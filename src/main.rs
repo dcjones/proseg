@@ -3,7 +3,7 @@ use clap::Parser;
 
 mod sampler;
 
-use sampler::Sampler;
+use sampler::{Sampler, Segmentation};
 use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph};
 
 
@@ -30,6 +30,9 @@ struct Args{
 
     #[arg(short, long, default_value="y_centroid")]
     cell_y_column: String,
+
+    #[arg(short, long, default_value_t=1000)]
+    niter: usize,
 }
 
 
@@ -51,7 +54,17 @@ fn main() {
 
     println!("Built neighborhood graph with {} edges", adjacency.nnz());
 
-    let sampler = Sampler::new(&transcripts, &nuclei_centroids, &adjacency);
+    let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
+    let mut sampler = Sampler::new(&seg);
+
+    for i in 0..args.niter {
+        sampler.sample_local_updates(&seg);
+        seg.apply_local_updates(&sampler);
+        sampler.sample_global_params(&seg);
+        if i % 100 == 0 {
+            println!("Iteration {}", i);
+        }
+    }
 
     // TODO: Run the sampler
 }

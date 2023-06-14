@@ -209,5 +209,6 @@ pub fn neighborhood_graph(transcripts: &Vec<Transcript>) -> CsMat<f32> {
     }
 
     let adjacency = adjacency.to_csr();
-    return &adjacency + &adjacency.transpose_view();
+    // return &adjacency + &adjacency.transpose_view();
+    return adjacency;
 }
