@@ -90,9 +90,9 @@ impl Sampler {
         self.proposal_cell_blacklist.fill(false);
         let mut rng = rand::thread_rng();
 
+        // Strategy here is to approximately shuffle the mismatch edges by
+        // assigning a random priority to each edge, then sorting on that.
         self.shuffled_mismatch_edges.clear();
-        // self.shuffled_mismatch_edges.extend(self.mismatch_edges.iter().cloned());
-        // self.shuffled_mismatch_edges.shuffle(&mut rng);
         self.shuffled_mismatch_edges.extend(self.mismatch_edges.iter().map(|(i, j)| {
             (rng.next_u32(), *i, *j)
         }));
@@ -100,22 +100,8 @@ impl Sampler {
             a.cmp(b)
         });
 
-        // this version needs a bunch of unstable features
-        // self.shuffled_mismatch_edges.par_shuffle_seed_with(&mut rng);
-
-        // this is super slow. Not really sure why.
-        // approximate fast parallel shuffle by sorting on values hashed with the
-        // sample iteration.
-        // self.shuffled_mismatch_edges.par_sort_unstable_by(|u, v| {
-        //     hash_value(&(self.sample_num, u)).cmp(&hash_value(&(self.sample_num, v)))
-        // });
-
         self.proposals.clear();
         let mut nblacklisted = 0;
-
-        // this version is slower
-        // loop {
-        //     let (i, j) = self.shuffled_mismatch_edges.choose(&mut rng).unwrap();
 
         for (_, i, j) in self.shuffled_mismatch_edges.iter() {
             let i_cell = seg.cell_assignments[*i];
@@ -142,6 +128,9 @@ impl Sampler {
 
             self.proposals.push(Proposal{i: *i, j: *j, accept: false});
 
+            // Quit early if we can. This is a sufficient but not necessary
+            // condition. There may be fewer proposals possible than there are
+            // cells in which case we end up going through every mismatch edge.
             if nblacklisted == ncells {
                 break;
             }
