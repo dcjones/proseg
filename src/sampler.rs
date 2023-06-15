@@ -1,17 +1,13 @@
 
 pub mod transcripts;
 
-use transcripts::{Transcript, NucleiCentroid, coordinate_span};
-use sprs::CsMat;
+use transcripts::{Transcript, NucleiCentroid, NeighborhoodGraph, coordinate_span};
 use kiddo::float::kdtree::KdTree;
 use kiddo::float::distance::squared_euclidean;
 use std::collections::HashSet;
-use bitvec::prelude::*;
 use rand::seq::SliceRandom;
-use rand::RngCore;
 use rayon::prelude::*;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+use petgraph::visit::IntoNeighbors;
 
 
 struct ChunkedTranscript {
@@ -57,12 +53,12 @@ fn chunk_transcripts(
 pub struct Segmentation<'a> {
     transcripts: &'a Vec<Transcript>,
     nuclei_centroids: &'a Vec<NucleiCentroid>,
-    adjacency: &'a CsMat<f32>,
+    adjacency: &'a NeighborhoodGraph,
     cell_assignments: Vec<u32>,
 }
 
 impl<'a> Segmentation<'a> {
-    pub fn new(transcripts: &'a Vec<Transcript>, nuclei_centroids: &'a Vec<NucleiCentroid>, adjacency: &'a CsMat<f32>) -> Segmentation<'a> {
+    pub fn new(transcripts: &'a Vec<Transcript>, nuclei_centroids: &'a Vec<NucleiCentroid>, adjacency: &'a NeighborhoodGraph) -> Segmentation<'a> {
         let cell_assignments = init_cell_assignments(transcripts, nuclei_centroids, 15);
         return Segmentation {
             transcripts,
@@ -72,13 +68,43 @@ impl<'a> Segmentation<'a> {
         }
     }
 
-    pub fn apply_local_updates(&mut self, sampler: &Sampler) {
+    pub fn apply_local_updates(&mut self, sampler: &mut Sampler) {
         println!("Updating with {} proposals", sampler.proposals.len());
-        for proposal in sampler.proposals.iter() {
-            if proposal.accept {
-                proposal.apply(self);
-            }
+
+        // TODO: check if we are doing multiple updates on the same cell and warn
+        // about it.
+
+        // Update cell assignments
+        for proposal in sampler.proposals.iter().filter(|p| p.accept) {
+            self.cell_assignments[proposal.i] = proposal.state;
         }
+
+        // Update mismatch edges
+        for quad in 0..4 {
+            sampler.chunkquads[quad].par_iter_mut().for_each(|chunkquad| {
+                for proposal in sampler.proposals.iter().filter(|p| p.accept) {
+                    let i = proposal.i;
+                    for j in self.adjacency.neighbors(i) {
+                        if self.cell_assignments[i] != self.cell_assignments[j] {
+                            if chunkquad.contains(&sampler.transcripts[j]) {
+                                chunkquad.mismatch_edges.insert((j, i));
+                            }
+                            if chunkquad.contains(&sampler.transcripts[i]) {
+                                chunkquad.mismatch_edges.insert((i, j));
+                            }
+                        } else {
+                            if chunkquad.contains(&sampler.transcripts[j]) {
+                                chunkquad.mismatch_edges.remove(&(j, i));
+                            }
+                            if chunkquad.contains(&sampler.transcripts[i]) {
+                                chunkquad.mismatch_edges.remove(&(i, j));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
     }
 }
 
@@ -90,9 +116,16 @@ struct ChunkQuad {
     shuffled_mismatch_edges: Vec<(usize, usize)>,
 }
 
+impl ChunkQuad {
+    fn contains(&self, transcript: &ChunkedTranscript) -> bool {
+        return self.chunk == transcript.chunk && self.quad == transcript.quad;
+    }
+}
+
 
 pub struct Sampler {
     chunkquads: Vec<Vec<ChunkQuad>>,
+    transcripts: Vec<ChunkedTranscript>,
     proposals: Vec<Proposal>,
     quad: usize,
     sample_num: usize,
@@ -125,24 +158,27 @@ impl Sampler {
 
         // need to be able to look up a quad chunk given its indexes
         let mut nmismatchedges = 0;
-        for (_, (i, j)) in seg.adjacency.iter() {
-            if seg.cell_assignments[i] != seg.cell_assignments[j] {
-                let ti = &chunked_transcripts[i];
-                chunkquads[ti.quad as usize][ti.chunk as usize].mismatch_edges.insert((i, j));
-                nmismatchedges += 1;
+        for i in 0..seg.adjacency.node_count() {
+            for j in seg.adjacency.neighbors(i) {
+                if seg.cell_assignments[i] != seg.cell_assignments[j] {
+                    let ti = &chunked_transcripts[i];
+                    chunkquads[ti.quad as usize][ti.chunk as usize].mismatch_edges.insert((i, j));
+                    nmismatchedges += 1;
+                }
             }
         }
         println!("Made initial cell assignments with {} mismatch edges", nmismatchedges);
 
         let proposals = vec![Proposal {
             i: 0,
-            j: 0,
+            state: ncells as u32,
             accept: false,
             ignore: true,
         }; nchunks];
 
         return Sampler {
             chunkquads,
+            transcripts: chunked_transcripts,
             proposals: proposals,
             quad: 0,
             sample_num: 0,
@@ -174,7 +210,7 @@ impl Sampler {
             chunkquad.shuffled_mismatch_edges.extend(chunkquad.mismatch_edges.iter().cloned());
             let (i, j) = chunkquad.shuffled_mismatch_edges.choose(&mut rng).unwrap();
             proposal.i = *i;
-            proposal.j = *j;
+            proposal.state = seg.cell_assignments[*j];
             proposal.accept = false;
             proposal.ignore = false;
         });
@@ -192,7 +228,7 @@ impl Sampler {
 #[derive(Clone)]
 struct Proposal {
     i: usize,
-    j: usize,
+    state: u32,
 
     ignore: bool,
     accept: bool
@@ -210,15 +246,6 @@ impl Proposal {
         }
         // TODO: actually evaluate
         self.accept = true;
-    }
-
-    fn apply(&self, seg: &mut Segmentation) {
-        // TODO:
-        //   1. swap states
-        //   2. update mismatch edges
-
-        // This second part is going to be a little expensive, we have to look up
-        // all of i and j's neighbors and see if they are now mismatched.
     }
 }
 

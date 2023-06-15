@@ -88,14 +88,14 @@ fn main() {
     let quadrant_size = chunk_size / 2.0;
     let adjacency = neighborhood_graph(&transcripts, quadrant_size);
 
-    println!("Built neighborhood graph with {} edges", adjacency.nnz()/2);
+    println!("Built neighborhood graph with {} edges", adjacency.edge_count()/2);
 
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
     let mut sampler = Sampler::new(&seg, chunk_size);
 
     for i in 0..args.niter {
         sampler.sample_local_updates(&seg);
-        seg.apply_local_updates(&sampler);
+        seg.apply_local_updates(&mut sampler);
         sampler.sample_global_params(&seg);
         if i % 100 == 0 {
             println!("Iteration {}", i);

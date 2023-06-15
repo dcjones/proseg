@@ -11,7 +11,7 @@ clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
 kiddo = "2.1.1"
+petgraph = "0.6.3"
 rand = "0.8.5"
 rayon = "1.7.0"
 spade = "2.2.0"
-sprs = "0.11.1"

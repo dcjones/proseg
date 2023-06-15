@@ -3,7 +3,10 @@ use flate2::read::GzDecoder;
 use spade::{Point2, DelaunayTriangulation, Triangulation, HasPosition, LastUsedVertexHintGenerator};
 use std::collections::HashMap;
 use std::fs::File;
-use sprs::{TriMat, CsMat};
+use petgraph::Directed;
+use petgraph::csr::Csr;
+
+pub type NeighborhoodGraph = Csr<(), (), Directed, usize>;
 
 #[derive(Copy, Clone)]
 pub struct Transcript {
@@ -192,7 +195,7 @@ impl HasPosition for TranscriptPosIdx {
 }
 
 
-pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -> CsMat<f32> {
+pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -> NeighborhoodGraph {
     let max_edge_length_squared = max_edge_length * max_edge_length;
 
     let vertices =
@@ -203,26 +206,25 @@ pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -
         DelaunayTriangulation::bulk_load(vertices).unwrap();
 
     let n = transcripts.len();
-    let mut adjacency = TriMat::new((n, n));
 
     let mut nrejected: usize = 0;
     let mut nedges: usize = 0;
-    for edge in triangulation.undirected_edges() {
+    let mut edges = Vec::new();
+    for edge in triangulation.directed_edges() {
         if edge.length_2() >= max_edge_length_squared {
             nrejected += 1;
             continue;
         }
 
         let [from, to] = edge.vertices();
-        adjacency.add_triplet(from.data().idx as usize,  to.data().idx as usize, 1.0f32);
+        edges.push((from.data().idx as usize, to.data().idx as usize));
         nedges += 1;
     }
+    edges.sort();
 
-    // TODO: issue some kind of warning
     println!("Rejected {} edges ({:0.3}%)", nrejected, nrejected as f64 / nedges as f64 * 100.0);
 
-    let adjacency = adjacency.to_csr();
-    return &adjacency + &adjacency.transpose_view();
+    return NeighborhoodGraph::from_sorted_edges(&edges).unwrap();
 }
 
 
