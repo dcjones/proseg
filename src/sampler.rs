@@ -7,7 +7,7 @@ use kiddo::float::distance::squared_euclidean;
 use std::collections::HashSet;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
-use petgraph::visit::IntoNeighbors;
+use petgraph::visit::{EdgeRef, IntoNeighbors};
 
 
 struct ChunkedTranscript {
@@ -55,16 +55,18 @@ pub struct Segmentation<'a> {
     nuclei_centroids: &'a Vec<NucleiCentroid>,
     adjacency: &'a NeighborhoodGraph,
     cell_assignments: Vec<u32>,
+    cell_population: Vec<usize>,
 }
 
 impl<'a> Segmentation<'a> {
     pub fn new(transcripts: &'a Vec<Transcript>, nuclei_centroids: &'a Vec<NucleiCentroid>, adjacency: &'a NeighborhoodGraph) -> Segmentation<'a> {
-        let cell_assignments = init_cell_assignments(transcripts, nuclei_centroids, 15);
+        let (cell_assignments, cell_population) = init_cell_assignments(transcripts, nuclei_centroids, 15);
         return Segmentation {
             transcripts,
             nuclei_centroids,
             adjacency,
             cell_assignments,
+            cell_population
         }
     }
 
@@ -76,6 +78,8 @@ impl<'a> Segmentation<'a> {
 
         // Update cell assignments
         for proposal in sampler.proposals.iter().filter(|p| p.accept) {
+            self.cell_population[self.cell_assignments[proposal.i] as usize] -= 1;
+            self.cell_population[proposal.state as usize] += 1;
             self.cell_assignments[proposal.i] = proposal.state;
         }
 
@@ -172,6 +176,7 @@ impl Sampler {
         let proposals = vec![Proposal {
             i: 0,
             state: ncells as u32,
+            weight: 0.0,
             accept: false,
             ignore: true,
         }; nchunks];
@@ -206,11 +211,49 @@ impl Sampler {
                 return;
             }
 
+            // TODO: If (i, j) are both cells, with some low probability we
+            // should propose making i background.
+
             chunkquad.shuffled_mismatch_edges.clear();
             chunkquad.shuffled_mismatch_edges.extend(chunkquad.mismatch_edges.iter().cloned());
             let (i, j) = chunkquad.shuffled_mismatch_edges.choose(&mut rng).unwrap();
+
+            let k = *i; // target cell
+            let c = seg.cell_assignments[*j]; // proposal state
+
+            // Don't propose removing the last transcript from a cell. (This is
+            // breaks the markov chain balance, since there's no path back to the previous state.)
+            if seg.cell_population[seg.cell_assignments[k] as usize] == 1 {
+                proposal.ignore = true;
+                return;
+            }
+
+            // compute the probability of selecting the proposal (k, c)
+            let num_mismatching_edges = chunkquad.mismatch_edges.len();
+
+            let num_state_c_neighbors = seg.adjacency.neighbors(k)
+                .filter(|j| seg.cell_assignments[*j] == c).count();
+
+            let proposal_prob = num_state_c_neighbors as f64 / num_mismatching_edges as f64;
+
+            // compute the probability of selecting the reverse proposal after applying it.
+            let num_newly_matching_neighbors = seg.adjacency.neighbors(k)
+                .filter(|j| seg.cell_assignments[*j] == c).count();
+
+            let num_newly_mismatching_neighbors = seg.adjacency.neighbors(k)
+                .filter(|j| seg.cell_assignments[*i] == seg.cell_assignments[*j]).count();
+
+            let new_num_mismatching_edges =
+                num_mismatching_edges - 2*num_newly_matching_neighbors + 2*num_newly_mismatching_neighbors;
+
+            let new_num_state_prev_neighbors = seg.adjacency.neighbors(*i)
+                .filter(|j| seg.cell_assignments[*j] == seg.cell_assignments[*i]).count();
+
+            let reverse_proposal_prob = new_num_state_prev_neighbors as f64 / new_num_mismatching_edges as f64;
+
             proposal.i = *i;
             proposal.state = seg.cell_assignments[*j];
+            proposal.weight = (reverse_proposal_prob / proposal_prob) as f32;
             proposal.accept = false;
             proposal.ignore = false;
         });
@@ -230,8 +273,12 @@ struct Proposal {
     i: usize,
     state: u32,
 
+    // metroplis-hastings proposal weight weight
+    weight: f32,
+
     ignore: bool,
-    accept: bool
+    accept: bool,
+
 
     // We need to keep track of some other stuff, preventing this from being
     // some pre-allocated structure.
@@ -250,7 +297,7 @@ impl Proposal {
 }
 
 
-fn init_cell_assignments(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<NucleiCentroid>, k: usize) -> Vec<u32> {
+fn init_cell_assignments(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<NucleiCentroid>, k: usize) -> (Vec<u32>, Vec<usize>) {
     let mut kdtree: KdTree<f32, usize, 2, 32, u32> = KdTree::with_capacity(transcripts.len());
 
     for (i, transcript) in transcripts.iter().enumerate() {
@@ -260,13 +307,17 @@ fn init_cell_assignments(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<N
     let ncells = nuclei_centroids.len();
     let ntranscripts = transcripts.len();
     let mut cell_assignments = vec![ncells as u32; ntranscripts];
+    let mut cell_population = vec![0; ncells+1];
+    cell_population[ncells] = ntranscripts;
 
     for (i, centroid) in nuclei_centroids.iter().enumerate() {
         for neighbor in kdtree.nearest_n(&[centroid.x, centroid.y], k, &squared_euclidean) {
             cell_assignments[neighbor.item] = i as u32;
+            cell_population[ncells] -= 1;
+            cell_population[i] += 1;
         }
     }
 
-    return cell_assignments;
+    return (cell_assignments, cell_population);
 }
 
