@@ -1,10 +1,12 @@
 use csv;
 use flate2::read::GzDecoder;
-use spade::{Point2, DelaunayTriangulation, Triangulation, HasPosition, LastUsedVertexHintGenerator};
+use petgraph::csr::Csr;
+use petgraph::Directed;
+use spade::{
+    DelaunayTriangulation, HasPosition, LastUsedVertexHintGenerator, Point2, Triangulation,
+};
 use std::collections::HashMap;
 use std::fs::File;
-use petgraph::Directed;
-use petgraph::csr::Csr;
 
 pub type NeighborhoodGraph = Csr<(), (), Directed, usize>;
 
@@ -13,7 +15,7 @@ pub struct Transcript {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    pub gene: u32
+    pub gene: u32,
 }
 
 pub struct NucleiCentroid {
@@ -150,12 +152,7 @@ where
     return (transcript_names, transcripts);
 }
 
-pub fn read_nuclei_csv(
-    path: &str,
-    x_column: &str,
-    y_column: &str,
-) -> Vec<NucleiCentroid>
-{
+pub fn read_nuclei_csv(path: &str, x_column: &str, y_column: &str) -> Vec<NucleiCentroid> {
     let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
     let headers = rdr.headers().unwrap();
 
@@ -169,21 +166,17 @@ pub fn read_nuclei_csv(
         let x = row[x_col].parse::<f32>().unwrap();
         let y = row[y_col].parse::<f32>().unwrap();
 
-        centroids.push(NucleiCentroid {
-            x,
-            y,
-        });
+        centroids.push(NucleiCentroid { x, y });
     }
 
     return centroids;
 }
 
-
 // Vertex type for doing the triangulation in 2D
 struct TranscriptPosIdx {
     x: f32,
     y: f32,
-    idx: u32
+    idx: u32,
 }
 
 impl HasPosition for TranscriptPosIdx {
@@ -194,16 +187,29 @@ impl HasPosition for TranscriptPosIdx {
     }
 }
 
-
-pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -> NeighborhoodGraph {
+pub fn neighborhood_graph(
+    transcripts: &Vec<Transcript>,
+    max_edge_length: f32,
+) -> NeighborhoodGraph {
     let max_edge_length_squared = max_edge_length * max_edge_length;
 
-    let vertices =
-        transcripts.iter().enumerate().map(
-            |(i, t)| TranscriptPosIdx { x: t.x, y: t.y, idx: i as u32 }).collect();
+    let vertices = transcripts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| TranscriptPosIdx {
+            x: t.x,
+            y: t.y,
+            idx: i as u32,
+        })
+        .collect();
 
-    let triangulation: DelaunayTriangulation<TranscriptPosIdx, (), (), (), LastUsedVertexHintGenerator> =
-        DelaunayTriangulation::bulk_load(vertices).unwrap();
+    let triangulation: DelaunayTriangulation<
+        TranscriptPosIdx,
+        (),
+        (),
+        (),
+        LastUsedVertexHintGenerator,
+    > = DelaunayTriangulation::bulk_load(vertices).unwrap();
 
     let n = transcripts.len();
 
@@ -222,13 +228,19 @@ pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -
     }
     edges.sort();
 
-    println!("Rejected {} edges ({:0.3}%)", nrejected, nrejected as f64 / nedges as f64 * 100.0);
+    println!(
+        "Rejected {} edges ({:0.3}%)",
+        nrejected,
+        nrejected as f64 / nedges as f64 * 100.0
+    );
 
     return NeighborhoodGraph::from_sorted_edges(&edges).unwrap();
 }
 
-
-pub fn coordinate_span(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<NucleiCentroid>) -> (f32, f32, f32, f32) {
+pub fn coordinate_span(
+    transcripts: &Vec<Transcript>,
+    nuclei_centroids: &Vec<NucleiCentroid>,
+) -> (f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
     let mut max_x = std::f32::MIN;
     let mut min_y = std::f32::MAX;
@@ -250,4 +262,3 @@ pub fn coordinate_span(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<Nuc
 
     return (min_x, max_x, min_y, max_y);
 }
-
