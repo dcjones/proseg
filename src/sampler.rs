@@ -1,7 +1,7 @@
 
 pub mod transcripts;
 
-use transcripts::{Transcript, NucleiCentroid};
+use transcripts::{Transcript, NucleiCentroid, coordinate_span};
 use sprs::CsMat;
 use kiddo::float::kdtree::KdTree;
 use kiddo::float::distance::squared_euclidean;
@@ -12,6 +12,46 @@ use rand::RngCore;
 use rayon::prelude::*;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+
+
+struct ChunkedTranscript {
+    transcript: Transcript,
+    chunk: u32,
+    quad: u32,
+}
+
+
+// Compute chunk and quadrant for a single a single (x,y) point.
+fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: usize) -> (u32, u32) {
+    let xchunkquad = ((x - xmin) / (chunk_size/2.0)).floor() as u32;
+    let ychunkquad = ((y - ymin) / (chunk_size/2.0)).floor() as u32;
+
+    let chunk = (xchunkquad/4) + (ychunkquad/4)*(nxchunks as u32);
+    let quad = (xchunkquad%2) + (ychunkquad%2)*2;
+
+    return (chunk, quad);
+}
+
+
+// Figure out every transcript's chunk and quadrant.
+fn chunk_transcripts(
+    transcripts: &Vec<Transcript>,
+    xmin: f32,
+    ymin: f32,
+    chunk_size: f32,
+    nxchunks: usize) -> Vec<ChunkedTranscript>
+{
+    return transcripts.iter().map(|transcript| {
+        let (chunk, quad) = chunkquad(
+            transcript.x, transcript.y, xmin, ymin, chunk_size, nxchunks);
+
+        ChunkedTranscript {
+            transcript: transcript.clone(),
+            chunk: chunk,
+            quad: quad,
+        }
+    }).collect();
+}
 
 
 pub struct Segmentation<'a> {
@@ -42,34 +82,69 @@ impl<'a> Segmentation<'a> {
     }
 }
 
+#[derive(Clone)]
+struct ChunkQuad {
+    chunk: u32,
+    quad: u32,
+    mismatch_edges: HashSet<(usize, usize)>,
+    shuffled_mismatch_edges: Vec<(usize, usize)>,
+}
+
 
 pub struct Sampler {
-    mismatch_edges: HashSet<(usize, usize)>,
-    shuffled_mismatch_edges: Vec<(u32, usize, usize)>,
-    proposal_cell_blacklist: BitVec,
+    chunkquads: Vec<Vec<ChunkQuad>>,
     proposals: Vec<Proposal>,
+    quad: usize,
     sample_num: usize,
 }
 
 impl Sampler {
-    pub fn new(seg: &Segmentation) -> Sampler {
+    pub fn new(seg: &Segmentation, chunk_size: f32) -> Sampler {
+        let (xmin, xmax, ymin, ymax) = coordinate_span(seg.transcripts, seg.nuclei_centroids);
+
+        let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
+        let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
+        let nchunks = nxchunks * nychunks;
+        let chunked_transcripts = chunk_transcripts(seg.transcripts, xmin, ymin, chunk_size, nxchunks);
+
         let ncells = seg.nuclei_centroids.len();
 
-        let mut mismatch_edges = HashSet::new();
+        let mut chunkquads = Vec::with_capacity(4);
+        for quad in 0..4 {
+            let mut chunks= Vec::with_capacity(nchunks);
+            for chunk in 0..nchunks {
+                chunks.push(ChunkQuad {
+                    chunk: chunk as u32,
+                    quad: quad as u32,
+                    mismatch_edges: HashSet::new(),
+                    shuffled_mismatch_edges: Vec::new(),
+                });
+            }
+            chunkquads.push(chunks);
+        }
+
+        // need to be able to look up a quad chunk given its indexes
+        let mut nmismatchedges = 0;
         for (_, (i, j)) in seg.adjacency.iter() {
             if seg.cell_assignments[i] != seg.cell_assignments[j] {
-                mismatch_edges.insert((i, j));
+                let ti = &chunked_transcripts[i];
+                chunkquads[ti.quad as usize][ti.chunk as usize].mismatch_edges.insert((i, j));
+                nmismatchedges += 1;
             }
         }
-        println!("Made initial cell assignments with {} mismatch edges", mismatch_edges.len());
+        println!("Made initial cell assignments with {} mismatch edges", nmismatchedges);
 
-        let proposal_cell_blacklist = bitvec![0; ncells+1];
+        let proposals = vec![Proposal {
+            i: 0,
+            j: 0,
+            accept: false,
+            ignore: true,
+        }; nchunks];
 
         return Sampler {
-            mismatch_edges,
-            shuffled_mismatch_edges: Vec::new(),
-            proposal_cell_blacklist,
-            proposals: Vec::new(),
+            chunkquads,
+            proposals: proposals,
+            quad: 0,
             sample_num: 0,
         }
     }
@@ -85,57 +160,26 @@ impl Sampler {
     }
 
     fn repoulate_proposals(&mut self, seg: &Segmentation) {
-        let ncells = seg.nuclei_centroids.len();
+        self.proposals.par_iter_mut()
+            .zip(&mut self.chunkquads[self.quad])
+            .for_each(|(proposal, chunkquad)| {
+            let mut rng = rand::thread_rng();
 
-        self.proposal_cell_blacklist.fill(false);
-        let mut rng = rand::thread_rng();
+            if chunkquad.mismatch_edges.is_empty() {
+                proposal.ignore = true;
+                return;
+            }
 
-        // Strategy here is to approximately shuffle the mismatch edges by
-        // assigning a random priority to each edge, then sorting on that.
-        self.shuffled_mismatch_edges.clear();
-        self.shuffled_mismatch_edges.extend(self.mismatch_edges.iter().map(|(i, j)| {
-            (rng.next_u32(), *i, *j)
-        }));
-        self.shuffled_mismatch_edges.par_sort_unstable_by(|(a, _, _), (b, _, _)| {
-            a.cmp(b)
+            chunkquad.shuffled_mismatch_edges.clear();
+            chunkquad.shuffled_mismatch_edges.extend(chunkquad.mismatch_edges.iter().cloned());
+            let (i, j) = chunkquad.shuffled_mismatch_edges.choose(&mut rng).unwrap();
+            proposal.i = *i;
+            proposal.j = *j;
+            proposal.accept = false;
+            proposal.ignore = false;
         });
 
-        self.proposals.clear();
-        let mut nblacklisted = 0;
-
-        for (_, i, j) in self.shuffled_mismatch_edges.iter() {
-            let i_cell = seg.cell_assignments[*i];
-            let i_cell_blacklisted = self.proposal_cell_blacklist[i_cell as usize];
-            if i_cell_blacklisted {
-                continue;
-            }
-
-            let j_cell = seg.cell_assignments[*j];
-            let j_cell_blacklisted = self.proposal_cell_blacklist[j_cell as usize];
-            if j_cell_blacklisted {
-                continue;
-            }
-
-            // never blacklist the background "cell"
-            if i_cell < ncells as u32 {
-                self.proposal_cell_blacklist.set(i_cell as usize, true);
-                nblacklisted += 1;
-            }
-            if j_cell < ncells as u32 {
-                self.proposal_cell_blacklist.set(j_cell as usize, true);
-                nblacklisted += 1;
-            }
-
-            self.proposals.push(Proposal{i: *i, j: *j, accept: false});
-
-            // Quit early if we can. This is a sufficient but not necessary
-            // condition. There may be fewer proposals possible than there are
-            // cells in which case we end up going through every mismatch edge.
-            if nblacklisted == ncells {
-                break;
-            }
-        }
-
+        self.quad = (self.quad + 1) % 4;
     }
 
     pub fn sample_global_params(&mut self, seg: &Segmentation) {
@@ -145,10 +189,12 @@ impl Sampler {
 }
 
 
+#[derive(Clone)]
 struct Proposal {
     i: usize,
     j: usize,
 
+    ignore: bool,
     accept: bool
 
     // We need to keep track of some other stuff, preventing this from being
@@ -158,6 +204,10 @@ struct Proposal {
 
 impl Proposal {
     fn evaluate(&mut self, seg: &Segmentation) {
+        if self.ignore {
+            self.accept = false;
+            return;
+        }
         // TODO: actually evaluate
         self.accept = true;
     }
@@ -170,13 +220,6 @@ impl Proposal {
         // This second part is going to be a little expensive, we have to look up
         // all of i and j's neighbors and see if they are now mismatched.
     }
-}
-
-
-fn hash_value<T: Hash>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    return s.finish();
 }
 
 

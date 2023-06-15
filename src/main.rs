@@ -4,7 +4,8 @@ use clap::Parser;
 mod sampler;
 
 use sampler::{Sampler, Segmentation};
-use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph};
+use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph, coordinate_span};
+use rayon::{prelude::*, current_num_threads};
 
 
 #[derive(Parser, Debug)]
@@ -33,6 +34,10 @@ struct Args{
 
     #[arg(short, long, default_value_t=1000)]
     niter: usize,
+
+    #[arg(short, long, default_value=None)]
+    nthreads: Option<usize>,
+
 }
 
 
@@ -47,15 +52,46 @@ fn main() {
 
     let nuclei_centroids = read_nuclei_csv(
         &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
+    let ncells = nuclei_centroids.len();
 
-    println!("Read {} nuclei centroids", nuclei_centroids.len());
+    let (xmin, xmax, ymin, ymax) = coordinate_span(&transcripts, &nuclei_centroids);
+    let (xspan, yspan) = (xmax - xmin, ymax - ymin);
 
-    let adjacency = neighborhood_graph(&transcripts);
+    if let Some(nthreads) = args.nthreads {
+        rayon::ThreadPoolBuilder::new().num_threads(nthreads).build_global().unwrap();
+    }
+    let nthreads = current_num_threads();
+    println!("Using {} threads", nthreads);
 
-    println!("Built neighborhood graph with {} edges", adjacency.nnz());
+    println!("Read {} nuclei centroids", ncells);
+
+    // Find a reasonable grid size to use to chunk the data
+    const chunk_factor: usize = 4;
+    let area = (xmax - xmin) * (ymax - ymin);
+    let mut chunk_size = (area / ((nthreads * chunk_factor) as f32)).sqrt();
+
+    let min_cells_per_chunk = (ncells as f64).min(100.0);
+
+    let nchunks = |chunk_size: f32, xspan: f32, yspan: f32| {
+        ((xspan / chunk_size).ceil() as usize) * ((yspan / chunk_size).ceil() as usize)
+    };
+
+    while (ncells as f64) / (nchunks(chunk_size, xspan, yspan) as f64) < min_cells_per_chunk {
+        chunk_size *= std::f32::consts::SQRT_2;
+    }
+
+    // while (ncells as f64) / ((grid_size * grid_size) as f64) < min_cells_per_chunk {
+    //     grid_size *= std::f32::consts::SQRT_2;
+    // }
+    println!("Using grid size {}. Cells per chunk: {}", chunk_size, nchunks(chunk_size, xspan, yspan));
+
+    let quadrant_size = chunk_size / 2.0;
+    let adjacency = neighborhood_graph(&transcripts, quadrant_size);
+
+    println!("Built neighborhood graph with {} edges", adjacency.nnz()/2);
 
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
-    let mut sampler = Sampler::new(&seg);
+    let mut sampler = Sampler::new(&seg, chunk_size);
 
     for i in 0..args.niter {
         sampler.sample_local_updates(&seg);

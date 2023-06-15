@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use sprs::{TriMat, CsMat};
 
+#[derive(Copy, Clone)]
 pub struct Transcript {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub gene: u32
 }
-
 
 pub struct NucleiCentroid {
     pub x: f32,
@@ -192,7 +192,9 @@ impl HasPosition for TranscriptPosIdx {
 }
 
 
-pub fn neighborhood_graph(transcripts: &Vec<Transcript>) -> CsMat<f32> {
+pub fn neighborhood_graph(transcripts: &Vec<Transcript>, max_edge_length: f32) -> CsMat<f32> {
+    let max_edge_length_squared = max_edge_length * max_edge_length;
+
     let vertices =
         transcripts.iter().enumerate().map(
             |(i, t)| TranscriptPosIdx { x: t.x, y: t.y, idx: i as u32 }).collect();
@@ -203,12 +205,47 @@ pub fn neighborhood_graph(transcripts: &Vec<Transcript>) -> CsMat<f32> {
     let n = transcripts.len();
     let mut adjacency = TriMat::new((n, n));
 
+    let mut nrejected: usize = 0;
+    let mut nedges: usize = 0;
     for edge in triangulation.undirected_edges() {
+        if edge.length_2() >= max_edge_length_squared {
+            nrejected += 1;
+            continue;
+        }
+
         let [from, to] = edge.vertices();
         adjacency.add_triplet(from.data().idx as usize,  to.data().idx as usize, 1.0f32);
+        nedges += 1;
     }
 
+    // TODO: issue some kind of warning
+    println!("Rejected {} edges ({:0.3}%)", nrejected, nrejected as f64 / nedges as f64 * 100.0);
+
     let adjacency = adjacency.to_csr();
-    // return &adjacency + &adjacency.transpose_view();
-    return adjacency;
+    return &adjacency + &adjacency.transpose_view();
 }
+
+
+pub fn coordinate_span(transcripts: &Vec<Transcript>, nuclei_centroids: &Vec<NucleiCentroid>) -> (f32, f32, f32, f32) {
+    let mut min_x = std::f32::MAX;
+    let mut max_x = std::f32::MIN;
+    let mut min_y = std::f32::MAX;
+    let mut max_y = std::f32::MIN;
+
+    for t in transcripts {
+        min_x = min_x.min(t.x);
+        max_x = max_x.max(t.x);
+        min_y = min_y.min(t.y);
+        max_y = max_y.max(t.y);
+    }
+
+    for n in nuclei_centroids {
+        min_x = min_x.min(n.x);
+        max_x = max_x.max(n.x);
+        min_y = min_y.min(n.y);
+        max_y = max_y.max(n.y);
+    }
+
+    return (min_x, max_x, min_y, max_y);
+}
+
