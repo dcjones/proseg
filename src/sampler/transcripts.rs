@@ -190,7 +190,7 @@ impl HasPosition for TranscriptPosIdx {
 pub fn neighborhood_graph(
     transcripts: &Vec<Transcript>,
     max_edge_length: f32,
-) -> NeighborhoodGraph {
+) -> (NeighborhoodGraph, f32) {
     let max_edge_length_squared = max_edge_length * max_edge_length;
 
     let vertices = transcripts
@@ -216,16 +216,21 @@ pub fn neighborhood_graph(
     let mut nrejected: usize = 0;
     let mut nedges: usize = 0;
     let mut edges = Vec::new();
+    let mut avg_edge_length = 0.0;
     for edge in triangulation.directed_edges() {
         if edge.length_2() >= max_edge_length_squared {
             nrejected += 1;
             continue;
         }
+        avg_edge_length += edge.length_2();
 
         let [from, to] = edge.vertices();
         edges.push((from.data().idx as usize, to.data().idx as usize));
         nedges += 1;
     }
+    avg_edge_length = (avg_edge_length / nedges as f32).sqrt();
+    assert!(avg_edge_length > 0.0);
+
     edges.sort();
 
     println!(
@@ -234,7 +239,7 @@ pub fn neighborhood_graph(
         nrejected as f64 / nedges as f64 * 100.0
     );
 
-    return NeighborhoodGraph::from_sorted_edges(&edges).unwrap();
+    return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), avg_edge_length);
 }
 
 pub fn coordinate_span(

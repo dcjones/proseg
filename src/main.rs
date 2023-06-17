@@ -3,7 +3,7 @@ use clap::Parser;
 
 mod sampler;
 
-use sampler::{Sampler, Segmentation};
+use sampler::{Sampler, Segmentation, ModelPriors};
 use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph, coordinate_span};
 use rayon::{prelude::*, current_num_threads};
 
@@ -32,6 +32,9 @@ struct Args{
     #[arg(short, long, default_value="y_centroid")]
     cell_y_column: String,
 
+    #[arg(short, long, default_value_t=20)]
+    ncomponents: usize,
+
     #[arg(short, long, default_value_t=1000)]
     niter: usize,
 
@@ -43,6 +46,8 @@ struct Args{
 
 fn main() {
     let args = Args::parse();
+
+    assert!(args.ncomponents > 0);
 
     let (transcript_names, transcripts) = read_transcripts_csv(
         &args.transcript_csv, &args.transcript_column, &args.x_column,
@@ -86,21 +91,26 @@ fn main() {
     println!("Using grid size {}. Cells per chunk: {}", chunk_size, nchunks(chunk_size, xspan, yspan));
 
     let quadrant_size = chunk_size / 2.0;
-    let adjacency = neighborhood_graph(&transcripts, quadrant_size);
+    let (adjacency, avg_edge_length) = neighborhood_graph(&transcripts, quadrant_size);
 
     println!("Built neighborhood graph with {} edges", adjacency.edge_count()/2);
 
-    let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
-    let mut sampler = Sampler::new(&seg, chunk_size);
+    let priors = ModelPriors {
+        min_cell_size: avg_edge_length,
+        background_prob: 0.01,
+    };
 
-    for i in 0..args.niter {
-        sampler.sample_local_updates(&seg);
-        seg.apply_local_updates(&mut sampler);
-        sampler.sample_global_params(&seg);
-        if i % 100 == 0 {
-            println!("Iteration {}", i);
-        }
-    }
+    let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
+    let mut sampler = Sampler::new(priors, &seg, args.ncomponents, chunk_size);
+
+    // for i in 0..args.niter {
+    //     sampler.sample_local_updates(&seg);
+    //     seg.apply_local_updates(&mut sampler);
+    //     sampler.sample_global_params(&seg);
+    //     if i % 100 == 0 {
+    //         println!("Iteration {}", i);
+    //     }
+    // }
 
     // TODO: Run the sampler
 }

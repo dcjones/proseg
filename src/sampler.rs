@@ -1,12 +1,51 @@
 pub mod transcripts;
+mod hull;
 
 use kiddo::float::distance::squared_euclidean;
 use kiddo::float::kdtree::KdTree;
 use petgraph::visit::{EdgeRef, IntoNeighbors};
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, Rng, thread_rng};
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::{collections::HashSet, cell, ops::DerefMut};
 use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript};
+use hull::convex_hull_area;
+use thread_local::ThreadLocal;
+use std::cell::{RefCell, RefMut};
+
+
+#[derive(Clone, Copy)]
+pub struct ModelPriors {
+    pub min_cell_size: f32,
+    pub background_prob: f32,
+}
+
+
+pub struct ModelParams {
+    z: Vec<u32>, // assignment of cells to components
+    π: Vec<f32>, // mixing proportions over components
+
+    μ_a: Vec<f32>, // area dist mean param by component
+    σ_a: Vec<f32>, // area dist std param by component
+
+    // TODO: feels like we need ndarrays to hold things like p and α
+}
+
+
+impl ModelParams {
+    // initialize model parameters, with random cell assignments
+    // and other parameterz unninitialized.
+    fn new(ncells: usize, ncomponents: usize) -> Self {
+        let mut rng = thread_rng();
+
+        return ModelParams {
+            z: (0..ncells).map(|_| rng.gen_range(0..ncomponents) as u32).collect(),
+            π: vec![0.0; ncomponents],
+            μ_a: vec![0.0; ncomponents],
+            σ_a: vec![0.0; ncomponents],
+        };
+    }
+}
+
 
 struct ChunkedTranscript {
     transcript: Transcript,
@@ -48,6 +87,9 @@ fn chunk_transcripts(
         .collect();
 }
 
+// Holds the segmentation state.
+// This is kept outside of Sample mainly so we can borrow this in multiple threads
+// while modifying the sampler when generating proposals.
 pub struct Segmentation<'a> {
     transcripts: &'a Vec<Transcript>,
     nuclei_centroids: &'a Vec<NucleiCentroid>,
@@ -64,6 +106,7 @@ impl<'a> Segmentation<'a> {
     ) -> Segmentation<'a> {
         let (cell_assignments, cell_population) =
             init_cell_assignments(transcripts, nuclei_centroids, 15);
+
         return Segmentation {
             transcripts,
             nuclei_centroids,
@@ -130,16 +173,38 @@ impl ChunkQuad {
     }
 }
 
+
+// Pre-allocated thread-local storage used when computing cell areas.
+struct AreaCalcStorage {
+    vertices: Vec<(f32, f32)>,
+    hull: Vec<(f32, f32)>,
+}
+
+impl AreaCalcStorage {
+    fn new() -> Self {
+        return AreaCalcStorage {
+            vertices: Vec::new(),
+            hull: Vec::new(),
+        };
+    }
+}
+
+
 pub struct Sampler {
+    priors: ModelPriors,
     chunkquads: Vec<Vec<ChunkQuad>>,
     transcripts: Vec<ChunkedTranscript>,
+    params: ModelParams,
     proposals: Vec<Proposal>,
+    cell_transcripts: Vec<HashSet<usize>>,
+    cell_areas: Vec<f32>,
+    cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
     quad: usize,
     sample_num: usize,
 }
 
 impl Sampler {
-    pub fn new(seg: &Segmentation, chunk_size: f32) -> Sampler {
+    pub fn new(priors: ModelPriors, seg: &Segmentation, ncomponents: usize, chunk_size: f32) -> Sampler {
         let (xmin, xmax, ymin, ymax) = coordinate_span(seg.transcripts, seg.nuclei_centroids);
 
         let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
@@ -182,24 +247,35 @@ impl Sampler {
             nmismatchedges
         );
 
-        let proposals = vec![
-            Proposal {
-                i: 0,
-                state: ncells as u32,
-                weight: 0.0,
-                accept: false,
-                ignore: true,
-            };
-            nchunks
-        ];
+        let params = ModelParams::new(ncells, ncomponents);
 
-        return Sampler {
+        let mut cell_transcripts = vec![HashSet::new(); ncells];
+        for (i, cell) in seg.cell_assignments.iter().enumerate() {
+            if (*cell as usize) < ncells {
+                cell_transcripts[*cell as usize].insert(i);
+            }
+        }
+
+        let cell_areas = vec![0.0; ncells];
+
+        let proposals = vec![Proposal::new(); nchunks];
+
+        let mut sampler = Sampler {
+            priors,
             chunkquads,
             transcripts: chunked_transcripts,
+            params: params,
+            cell_transcripts: cell_transcripts,
+            cell_areas: cell_areas,
+            cell_area_calc_storage: ThreadLocal::new(),
             proposals: proposals,
             quad: 0,
             sample_num: 0,
         };
+
+        sampler.compute_cell_areas();
+        sampler.sample_global_params(seg);
+        return sampler;
     }
 
     pub fn sample_local_updates(&mut self, seg: &Segmentation) {
@@ -246,39 +322,25 @@ impl Sampler {
                 // compute the probability of selecting the proposal (k, c)
                 let num_mismatching_edges = chunkquad.mismatch_edges.len();
 
-                let num_state_c_neighbors = seg
+                let num_new_state_neighbors = seg
                     .adjacency
                     .neighbors(k)
                     .filter(|j| seg.cell_assignments[*j] == c)
                     .count();
 
-                let proposal_prob = num_state_c_neighbors as f64 / num_mismatching_edges as f64;
-
-                // compute the probability of selecting the reverse proposal after applying it.
-                let num_newly_matching_neighbors = seg
+                let num_prev_state_neighbors = seg
                     .adjacency
                     .neighbors(k)
-                    .filter(|j| seg.cell_assignments[*j] == c)
-                    .count();
-
-                let num_newly_mismatching_neighbors = seg
-                    .adjacency
-                    .neighbors(k)
-                    .filter(|j| seg.cell_assignments[*i] == seg.cell_assignments[*j])
-                    .count();
-
-                let new_num_mismatching_edges = num_mismatching_edges
-                    - 2 * num_newly_matching_neighbors
-                    + 2 * num_newly_mismatching_neighbors;
-
-                let new_num_state_prev_neighbors = seg
-                    .adjacency
-                    .neighbors(*i)
                     .filter(|j| seg.cell_assignments[*j] == seg.cell_assignments[*i])
                     .count();
 
-                let reverse_proposal_prob =
-                    new_num_state_prev_neighbors as f64 / new_num_mismatching_edges as f64;
+                let proposal_prob = num_new_state_neighbors as f64 / num_mismatching_edges as f64;
+
+                let new_num_mismatching_edges = num_mismatching_edges
+                    + 2*num_prev_state_neighbors // edges that are newly mismatching
+                    - 2*num_new_state_neighbors; // edges that are newly matching
+
+                let reverse_proposal_prob = num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
 
                 proposal.i = *i;
                 proposal.state = seg.cell_assignments[*j];
@@ -290,8 +352,52 @@ impl Sampler {
         self.quad = (self.quad + 1) % 4;
     }
 
+    pub fn sample_cell_assignments(&mut self, seg: &mut Segmentation) {
+    }
+
     pub fn sample_global_params(&mut self, seg: &Segmentation) {
-        // TODO:
+        // Are we tracking cell probabilities and areas and such? Yes.
+
+        // TODO: sample π
+        // Sample from conjugate-prior Dirichlet distribution.
+
+        // TODO: sample μ_a
+        // Compute area for every cell, log-transform, sample from gaussian
+
+        // TODO: sample μ_d
+        // compute density for every cell, log-transform, sample from gaussian
+    }
+
+    fn compute_cell_areas(&mut self) {
+        self.cell_areas
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, area)| {
+                let mut areacalc = self.cell_area_calc_storage.get_or(
+                    || RefCell::new(AreaCalcStorage::new()) ).borrow_mut();
+                areacalc.vertices.clear();
+
+                for j in self.cell_transcripts[i].iter() {
+                    let transcript = self.transcripts[*j].transcript;
+                    areacalc.vertices.push((transcript.x, transcript.y));
+                }
+
+                let (vertices, hull) =
+                    RefMut::map_split(areacalc, |areacalc| (&mut areacalc.vertices, &mut areacalc.hull));
+                *area = convex_hull_area(vertices, hull).max(self.priors.min_cell_size);
+            });
+
+        let mut minarea: f32 = 1e12;
+        let mut maxarea: f32 = 0.0;
+        for area in &self.cell_areas {
+            if *area < minarea {
+                minarea = *area;
+            }
+            if *area > maxarea {
+                maxarea = *area;
+            }
+        }
+        println!("Area span: {}, {}", minarea, maxarea);
     }
 }
 
@@ -307,9 +413,28 @@ struct Proposal {
     accept: bool,
     // We need to keep track of some other stuff, preventing this from being
     // some pre-allocated structure.
+
+    // TODO: geo's quick_hull implementation allocates. We are trying to avoid
+    // allocation at all costs. Let's just do our own implementation.
+
+    // Space used to compute convex hull
+    transcript_coords: Vec<(f32, f32)>,
+    hull_coords: Vec<(f32, f32)>,
 }
 
 impl Proposal {
+    fn new() -> Self {
+        Proposal {
+            i: 0,
+            state: 0,
+            weight: 0.0,
+            ignore: true,
+            accept: false,
+            transcript_coords: Vec::new(),
+            hull_coords: Vec::new(),
+        }
+    }
+
     fn evaluate(&mut self, seg: &Segmentation) {
         if self.ignore {
             self.accept = false;
@@ -347,3 +472,15 @@ fn init_cell_assignments(
 
     return (cell_assignments, cell_population);
 }
+
+
+
+// TODO:
+// Ok, what am I doing here? When do I have to recompute cell area?
+// 
+
+// fn compute_cell_area(transcripts: &Vec<Transcript>, cell_assignments: &Vec<u32>, ncells: usize) -> Vec<f32> {
+//     let mut cell_area = vec![0.0; ncells];
+
+//     return cell_area;
+// }
