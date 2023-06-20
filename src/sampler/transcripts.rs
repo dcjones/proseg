@@ -10,7 +10,7 @@ use std::fs::File;
 
 pub type NeighborhoodGraph = Csr<(), (), Directed, usize>;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Transcript {
     pub x: f32,
     pub y: f32,

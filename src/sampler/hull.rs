@@ -33,7 +33,7 @@ impl QuickhullSide for QuickhullBelow {
 
 
 /// Compute the convex hull and return it's area.
-pub fn convex_hull_area(mut vertices: RefMut<Vec<(f32,f32)>>, mut hull: RefMut<Vec<(f32,f32)>>) -> f32 {
+pub fn convex_hull_area(vertices: &mut RefMut<Vec<(f32,f32)>>, hull: &mut RefMut<Vec<(f32,f32)>>) -> f32 {
     if vertices.len() < 3 {
         hull.clear();
         hull.extend(vertices.iter().cloned());
@@ -78,8 +78,8 @@ pub fn convex_hull_area(mut vertices: RefMut<Vec<(f32,f32)>>, mut hull: RefMut<V
             vertices.swap(i, j);
         }
 
-        quickhull_part(QuickhullAbove{}, &mut vertices[2..i], &mut hull, u, v);
-        quickhull_part(QuickhullBelow{}, &mut vertices[i..], &mut hull, u, v);
+        quickhull_part(QuickhullAbove{}, &mut vertices[2..i], hull, u, v);
+        quickhull_part(QuickhullBelow{}, &mut vertices[i..], hull, u, v);
     }
 
     // compute the area
