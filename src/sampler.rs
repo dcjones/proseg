@@ -14,7 +14,7 @@ use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
 use distributions::{normal_logpdf, lognormal_logpdf};
-use statrs::distribution::{Dirichlet, InverseGamma, Normal};
+use statrs::distribution::{Dirichlet, InverseGamma, Normal, Categorical};
 use itertools::izip;
 
 
@@ -61,6 +61,13 @@ impl ModelParams {
 
     fn ncomponents(&self) -> usize {
         return self.π.len();
+    }
+
+    fn cell_logprob(&self, cell: usize, cell_area: f32) -> f32 {
+        return lognormal_logpdf(
+            self.μ_a[self.z[cell as usize] as usize],
+            self.σ_a[self.z[cell as usize] as usize],
+            cell_area);
     }
 }
 
@@ -144,7 +151,8 @@ impl<'a> Segmentation<'a> {
 
     pub fn apply_local_updates(&mut self, sampler: &mut Sampler) {
         let accept_count = sampler.proposals.iter().filter(|p| p.accept).count();
-        println!("Applying {} of {} proposals", accept_count, sampler.proposals.len());
+        let unignored_count = sampler.proposals.iter().filter(|p| !p.ignore).count();
+        println!("Applying {} of {} proposals", accept_count, unignored_count);
 
         // TODO: check if we are doing multiple updates on the same cell and warn
         // about it.
@@ -324,7 +332,7 @@ impl Sampler {
 
     pub fn sample_local_updates(&mut self, seg: &Segmentation) {
         self.repoulate_proposals(seg);
-        dbg!(&self.proposals);
+        // dbg!(&self.proposals);
 
         self.proposals.par_iter_mut().for_each(|proposal| {
             let areacalc = self.cell_area_calc_storage.get_or(
@@ -343,8 +351,10 @@ impl Sampler {
             .for_each(|(proposal, chunkquad)| {
                 let mut rng = rand::thread_rng();
 
+                // So we have a lack of mismatch_edges in a lot of places...?
                 if chunkquad.mismatch_edges.is_empty() {
                     proposal.ignore = true;
+                    // println!("A");
                     return;
                 }
 
@@ -364,6 +374,7 @@ impl Sampler {
                 // breaks the markov chain balance, since there's no path back to the previous state.)
                 if seg.cell_population[seg.cell_assignments[k] as usize] == 1 {
                     proposal.ignore = true;
+                    // println!("B");
                     return;
                 }
 
@@ -402,9 +413,18 @@ impl Sampler {
 
     pub fn sample_global_params(&mut self, seg: &Segmentation) {
         let mut rng = thread_rng();
+        let ncomponents = self.params.ncomponents();
 
         // sample z
-        // TODO: fuck me
+        let mut z_probs = vec![0_f64; ncomponents];
+        for (i, cell_area) in self.cell_areas.iter().enumerate() {
+            for z in 0..ncomponents {
+                z_probs[z] = (self.params.π[z] as f64) * (self.params.cell_logprob(i, *cell_area) as f64).exp();
+            }
+            let probsum = z_probs.iter().sum::<f64>();
+            z_probs.iter_mut().for_each(|p| *p /= probsum);
+            self.params.z[i] = Categorical::new(&z_probs).unwrap().sample(&mut rng) as u32;
+        }
 
         // sample π
         let mut α = vec![1_f64; self.params.ncomponents()];
@@ -489,15 +509,7 @@ impl Sampler {
 
         seg.cell_logprobs.par_iter_mut().enumerate().for_each(|(i, logprob)| {
             let cell_area = self.cell_areas[i];
-            let component = self.params.z[i] as usize;
-            let logprob_area = lognormal_logpdf(
-                self.params.μ_a[component],
-                self.params.σ_a[component],
-                cell_area);
-
-        // TODO: transcript count logprob
-
-            *logprob = logprob_area;
+            *logprob = self.params.cell_logprob(i, cell_area);
         });
     }
 
@@ -589,14 +601,8 @@ impl Proposal {
             areacalc_vertices.push((this_transcript.x, this_transcript.y));
 
             self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
-            let component = params.z[self.state as usize] as usize;
-
-            // TODO: transcript count logprob
-
-            self.to_cell_logprob = lognormal_logpdf(
-                params.μ_a[component],
-                params.σ_a[component],
-                self.to_cell_area);
+            self.to_cell_logprob = params.cell_logprob(
+                self.state as usize, self.to_cell_area);
 
             proposal_logprob += self.to_cell_logprob;
         }
@@ -611,16 +617,9 @@ impl Proposal {
                 }
             }
 
-            // TODO: transcript count logprob
-
             self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
-
-            let component = params.z[prev_state as usize] as usize;
-
-            self.from_cell_logprob = lognormal_logpdf(
-                params.μ_a[component],
-                params.σ_a[component],
-                self.from_cell_area);
+            self.from_cell_logprob = params.cell_logprob(
+                prev_state as usize, self.from_cell_area);
 
             proposal_logprob += self.from_cell_logprob;
         }
@@ -628,13 +627,10 @@ impl Proposal {
         let mut rng = thread_rng();
         let logu = rng.gen::<f32>().ln();
 
-        if logu <= (proposal_logprob - current_logprob) + self.log_weight {
-            self.accept = true;
-        } else {
-            self.accept = false;
-        }
+        // println!("Eval: {} {} {} {} {}", prev_state, self.state, proposal_logprob, current_logprob, self.log_weight);
 
-        self.accept = true;
+        self.accept = logu <= (proposal_logprob - current_logprob) + self.log_weight;
+
     }
 }
 

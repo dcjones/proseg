@@ -113,14 +113,14 @@ fn main() {
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
     let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, chunk_size);
 
-    // for i in 0..args.niter {
-    //     sampler.sample_local_updates(&seg);
-    //     seg.apply_local_updates(&mut sampler);
-    //     sampler.sample_global_params(&seg);
-    //     if i % 100 == 0 {
-    //         println!("Iteration {}", i);
-    //     }
-    // }
+    for i in 0..args.niter {
+        sampler.sample_local_updates(&seg);
+        seg.apply_local_updates(&mut sampler);
+        sampler.sample_global_params(&seg);
+        if i % 100 == 0 {
+            println!("Iteration {}", i);
+        }
+    }
 
     // TODO: Run the sampler
 }
