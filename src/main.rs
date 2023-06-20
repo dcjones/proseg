@@ -74,9 +74,9 @@ fn main() {
     println!("Read {} nuclei centroids", ncells);
 
     // Find a reasonable grid size to use to chunk the data
-    const chunk_factor: usize = 4;
+    const CHUNK_FACTOR: usize = 4;
     let area = (xmax - xmin) * (ymax - ymin);
-    let mut chunk_size = (area / ((nthreads * chunk_factor) as f32)).sqrt();
+    let mut chunk_size = (area / ((nthreads * CHUNK_FACTOR) as f32)).sqrt();
 
     let min_cells_per_chunk = (ncells as f64).min(100.0);
 

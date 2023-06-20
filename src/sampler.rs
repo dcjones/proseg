@@ -13,7 +13,7 @@ use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript
 use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
-use distributions::{normal_logpdf, lognormal_logpdf};
+use distributions::lognormal_logpdf;
 use statrs::distribution::{Dirichlet, InverseGamma, Normal, Categorical};
 use itertools::izip;
 
@@ -35,7 +35,6 @@ pub struct ModelPriors {
 
 
 pub struct ModelParams {
-    z: Vec<u32>, // assignment of cells to components
     π: Vec<f32>, // mixing proportions over components
 
     μ_a: Vec<f32>, // area dist mean param by component
@@ -52,7 +51,6 @@ impl ModelParams {
         let mut rng = thread_rng();
 
         return ModelParams {
-            z: (0..ncells).map(|_| rng.gen_range(0..ncomponents) as u32).collect(),
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
             σ_a: vec![priors.σ_μ_a; ncomponents],
@@ -63,10 +61,10 @@ impl ModelParams {
         return self.π.len();
     }
 
-    fn cell_logprob(&self, cell: usize, cell_area: f32) -> f32 {
+    fn cell_logprob(&self, z: usize, cell_area: f32) -> f32 {
         return lognormal_logpdf(
-            self.μ_a[self.z[cell as usize] as usize],
-            self.σ_a[self.z[cell as usize] as usize],
+            self.μ_a[z],
+            self.σ_a[z],
             cell_area);
     }
 }
@@ -246,7 +244,8 @@ pub struct Sampler {
     cell_transcripts: Vec<HashSet<usize>>,
     cell_areas: Vec<f32>,
     cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
-    cell_logprobs: Vec<f32>,
+    z: Vec<u32>, // assignment of cells to components
+    z_probs: ThreadLocal<RefCell<Vec<f64>>>,
     quad: usize,
     sample_num: usize,
 }
@@ -305,9 +304,10 @@ impl Sampler {
         }
 
         let cell_areas = vec![0.0; ncells];
-        let cell_logprobs = vec![0.0; ncells];
-
         let proposals = vec![Proposal::new(); nchunks];
+
+        let mut rng = rand::thread_rng();
+        let z = (0..ncells).map(|_| rng.gen_range(0..ncomponents) as u32).collect();
 
         let mut sampler = Sampler {
             priors,
@@ -317,7 +317,8 @@ impl Sampler {
             cell_transcripts: cell_transcripts,
             cell_areas: cell_areas,
             cell_area_calc_storage: ThreadLocal::new(),
-            cell_logprobs: cell_logprobs,
+            z_probs: ThreadLocal::new(),
+            z: z,
             proposals: proposals,
             quad: 0,
             sample_num: 0,
@@ -338,7 +339,7 @@ impl Sampler {
             let areacalc = self.cell_area_calc_storage.get_or(
                 || RefCell::new(AreaCalcStorage::new()) ).borrow_mut();
 
-            proposal.evaluate(seg, &self.priors, &self.params, &self.cell_transcripts, areacalc);
+            proposal.evaluate(seg, &self.priors, &self.params, &self.z, &self.cell_transcripts, areacalc);
         });
 
         self.sample_num += 1;
@@ -415,20 +416,42 @@ impl Sampler {
         let mut rng = thread_rng();
         let ncomponents = self.params.ncomponents();
 
+        // TODO: move z out of Params?
+
+        self.z.par_iter_mut().enumerate().for_each(|(i, z_i)| {
+            let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
+            z_probs.iter_mut().enumerate().for_each(|(i, zp)| {
+                *zp = (self.params.π[i] as f64) *
+                    (self.params.cell_logprob(*z_i as usize, self.cell_areas[i]) as f64).exp();
+            });
+            let z_prob_sum = z_probs.iter().sum::<f64>();
+
+            // cumsum in-place
+            z_probs.iter_mut().fold(0.0, |mut acc, x| {
+                acc += *x / z_prob_sum;
+                *x = acc;
+                acc
+            });
+
+            let rng = &mut thread_rng();
+            let u = rng.gen::<f64>();
+            *z_i = z_probs.partition_point(|x| *x < u) as u32;
+        });
+
         // sample z
-        let mut z_probs = vec![0_f64; ncomponents];
-        for (i, cell_area) in self.cell_areas.iter().enumerate() {
-            for z in 0..ncomponents {
-                z_probs[z] = (self.params.π[z] as f64) * (self.params.cell_logprob(i, *cell_area) as f64).exp();
-            }
-            let probsum = z_probs.iter().sum::<f64>();
-            z_probs.iter_mut().for_each(|p| *p /= probsum);
-            self.params.z[i] = Categorical::new(&z_probs).unwrap().sample(&mut rng) as u32;
-        }
+        // let mut z_probs = vec![0_f64; ncomponents];
+        // for (i, cell_area) in self.cell_areas.iter().enumerate() {
+        //     for z in 0..ncomponents {
+        //         z_probs[z] = (self.params.π[z] as f64) * (self.params.cell_logprob(i, *cell_area) as f64).exp();
+        //     }
+        //     let probsum = z_probs.iter().sum::<f64>();
+        //     z_probs.iter_mut().for_each(|p| *p /= probsum);
+        //     self.params.z[i] = Categorical::new(&z_probs).unwrap().sample(&mut rng) as u32;
+        // }
 
         // sample π
         let mut α = vec![1_f64; self.params.ncomponents()];
-        for z_i in self.params.z.iter() {
+        for z_i in self.z.iter() {
             α[*z_i as usize] += 1.0;
         }
         self.params.π.clear();
@@ -438,7 +461,7 @@ impl Sampler {
         let mut μ_μ_a = vec![self.priors.μ_μ_a / (self.priors.σ_μ_a.powi(2)) ; self.params.ncomponents()];
         let mut component_population = vec![0; self.params.ncomponents()];
 
-        for (z_i, cell_area) in self.params.z.iter().zip(&self.cell_areas) {
+        for (z_i, cell_area) in self.z.iter().zip(&self.cell_areas) {
             μ_μ_a[*z_i as usize] += cell_area.ln() / self.params.σ_a[*z_i as usize].powi(2);
             component_population[*z_i as usize] += 1;
         }
@@ -458,7 +481,7 @@ impl Sampler {
 
         // sample σ_a
         let mut δ2s = vec![0_f32; self.params.ncomponents()];
-        for (z_i, cell_area) in self.params.z.iter().zip(&self.cell_areas) {
+        for (z_i, cell_area) in self.z.iter().zip(&self.cell_areas) {
             δ2s[*z_i as usize] += (cell_area.ln() - μ_μ_a[*z_i as usize]).powi(2);
         }
 
@@ -509,7 +532,7 @@ impl Sampler {
 
         seg.cell_logprobs.par_iter_mut().enumerate().for_each(|(i, logprob)| {
             let cell_area = self.cell_areas[i];
-            *logprob = self.params.cell_logprob(i, cell_area);
+            *logprob = self.params.cell_logprob(self.z[i] as usize, cell_area);
         });
     }
 
@@ -555,6 +578,7 @@ impl Proposal {
             seg: &Segmentation,
             priors: &ModelPriors,
             params: &ModelParams,
+            z: &Vec<u32>,
             cell_transcripts: &Vec<HashSet<usize>>,
             mut areacalc: RefMut<AreaCalcStorage>) {
 
@@ -602,7 +626,7 @@ impl Proposal {
 
             self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
             self.to_cell_logprob = params.cell_logprob(
-                self.state as usize, self.to_cell_area);
+                z[self.state as usize] as usize, self.to_cell_area);
 
             proposal_logprob += self.to_cell_logprob;
         }
@@ -619,7 +643,7 @@ impl Proposal {
 
             self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
             self.from_cell_logprob = params.cell_logprob(
-                prev_state as usize, self.from_cell_area);
+                z[prev_state as usize] as usize, self.from_cell_area);
 
             proposal_logprob += self.from_cell_logprob;
         }
