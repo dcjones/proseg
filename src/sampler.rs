@@ -4,19 +4,18 @@ mod distributions;
 
 use kiddo::float::distance::squared_euclidean;
 use kiddo::float::kdtree::KdTree;
-use petgraph::visit::{EdgeRef, IntoNeighbors};
+use petgraph::visit::IntoNeighbors;
 use rand::{seq::SliceRandom, Rng, thread_rng};
 use rand::distributions::Distribution;
 use rayon::prelude::*;
-use std::{collections::HashSet, cell, ops::DerefMut};
+use std::collections::HashSet;
 use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript};
 use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
 use distributions::lognormal_logpdf;
-use statrs::distribution::{Dirichlet, InverseGamma, Normal, Categorical};
+use statrs::distribution::{Dirichlet, InverseGamma, Normal};
 use itertools::izip;
-
 
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -47,9 +46,7 @@ pub struct ModelParams {
 impl ModelParams {
     // initialize model parameters, with random cell assignments
     // and other parameterz unninitialized.
-    fn new(priors: &ModelPriors, ncells: usize, ncomponents: usize) -> Self {
-        let mut rng = thread_rng();
-
+    fn new(priors: &ModelPriors, ncomponents: usize) -> Self {
         return ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
@@ -294,7 +291,7 @@ impl Sampler {
             nmismatchedges
         );
 
-        let params = ModelParams::new(&priors, ncells, ncomponents);
+        let params = ModelParams::new(&priors, ncomponents);
 
         let mut cell_transcripts = vec![HashSet::new(); ncells];
         for (i, cell) in seg.cell_assignments.iter().enumerate() {
@@ -325,7 +322,7 @@ impl Sampler {
         };
 
         sampler.compute_cell_areas();
-        sampler.sample_global_params(seg);
+        sampler.sample_global_params();
         sampler.compute_cell_logprobs(seg);
 
         return sampler;
@@ -412,7 +409,7 @@ impl Sampler {
         self.quad = (self.quad + 1) % 4;
     }
 
-    pub fn sample_global_params(&mut self, seg: &Segmentation) {
+    pub fn sample_global_params(&mut self) {
         let mut rng = thread_rng();
         let ncomponents = self.params.ncomponents();
 
@@ -420,9 +417,10 @@ impl Sampler {
 
         self.z.par_iter_mut().enumerate().for_each(|(i, z_i)| {
             let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
-            z_probs.iter_mut().enumerate().for_each(|(i, zp)| {
-                *zp = (self.params.π[i] as f64) *
-                    (self.params.cell_logprob(*z_i as usize, self.cell_areas[i]) as f64).exp();
+            let cell_area = self.cell_areas[i];
+            z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
+                *zp = (self.params.π[j] as f64) *
+                    (self.params.cell_logprob(j as usize, cell_area) as f64).exp();
             });
             let z_prob_sum = z_probs.iter().sum::<f64>();
 
@@ -580,7 +578,7 @@ impl Proposal {
             params: &ModelParams,
             z: &Vec<u32>,
             cell_transcripts: &Vec<HashSet<usize>>,
-            mut areacalc: RefMut<AreaCalcStorage>) {
+            areacalc: RefMut<AreaCalcStorage>) {
 
         if self.ignore || seg.cell_assignments[self.i] == self.state {
             self.accept = false;

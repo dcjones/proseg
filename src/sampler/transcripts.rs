@@ -211,8 +211,6 @@ pub fn neighborhood_graph(
         LastUsedVertexHintGenerator,
     > = DelaunayTriangulation::bulk_load(vertices).unwrap();
 
-    let n = transcripts.len();
-
     let mut nrejected: usize = 0;
     let mut nedges: usize = 0;
     let mut edges = Vec::new();
