@@ -56,9 +56,10 @@ fn main() {
 
     assert!(args.ncomponents > 0);
 
-    let (_transcript_names, transcripts) = read_transcripts_csv(
+    let (transcript_names, transcripts) = read_transcripts_csv(
         &args.transcript_csv, &args.transcript_column, &args.x_column,
         &args.y_column, args.z_column.as_deref());
+    let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
 
     println!("Read {} transcripts", ntranscripts);
@@ -113,10 +114,12 @@ fn main() {
         σ_μ_a: 3.0_f32,
         α_σ_a: 0.1,
         β_σ_a: 0.1,
+        α_r: 0.1,
+        β_r: 0.1,
     };
 
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
-    let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, chunk_size);
+    let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, ngenes, chunk_size);
 
     for i in 0..args.niter {
         for _ in 0..args.local_steps_per_iter {
