@@ -1,11 +1,12 @@
 pub mod transcripts;
 mod hull;
 mod distributions;
+mod sampleset;
 
 use kiddo::float::distance::squared_euclidean;
 use kiddo::float::kdtree::KdTree;
 use petgraph::visit::IntoNeighbors;
-use rand::{seq::SliceRandom, Rng, thread_rng};
+use rand::{Rng, thread_rng};
 use rand::distributions::Distribution;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -16,6 +17,9 @@ use std::cell::{RefCell, RefMut};
 use distributions::lognormal_logpdf;
 use statrs::distribution::{Dirichlet, InverseGamma, Normal};
 use itertools::izip;
+use sampleset::SampleSet;
+
+use std::time::Instant;
 
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -125,8 +129,11 @@ impl<'a> Segmentation<'a> {
         nuclei_centroids: &'a Vec<NucleiCentroid>,
         adjacency: &'a NeighborhoodGraph,
     ) -> Segmentation<'a> {
+
+        // initialize cell assignments so roughly half of the transcripts are assigned.
+        let k = (0.5 * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
         let (cell_assignments, cell_population) =
-            init_cell_assignments(transcripts, nuclei_centroids, 15);
+            init_cell_assignments(transcripts, nuclei_centroids, k);
 
         let cell_logprobs = vec![0.0; nuclei_centroids.len()];
 
@@ -140,14 +147,19 @@ impl<'a> Segmentation<'a> {
         };
     }
 
+    pub fn nunassigned(&self) -> usize {
+        let ncells = self.ncells() as u32;
+        return self.cell_assignments.iter().filter(|&c| *c == ncells).count();
+    }
+
     fn ncells(&self) -> usize {
         return self.nuclei_centroids.len();
     }
 
     pub fn apply_local_updates(&mut self, sampler: &mut Sampler) {
-        let accept_count = sampler.proposals.iter().filter(|p| p.accept).count();
-        let unignored_count = sampler.proposals.iter().filter(|p| !p.ignore).count();
-        println!("Applying {} of {} proposals", accept_count, unignored_count);
+        // let accept_count = sampler.proposals.iter().filter(|p| p.accept).count();
+        // let unignored_count = sampler.proposals.iter().filter(|p| !p.ignore).count();
+        // println!("Applying {} of {} proposals", accept_count, unignored_count);
 
         // TODO: check if we are doing multiple updates on the same cell and warn
         // about it.
@@ -188,10 +200,10 @@ impl<'a> Segmentation<'a> {
                                 }
                             } else {
                                 if chunkquad.contains(&sampler.transcripts[j]) {
-                                    chunkquad.mismatch_edges.remove(&(j, i));
+                                    chunkquad.mismatch_edges.remove((j, i));
                                 }
                                 if chunkquad.contains(&sampler.transcripts[i]) {
-                                    chunkquad.mismatch_edges.remove(&(i, j));
+                                    chunkquad.mismatch_edges.remove((i, j));
                                 }
                             }
                         }
@@ -205,8 +217,7 @@ impl<'a> Segmentation<'a> {
 struct ChunkQuad {
     chunk: u32,
     quad: u32,
-    mismatch_edges: HashSet<(usize, usize)>,
-    shuffled_mismatch_edges: Vec<(usize, usize)>,
+    mismatch_edges: SampleSet<(usize, usize)>,
 }
 
 impl ChunkQuad {
@@ -266,8 +277,7 @@ impl Sampler {
                 chunks.push(ChunkQuad {
                     chunk: chunk as u32,
                     quad: quad as u32,
-                    mismatch_edges: HashSet::new(),
-                    shuffled_mismatch_edges: Vec::new(),
+                    mismatch_edges: SampleSet::new(),
                 });
             }
             chunkquads.push(chunks);
@@ -329,8 +339,10 @@ impl Sampler {
     }
 
     pub fn sample_local_updates(&mut self, seg: &Segmentation) {
+        // let t0 = Instant::now();
         self.repoulate_proposals(seg);
-        // dbg!(&self.proposals);
+        // let t1 = Instant::now();
+        // println!("repoulate_proposals took {:?}", t1 - t0);
 
         self.proposals.par_iter_mut().for_each(|proposal| {
             let areacalc = self.cell_area_calc_storage.get_or(
@@ -338,6 +350,8 @@ impl Sampler {
 
             proposal.evaluate(seg, &self.priors, &self.params, &self.z, &self.cell_transcripts, areacalc);
         });
+        // let t2 = Instant::now();
+        // println!("evaluate took {:?}", t2 - t1);
 
         self.sample_num += 1;
     }
@@ -352,18 +366,10 @@ impl Sampler {
                 // So we have a lack of mismatch_edges in a lot of places...?
                 if chunkquad.mismatch_edges.is_empty() {
                     proposal.ignore = true;
-                    // println!("A");
                     return;
                 }
 
-                // TODO: If (i, j) are both cells, with some low probability we
-                // should propose making i background.
-
-                chunkquad.shuffled_mismatch_edges.clear();
-                chunkquad
-                    .shuffled_mismatch_edges
-                    .extend(chunkquad.mismatch_edges.iter().cloned());
-                let (i, j) = chunkquad.shuffled_mismatch_edges.choose(&mut rng).unwrap();
+                let (i, j) = chunkquad.mismatch_edges.choose(&mut rng).unwrap();
 
                 let k = *i; // target cell
                 let c = seg.cell_assignments[*j]; // proposal state
@@ -372,7 +378,6 @@ impl Sampler {
                 // breaks the markov chain balance, since there's no path back to the previous state.)
                 if seg.cell_population[seg.cell_assignments[k] as usize] == 1 {
                     proposal.ignore = true;
-                    // println!("B");
                     return;
                 }
 
@@ -683,15 +688,3 @@ fn init_cell_assignments(
 
     return (cell_assignments, cell_population);
 }
-
-
-
-// TODO:
-// Ok, what am I doing here? When do I have to recompute cell area?
-// 
-
-// fn compute_cell_area(transcripts: &Vec<Transcript>, cell_assignments: &Vec<u32>, ncells: usize) -> Vec<f32> {
-//     let mut cell_area = vec![0.0; ncells];
-
-//     return cell_area;
-// }

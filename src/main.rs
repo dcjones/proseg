@@ -37,7 +37,7 @@ struct Args{
     #[arg(short, long, default_value_t=20)]
     ncomponents: usize,
 
-    #[arg(short, long, default_value_t=1000)]
+    #[arg(short, long, default_value_t=100000)]
     niter: usize,
 
     #[arg(short, long, default_value=None)]
@@ -45,6 +45,9 @@ struct Args{
 
     #[arg(short, long, default_value_t=0.01_f32)]
     background_prob: f32,
+
+    #[arg(short, long, default_value_t=1)]
+    local_steps_per_iter: usize,
 }
 
 
@@ -116,11 +119,14 @@ fn main() {
     let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, chunk_size);
 
     for i in 0..args.niter {
-        sampler.sample_local_updates(&seg);
+        for _ in 0..args.local_steps_per_iter {
+            sampler.sample_local_updates(&seg);
+        }
+        // sampler.sample_local_updates(&seg);
         seg.apply_local_updates(&mut sampler);
         sampler.sample_global_params();
         if i % 100 == 0 {
-            println!("Iteration {}", i);
+            println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
         }
     }
 
