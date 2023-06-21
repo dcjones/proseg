@@ -14,7 +14,8 @@ use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript
 use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
-use distributions::{lognormal_logpdf, poisson_logpmf};
+use distributions::{lognormal_logpdf, poisson_logpmf, poisson_logpmf_fast};
+use statrs::function::factorial::ln_factorial;
 use statrs::distribution::{Dirichlet, InverseGamma, Gamma, Normal};
 use itertools::izip;
 use sampleset::SampleSet;
@@ -85,6 +86,32 @@ impl ModelParams {
             cell_area);
 
         return count_logprob + area_logprob;
+    }
+
+    // with pre-computed log(factorial(counts))
+    fn cell_logprob_fast<'a, A: AsArray<'a, u32>, B: AsArray<'a, f32>>(
+        &self, z: usize, cell_area: f32, counts: A, counts_ln_factorial: B) -> f32
+    {
+        let counts = counts.into();
+        let counts_ln_factorial = counts_ln_factorial.into();
+        // TODO: This is super slow, and it doesn't seem to have that much to do
+        // with the actual function being computed here. It seems just really expensive
+        // to do this iteration. Why would that be?
+
+        let count_logprob = Zip::from(self.r.column(z))
+            .and(counts)
+            .and(counts_ln_factorial)
+            .fold(0_f32, |acc, r, c, clf| {
+            acc + poisson_logpmf_fast(r * cell_area, *c, *clf)
+        });
+
+        let area_logprob = lognormal_logpdf(
+            self.μ_a[z],
+            self.σ_a[z],
+            cell_area);
+
+        return count_logprob + area_logprob;
+        // return area_logprob;
     }
 }
 
@@ -195,12 +222,16 @@ impl<'a> Segmentation<'a> {
                 sampler.cell_areas[prev_state as usize] = proposal.from_cell_area;
                 self.cell_logprobs[prev_state as usize] = proposal.from_cell_logprob;
                 sampler.counts[[gene as usize, prev_state as usize]] -= 1;
+                sampler.counts_ln_factorial[[gene as usize, prev_state as usize]] =
+                    ln_factorial(sampler.counts[[gene as usize, prev_state as usize]] as u64) as f32;
             }
 
             if proposal.state as usize != self.ncells() {
                 sampler.cell_areas[proposal.state as usize] = proposal.to_cell_area;
                 self.cell_logprobs[proposal.state as usize] = proposal.to_cell_logprob;
                 sampler.counts[[gene as usize, proposal.state as usize]] += 1;
+                sampler.counts_ln_factorial[[gene as usize, proposal.state as usize]] =
+                    ln_factorial(sampler.counts[[gene as usize, proposal.state as usize]] as u64) as f32;
             }
         }
 
@@ -276,6 +307,7 @@ pub struct Sampler {
     z: Array1<u32>, // assignment of cells to components
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
     counts: Array2<u32>,
+    counts_ln_factorial: Array2<f32>,
     component_counts: Array2<u32>,
     quad: usize,
     sample_num: usize,
@@ -350,6 +382,7 @@ impl Sampler {
             z_probs: ThreadLocal::new(),
             z: z,
             counts: Array2::<u32>::zeros((ngenes, ncells)),
+            counts_ln_factorial: Array2::<f32>::zeros((ngenes, ncells)),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
             proposals: proposals,
             quad: 0,
@@ -376,7 +409,7 @@ impl Sampler {
 
             proposal.evaluate(
                 seg, &self.priors, &self.params, &self.z, &self.counts,
-                &self.cell_transcripts, areacalc);
+                &self.counts_ln_factorial, &self.cell_transcripts, areacalc);
         });
         // let t2 = Instant::now();
         // println!("evaluate took {:?}", t2 - t1);
@@ -453,14 +486,18 @@ impl Sampler {
         // TODO: Ok, the issue is that this is insanely slow.
 
         Zip::from(self.counts.columns())
+            .and(self.counts_ln_factorial.columns())
             .and(&mut self.z)
             .and(&self.cell_areas)
-            .par_for_each(|cs, z_i, cell_area| {
+            .par_for_each(|cs, clfs, z_i, cell_area| {
                 let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
                 z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
                     *zp = (self.params.π[j] as f64) *
-                        (self.params.cell_logprob(j as usize, *cell_area, cs) as f64).exp();
+                        (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
                 });
+
+                // TODO: Nope, still slow as fuck!
+
                 let z_prob_sum = z_probs.iter().sum::<f64>();
 
                 // cumsum in-place
@@ -591,6 +628,12 @@ impl Sampler {
             let i = transcript.transcript.gene as usize;
             self.counts[[i, *j as usize]] += 1;
         }
+
+        Zip::from(&mut self.counts_ln_factorial)
+            .and(&self.counts)
+            .for_each(|clf, c| {
+                *clf = ln_factorial(*c as u64) as f32;
+            });
     }
 
     fn compute_cell_logprobs(&self, seg: &mut Segmentation) {
@@ -624,6 +667,7 @@ struct Proposal {
 
     // tempory transcript counts array
     counts: Array1<u32>,
+    counts_ln_factorial: Array1<f32>,
 }
 
 impl Proposal {
@@ -639,6 +683,7 @@ impl Proposal {
             from_cell_area: 0.0,
             from_cell_logprob: 0.0,
             counts: Array1::zeros(ngenes),
+            counts_ln_factorial: Array1::zeros(ngenes),
         }
     }
 
@@ -649,6 +694,7 @@ impl Proposal {
             params: &ModelParams,
             z: &Array1<u32>,
             counts: &Array2<u32>,
+            counts_ln_factorial: &Array2<f32>,
             cell_transcripts: &Vec<HashSet<usize>>,
             areacalc: RefMut<AreaCalcStorage>) {
 
@@ -699,8 +745,12 @@ impl Proposal {
             self.counts.assign(&counts.column(self.state as usize));
             self.counts[this_transcript.gene as usize] += 1;
 
-            self.to_cell_logprob = params.cell_logprob(
-                z[self.state as usize] as usize, self.to_cell_area, &self.counts);
+            self.counts_ln_factorial.assign(&counts_ln_factorial.column(self.state as usize));
+            self.counts_ln_factorial[this_transcript.gene as usize] =
+                ln_factorial(self.counts[this_transcript.gene as usize] as u64) as f32;
+
+            self.to_cell_logprob = params.cell_logprob_fast(
+                z[self.state as usize] as usize, self.to_cell_area, &self.counts, &self.counts_ln_factorial);
 
             proposal_logprob += self.to_cell_logprob;
         }
@@ -720,8 +770,12 @@ impl Proposal {
             self.counts.assign(&counts.column(prev_state as usize));
             self.counts[this_transcript.gene as usize] -= 1;
 
-            self.from_cell_logprob = params.cell_logprob(
-                z[prev_state as usize] as usize, self.from_cell_area, &self.counts);
+            self.counts_ln_factorial.assign(&counts_ln_factorial.column(prev_state as usize));
+            self.counts_ln_factorial[this_transcript.gene as usize] =
+                ln_factorial(self.counts[this_transcript.gene as usize] as u64) as f32;
+
+            self.from_cell_logprob = params.cell_logprob_fast(
+                z[prev_state as usize] as usize, self.from_cell_area, &self.counts, &self.counts_ln_factorial);
 
             proposal_logprob += self.from_cell_logprob;
         }

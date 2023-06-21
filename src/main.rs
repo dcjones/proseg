@@ -46,7 +46,7 @@ struct Args{
     #[arg(short, long, default_value_t=0.01_f32)]
     background_prob: f32,
 
-    #[arg(short, long, default_value_t=1)]
+    #[arg(short, long, default_value_t=100)]
     local_steps_per_iter: usize,
 }
 
@@ -124,9 +124,8 @@ fn main() {
     for i in 0..args.niter {
         for _ in 0..args.local_steps_per_iter {
             sampler.sample_local_updates(&seg);
+            seg.apply_local_updates(&mut sampler);
         }
-        // sampler.sample_local_updates(&seg);
-        seg.apply_local_updates(&mut sampler);
         sampler.sample_global_params();
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
