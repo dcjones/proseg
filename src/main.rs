@@ -7,7 +7,10 @@ mod sampler;
 use sampler::{Sampler, Segmentation, ModelPriors};
 use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph, coordinate_span};
 use rayon::current_num_threads;
-
+use csv;
+use std::fs::File;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 
 
 #[derive(Parser, Debug)]
@@ -48,6 +51,9 @@ struct Args{
 
     #[arg(short, long, default_value_t=100)]
     local_steps_per_iter: usize,
+
+    #[arg(short, long, default_value="counts.csv.gz")]
+    output_counts: String,
 }
 
 
@@ -129,8 +135,21 @@ fn main() {
         sampler.sample_global_params();
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
+            // dbg!(&seg.cell_logprobs);
         }
     }
 
-    // TODO: Run the sampler
+    {
+        let file = File::create(&args.output_counts).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(transcript_names.iter()).unwrap();
+        for row in sampler.counts().t().rows() {
+            writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
+        }
+    }
+
 }
