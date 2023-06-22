@@ -120,36 +120,38 @@ fn main() {
         σ_μ_a: 3.0_f32,
         α_σ_a: 0.1,
         β_σ_a: 0.1,
-        α_r: 0.1,
-        β_r: 0.1,
+        α_p: 1.0,
+        β_p: 1.0,
+        e_r: 1.0,
+        f_r: 1.0,
     };
 
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
     let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, ngenes, chunk_size);
 
-    for i in 0..args.niter {
-        for _ in 0..args.local_steps_per_iter {
-            sampler.sample_local_updates(&seg);
-            seg.apply_local_updates(&mut sampler);
-        }
-        sampler.sample_global_params();
-        if i % 100 == 0 {
-            println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
-            // dbg!(&seg.cell_logprobs);
-        }
-    }
+    // for i in 0..args.niter {
+    //     for _ in 0..args.local_steps_per_iter {
+    //         sampler.sample_local_updates(&seg);
+    //         seg.apply_local_updates(&mut sampler);
+    //     }
+    //     sampler.sample_global_params();
+    //     if i % 100 == 0 {
+    //         println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
+    //         // dbg!(&seg.cell_logprobs);
+    //     }
+    // }
 
-    {
-        let file = File::create(&args.output_counts).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
+    // {
+    //     let file = File::create(&args.output_counts).unwrap();
+    //     let encoder = GzEncoder::new(file, Compression::default());
+    //     let mut writer = csv::WriterBuilder::new()
+    //         .has_headers(false)
+    //         .from_writer(encoder);
 
-        writer.write_record(transcript_names.iter()).unwrap();
-        for row in sampler.counts().t().rows() {
-            writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
-        }
-    }
+    //     writer.write_record(transcript_names.iter()).unwrap();
+    //     for row in sampler.counts().t().rows() {
+    //         writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
+    //     }
+    // }
 
 }
