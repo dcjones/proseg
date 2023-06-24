@@ -20,7 +20,7 @@ use statrs::distribution::{Beta, Dirichlet, Poisson, InverseGamma, Gamma, Normal
 use itertools::izip;
 use sampleset::SampleSet;
 use ndarray::{Array1, Array2, AsArray, Zip};
-use libm::{log1pf};
+use libm::{log1pf, lgammaf};
 
 
 
@@ -70,6 +70,8 @@ pub struct ModelParams {
     // [ngenes] NB r parameters.
     r: Array1<f32>,
 
+    lgamma_r: Array1<f32>,
+
     // [ngenes, ncomponents] NB p parameters.
     w: Array2<f32>,
 }
@@ -79,12 +81,14 @@ impl ModelParams {
     // initialize model parameters, with random cell assignments
     // and other parameterz unninitialized.
     fn new(priors: &ModelPriors, ncomponents: usize, ngenes: usize) -> Self {
+        let r = Array1::<f32>::from_elem(ngenes, 0.1_f32);
+        let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x) ));
         return ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
             σ_a: vec![priors.σ_μ_a; ncomponents],
-            // r: Array1::<f32>::from_elem(ngenes, 0.001_f32),
-            r: Array1::<f32>::from_elem(ngenes, 0.1_f32),
+            r: r,
+            lgamma_r: lgamma_r,
             w: Array2::<f32>::from_elem((ngenes, ncomponents), 0.1),
         };
     }
@@ -96,11 +100,13 @@ impl ModelParams {
     fn cell_logprob<'a, A: AsArray<'a, u32>>(&self, z: usize, cell_area: f32, counts: A) -> f32
     {
         let counts = counts.into();
-        let count_logprob = Zip::from(&self.r)
+        let count_logprob =
+            Zip::from(&self.r)
+            .and(&self.lgamma_r)
             .and(self.w.column(z))
             .and(counts)
-            .fold(0_f32, |acc, r, w, c| {
-                acc + negbin_logpmf(*r, odds_to_prob(*w * cell_area), *c)
+            .fold(0_f32, |acc, r, lgamma_r, w, c| {
+                acc + negbin_logpmf(*r, *lgamma_r, odds_to_prob(*w * cell_area), *c)
             });
 
         let area_logprob = lognormal_logpdf(
@@ -123,11 +129,12 @@ impl ModelParams {
         // to do this iteration. Why would that be?
 
         let count_logprob = Zip::from(&self.r)
+            .and(&self.lgamma_r)
             .and(self.w.column(z))
             .and(counts)
             .and(counts_ln_factorial)
-            .fold(0_f32, |acc, r, w, c, clf| {
-                acc + negbin_logpmf_fast(*r, odds_to_prob(*w * cell_area), *c, *clf)
+            .fold(0_f32, |acc, r, lgamma_r, w, c, clf| {
+                acc + negbin_logpmf_fast(*r, *lgamma_r, odds_to_prob(*w * cell_area), *c, *clf)
             });
 
         let area_logprob = lognormal_logpdf(
@@ -450,6 +457,8 @@ impl Sampler {
     }
 
     fn repoulate_proposals(&mut self, seg: &Segmentation) {
+        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.1;
+        let ncells = seg.ncells();
         self.proposals
             .par_iter_mut()
             .zip(&mut self.chunkquads[self.quad])
@@ -464,12 +473,21 @@ impl Sampler {
 
                 let (i, j) = chunkquad.mismatch_edges.choose(&mut rng).unwrap();
 
-                let k = *i; // target cell
-                let c = seg.cell_assignments[*j]; // proposal state
+                let mut c = seg.cell_assignments[*j]; // proposal state
+
+                let isunassigned = seg.cell_assignments[*i] == ncells as u32;
+
+                // propose making the cell unassigned with some probability
+                // regardless of what the parent is.
+                // let mut unassign_proposal = false;
+                if !isunassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
+                    c = ncells as u32;
+                    // unassign_proposal = true;
+                }
 
                 // Don't propose removing the last transcript from a cell. (This is
                 // breaks the markov chain balance, since there's no path back to the previous state.)
-                if seg.cell_population[seg.cell_assignments[k] as usize] == 1 {
+                if !isunassigned && seg.cell_population[seg.cell_assignments[*i] as usize] == 1 {
                     proposal.ignore = true;
                     return;
                 }
@@ -479,23 +497,50 @@ impl Sampler {
 
                 let num_new_state_neighbors = seg
                     .adjacency
-                    .neighbors(k)
+                    .neighbors(*i)
                     .filter(|j| seg.cell_assignments[*j] == c)
                     .count();
 
                 let num_prev_state_neighbors = seg
                     .adjacency
-                    .neighbors(k)
+                    .neighbors(*i)
                     .filter(|j| seg.cell_assignments[*j] == seg.cell_assignments[*i])
                     .count();
 
-                let proposal_prob = num_new_state_neighbors as f64 / num_mismatching_edges as f64;
+                let mut proposal_prob = num_new_state_neighbors as f64 / num_mismatching_edges as f64;
+                // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
+                if c == ncells as u32 {
+                    let num_mismatching_neighbors = seg
+                        .adjacency
+                        .neighbors(*i)
+                        .filter(|j| seg.cell_assignments[*j] != seg.cell_assignments[*i])
+                        .count();
+                    proposal_prob =
+                        UNASSIGNED_PROPOSAL_PROB * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64) +
+                        (1.0 - UNASSIGNED_PROPOSAL_PROB) * proposal_prob;
+                }
 
                 let new_num_mismatching_edges = num_mismatching_edges
                     + 2*num_prev_state_neighbors // edges that are newly mismatching
                     - 2*num_new_state_neighbors; // edges that are newly matching
 
-                let reverse_proposal_prob = num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
+                let mut reverse_proposal_prob = num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
+
+                // If this is a proposal from unassigned, account for multiple ways of reversing it
+                if seg.cell_assignments[*i] == ncells as u32 {
+                    let new_num_mismatching_neighbors = seg
+                        .adjacency
+                        .neighbors(*i)
+                        .filter(|j| seg.cell_assignments[*j] != c)
+                        .count();
+                    reverse_proposal_prob =
+                        UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64) +
+                        (1.0 - UNASSIGNED_PROPOSAL_PROB) * reverse_proposal_prob;
+                }
+
+                // let unassign_proposal {
+                //     // TODO: 
+                // }
 
                 // TODO: In particular, we need make sure "unassigned" is proposed
                 // with some probability, etherwise there is no reverse path and proposals
@@ -654,6 +699,8 @@ impl Sampler {
                         (self.priors.β_w + *a * *r) as f64,
                     ).unwrap().sample(&mut rng) as f32);
 
+                    *w = w.max(1e-6);
+
                     // if *w > 1000.0 {
                     //     dbg!(w, c, a, r);
                     //     panic!("w is too large");
@@ -692,9 +739,10 @@ impl Sampler {
 
         // Sample r
         Zip::from(&mut self.params.r)
+            .and(&mut self.params.lgamma_r)
             .and(self.params.w.rows())
             .and(self.counts.rows())
-            .par_for_each(|r, ws, cs| {
+            .par_for_each(|r, lgamma_r, ws, cs| {
                 let mut rng = thread_rng();
 
                 // TODO: I must need to account for cell_area somehow here.
@@ -736,8 +784,10 @@ impl Sampler {
                     (self.priors.f_r - v) as f64
                 ).unwrap().sample(&mut rng) as f32;
 
+                *lgamma_r = lgammaf(*r);
+
                 // TODO: any better solution here?
-                *r = r.min(100.0);
+                *r = r.min(100.0).max(1e-4);
             });
 
         // dbg!(&self.params.p);
