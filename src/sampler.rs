@@ -14,9 +14,9 @@ use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript
 use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
-use distributions::{lfact, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast, poisson_logpmf, poisson_logpmf_fast};
+use distributions::{lfact, odds_to_prob, prob_to_odds, rand_pois, logit, logistic, scale_nb_p, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast, poisson_logpmf, poisson_logpmf_fast};
 // use statrs::function::factorial::ln_factorial;
-use statrs::distribution::{Beta, Dirichlet, InverseGamma, Gamma, Normal};
+use statrs::distribution::{Beta, Dirichlet, Poisson, InverseGamma, Gamma, Normal};
 use itertools::izip;
 use sampleset::SampleSet;
 use ndarray::{Array1, Array2, AsArray, Zip};
@@ -27,6 +27,7 @@ use libm::{log1pf};
 use std::time::Instant;
 
 use crate::sampler::distributions::rand_crt;
+
 
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -42,8 +43,8 @@ pub struct ModelPriors {
     pub α_σ_a: f32,
     pub β_σ_a: f32,
 
-    pub α_p: f32,
-    pub β_p: f32,
+    pub α_w: f32,
+    pub β_w: f32,
 
     // gamma rate prior
     pub e_r: f32,
@@ -70,7 +71,7 @@ pub struct ModelParams {
     r: Array1<f32>,
 
     // [ngenes, ncomponents] NB p parameters.
-    p: Array2<f32>,
+    w: Array2<f32>,
 }
 
 
@@ -82,25 +83,24 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
             σ_a: vec![priors.σ_μ_a; ncomponents],
-            r: Array1::<f32>::from_elem(ngenes, 10.0_f32),
-            p: Array2::<f32>::from_elem((ngenes, ncomponents), 0.0001_f32),
+            // r: Array1::<f32>::from_elem(ngenes, 0.001_f32),
+            r: Array1::<f32>::from_elem(ngenes, 0.1_f32),
+            w: Array2::<f32>::from_elem((ngenes, ncomponents), 0.1),
         };
     }
 
     fn ncomponents(&self) -> usize {
         return self.π.len();
     }
-}
 
-impl ModelParams {
     fn cell_logprob<'a, A: AsArray<'a, u32>>(&self, z: usize, cell_area: f32, counts: A) -> f32
     {
         let counts = counts.into();
         let count_logprob = Zip::from(&self.r)
-            .and(self.p.column(z))
+            .and(self.w.column(z))
             .and(counts)
-            .fold(0_f32, |acc, r, p, c| {
-                acc + negbin_logpmf(*r * cell_area, *p, *c)
+            .fold(0_f32, |acc, r, w, c| {
+                acc + negbin_logpmf(*r, odds_to_prob(*w * cell_area), *c)
             });
 
         let area_logprob = lognormal_logpdf(
@@ -123,11 +123,11 @@ impl ModelParams {
         // to do this iteration. Why would that be?
 
         let count_logprob = Zip::from(&self.r)
-            .and(self.p.column(z))
+            .and(self.w.column(z))
             .and(counts)
             .and(counts_ln_factorial)
-            .fold(0_f32, |acc, r, p, c, clf| {
-                acc + negbin_logpmf_fast(*r * cell_area, *p, *c, *clf)
+            .fold(0_f32, |acc, r, w, c, clf| {
+                acc + negbin_logpmf_fast(*r, odds_to_prob(*w * cell_area), *c, *clf)
             });
 
         let area_logprob = lognormal_logpdf(
@@ -202,6 +202,7 @@ impl<'a> Segmentation<'a> {
 
         // initialize cell assignments so roughly half of the transcripts are assigned.
         let k = (0.5 * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
+
         let (cell_assignments, cell_population) =
             init_cell_assignments(transcripts, nuclei_centroids, k);
 
@@ -329,11 +330,12 @@ pub struct Sampler {
     cell_transcripts: Vec<HashSet<usize>>,
     cell_areas: Array1<f32>,
     cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
-    z: Array1<u32>, // assignment of cells to components
+    pub z: Array1<u32>, // assignment of cells to components
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
     counts: Array2<u32>,
     counts_ln_factorial: Array2<f32>,
     component_counts: Array2<u32>,
+    component_counts_per_area: Array2<f32>,
     quad: usize,
     sample_num: usize,
 }
@@ -409,6 +411,7 @@ impl Sampler {
             counts: Array2::<u32>::zeros((ngenes, ncells)),
             counts_ln_factorial: Array2::<f32>::zeros((ngenes, ncells)),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
+            component_counts_per_area: Array2::<f32>::zeros((ngenes, ncomponents)),
             proposals: proposals,
             quad: 0,
             sample_num: 0,
@@ -515,14 +518,19 @@ impl Sampler {
         let mut rng = thread_rng();
         let ncomponents = self.params.ncomponents();
 
-        // TODO: Ok, the issue is that this is insanely slow.
-
         Zip::from(self.counts.columns())
             .and(self.counts_ln_factorial.columns())
             .and(&mut self.z)
             .and(&self.cell_areas)
             .par_for_each(|cs, clfs, z_i, cell_area| {
                 let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
+
+
+                // TODO: This is basically the majority of the run time. Evaluating
+                // NB log pmf is super expensive. Pre-computing lgamma(r) is
+                // one pretty big optimization, but we also have to compute
+                // lgamma(r + k)
+
                 z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
                     *zp = (self.params.π[j] as f64) *
                         (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
@@ -531,6 +539,8 @@ impl Sampler {
                 // TODO: Nope, still slow as fuck!
 
                 let z_prob_sum = z_probs.iter().sum::<f64>();
+
+                assert!(z_prob_sum.is_finite());
 
                 // dbg!(&z_probs);
 
@@ -561,7 +571,8 @@ impl Sampler {
 
         // sample μ_a
         let mut μ_μ_a = vec![self.priors.μ_μ_a / (self.priors.σ_μ_a.powi(2)) ; self.params.ncomponents()];
-        let mut component_population = vec![0; self.params.ncomponents()];
+        // let mut component_population = vec![0; self.params.ncomponents()];
+        let mut component_population = Array1::<u32>::from_elem(self.params.ncomponents(), 0_u32);
 
         for (z_i, cell_area) in self.z.iter().zip(&self.cell_areas) {
             μ_μ_a[*z_i as usize] += cell_area.ln() / self.params.σ_a[*z_i as usize].powi(2);
@@ -615,43 +626,118 @@ impl Sampler {
                 }
             });
 
-        Zip::from(self.params.p.rows_mut())
-            .and(self.component_counts.rows())
-            .and(&self.params.r)
-            .par_for_each(|ps, cs, r| {
-                let mut rng = thread_rng();
-                for (p, c, area) in izip!(ps, cs, &component_cell_area) {
-                    *p = Beta::new(
-                        self.priors.α_p as f64 + *c as f64,
-                        self.priors.β_p as f64 + (*area * *r) as f64
-                    ).unwrap().sample(&mut rng) as f32;
+        self.component_counts_per_area.fill(0_f32);
+        Zip::from(self.component_counts_per_area.rows_mut())
+            .and(self.counts.rows())
+            .par_for_each(|mut compc, cellc| {
+                for (c, component, area) in izip!(cellc.iter(), &self.z, &self.cell_areas) {
+                    compc[*component as usize] += *c as f32 / *area;
                 }
             });
 
+        // dbg!(self.params.p.shape());
+        // dbg!(self.component_counts_per_area.shape());
+        // dbg!(component_population.shape());
+        // dbg!(self.params.r.shape());
+
+
+        // TODO: This seems to reduce the probability...
+
+        Zip::from(self.params.w.rows_mut())
+            .and(self.component_counts.rows())
+            .and(&self.params.r)
+            .par_for_each(|ws, cs, r| {
+                let mut rng = thread_rng();
+                for (w, c, a) in izip!(ws, cs, &component_cell_area) {
+                    *w = prob_to_odds(Beta::new(
+                        (self.priors.α_w + *c as f32) as f64,
+                        (self.priors.β_w + *a * *r) as f64,
+                    ).unwrap().sample(&mut rng) as f32);
+
+                    // if *w > 1000.0 {
+                    //     dbg!(w, c, a, r);
+                    //     panic!("w is too large");
+                    // }
+                }
+            });
+
+        // TODO: Ok, so the origin is really that we generate some huge values of w,
+        // which in turn makes p 1.0, which breaks things.
+        //
+        // This seems to happen because `r` is allowed to get very small.
+
+        // let w_min = self.params.w.fold(f32::INFINITY, |acc, w| acc.min(*w));
+        // let w_max = self.params.w.fold(f32::NEG_INFINITY, |acc, w| acc.max(*w));
+        // dbg!(w_min, w_max);
+
+        //
+        // Origin of the huge values of `w` seem to be from 
+
+        // Zip::from(self.params.p.rows_mut())
+        //     // .and(self.component_counts.rows())
+        //     .and(self.component_counts_per_area.rows())
+        //     .and(&self.params.r)
+        //     .par_for_each(|ps, cs, r| {
+        //         let mut rng = thread_rng();
+        //         for (p, c, pop) in izip!(ps, cs, &component_population) {
+        //             *p = Beta::new(
+        //                 self.priors.α_p as f64 + *c as f64,
+        //                 self.priors.β_p as f64 + (*pop as f64) * *r as f64
+        //             ).unwrap().sample(&mut rng) as f32;
+        //         }
+        //     });
+
+
+        // TODO: This part is absolutely fucked.
+
         // Sample r
         Zip::from(&mut self.params.r)
-            .and(self.params.p.rows())
+            .and(self.params.w.rows())
             .and(self.counts.rows())
-            .par_for_each(|r, ps, cs| {
+            .par_for_each(|r, ws, cs| {
                 let mut rng = thread_rng();
 
                 // TODO: I must need to account for cell_area somehow here.
                 // I guess in expectation I would be dividing counts by cell_area,
                 // but the crt distribution necessitates it being an integer.
 
-                // let u = cs.iter().map(|c| rand_crt(&mut rng, *c, *r)).sum::<u32>() as f32;
-                let u = cs.iter().zip(&self.cell_areas).map(|(c, cell_area)| rand_crt(&mut rng, *c, *r * cell_area)).sum::<u32>() as f32;
-                let v = ps.iter().map(|p| log1pf(-p) ).sum::<f32>();
+                // let u = cs.iter().zip(&self.cell_areas).map(|(c, cell_area)| rand_crt(&mut rng, *c, *r * cell_area)).sum::<u32>() as f32;
+                // let v = ws.iter().map(|w| odds_to_prob(*w)).map(|p| log1pf(-p) ).sum::<f32>();
 
-                // TODO: Something is fucked here. Sampling `r` gives much
-                // worse cell probabilities.
+                // Ok, the other Zhang paper uses a difference procedure.
 
-                // It's because we are using shape/scale parameterization for this
+                // TODO: optimize this by not redundantly computing log1pf(-odds_to_prob(w * *a))
+
+                // TODO: seems it runs for a while then we get stuck sampling the poisson here
+
+
+                let u =
+                    Zip::from(&self.z)
+                        .and(&self.cell_areas)
+                        .fold(0, |accum, z, a| {
+                            let w = ws[*z as usize];
+                            let λ = -*r * log1pf(-odds_to_prob(w * *a));
+                            // assert!(λ >= 0.0);
+                            // accum + Poisson::new(λ as f64).unwrap().sample(&mut rng)
+                            accum + rand_pois(&mut rng, λ)
+                        }) as f32;
+                // let v = ws.iter().map(|w| odds_to_prob(*w)).map(|p| log1pf(-p) ).sum::<f32>();
+                // Ohh, I think the issue is that this should be done over cells not components.
+                let v =
+                    Zip::from(&self.z)
+                        .and(&self.cell_areas)
+                        .fold(0.0, |accum, z, a| {
+                            let w = ws[*z as usize];
+                            accum + log1pf(-odds_to_prob(w * *a))
+                        });
 
                 *r = Gamma::new(
                     (self.priors.e_r + u) as f64,
                     (self.priors.f_r - v) as f64
                 ).unwrap().sample(&mut rng) as f32;
+
+                // TODO: any better solution here?
+                *r = r.min(100.0);
             });
 
         // dbg!(&self.params.p);
@@ -706,14 +792,14 @@ impl Sampler {
             });
     }
 
-    fn compute_cell_logprobs(&self, seg: &mut Segmentation) {
+    pub fn compute_cell_logprobs(&self, seg: &mut Segmentation) {
         // Assume at this point that cell areas and transcript counts are up to date
         seg.cell_logprobs.par_iter_mut().enumerate().for_each(|(i, logprob)| {
             let cell_area = self.cell_areas[i];
             *logprob = self.params.cell_logprob(self.z[i] as usize, cell_area, self.counts.column(i));
         });
 
-        dbg!(&seg.cell_logprobs);
+        // dbg!(&seg.cell_logprobs);
     }
 
 

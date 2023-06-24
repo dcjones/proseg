@@ -12,6 +12,9 @@ use std::fs::File;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
+// use signal_hook::{consts::SIGINT, iterator::Signals};
+// use std::{error::Error, thread, time::Duration};
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -58,6 +61,14 @@ struct Args{
 
 
 fn main() {
+    // let mut signals = Signals::new(&[SIGINT])?;
+
+    // thread::spawn(move || {
+    //     for sig in signals.forever() {
+    //         panic!();
+    //     }
+    // });
+
     let args = Args::parse();
 
     assert!(args.ncomponents > 0);
@@ -120,8 +131,8 @@ fn main() {
         σ_μ_a: 3.0_f32,
         α_σ_a: 0.1,
         β_σ_a: 0.1,
-        α_p: 1.0,
-        β_p: 1.0,
+        α_w: 1.0,
+        β_w: 1.0,
         e_r: 1.0,
         f_r: 1.0,
     };
@@ -129,29 +140,44 @@ fn main() {
     let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
     let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, ngenes, chunk_size);
 
-    // for i in 0..args.niter {
-    //     for _ in 0..args.local_steps_per_iter {
-    //         sampler.sample_local_updates(&seg);
-    //         seg.apply_local_updates(&mut sampler);
-    //     }
-    //     sampler.sample_global_params();
-    //     if i % 100 == 0 {
-    //         println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
-    //         // dbg!(&seg.cell_logprobs);
-    //     }
-    // }
+    for i in 0..args.niter {
+        for _ in 0..args.local_steps_per_iter {
+            sampler.sample_local_updates(&seg);
+            seg.apply_local_updates(&mut sampler);
+        }
+        sampler.sample_global_params();
+        sampler.compute_cell_logprobs(&mut seg);
 
-    // {
-    //     let file = File::create(&args.output_counts).unwrap();
-    //     let encoder = GzEncoder::new(file, Compression::default());
-    //     let mut writer = csv::WriterBuilder::new()
-    //         .has_headers(false)
-    //         .from_writer(encoder);
+        if i % 100 == 0 {
+            println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
+            // dbg!(&seg.cell_logprobs);
+        }
+    }
 
-    //     writer.write_record(transcript_names.iter()).unwrap();
-    //     for row in sampler.counts().t().rows() {
-    //         writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
-    //     }
-    // }
+    {
+        let file = File::create(&args.output_counts).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(transcript_names.iter()).unwrap();
+        for row in sampler.counts().t().rows() {
+            writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
+        }
+    }
+
+    {
+        let file = File::create("z.csv.gz").unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(["z"]).unwrap();
+        for z in sampler.z.iter() {
+            writer.write_record([z.to_string()]).unwrap();
+        }
+    }
 
 }
