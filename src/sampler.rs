@@ -5,7 +5,7 @@ mod sampleset;
 
 use kiddo::float::distance::squared_euclidean;
 use kiddo::float::kdtree::KdTree;
-use petgraph::visit::IntoNeighbors;
+use petgraph::visit::{IntoNeighbors, EdgeRef};
 use rand::{Rng, thread_rng};
 use rand::distributions::Distribution;
 use rayon::prelude::*;
@@ -14,19 +14,18 @@ use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript
 use hull::convex_hull_area;
 use thread_local::ThreadLocal;
 use std::cell::{RefCell, RefMut};
-use distributions::{lfact, odds_to_prob, prob_to_odds, rand_pois, logit, logistic, scale_nb_p, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast, poisson_logpmf, poisson_logpmf_fast};
-// use statrs::function::factorial::ln_factorial;
-use statrs::distribution::{Beta, Dirichlet, Poisson, InverseGamma, Gamma, Normal};
+use distributions::{lfact, odds_to_prob, prob_to_odds, rand_pois, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast};
+use statrs::distribution::{Beta, Dirichlet, InverseGamma, Gamma, Normal};
 use itertools::izip;
 use sampleset::SampleSet;
 use ndarray::{Array1, Array2, AsArray, Zip};
 use libm::{log1pf, lgammaf};
+use std::fs::File;
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use std::io::Write;
 
-
-
-use std::time::Instant;
-
-use crate::sampler::distributions::rand_crt;
+// use std::time::Instant;
 
 
 #[derive(Clone, Copy)]
@@ -193,12 +192,13 @@ fn chunk_transcripts(
 // while modifying the sampler when generating proposals.
 pub struct Segmentation<'a> {
     transcripts: &'a Vec<Transcript>,
-    nuclei_centroids: &'a Vec<NucleiCentroid>,
+    pub nuclei_centroids: &'a Vec<NucleiCentroid>,
     adjacency: &'a NeighborhoodGraph,
-    cell_assignments: Vec<u32>,
+    pub cell_assignments: Vec<u32>,
     cell_population: Vec<usize>,
     pub cell_logprobs: Vec<f32>,
 }
+
 
 impl<'a> Segmentation<'a> {
     pub fn new(
@@ -208,7 +208,8 @@ impl<'a> Segmentation<'a> {
     ) -> Segmentation<'a> {
 
         // initialize cell assignments so roughly half of the transcripts are assigned.
-        let k = (0.5 * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
+        const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.25;
+        let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
 
         let (cell_assignments, cell_population) =
             init_cell_assignments(transcripts, nuclei_centroids, k);
@@ -242,6 +243,10 @@ impl<'a> Segmentation<'a> {
         // TODO: check if we are doing multiple updates on the same cell and warn
         // about it.
 
+        let mut background_to_cell = 0;
+        let mut cell_to_background = 0;
+        let mut cell_to_cell = 0;
+
         // Update cell assignments
         for proposal in sampler.proposals.iter().filter(|p| p.accept) {
             let prev_state = self.cell_assignments[proposal.i];
@@ -266,7 +271,17 @@ impl<'a> Segmentation<'a> {
                 sampler.counts_ln_factorial[[gene as usize, proposal.state as usize]] =
                     lfact(sampler.counts[[gene as usize, proposal.state as usize]]);
             }
+
+            // if prev_state as usize == self.ncells() && proposal.state as usize != self.ncells() {
+            //     background_to_cell += 1;
+            // } else if prev_state as usize != self.ncells() && proposal.state as usize == self.ncells() {
+            //     cell_to_background += 1;
+            // } else if prev_state as usize != self.ncells() && proposal.state as usize != self.ncells() {
+            //     cell_to_cell += 1;
+            // }
         }
+
+        // dbg!(background_to_cell, cell_to_background, cell_to_cell);
 
         // Update mismatch edges
         for quad in 0..4 {
@@ -296,6 +311,76 @@ impl<'a> Segmentation<'a> {
                 });
         }
     }
+
+    pub fn write_cell_hulls(&self, filename: &str) {
+
+        // We are not maintaining any kind of per-cell array, so I guess I have
+        // no choice but to compute such a thing here.
+        // TODO: We area already keeping track of this in Sampler!!
+        let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
+        for (i, &cell) in self.cell_assignments.iter().enumerate() {
+            if cell as usize != self.ncells() {
+                cell_transcripts[cell as usize].push(i);
+            }
+        }
+
+        let file = File::create(filename).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        writeln!(encoder, "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [").unwrap();
+
+        let mut vertices: Vec<(f32, f32)> = Vec::new();
+        let mut hull: Vec<(f32, f32)> = Vec::new();
+
+        let mut vertices_refcell = RefCell::new(vertices);
+        let mut vertices_ref = vertices_refcell.borrow_mut();
+
+        let mut hull_refcell = RefCell::new(hull);
+        let mut hull_ref = hull_refcell.borrow_mut();
+
+        for (i, transcripts) in cell_transcripts.iter().enumerate() {
+            vertices_ref.clear();
+            for j in transcripts {
+                let transcript = self.transcripts[*j];
+                vertices_ref.push((transcript.x, transcript.y));
+            }
+
+            let area = convex_hull_area(&mut vertices_ref, &mut hull_ref);
+
+            writeln!(
+                encoder,
+                concat!(
+                "    {{\n",
+                "      \"type\": \"Feature\",\n",
+                "      \"properties\": {{\n",
+                "        \"cell\": {},\n",
+                "        \"area\": {}\n",
+                "      }},\n",
+                "      \"geometry\": {{\n",
+                "        \"type\": \"Polygon\",\n",
+                "        \"coordinates\": [",
+                "          ["), i, area).unwrap();
+            for (i, (x, y)) in hull_ref.iter().enumerate() {
+                writeln!(encoder, "            [{}, {}]", x, y).unwrap();
+                if i < hull_ref.len() - 1 {
+                    write!(encoder, ",").unwrap();
+                }
+            }
+            write!(encoder, concat!(
+                "          ]\n", // polygon
+                "        ]\n", // coordinates
+                "      }}\n", // geometry
+                "    }}\n", // feature
+            )).unwrap();
+
+            if i < cell_transcripts.len() - 1 {
+                write!(encoder, ",").unwrap();
+            }
+        }
+
+        writeln!(encoder, "\n  ]\n}}").unwrap();
+
+    }
+
 }
 
 #[derive(Clone)]
@@ -472,6 +557,7 @@ impl Sampler {
                 }
 
                 let (i, j) = chunkquad.mismatch_edges.choose(&mut rng).unwrap();
+                assert!(seg.cell_assignments[*i] != seg.cell_assignments[*j]);
 
                 let mut c = seg.cell_assignments[*j]; // proposal state
 
@@ -480,6 +566,10 @@ impl Sampler {
                 // propose making the cell unassigned with some probability
                 // regardless of what the parent is.
                 // let mut unassign_proposal = false;
+
+
+                // TODO: For correct balance, should I do UNASSIGNED_PROPOSAL_PROB
+                // chance of background proposal regardless of isunassigned?
                 if !isunassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
                     c = ncells as u32;
                     // unassign_proposal = true;
@@ -654,6 +744,10 @@ impl Sampler {
             ).unwrap().sample(&mut rng).sqrt() as f32
         }));
 
+        // dbg!(&self.params.μ_a);
+        // dbg!(&self.params.σ_a);
+        // dbg!(&self.cell_areas);
+
         // Sample p
 
         // total component area
@@ -741,8 +835,8 @@ impl Sampler {
         Zip::from(&mut self.params.r)
             .and(&mut self.params.lgamma_r)
             .and(self.params.w.rows())
-            .and(self.counts.rows())
-            .par_for_each(|r, lgamma_r, ws, cs| {
+            // .and(self.counts.rows())
+            .par_for_each(|r, lgamma_r, ws| {
                 let mut rng = thread_rng();
 
                 // TODO: I must need to account for cell_area somehow here.
@@ -852,6 +946,35 @@ impl Sampler {
         // dbg!(&seg.cell_logprobs);
     }
 
+    pub fn check_mismatch_edges(&self, seg: &Segmentation) {
+        // check that mismatch edges are symmetric and really are mismatching
+        for quad in 0..4 {
+            for quadchunk in &self.chunkquads[quad] {
+                for (i, j) in quadchunk.mismatch_edges.iter() {
+                    assert!(seg.cell_assignments[*i] != seg.cell_assignments[*j]);
+
+                    let quad_j = self.transcripts[*j].quad as usize;
+                    let chunk_j = self.transcripts[*j].chunk as usize;
+                    let quadchunk_j = &self.chunkquads[quad_j][chunk_j];
+                    assert!(quadchunk_j.mismatch_edges.contains(&(*j, *i)));
+                }
+            }
+        }
+
+        // check that every mismatched edge is present in a set
+        for i in 0..self.transcripts.len() {
+            for edge in seg.adjacency.edges(i) {
+                let j = edge.target();
+                if seg.cell_assignments[i] != seg.cell_assignments[j] {
+                    let quad_i = self.transcripts[i].quad as usize;
+                    let chunk_i = self.transcripts[i].chunk as usize;
+                    let quadchunk_i = &self.chunkquads[quad_i][chunk_i];
+                    assert!(quadchunk_i.mismatch_edges.contains(&(i, j)));
+                }
+            }
+        }
+    }
+
 
 }
 
@@ -921,49 +1044,16 @@ impl Proposal {
 
         // Current total log prob
         let mut current_logprob = 0.0_f32;
+        let mut proposal_logprob = 0.0;
+
         if from_background {
             current_logprob += priors.background_logprob;
+
         } else {
             current_logprob += priors.foreground_logprob;
+
             current_logprob += seg.cell_logprobs[prev_state as usize];
-        }
 
-        if !to_background {
-            current_logprob += seg.cell_logprobs[self.state as usize];
-        }
-
-        // Proposal total log prob
-        let mut proposal_logprob = 0.0;
-        if to_background {
-            proposal_logprob += priors.background_logprob;
-        } else {
-            proposal_logprob += priors.foreground_logprob;
-
-            // recompute area for `self.state` after reassigning this transcript
-            areacalc_vertices.clear();
-
-            for j in cell_transcripts[self.state as usize].iter() {
-                let transcript = &seg.transcripts[*j];
-                areacalc_vertices.push((transcript.x, transcript.y));
-            }
-            areacalc_vertices.push((this_transcript.x, this_transcript.y));
-
-            self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
-
-            self.counts.assign(&counts.column(self.state as usize));
-            self.counts[this_transcript.gene as usize] += 1;
-
-            self.counts_ln_factorial.assign(&counts_ln_factorial.column(self.state as usize));
-            self.counts_ln_factorial[this_transcript.gene as usize] =
-                lfact(self.counts[this_transcript.gene as usize]);
-
-            self.to_cell_logprob = params.cell_logprob_fast(
-                z[self.state as usize] as usize, self.to_cell_area, &self.counts, &self.counts_ln_factorial);
-
-            proposal_logprob += self.to_cell_logprob;
-        }
-
-        if !from_background {
             // recompute area for `self.state` after reassigning this transcript
             areacalc_vertices.clear();
             for j in cell_transcripts[prev_state as usize].iter() {
@@ -986,6 +1076,37 @@ impl Proposal {
                 z[prev_state as usize] as usize, self.from_cell_area, &self.counts, &self.counts_ln_factorial);
 
             proposal_logprob += self.from_cell_logprob;
+        }
+
+        if to_background {
+            proposal_logprob += priors.background_logprob;
+
+        } else {
+            proposal_logprob += priors.foreground_logprob;
+
+            current_logprob += seg.cell_logprobs[self.state as usize];
+
+            // recompute area for `self.state` after reassigning this transcript
+            areacalc_vertices.clear();
+            for j in cell_transcripts[self.state as usize].iter() {
+                let transcript = &seg.transcripts[*j];
+                areacalc_vertices.push((transcript.x, transcript.y));
+            }
+            areacalc_vertices.push((this_transcript.x, this_transcript.y));
+
+            self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
+
+            self.counts.assign(&counts.column(self.state as usize));
+            self.counts[this_transcript.gene as usize] += 1;
+
+            self.counts_ln_factorial.assign(&counts_ln_factorial.column(self.state as usize));
+            self.counts_ln_factorial[this_transcript.gene as usize] =
+                lfact(self.counts[this_transcript.gene as usize]);
+
+            self.to_cell_logprob = params.cell_logprob_fast(
+                z[self.state as usize] as usize, self.to_cell_area, &self.counts, &self.counts_ln_factorial);
+
+            proposal_logprob += self.to_cell_logprob;
         }
 
         let mut rng = thread_rng();

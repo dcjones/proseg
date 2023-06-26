@@ -70,5 +70,14 @@ where T: Eq + Hash + Copy
         let index = rng.gen_range(0..self.len());
         return Some(&self.vec[index]);
     }
+
+    pub fn contains(&self, value: &T) -> bool {
+        return self.set.contains_key(value);
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<T> {
+        return self.vec.iter();
+    }
+
 }
 

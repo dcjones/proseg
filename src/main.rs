@@ -150,6 +150,12 @@ fn main() {
         sampler.sample_global_params();
         sampler.compute_cell_logprobs(&mut seg);
 
+        // TODO: debugging
+        // sampler.check_mismatch_edges(&seg);
+
+        let total_cell_logprobs = seg.cell_logprobs.iter().sum::<f32>();
+        println!("Total cell logprob: {}", total_cell_logprobs);
+
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
             // dbg!(&seg.cell_logprobs);
@@ -169,6 +175,7 @@ fn main() {
         }
     }
 
+    // TODO: dumping component assignments for debugging
     {
         let file = File::create("z.csv.gz").unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
@@ -181,5 +188,45 @@ fn main() {
             writer.write_record([z.to_string()]).unwrap();
         }
     }
+
+    seg.write_cell_hulls("cells.geojson.gz");
+
+    // TODO: dumping cell assignments
+    {
+        let file = File::create("cell_assignments.csv.gz").unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(["x", "y", "gene", "assignment"]).unwrap();
+        for (cell, transcript) in seg.cell_assignments.iter().zip(&transcripts) {
+            writer.write_record([
+                transcript.x.to_string(),
+                transcript.y.to_string(),
+                transcript_names[transcript.gene as usize].clone(),
+                cell.to_string().to_string()]).unwrap();
+        }
+    }
+
+    // TODO: dumping nuclei
+    {
+        let file = File::create("nuclei.csv.gz").unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(["x", "y"]).unwrap();
+        for centroid in &nuclei_centroids {
+            writer.write_record([centroid.x.to_string(), centroid.y.to_string()]).unwrap();
+        }
+    }
+
+    // TODO
+    // I think to really dig into the details, we are going to have to dump
+    // cell polygons. That we we can plot the cell boundaries overlaid with
+    // the transcripts.
+
 
 }
