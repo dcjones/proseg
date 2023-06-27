@@ -12,11 +12,11 @@ type NeighborhoodGraphCsr = Csr<(), (), Directed, usize>;
 type NeighborhoodGraph = Graph<(), (), Undirected, usize>;
 
 
+#[derive(Copy, Clone, PartialEq)]
 struct DfsInfo {
     parent: NodeIndex<usize>,
     depth: u32,
     low: u32,
-    is_articulation: bool,
 }
 
 impl Default for DfsInfo {
@@ -25,18 +25,17 @@ impl Default for DfsInfo {
             parent: NodeIndex::end(),
             depth: 0,
             low: 0,
-            is_articulation: false,
         };
     }
 }
 
-pub struct ConnectivityCheck {
+pub struct ConnectivityChecker {
     subgraph: NeighborhoodGraph,
     graph_to_subgraph: HashMap<usize, NodeIndex<usize>>,
     dfsinfo: HashMap<NodeIndex<usize>, DfsInfo>,
 }
 
-impl ConnectivityCheck {
+impl ConnectivityChecker {
     pub fn new() -> Self {
         let subgraph: NeighborhoodGraph = Graph::default();
 
@@ -111,33 +110,39 @@ fn is_articulation_dfs(
     parent: NodeIndex<usize>,
     depth: u32) -> bool
 {
-    let mut i_info = dfsinfo.insert(i, DfsInfo::default()).unwrap();
-    i_info.parent = parent;
-    i_info.depth = depth;
-    i_info.low = depth;
+    dfsinfo.entry(i).or_insert_with(|| 
+        DfsInfo{
+            parent,
+            depth,
+            low: depth
+        });
 
     let mut child_count = 0;
+    let mut is_articulation = false;
 
     for j in subgraph.neighbors(i) {
-        if let Some(j_info) = dfsinfo.get(&j) {
+        if let Some(j_info) = dfsinfo.get(&j).cloned() {
             // aready visited j
+            let mut i_info = dfsinfo.get_mut(&i).unwrap();
             i_info.low = i_info.low.min(j_info.depth);
         } else {
             // j is unvisited
             is_articulation_dfs(subgraph, dfsinfo, j, i, depth + 1);
-            let j_info = &dfsinfo[&j];
+            let j_info_low = dfsinfo[&j].low;
             child_count += 1;
 
-            if j_info.low >= i_info.depth {
-                i_info.is_articulation = true;
+            let mut i_info = dfsinfo.get_mut(&i).unwrap();
+            if j_info_low >= i_info.depth {
+                is_articulation = true;
             }
-            i_info.low = i_info.low.min(j_info.low);
+            i_info.low = i_info.low.min(j_info_low);
         }
 
+        let i_info = &dfsinfo[&i];
         if i_info.parent == NodeIndex::end() && child_count > 1 {
-            i_info.is_articulation = true;
+            is_articulation = true;
         }
     }
 
-    return i_info.is_articulation;
+    return is_articulation;
 }

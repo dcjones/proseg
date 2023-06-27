@@ -25,6 +25,7 @@ use std::fs::File;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
+use connectivity::ConnectivityChecker;
 
 // use std::time::Instant;
 
@@ -244,9 +245,9 @@ impl<'a> Segmentation<'a> {
         // TODO: check if we are doing multiple updates on the same cell and warn
         // about it.
 
-        let mut background_to_cell = 0;
-        let mut cell_to_background = 0;
-        let mut cell_to_cell = 0;
+        // let mut background_to_cell = 0;
+        // let mut cell_to_background = 0;
+        // let mut cell_to_cell = 0;
 
         // Update cell assignments
         for proposal in sampler.proposals.iter().filter(|p| p.accept) {
@@ -423,6 +424,7 @@ pub struct Sampler {
     cell_transcripts: Vec<HashSet<usize>>,
     cell_areas: Array1<f32>,
     cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
+    connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
     pub z: Array1<u32>, // assignment of cells to components
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
     counts: Array2<u32>,
@@ -499,6 +501,7 @@ impl Sampler {
             cell_transcripts: cell_transcripts,
             cell_areas: cell_areas,
             cell_area_calc_storage: ThreadLocal::new(),
+            connectivity_checker: ThreadLocal::new(),
             z_probs: ThreadLocal::new(),
             z: z,
             counts: Array2::<u32>::zeros((ngenes, ncells)),
@@ -560,25 +563,39 @@ impl Sampler {
                 let (i, j) = chunkquad.mismatch_edges.choose(&mut rng).unwrap();
                 assert!(seg.cell_assignments[*i] != seg.cell_assignments[*j]);
 
-                let mut c = seg.cell_assignments[*j]; // proposal state
-
-                let isunassigned = seg.cell_assignments[*i] == ncells as u32;
-
-                // propose making the cell unassigned with some probability
-                // regardless of what the parent is.
-                // let mut unassign_proposal = false;
+                let cell_from = seg.cell_assignments[*i];
+                let mut cell_to = seg.cell_assignments[*j];
+                let isunassigned = cell_from == ncells as u32;
 
 
                 // TODO: For correct balance, should I do UNASSIGNED_PROPOSAL_PROB
                 // chance of background proposal regardless of isunassigned?
                 if !isunassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
-                    c = ncells as u32;
-                    // unassign_proposal = true;
+                    cell_to = ncells as u32;
                 }
 
                 // Don't propose removing the last transcript from a cell. (This is
                 // breaks the markov chain balance, since there's no path back to the previous state.)
                 if !isunassigned && seg.cell_population[seg.cell_assignments[*i] as usize] == 1 {
+                    proposal.ignore = true;
+                    return;
+                }
+
+                // Local connectivity condition: don't propose changes that render increase the
+                // number of connected components of either the cell_from or cell_to
+                // neighbors subgraphs.
+                let mut connectivity_checker = self.connectivity_checker.get_or(
+                    || RefCell::new(ConnectivityChecker::new())).borrow_mut();
+
+                let art_from = connectivity_checker.isarticulation(
+                    &seg.adjacency, &seg.cell_assignments,
+                    *i, seg.cell_assignments[*i]);
+
+                let art_to = connectivity_checker.isarticulation(
+                    &seg.adjacency, &seg.cell_assignments,
+                    *i, seg.cell_assignments[*j]);
+
+                if art_from || art_to {
                     proposal.ignore = true;
                     return;
                 }
@@ -589,22 +606,22 @@ impl Sampler {
                 let num_new_state_neighbors = seg
                     .adjacency
                     .neighbors(*i)
-                    .filter(|j| seg.cell_assignments[*j] == c)
+                    .filter(|j| seg.cell_assignments[*j] == cell_to)
                     .count();
 
                 let num_prev_state_neighbors = seg
                     .adjacency
                     .neighbors(*i)
-                    .filter(|j| seg.cell_assignments[*j] == seg.cell_assignments[*i])
+                    .filter(|j| seg.cell_assignments[*j] == cell_from)
                     .count();
 
                 let mut proposal_prob = num_new_state_neighbors as f64 / num_mismatching_edges as f64;
                 // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
-                if c == ncells as u32 {
+                if cell_to == ncells as u32 {
                     let num_mismatching_neighbors = seg
                         .adjacency
                         .neighbors(*i)
-                        .filter(|j| seg.cell_assignments[*j] != seg.cell_assignments[*i])
+                        .filter(|j| seg.cell_assignments[*j] != cell_from)
                         .count();
                     proposal_prob =
                         UNASSIGNED_PROPOSAL_PROB * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64) +
@@ -622,7 +639,7 @@ impl Sampler {
                     let new_num_mismatching_neighbors = seg
                         .adjacency
                         .neighbors(*i)
-                        .filter(|j| seg.cell_assignments[*j] != c)
+                        .filter(|j| seg.cell_assignments[*j] != cell_to)
                         .count();
                     reverse_proposal_prob =
                         UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64) +
@@ -638,7 +655,7 @@ impl Sampler {
                 // to assign the last unassigned transcript are automatically rejected.
 
                 proposal.i = *i;
-                proposal.state = seg.cell_assignments[*j];
+                proposal.state = cell_to;
                 proposal.log_weight = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
                 proposal.accept = false;
                 proposal.ignore = false;
