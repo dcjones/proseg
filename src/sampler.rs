@@ -2,6 +2,7 @@ pub mod transcripts;
 mod hull;
 mod distributions;
 mod sampleset;
+mod connectivity;
 
 use kiddo::float::distance::squared_euclidean;
 use kiddo::float::kdtree::KdTree;
