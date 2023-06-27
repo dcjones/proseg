@@ -52,7 +52,7 @@ impl ConnectivityChecker {
         &mut self, graph: &NeighborhoodGraphCsr,
         cell_assignments: &Vec<u32>, i: usize, cell: u32) -> bool
     {
-        self.costruct_subgraph(graph, cell_assignments, i, cell);
+        self.construct_subgraph(graph, cell_assignments, i, cell);
         self.dfsinfo.clear();
         return is_articulation_dfs(
             &self.subgraph,
@@ -63,7 +63,7 @@ impl ConnectivityChecker {
 
     // Construct a subgraph of `graph` containing i and any neighbors of `i`
     // that are of cell `cell`.
-    fn costruct_subgraph(
+    fn construct_subgraph(
         &mut self, graph: &NeighborhoodGraphCsr,
         cell_assignments: &Vec<u32>, i: usize, cell: u32)
     {
@@ -85,16 +85,18 @@ impl ConnectivityChecker {
 
         // add edges from i to neighbors, and neighbors' neighbors
         for j in graph.neighbors(i) {
-            if self.graph_to_subgraph.contains_key(&j) {
-                self.subgraph.add_edge(
-                    self.graph_to_subgraph[&i],
-                    self.graph_to_subgraph[&j], ());
+            if !self.graph_to_subgraph.contains_key(&j) {
+                continue;
             }
+
+            self.subgraph.add_edge(
+                self.graph_to_subgraph[&i],
+                self.graph_to_subgraph[&j], ());
 
             for k in graph.neighbors(j) {
                 if self.graph_to_subgraph.contains_key(&k) {
                     self.subgraph.add_edge(
-                        self.graph_to_subgraph[&i],
+                        self.graph_to_subgraph[&j],
                         self.graph_to_subgraph[&k], ());
                 }
             }
@@ -121,10 +123,11 @@ fn is_articulation_dfs(
     let mut is_articulation = false;
 
     for j in subgraph.neighbors(i) {
-        if let Some(j_info) = dfsinfo.get(&j).cloned() {
-            // aready visited j
-            let mut i_info = dfsinfo.get_mut(&i).unwrap();
-            i_info.low = i_info.low.min(j_info.depth);
+        if let Some(j_info_depth) = dfsinfo.get(&j).map(|j_info| j_info.depth) {
+            if j != parent {
+                let mut i_info = dfsinfo.get_mut(&i).unwrap();
+                i_info.low = i_info.low.min(j_info_depth);
+            }
         } else {
             // j is unvisited
             is_articulation_dfs(subgraph, dfsinfo, j, i, depth + 1);
@@ -139,8 +142,9 @@ fn is_articulation_dfs(
         }
 
         let i_info = &dfsinfo[&i];
-        if i_info.parent == NodeIndex::end() && child_count > 1 {
-            is_articulation = true;
+
+        if i_info.parent == NodeIndex::end() {
+            is_articulation = child_count > 1;
         }
     }
 

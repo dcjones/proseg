@@ -589,11 +589,11 @@ impl Sampler {
 
                 let art_from = connectivity_checker.isarticulation(
                     &seg.adjacency, &seg.cell_assignments,
-                    *i, seg.cell_assignments[*i]);
+                    *i, cell_from);
 
                 let art_to = connectivity_checker.isarticulation(
                     &seg.adjacency, &seg.cell_assignments,
-                    *i, seg.cell_assignments[*j]);
+                    *i, cell_to);
 
                 if art_from || art_to {
                     proposal.ignore = true;
