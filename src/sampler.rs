@@ -26,6 +26,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
 use connectivity::ConnectivityChecker;
+use core::fmt::Debug;
 
 // use std::time::Instant;
 
@@ -105,14 +106,26 @@ impl ModelParams {
         return self.π.len();
     }
 
-    fn cell_logprob<'a, A: AsArray<'a, f32>, B: AsArray<'a, u32>>(&self, ts: A, cell_area: f32, z: u32, counts: B) -> f32
+    fn cell_logprob<'a, A: AsArray<'a, f32> + Debug, B: AsArray<'a, u32> + Debug>(&self, ts: A, cell_area: f32, z: u32, counts: B) -> f32
     {
+        let ts = ts.into();
+        let counts = counts.into();
+
         let count_logprob =
-            Zip::from(counts.into())
-            .and(ts.into())
+            Zip::from(&counts)
+            .and(&ts)
             .fold(0_f32, |acc, c, t| {
-                acc + (*c as f32) * (t/cell_area)
+                acc + (*c as f32) * (t.ln() - cell_area.ln())
             });
+
+        // if (!count_logprob.is_finite()) {
+        //     let tmin = ts.fold(f32::INFINITY, |acc, t| acc.min(*t));
+        //     let tmax = ts.fold(f32::NEG_INFINITY, |acc, t| acc.max(*t));
+        //     dbg!(count_logprob, &ts, tmin, tmax, cell_area, &counts, z);
+        // }
+// 
+        // TODO: looks like this fails because background has area zero somehow.
+        assert!(count_logprob.is_finite());
 
         // let count_logprob =
         //     Zip::from(&self.r)
@@ -217,7 +230,6 @@ pub struct Segmentation<'a> {
     pub cell_assignments: Vec<u32>,
     cell_population: Vec<usize>,
     pub cell_logprobs: Vec<f32>,
-    background_area: f32,
 }
 
 
@@ -229,7 +241,7 @@ impl<'a> Segmentation<'a> {
     ) -> Segmentation<'a> {
 
         // initialize cell assignments so roughly half of the transcripts are assigned.
-        const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.25;
+        const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.5;
         let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
 
         let (cell_assignments, cell_population) =
@@ -246,7 +258,6 @@ impl<'a> Segmentation<'a> {
             cell_assignments,
             cell_population,
             cell_logprobs,
-            background_area: 0_f32,
         };
     }
 
@@ -576,7 +587,7 @@ impl Sampler {
 
             proposal.evaluate(
                 seg, &self.priors, &self.params, &self.z, &self.counts,
-                &self.cell_transcripts, areacalc);
+                &self.cell_transcripts, *self.cell_areas.last().unwrap(), areacalc);
         });
         // let t2 = Instant::now();
         // println!("evaluate took {:?}", t2 - t1);
@@ -856,7 +867,7 @@ impl Sampler {
                         *r as f64 + *c as f64,
                         // (θ / (cell_area * θ + 1.0)) as f64
                         ((cell_area * θ + 1.0) / θ) as f64
-                    ).unwrap().sample(&mut rng) as f32;
+                    ).unwrap().sample(&mut rng).max(1e-9) as f32;
                 }
             });
 
@@ -945,11 +956,11 @@ impl Sampler {
                     *zp = (*π as f64) *
                         (Zip::from(cs)
                         .and(&self.params.r)
+                        .and(&self.params.lgamma_r)
                         .and(&θs)
-                        .fold(0_f32, |accum, c, r, θ| {
-                            // TODO: precompute lgammaf(*r)
+                        .fold(0_f32, |accum, c, r, lgamma_r, θ| {
                             accum + negbin_logpmf(
-                                *r, lgammaf(*r),
+                                *r, *lgamma_r,
                                 odds_to_prob(*θ * cell_area), *c)
                         }) as f64).exp();
                 }
@@ -1147,6 +1158,7 @@ impl Proposal {
             z: &Array1<u32>,
             counts: &Array2<u32>,
             cell_transcripts: &Vec<HashSet<usize>>,
+            background_area: f32,
             areacalc: RefMut<AreaCalcStorage>) {
 
         if self.ignore || seg.cell_assignments[self.i] == self.state {
@@ -1166,10 +1178,10 @@ impl Proposal {
         let current_logprob =
             seg.cell_logprobs[prev_state as usize] + seg.cell_logprobs[self.state as usize];
 
-        let mut proposal_logprob = 0.0;
+        // let mut proposal_logprob = 0.0;
 
         if from_background {
-            self.from_cell_area = seg.background_area;
+            self.from_cell_area = background_area;
         } else {
             // recompute area for `prev_state` after reassigning this transcript
             areacalc_vertices.clear();
@@ -1183,7 +1195,6 @@ impl Proposal {
             self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
         }
 
-
         self.counts.assign(&counts.column(prev_state as usize));
         self.counts[this_transcript.gene as usize] -= 1;
 
@@ -1192,10 +1203,8 @@ impl Proposal {
             params.t.column(prev_state as usize),
             self.from_cell_area, z_prev, &self.counts);
 
-        proposal_logprob += self.from_cell_logprob;
-
         if to_background {
-            self.to_cell_area = seg.background_area;
+            self.to_cell_area = background_area;
         } else {
             // recompute area for `self.state` after reassigning this transcript
             areacalc_vertices.clear();
@@ -1216,14 +1225,21 @@ impl Proposal {
             params.t.column(self.state as usize),
             self.to_cell_area, z_to, &self.counts);
 
-        proposal_logprob += self.to_cell_logprob;
-
         let mut rng = thread_rng();
         let logu = rng.gen::<f32>().ln();
 
         // println!("Eval: {} {} {} {} {}", prev_state, self.state, proposal_logprob, current_logprob, self.log_weight);
 
+        let proposal_logprob = self.from_cell_logprob + self.to_cell_logprob;
+
         self.accept = logu <= (proposal_logprob - current_logprob) + self.log_weight;
+
+        // // DEBUG: Why are we rejecting from background proposals?
+        // if !self.accept && from_background {
+        //     dbg!(self.log_weight, proposal_logprob, current_logprob,
+        //         seg.cell_logprobs[prev_state as usize], seg.cell_logprobs[self.state as usize],
+        //         self.from_cell_logprob, self.to_cell_logprob);
+        // }
 
     }
 }
