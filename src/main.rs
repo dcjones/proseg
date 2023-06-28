@@ -125,16 +125,14 @@ fn main() {
 
     let priors = ModelPriors {
         min_cell_size: avg_edge_length,
-        background_logprob: args.background_prob.ln(),
-        foreground_logprob: (1_f32 - args.background_prob).ln(),
         μ_μ_a: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
         σ_μ_a: 3.0_f32,
         α_σ_a: 0.1,
         β_σ_a: 0.1,
         // α_w: 1.0,
         // β_w: 1.0,
-        α_w: 0.1,
-        β_w: 10.0,
+        α_θ: 1.0,
+        β_θ: 10.0,
         e_r: 1.0,
         f_r: 1.0,
     };
