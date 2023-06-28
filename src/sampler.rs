@@ -1,35 +1,37 @@
-pub mod transcripts;
-mod hull;
-mod distributions;
-mod sampleset;
 mod connectivity;
+mod distributions;
+mod hull;
+mod sampleset;
+pub mod transcripts;
 
-use kiddo::float::distance::squared_euclidean;
-use kiddo::float::kdtree::KdTree;
-use petgraph::visit::{IntoNeighbors, EdgeRef};
-use rand::{Rng, thread_rng};
-use rand::distributions::Distribution;
-use rayon::prelude::*;
-use std::collections::HashSet;
-use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript};
-use hull::convex_hull_area;
-use thread_local::ThreadLocal;
-use std::cell::{RefCell, RefMut};
-use distributions::{lfact, odds_to_prob, prob_to_odds, rand_pois, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast, gamma_logpdf};
-use statrs::distribution::{Beta, Dirichlet, InverseGamma, Gamma, Normal};
-use itertools::izip;
-use sampleset::SampleSet;
-use ndarray::{Array1, Array2, AsArray, Zip, s};
-use libm::{log1pf, lgammaf};
-use std::fs::File;
-use flate2::Compression;
-use flate2::write::GzEncoder;
-use std::io::Write;
 use connectivity::ConnectivityChecker;
 use core::fmt::Debug;
+use distributions::{
+    gamma_logpdf, lfact, logaddexp, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast,
+    odds_to_prob, prob_to_odds, rand_pois,
+};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use hull::convex_hull_area;
+use itertools::izip;
+use kiddo::float::distance::squared_euclidean;
+use kiddo::float::kdtree::KdTree;
+use libm::{lgammaf, log1pf};
+use ndarray::{s, Array1, Array2, AsArray, Zip};
+use petgraph::visit::{EdgeRef, IntoNeighbors};
+use rand::{thread_rng, Rng};
+use rand_distr::{Binomial, Distribution};
+use rayon::prelude::*;
+use sampleset::SampleSet;
+use statrs::distribution::{Beta, Dirichlet, Gamma, InverseGamma, Normal};
+use std::cell::{RefCell, RefMut};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
+use thread_local::ThreadLocal;
+use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript};
 
 // use std::time::Instant;
-
 
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -51,13 +53,11 @@ pub struct ModelPriors {
     pub f_r: f32,
 }
 
-
 pub struct ModelParams {
     π: Vec<f32>, // mixing proportions over components
 
     μ_a: Vec<f32>, // area dist mean param by component
     σ_a: Vec<f32>, // area dist std param by component
-    //
 
     // TODO: If we follow the paper, we have no coefficients we are regressing
     // on. We are just modeling logistic(p) ~ LogNormal(). Let's make sure
@@ -76,20 +76,29 @@ pub struct ModelParams {
     // [ngenes, ncomponents] NB p parameters.
     θ: Array2<f32>,
 
-    // [ngenes, ncells+1] Poisson rates
+    // [ngenes, ncells] Poisson rates
     λ: Array2<f32>,
 
-    // [ngenes, ncells+1] Cell (and background) mixing coefficients.
-    t: Array2<f32>
-}
+    // [ngenes, ncells] Cell (and background) mixing coefficients.
+    t: Array2<f32>,
 
+    γ_bg: Array1<f32>,
+    γ_fg: Array1<f32>,
+
+    // background rate
+    λ_bg: Array1<f32>,
+
+    // background relative probability
+    p_bg: Array1<f32>,
+    log_p_bg: Array1<f32>,
+}
 
 impl ModelParams {
     // initialize model parameters, with random cell assignments
     // and other parameterz unninitialized.
     fn new(priors: &ModelPriors, ncomponents: usize, ncells: usize, ngenes: usize) -> Self {
         let r = Array1::<f32>::from_elem(ngenes, 100.0_f32);
-        let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x) ));
+        let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x)));
         return ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
@@ -97,8 +106,13 @@ impl ModelParams {
             r: r,
             lgamma_r: lgamma_r,
             θ: Array2::<f32>::from_elem((ngenes, ncomponents), 0.1),
-            λ: Array2::<f32>::from_elem((ngenes, ncells + 1), 0.1),
-            t: Array2::<f32>::from_elem((ngenes, ncells + 1), ((ncells + 1) as f32).recip()),
+            λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
+            t: Array2::<f32>::from_elem((ngenes, ncells), (ncells as f32).recip()),
+            γ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
+            γ_fg: Array1::<f32>::from_elem(ngenes, 0.0),
+            λ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
+            p_bg: Array1::<f32>::from_elem(ngenes, 0.0),
+            log_p_bg: Array1::<f32>::from_elem(ngenes, 0.0),
         };
     }
 
@@ -106,16 +120,21 @@ impl ModelParams {
         return self.π.len();
     }
 
-    fn cell_logprob<'a, A: AsArray<'a, f32> + Debug, B: AsArray<'a, u32> + Debug>(&self, ts: A, cell_area: f32, z: u32, counts: B) -> f32
-    {
+    fn cell_logprob<'a, A: AsArray<'a, f32> + Debug, B: AsArray<'a, u32> + Debug>(
+        &self,
+        ts: A,
+        cell_area: f32,
+        z: u32,
+        counts: B,
+    ) -> f32 {
         let ts = ts.into();
         let counts = counts.into();
 
-        let count_logprob =
-            Zip::from(&counts)
+        let count_logprob = Zip::from(&counts)
             .and(&ts)
-            .fold(0_f32, |acc, c, t| {
-                acc + (*c as f32) * (t.ln() - cell_area.ln())
+            .and(&self.log_p_bg)
+            .fold(0_f32, |acc, c, t, &log_p_bg| {
+                acc + (*c as f32) * logaddexp(log_p_bg, t.ln() - cell_area.ln())
             });
 
         // if (!count_logprob.is_finite()) {
@@ -123,7 +142,7 @@ impl ModelParams {
         //     let tmax = ts.fold(f32::NEG_INFINITY, |acc, t| acc.max(*t));
         //     dbg!(count_logprob, &ts, tmin, tmax, cell_area, &counts, z);
         // }
-// 
+        //
         // TODO: looks like this fails because background has area zero somehow.
         assert!(count_logprob.is_finite());
 
@@ -138,10 +157,8 @@ impl ModelParams {
 
         // this condition is false when we are dealing with the background cell
         if (z as usize) < self.μ_a.len() {
-            let area_logprob = lognormal_logpdf(
-                self.μ_a[z as usize],
-                self.σ_a[z as usize],
-                cell_area);
+            let area_logprob =
+                lognormal_logpdf(self.μ_a[z as usize], self.σ_a[z as usize], cell_area);
             return count_logprob + area_logprob;
         }
 
@@ -178,7 +195,6 @@ impl ModelParams {
     //     // return count_logprob;
     // }
 }
-
 
 struct ChunkedTranscript {
     transcript: Transcript,
@@ -232,24 +248,24 @@ pub struct Segmentation<'a> {
     pub cell_logprobs: Vec<f32>,
 }
 
-
 impl<'a> Segmentation<'a> {
     pub fn new(
         transcripts: &'a Vec<Transcript>,
         nuclei_centroids: &'a Vec<NucleiCentroid>,
         adjacency: &'a NeighborhoodGraph,
     ) -> Segmentation<'a> {
-
         // initialize cell assignments so roughly half of the transcripts are assigned.
         const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.5;
-        let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64) / (nuclei_centroids.len() as f64)).ceil() as usize;
+        let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64)
+            / (nuclei_centroids.len() as f64))
+            .ceil() as usize;
 
         let (cell_assignments, cell_population) =
             init_cell_assignments(transcripts, nuclei_centroids, k);
 
         let ncells = nuclei_centroids.len();
 
-        let cell_logprobs = vec![0.0; ncells + 1];
+        let cell_logprobs = vec![0.0; ncells];
 
         return Segmentation {
             transcripts,
@@ -263,7 +279,11 @@ impl<'a> Segmentation<'a> {
 
     pub fn nunassigned(&self) -> usize {
         let ncells = self.ncells() as u32;
-        return self.cell_assignments.iter().filter(|&c| *c == ncells).count();
+        return self
+            .cell_assignments
+            .iter()
+            .filter(|&c| *c == ncells)
+            .count();
     }
 
     fn ncells(&self) -> usize {
@@ -312,9 +332,6 @@ impl<'a> Segmentation<'a> {
             // }
         }
 
-        sampler.cell_areas[sampler.background_cell as usize] =
-            sampler.full_area - sampler.cell_areas.iter().take(self.ncells()).sum::<f32>();
-
         // dbg!(background_to_cell, cell_to_background, cell_to_cell);
 
         // Update mismatch edges
@@ -347,7 +364,6 @@ impl<'a> Segmentation<'a> {
     }
 
     pub fn write_cell_hulls(&self, filename: &str) {
-
         // We are not maintaining any kind of per-cell array, so I guess I have
         // no choice but to compute such a thing here.
         // TODO: We area already keeping track of this in Sampler!!
@@ -360,7 +376,11 @@ impl<'a> Segmentation<'a> {
 
         let file = File::create(filename).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
-        writeln!(encoder, "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [").unwrap();
+        writeln!(
+            encoder,
+            "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
+        )
+        .unwrap();
 
         let mut vertices: Vec<(f32, f32)> = Vec::new();
         let mut hull: Vec<(f32, f32)> = Vec::new();
@@ -383,28 +403,36 @@ impl<'a> Segmentation<'a> {
             writeln!(
                 encoder,
                 concat!(
-                "    {{\n",
-                "      \"type\": \"Feature\",\n",
-                "      \"properties\": {{\n",
-                "        \"cell\": {},\n",
-                "        \"area\": {}\n",
-                "      }},\n",
-                "      \"geometry\": {{\n",
-                "        \"type\": \"Polygon\",\n",
-                "        \"coordinates\": [",
-                "          ["), i, area).unwrap();
+                    "    {{\n",
+                    "      \"type\": \"Feature\",\n",
+                    "      \"properties\": {{\n",
+                    "        \"cell\": {},\n",
+                    "        \"area\": {}\n",
+                    "      }},\n",
+                    "      \"geometry\": {{\n",
+                    "        \"type\": \"Polygon\",\n",
+                    "        \"coordinates\": [",
+                    "          ["
+                ),
+                i, area
+            )
+            .unwrap();
             for (i, (x, y)) in hull_ref.iter().enumerate() {
                 writeln!(encoder, "            [{}, {}]", x, y).unwrap();
                 if i < hull_ref.len() - 1 {
                     write!(encoder, ",").unwrap();
                 }
             }
-            write!(encoder, concat!(
-                "          ]\n", // polygon
-                "        ]\n", // coordinates
-                "      }}\n", // geometry
-                "    }}\n", // feature
-            )).unwrap();
+            write!(
+                encoder,
+                concat!(
+                    "          ]\n", // polygon
+                    "        ]\n",   // coordinates
+                    "      }}\n",    // geometry
+                    "    }}\n",      // feature
+                )
+            )
+            .unwrap();
 
             if i < cell_transcripts.len() - 1 {
                 write!(encoder, ",").unwrap();
@@ -412,9 +440,7 @@ impl<'a> Segmentation<'a> {
         }
 
         writeln!(encoder, "\n  ]\n}}").unwrap();
-
     }
-
 }
 
 #[derive(Clone)]
@@ -429,7 +455,6 @@ impl ChunkQuad {
         return self.chunk == transcript.chunk && self.quad == transcript.quad;
     }
 }
-
 
 // Pre-allocated thread-local storage used when computing cell areas.
 struct AreaCalcStorage {
@@ -446,7 +471,6 @@ impl AreaCalcStorage {
     }
 }
 
-
 pub struct Sampler {
     priors: ModelPriors,
     chunkquads: Vec<Vec<ChunkQuad>>,
@@ -461,6 +485,9 @@ pub struct Sampler {
     pub z: Array1<u32>, // assignment of cells to components
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
     counts: Array2<u32>,
+    foreground_counts: Array2<u32>,
+    background_counts: Array1<u32>,
+    total_gene_counts: Array1<u32>,
     component_counts: Array2<u32>,
     quad: usize,
     sample_num: usize,
@@ -469,7 +496,13 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new(priors: ModelPriors, seg: &mut Segmentation, ncomponents: usize, ngenes: usize, chunk_size: f32) -> Sampler {
+    pub fn new(
+        priors: ModelPriors,
+        seg: &mut Segmentation,
+        ncomponents: usize,
+        ngenes: usize,
+        chunk_size: f32,
+    ) -> Sampler {
         let (xmin, xmax, ymin, ymax) = coordinate_span(seg.transcripts, seg.nuclei_centroids);
 
         let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
@@ -520,11 +553,14 @@ impl Sampler {
             }
         }
 
-        let cell_areas = Array1::<f32>::zeros(ncells+1);
+        let cell_areas = Array1::<f32>::zeros(ncells);
         let proposals = vec![Proposal::new(ngenes); nchunks];
 
         let mut rng = rand::thread_rng();
-        let z = (0..ncells).map(|_| rng.gen_range(0..ncomponents) as u32).collect::<Vec<_>>().into();
+        let z = (0..ncells)
+            .map(|_| rng.gen_range(0..ncomponents) as u32)
+            .collect::<Vec<_>>()
+            .into();
 
         let mut sampler = Sampler {
             priors,
@@ -538,7 +574,10 @@ impl Sampler {
             connectivity_checker: ThreadLocal::new(),
             z_probs: ThreadLocal::new(),
             z: z,
-            counts: Array2::<u32>::zeros((ngenes, ncells+1)),
+            counts: Array2::<u32>::zeros((ngenes, ncells)),
+            foreground_counts: Array2::<u32>::zeros((ngenes, ncells)),
+            background_counts: Array1::<u32>::zeros(ngenes),
+            total_gene_counts: Array1::<u32>::zeros(ngenes),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
             proposals: proposals,
             quad: 0,
@@ -562,8 +601,11 @@ impl Sampler {
     }
 
     fn compute_full_area(&self) -> f32 {
-        let mut vertices = Vec::from_iter(self.transcripts.iter().map(
-            |t| (t.transcript.x, t.transcript.y)));
+        let mut vertices = Vec::from_iter(
+            self.transcripts
+                .iter()
+                .map(|t| (t.transcript.x, t.transcript.y)),
+        );
         let mut hull = Vec::new();
 
         let mut vertices_refcell = RefCell::new(vertices);
@@ -582,12 +624,20 @@ impl Sampler {
         // println!("repoulate_proposals took {:?}", t1 - t0);
 
         self.proposals.par_iter_mut().for_each(|proposal| {
-            let areacalc = self.cell_area_calc_storage.get_or(
-                || RefCell::new(AreaCalcStorage::new()) ).borrow_mut();
+            let areacalc = self
+                .cell_area_calc_storage
+                .get_or(|| RefCell::new(AreaCalcStorage::new()))
+                .borrow_mut();
 
             proposal.evaluate(
-                seg, &self.priors, &self.params, &self.z, &self.counts,
-                &self.cell_transcripts, *self.cell_areas.last().unwrap(), areacalc);
+                seg,
+                &self.priors,
+                &self.params,
+                &self.z,
+                &self.counts,
+                &self.cell_transcripts,
+                areacalc,
+            );
         });
         // let t2 = Instant::now();
         // println!("evaluate took {:?}", t2 - t1);
@@ -617,7 +667,6 @@ impl Sampler {
                 let mut cell_to = seg.cell_assignments[*j];
                 let isunassigned = cell_from == ncells as u32;
 
-
                 // TODO: For correct balance, should I do UNASSIGNED_PROPOSAL_PROB
                 // chance of background proposal regardless of isunassigned?
                 if !isunassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
@@ -634,16 +683,24 @@ impl Sampler {
                 // Local connectivity condition: don't propose changes that render increase the
                 // number of connected components of either the cell_from or cell_to
                 // neighbors subgraphs.
-                let mut connectivity_checker = self.connectivity_checker.get_or(
-                    || RefCell::new(ConnectivityChecker::new())).borrow_mut();
+                let mut connectivity_checker = self
+                    .connectivity_checker
+                    .get_or(|| RefCell::new(ConnectivityChecker::new()))
+                    .borrow_mut();
 
                 let art_from = connectivity_checker.isarticulation(
-                    &seg.adjacency, &seg.cell_assignments,
-                    *i, cell_from);
+                    &seg.adjacency,
+                    &seg.cell_assignments,
+                    *i,
+                    cell_from,
+                );
 
                 let art_to = connectivity_checker.isarticulation(
-                    &seg.adjacency, &seg.cell_assignments,
-                    *i, cell_to);
+                    &seg.adjacency,
+                    &seg.cell_assignments,
+                    *i,
+                    cell_to,
+                );
 
                 if art_from || art_to {
                     proposal.ignore = true;
@@ -665,7 +722,8 @@ impl Sampler {
                     .filter(|j| seg.cell_assignments[*j] == cell_from)
                     .count();
 
-                let mut proposal_prob = num_new_state_neighbors as f64 / num_mismatching_edges as f64;
+                let mut proposal_prob =
+                    num_new_state_neighbors as f64 / num_mismatching_edges as f64;
                 // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
                 if cell_to == ncells as u32 {
                     let num_mismatching_neighbors = seg
@@ -673,16 +731,17 @@ impl Sampler {
                         .neighbors(*i)
                         .filter(|j| seg.cell_assignments[*j] != cell_from)
                         .count();
-                    proposal_prob =
-                        UNASSIGNED_PROPOSAL_PROB * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64) +
-                        (1.0 - UNASSIGNED_PROPOSAL_PROB) * proposal_prob;
+                    proposal_prob = UNASSIGNED_PROPOSAL_PROB
+                        * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64)
+                        + (1.0 - UNASSIGNED_PROPOSAL_PROB) * proposal_prob;
                 }
 
                 let new_num_mismatching_edges = num_mismatching_edges
                     + 2*num_prev_state_neighbors // edges that are newly mismatching
                     - 2*num_new_state_neighbors; // edges that are newly matching
 
-                let mut reverse_proposal_prob = num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
+                let mut reverse_proposal_prob =
+                    num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
 
                 // If this is a proposal from unassigned, account for multiple ways of reversing it
                 if seg.cell_assignments[*i] == ncells as u32 {
@@ -691,13 +750,13 @@ impl Sampler {
                         .neighbors(*i)
                         .filter(|j| seg.cell_assignments[*j] != cell_to)
                         .count();
-                    reverse_proposal_prob =
-                        UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64) +
-                        (1.0 - UNASSIGNED_PROPOSAL_PROB) * reverse_proposal_prob;
+                    reverse_proposal_prob = UNASSIGNED_PROPOSAL_PROB
+                        * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64)
+                        + (1.0 - UNASSIGNED_PROPOSAL_PROB) * reverse_proposal_prob;
                 }
 
                 // let unassign_proposal {
-                //     // TODO: 
+                //     // TODO:
                 // }
 
                 // TODO: In particular, we need make sure "unassigned" is proposed
@@ -722,7 +781,6 @@ impl Sampler {
         let ncomponents = self.params.ncomponents();
         let ngenes = self.params.λ.shape()[0];
 
-
         // // sample π
         // let mut α = vec![1_f64; self.params.ncomponents()];
         // for z_i in self.z.iter() {
@@ -732,9 +790,9 @@ impl Sampler {
         // self.params.π.clear();
         // self.params.π.extend(Dirichlet::new(α).unwrap().sample(&mut rng).iter().map(|x| *x as f32));
 
-
         // sample μ_a
-        let mut μ_μ_a = vec![self.priors.μ_μ_a / (self.priors.σ_μ_a.powi(2)) ; self.params.ncomponents()];
+        let mut μ_μ_a =
+            vec![self.priors.μ_μ_a / (self.priors.σ_μ_a.powi(2)); self.params.ncomponents()];
         // let mut component_population = vec![0; self.params.ncomponents()];
         let mut component_population = Array1::<u32>::from_elem(self.params.ncomponents(), 0_u32);
 
@@ -745,18 +803,22 @@ impl Sampler {
         dbg!(&component_population);
 
         μ_μ_a.iter_mut().enumerate().for_each(|(i, μ)| {
-            *μ /= (1_f32/self.priors.σ_μ_a.powi(2)) +
-                (component_population[i] as f32 / self.params.σ_a[i].powi(2));
+            *μ /= (1_f32 / self.priors.σ_μ_a.powi(2))
+                + (component_population[i] as f32 / self.params.σ_a[i].powi(2));
         });
 
-        let σ2_μ_a: Vec<f32> = izip!(&self.params.σ_a, &component_population).map(|(σ, n)| {
-            (1_f32 / self.priors.σ_μ_a.powi(2) + (*n as f32) / σ.powi(2)).recip()
-        }).collect();
+        let σ2_μ_a: Vec<f32> = izip!(&self.params.σ_a, &component_population)
+            .map(|(σ, n)| (1_f32 / self.priors.σ_μ_a.powi(2) + (*n as f32) / σ.powi(2)).recip())
+            .collect();
 
         self.params.μ_a.clear();
-        self.params.μ_a.extend(
-            izip!(&μ_μ_a, &σ2_μ_a).map(|(μ, σ2)| Normal::new(*μ as f64, σ2.sqrt() as f64).unwrap().sample(&mut rng) as f32)
-        );
+        self.params
+            .μ_a
+            .extend(izip!(&μ_μ_a, &σ2_μ_a).map(|(μ, σ2)| {
+                Normal::new(*μ as f64, σ2.sqrt() as f64)
+                    .unwrap()
+                    .sample(&mut rng) as f32
+            }));
 
         // sample σ_a
         let mut δ2s = vec![0_f32; self.params.ncomponents()];
@@ -766,25 +828,50 @@ impl Sampler {
 
         // sample σ_a
         self.params.σ_a.clear();
-        self.params.σ_a.extend(izip!(&component_population, &δ2s).map(|(n, δ2)| {
-            InverseGamma::new(
-                self.priors.α_σ_a as f64 + 0.5 * *n as f64,
-                self.priors.β_σ_a as f64 + 0.5 * *δ2 as f64
-            ).unwrap().sample(&mut rng).sqrt() as f32
-        }));
+        self.params
+            .σ_a
+            .extend(izip!(&component_population, &δ2s).map(|(n, δ2)| {
+                InverseGamma::new(
+                    self.priors.α_σ_a as f64 + 0.5 * *n as f64,
+                    self.priors.β_σ_a as f64 + 0.5 * *δ2 as f64,
+                )
+                .unwrap()
+                .sample(&mut rng)
+                .sqrt() as f32
+            }));
 
-        // Sample p
+        // Sample background/foreground counts
+        self.background_counts.assign(&self.total_gene_counts);
+        Zip::from(self.counts.rows())
+            .and(self.foreground_counts.rows_mut())
+            .and(self.params.t.rows())
+            .and(&mut self.background_counts)
+            .and(&self.params.p_bg)
+            .par_for_each(|cs, fcs, ts, bc, p_bg| {
+                let mut rng = thread_rng();
+                for (c, fc, t, cell_area) in izip!(cs, fcs, ts, &self.cell_areas) {
+                    let p_fg = t / cell_area;
+                    let p = p_fg / (p_fg + p_bg);
+                    *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
+                    *bc -= *fc;
+                }
+            });
 
         // total component area
         let mut component_cell_area = vec![0_f32; self.params.ncomponents()];
-        self.cell_areas.iter().take(self.ncells).zip(&self.z).for_each(|(area, z_i)| {
-            component_cell_area[*z_i as usize] += *area;
-        });
+        self.cell_areas
+            .iter()
+            .take(self.ncells)
+            .zip(&self.z)
+            .for_each(|(area, z_i)| {
+                component_cell_area[*z_i as usize] += *area;
+            });
 
         // compute per component transcript counts
         self.component_counts.fill(0);
         Zip::from(self.component_counts.rows_mut())
-            .and(self.counts.rows()).par_for_each(|mut compc, cellc| {
+            .and(self.foreground_counts.rows())
+            .par_for_each(|mut compc, cellc| {
                 for (c, component) in cellc.iter().zip(&self.z) {
                     compc[*component as usize] += *c;
                 }
@@ -797,10 +884,14 @@ impl Sampler {
             .par_for_each(|θs, cs, r| {
                 let mut rng = thread_rng();
                 for (θ, c, a) in izip!(θs, cs, &component_cell_area) {
-                    *θ = prob_to_odds(Beta::new(
-                        (self.priors.α_θ + *c as f32) as f64,
-                        (self.priors.β_θ + *a * *r) as f64,
-                    ).unwrap().sample(&mut rng) as f32);
+                    *θ = prob_to_odds(
+                        Beta::new(
+                            (self.priors.α_θ + *c as f32) as f64,
+                            (self.priors.β_θ + *a * *r) as f64,
+                        )
+                        .unwrap()
+                        .sample(&mut rng) as f32,
+                    );
 
                     *θ = θ.max(1e-6);
 
@@ -821,28 +912,25 @@ impl Sampler {
 
                 // self.cell_areas.slice(0..self.ncells)
 
-                let u =
-                    Zip::from(&self.z)
-                        .and(&self.cell_areas.slice(s![0..self.ncells]))
-                        .fold(0, |accum, z, a| {
-                            let θ = θs[*z as usize];
-                            let λ = -*r * log1pf(-odds_to_prob(θ * *a));
-                            // assert!(λ >= 0.0);
-                            // accum + Poisson::new(λ as f64).unwrap().sample(&mut rng)
-                            accum + rand_pois(&mut rng, λ)
-                        }) as f32;
-                let v =
-                    Zip::from(&self.z)
-                        .and(&self.cell_areas.slice(s![0..self.ncells]))
-                        .fold(0.0, |accum, z, a| {
-                            let w = θs[*z as usize];
-                            accum + log1pf(-odds_to_prob(w * *a))
-                        });
+                let u = Zip::from(&self.z)
+                    .and(&self.cell_areas.slice(s![0..self.ncells]))
+                    .fold(0, |accum, z, a| {
+                        let θ = θs[*z as usize];
+                        let λ = -*r * log1pf(-odds_to_prob(θ * *a));
+                        // assert!(λ >= 0.0);
+                        // accum + Poisson::new(λ as f64).unwrap().sample(&mut rng)
+                        accum + rand_pois(&mut rng, λ)
+                    }) as f32;
+                let v = Zip::from(&self.z)
+                    .and(&self.cell_areas.slice(s![0..self.ncells]))
+                    .fold(0.0, |accum, z, a| {
+                        let w = θs[*z as usize];
+                        accum + log1pf(-odds_to_prob(w * *a))
+                    });
 
-                *r = Gamma::new(
-                    (self.priors.e_r + u) as f64,
-                    (self.priors.f_r - v) as f64
-                ).unwrap().sample(&mut rng) as f32;
+                *r = Gamma::new((self.priors.e_r + u) as f64, (self.priors.f_r - v) as f64)
+                    .unwrap()
+                    .sample(&mut rng) as f32;
 
                 *lgamma_r = lgammaf(*r);
 
@@ -852,7 +940,7 @@ impl Sampler {
 
         // Sample λ
         Zip::from(self.params.λ.rows_mut())
-            .and(self.counts.rows())
+            .and(self.foreground_counts.rows())
             .and(self.params.θ.rows())
             .and(&self.params.r)
             .par_for_each(|mut λs, cs, θs, r| {
@@ -861,13 +949,21 @@ impl Sampler {
                 // TODO: Afraid this is where we'll get killed on performance. Look for
                 // a Gamma distribution sampler that runs as f32 precision. Maybe in rand_distr
 
-                for (λ, z, c, cell_area) in izip!(λs.slice_mut(s![0..self.ncells]), &self.z, cs, &self.cell_areas.slice(s![0..self.ncells])) {
+                for (λ, z, c, cell_area) in izip!(
+                    λs.slice_mut(s![0..self.ncells]),
+                    &self.z,
+                    cs,
+                    &self.cell_areas.slice(s![0..self.ncells])
+                ) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
                         *r as f64 + *c as f64,
                         // (θ / (cell_area * θ + 1.0)) as f64
-                        ((cell_area * θ + 1.0) / θ) as f64
-                    ).unwrap().sample(&mut rng).max(1e-9) as f32;
+                        ((cell_area * θ + 1.0) / θ) as f64,
+                    )
+                    .unwrap()
+                    .sample(&mut rng)
+                    .max(1e-9) as f32;
                 }
             });
 
@@ -885,7 +981,6 @@ impl Sampler {
         // panic!();
 
         // Sample z (assignment of cells to components)
-
 
         // TODO: It seems super unstable to do this.
 
@@ -944,71 +1039,114 @@ impl Sampler {
         //         *z = z_probs.partition_point(|x| *x < u) as u32;
         //     });
 
-        Zip::from(self.counts.slice(s![0..ngenes, 0..self.ncells]).columns())
-            .and(&mut self.z)
-            .and(self.cell_areas.slice(s![0..self.ncells]))
-            .par_for_each(|cs, z_i, cell_area| {
-                let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
+        // Sample z
+        Zip::from(
+            self.foreground_counts
+                .slice(s![0..ngenes, 0..self.ncells])
+                .columns(),
+        )
+        .and(&mut self.z)
+        .and(self.cell_areas.slice(s![0..self.ncells]))
+        .par_for_each(|cs, z_i, cell_area| {
+            let mut z_probs = self
+                .z_probs
+                .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
+                .borrow_mut();
 
-                // loop over components
-                for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.columns()) {
-                    // sum over genes
-                    *zp = (*π as f64) *
-                        (Zip::from(cs)
+            // loop over components
+            for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.columns())
+            {
+                // sum over genes
+                *zp = (*π as f64)
+                    * (Zip::from(cs)
                         .and(&self.params.r)
                         .and(&self.params.lgamma_r)
                         .and(&θs)
                         .fold(0_f32, |accum, c, r, lgamma_r, θ| {
-                            accum + negbin_logpmf(
-                                *r, *lgamma_r,
-                                odds_to_prob(*θ * cell_area), *c)
-                        }) as f64).exp();
-                }
+                            accum + negbin_logpmf(*r, *lgamma_r, odds_to_prob(*θ * cell_area), *c)
+                        }) as f64)
+                        .exp();
+            }
 
-                // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
-                //     *zp = (self.params.π[j] as f64) *
-                //         negbin_logpmf(r, lgamma_r, p, k)
-                //         // (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
-                // });
+            // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
+            //     *zp = (self.params.π[j] as f64) *
+            //         negbin_logpmf(r, lgamma_r, p, k)
+            //         // (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
+            // });
 
-                let z_prob_sum = z_probs.iter().sum::<f64>();
-                assert!(z_prob_sum.is_finite());
+            let z_prob_sum = z_probs.iter().sum::<f64>();
+            assert!(z_prob_sum.is_finite());
 
-                // cumulative probabilities in-place
-                z_probs.iter_mut().fold(0.0, |mut acc, x| {
-                    acc += *x / z_prob_sum;
-                    *x = acc;
-                    acc
-                });
+            // cumulative probabilities in-place
+            z_probs.iter_mut().fold(0.0, |mut acc, x| {
+                acc += *x / z_prob_sum;
+                *x = acc;
+                acc
+            });
 
-                let rng = &mut thread_rng();
-                let u = rng.gen::<f64>();
-                *z_i = z_probs.partition_point(|x| *x < u) as u32;
+            let rng = &mut thread_rng();
+            let u = rng.gen::<f64>();
+            *z_i = z_probs.partition_point(|x| *x < u) as u32;
         });
 
+        // sample π
+        let mut α = vec![1_f64; self.params.ncomponents()];
+        for z_i in self.z.iter() {
+            α[*z_i as usize] += 1.0;
+        }
+
+        self.params.π.clear();
+        self.params.π.extend(
+            Dirichlet::new(α)
+                .unwrap()
+                .sample(&mut rng)
+                .iter()
+                .map(|x| *x as f32),
+        );
+
         // Special case for background noise.
-        // TODO: should sample here, but need a prior, though it shouldn't matter much.
-        Zip::from(self.params.λ.column_mut(self.background_cell as usize))
-            .and(self.counts.column(self.background_cell as usize))
+        Zip::from(&mut self.params.λ_bg)
+            .and(&self.background_counts)
             .for_each(|λ, c| {
-                *λ = (*c as f32) / self.cell_areas[self.background_cell as usize];
+                *λ = (*c as f32) / self.full_area;
             });
 
-        // Compute per-gene cell mixture coeficients
+        // Comptue γ_bg
+        Zip::from(&mut self.params.γ_bg)
+            .and(&self.params.λ_bg)
+            .for_each(|γ, λ| {
+                *γ = λ * self.full_area;
+            });
+
+        // Compute γ_fg
+        Zip::from(&mut self.params.γ_fg)
+            .and(self.params.λ.rows())
+            .par_for_each(|γ, λs| {
+                *γ = 0.0;
+                for (λ, cell_area) in izip!(λs, &self.cell_areas) {
+                    *γ += *λ * *cell_area;
+                }
+            });
+
+        // Compute relative background probability (p_bg)
+        Zip::from(&mut self.params.p_bg)
+            .and(&mut self.params.log_p_bg)
+            .and(&self.params.γ_bg)
+            .and(&self.params.γ_fg)
+            .for_each(|p, lp, γ_bg, γ_fg| {
+                *p = (*γ_bg / *γ_fg) / self.full_area;
+                *lp = p.ln();
+            });
+
+        // Compute t (per-gene cell mixture coeficients)
         Zip::from(self.params.t.rows_mut())
             .and(self.params.λ.rows())
-            .par_for_each(|mut ts, λs| {
-                let mut ts_sum = 0.0;
+            .and(&self.params.γ_fg)
+            .par_for_each(|mut ts, λs, γ| {
                 for (t, λ, cell_area) in izip!(&mut ts, λs, &self.cell_areas) {
-                    *t = *λ * cell_area;
-                    ts_sum += *t;
-                }
-
-                for t in &mut ts {
-                    *t /= ts_sum;
+                    *t = (*λ * cell_area) / *γ;
                 }
             });
-
     }
 
     fn compute_cell_areas(&mut self) {
@@ -1017,8 +1155,10 @@ impl Sampler {
                 return;
             }
 
-            let mut areacalc = self.cell_area_calc_storage.get_or(
-                || RefCell::new(AreaCalcStorage::new()) ).borrow_mut();
+            let mut areacalc = self
+                .cell_area_calc_storage
+                .get_or(|| RefCell::new(AreaCalcStorage::new()))
+                .borrow_mut();
             areacalc.vertices.clear();
 
             for j in self.cell_transcripts[i].iter() {
@@ -1026,18 +1166,11 @@ impl Sampler {
                 areacalc.vertices.push((transcript.x, transcript.y));
             }
 
-            let (mut vertices, mut hull) =
-                RefMut::map_split(areacalc, |areacalc| (&mut areacalc.vertices, &mut areacalc.hull));
+            let (mut vertices, mut hull) = RefMut::map_split(areacalc, |areacalc| {
+                (&mut areacalc.vertices, &mut areacalc.hull)
+            });
             *area = convex_hull_area(&mut vertices, &mut hull).max(self.priors.min_cell_size);
         });
-
-        // TODO:
-        // This is quite precise, because the convex hulls of cells can overlap.
-        // We may consider switching to summing voronoi cells, if we can deal with the issue
-        // of cells on the border being enormous. Ideally we would truncate transcript vornoi cells
-        // to the convex hull of the whole dataset.
-        self.cell_areas[self.background_cell as usize] =
-            self.full_area - self.cell_areas.iter().take(self.cell_areas.len() - 1).sum::<f32>();
 
         let mut minarea: f32 = 1e12;
         let mut maxarea: f32 = 0.0;
@@ -1054,28 +1187,29 @@ impl Sampler {
 
     fn compute_counts(&mut self, seg: &Segmentation) {
         self.counts.fill(0);
-        let ncells = seg.ncells() as u32;
-        for (transcript, j) in self.transcripts.iter().zip(&seg.cell_assignments) {
+        for (transcript, &j) in self.transcripts.iter().zip(&seg.cell_assignments) {
             let i = transcript.transcript.gene as usize;
-            self.counts[[i, *j as usize]] += 1;
+            if j != self.background_cell {
+                self.counts[[i, j as usize]] += 1;
+            }
+            self.total_gene_counts[i] += 1;
         }
     }
 
     pub fn compute_cell_logprobs(&self, seg: &mut Segmentation) {
         // Assume at this point that cell areas and transcript counts are up to date
-        seg.cell_logprobs.par_iter_mut().enumerate().for_each(|(i, logprob)| {
-            let cell_area = self.cell_areas[i];
-            let z = if i == self.background_cell as usize {
-                u32::MAX
-            } else {
-                self.z[i]
-            };
-
-            *logprob = self.params.cell_logprob(
-                self.params.t.column(i),
-                cell_area, z,
-                self.counts.column(i));
-        });
+        seg.cell_logprobs
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, logprob)| {
+                let cell_area = self.cell_areas[i];
+                *logprob = self.params.cell_logprob(
+                    self.params.t.column(i),
+                    cell_area,
+                    self.z[i],
+                    self.counts.column(i),
+                );
+            });
 
         // dbg!(&seg.cell_logprobs);
     }
@@ -1108,8 +1242,6 @@ impl Sampler {
             }
         }
     }
-
-
 }
 
 #[derive(Clone, Debug)]
@@ -1151,37 +1283,52 @@ impl Proposal {
     }
 
     fn evaluate(
-            &mut self,
-            seg: &Segmentation,
-            priors: &ModelPriors,
-            params: &ModelParams,
-            z: &Array1<u32>,
-            counts: &Array2<u32>,
-            cell_transcripts: &Vec<HashSet<usize>>,
-            background_area: f32,
-            areacalc: RefMut<AreaCalcStorage>) {
-
+        &mut self,
+        seg: &Segmentation,
+        priors: &ModelPriors,
+        params: &ModelParams,
+        z: &Array1<u32>,
+        counts: &Array2<u32>,
+        cell_transcripts: &Vec<HashSet<usize>>,
+        areacalc: RefMut<AreaCalcStorage>,
+    ) {
         if self.ignore || seg.cell_assignments[self.i] == self.state {
             self.accept = false;
             return;
         }
 
-        let (mut areacalc_vertices, mut areacalc_hull) =
-            RefMut::map_split(areacalc, |areacalc| (&mut areacalc.vertices, &mut areacalc.hull));
+        let (mut areacalc_vertices, mut areacalc_hull) = RefMut::map_split(areacalc, |areacalc| {
+            (&mut areacalc.vertices, &mut areacalc.hull)
+        });
 
         let prev_state = seg.cell_assignments[self.i];
         let from_background = prev_state == seg.ncells() as u32;
         let to_background = self.state == seg.ncells() as u32;
         let this_transcript = &seg.transcripts[self.i];
+        let log_p_bg = params.log_p_bg[this_transcript.gene as usize];
 
         // Current total log prob
-        let current_logprob =
-            seg.cell_logprobs[prev_state as usize] + seg.cell_logprobs[self.state as usize];
+        let current_logprob = if from_background {
+            log_p_bg
+        } else {
+            seg.cell_logprobs[prev_state as usize]
+        } + if to_background {
+            0_f32
+        } else {
+            seg.cell_logprobs[self.state as usize]
+        };
 
         // let mut proposal_logprob = 0.0;
+        //
+        //
+
+        // TODO: figure out what to do here wrt to background relative prob.
+
+
+
 
         if from_background {
-            self.from_cell_area = background_area;
+            self.from_cell_logprob = 0.0;
         } else {
             // recompute area for `prev_state` after reassigning this transcript
             areacalc_vertices.clear();
@@ -1192,19 +1339,27 @@ impl Proposal {
                 }
             }
 
-            self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
+            self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
+                .max(priors.min_cell_size);
+
+            self.counts.assign(&counts.column(prev_state as usize));
+            self.counts[this_transcript.gene as usize] -= 1;
+
+            let z_prev = if from_background {
+                u32::MAX
+            } else {
+                z[prev_state as usize]
+            };
+            self.from_cell_logprob = params.cell_logprob(
+                params.t.column(prev_state as usize),
+                self.from_cell_area,
+                z_prev,
+                &self.counts,
+            );
         }
 
-        self.counts.assign(&counts.column(prev_state as usize));
-        self.counts[this_transcript.gene as usize] -= 1;
-
-        let z_prev = if from_background { u32::MAX } else { z[prev_state as usize] };
-        self.from_cell_logprob = params.cell_logprob(
-            params.t.column(prev_state as usize),
-            self.from_cell_area, z_prev, &self.counts);
-
         if to_background {
-            self.to_cell_area = background_area;
+            self.to_cell_logprob = log_p_bg;
         } else {
             // recompute area for `self.state` after reassigning this transcript
             areacalc_vertices.clear();
@@ -1214,16 +1369,24 @@ impl Proposal {
             }
             areacalc_vertices.push((this_transcript.x, this_transcript.y));
 
-            self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull).max(priors.min_cell_size);
+            self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
+               .max(priors.min_cell_size);
+
+            self.counts.assign(&counts.column(self.state as usize));
+            self.counts[this_transcript.gene as usize] += 1;
+
+            let z_to = if to_background {
+                u32::MAX
+            } else {
+                z[self.state as usize]
+            };
+            self.to_cell_logprob = params.cell_logprob(
+                params.t.column(self.state as usize),
+                self.to_cell_area,
+                z_to,
+                &self.counts,
+            );
         }
-
-        self.counts.assign(&counts.column(self.state as usize));
-        self.counts[this_transcript.gene as usize] += 1;
-
-        let z_to = if to_background { u32::MAX } else { z[self.state as usize] };
-        self.to_cell_logprob = params.cell_logprob(
-            params.t.column(self.state as usize),
-            self.to_cell_area, z_to, &self.counts);
 
         let mut rng = thread_rng();
         let logu = rng.gen::<f32>().ln();
@@ -1241,6 +1404,13 @@ impl Proposal {
         //         self.from_cell_logprob, self.to_cell_logprob);
         // }
 
+        // DEBUG: Why are we accepting to_background proposals?
+        // if self.accept && to_background {
+        //     dbg!(
+        //         self.log_weight, proposal_logprob, current_logprob,
+        //         seg.cell_logprobs[prev_state as usize],
+        //         self.from_cell_logprob, self.to_cell_logprob);
+        // }
     }
 }
 

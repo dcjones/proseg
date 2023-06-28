@@ -22,31 +22,31 @@ struct Args{
     transcript_csv: String,
     cell_centers_csv: String,
 
-    #[arg(short, long, default_value="feature_name")]
+    #[arg(long, default_value="feature_name")]
     transcript_column: String,
 
-    #[arg(short, long, default_value="x_location")]
+    #[arg(long, default_value="x_location")]
     x_column: String,
 
-    #[arg(short, long, default_value="y_location")]
+    #[arg(long, default_value="y_location")]
     y_column: String,
 
     #[arg(short, long, default_value=None)]
     z_column: Option<String>,
 
-    #[arg(short, long, default_value="x_centroid")]
+    #[arg(long, default_value="x_centroid")]
     cell_x_column: String,
 
-    #[arg(short, long, default_value="y_centroid")]
+    #[arg(long, default_value="y_centroid")]
     cell_y_column: String,
 
     #[arg(short, long, default_value_t=20)]
     ncomponents: usize,
 
-    #[arg(short, long, default_value_t=100000)]
+    #[arg(long, default_value_t=100000)]
     niter: usize,
 
-    #[arg(short, long, default_value=None)]
+    #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
 
     #[arg(short, long, default_value_t=0.05_f32)]
