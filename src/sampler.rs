@@ -600,6 +600,28 @@ impl Sampler {
         return self.counts.clone();
     }
 
+    pub fn log_likelihood(&self, seg: &Segmentation) -> f32 {
+        let γ_factor = Zip::from(&self.total_gene_counts)
+            .and(&self.params.γ_fg)
+            .fold(0_f32, |accum, &c, γ_fg| {
+                accum + (c as f32) * γ_fg.ln()
+            });
+
+        let bg_log_p = Zip::from(&self.params.log_p_bg)
+            .and(self.counts.rows())
+            .and(&self.total_gene_counts)
+            .fold(0_f32, |accum, log_p_bg, cs, tc| {
+                accum + log_p_bg * ((tc - cs.sum()) as f32)
+            });
+
+        return
+            - self.params.γ_bg.sum()
+            - self.params.γ_fg.sum()
+            + γ_factor
+            + seg.cell_logprobs.iter().sum::<f32>()
+            + bg_log_p;
+    }
+
     fn compute_full_area(&self) -> f32 {
         let mut vertices = Vec::from_iter(
             self.transcripts
@@ -646,7 +668,7 @@ impl Sampler {
     }
 
     fn repoulate_proposals(&mut self, seg: &Segmentation) {
-        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.1;
+        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.0;
         let ncells = seg.ncells();
         self.proposals
             .par_iter_mut()
@@ -913,7 +935,7 @@ impl Sampler {
                 // self.cell_areas.slice(0..self.ncells)
 
                 let u = Zip::from(&self.z)
-                    .and(&self.cell_areas.slice(s![0..self.ncells]))
+                    .and(&self.cell_areas)
                     .fold(0, |accum, z, a| {
                         let θ = θs[*z as usize];
                         let λ = -*r * log1pf(-odds_to_prob(θ * *a));
@@ -922,7 +944,7 @@ impl Sampler {
                         accum + rand_pois(&mut rng, λ)
                     }) as f32;
                 let v = Zip::from(&self.z)
-                    .and(&self.cell_areas.slice(s![0..self.ncells]))
+                    .and(&self.cell_areas)
                     .fold(0.0, |accum, z, a| {
                         let w = θs[*z as usize];
                         accum + log1pf(-odds_to_prob(w * *a))
@@ -950,10 +972,10 @@ impl Sampler {
                 // a Gamma distribution sampler that runs as f32 precision. Maybe in rand_distr
 
                 for (λ, z, c, cell_area) in izip!(
-                    λs.slice_mut(s![0..self.ncells]),
+                    &mut λs,
                     &self.z,
                     cs,
-                    &self.cell_areas.slice(s![0..self.ncells])
+                    &self.cell_areas
                 ) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
@@ -1042,11 +1064,10 @@ impl Sampler {
         // Sample z
         Zip::from(
             self.foreground_counts
-                .slice(s![0..ngenes, 0..self.ncells])
                 .columns(),
         )
         .and(&mut self.z)
-        .and(self.cell_areas.slice(s![0..self.ncells]))
+        .and(&self.cell_areas)
         .par_for_each(|cs, z_i, cell_area| {
             let mut z_probs = self
                 .z_probs

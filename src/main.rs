@@ -151,8 +151,7 @@ fn main() {
         // TODO: debugging
         // sampler.check_mismatch_edges(&seg);
 
-        let total_cell_logprobs = seg.cell_logprobs.iter().sum::<f32>();
-        println!("Total cell logprob: {}", total_cell_logprobs);
+        println!("Log likelihood: {}", sampler.log_likelihood(&seg));
 
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
