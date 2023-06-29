@@ -29,7 +29,7 @@ pub fn read_transcripts_csv(
     x_column: &str,
     y_column: &str,
     z_column: Option<&str>,
-) -> (Vec<String>, Vec<Transcript>) {
+) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
     let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
     // let mut rdr = csv::Reader::from_path(path).unwrap();
 
@@ -57,12 +57,43 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
+
+fn postprocess_cell_assignments(cell_assignments: &mut Vec<u32>) -> Vec<usize> {
+    let mut ncells = usize::MAX;
+    for &cell_id in cell_assignments.iter() {
+        if cell_id < u32::MAX {
+            if ncells == usize::MAX || cell_id as usize >= ncells {
+                ncells = (cell_id + 1) as usize;
+            }
+        }
+    }
+
+    if ncells == usize::MAX {
+        ncells = 0;
+    }
+
+    // use `ncells` as a placeholder for unassigned/background transcripts
+    for cell_id in cell_assignments.iter_mut() {
+        if *cell_id == u32::MAX {
+            *cell_id = ncells as u32;
+        }
+    }
+
+    let mut cell_population = vec![0; ncells + 1];
+    for &cell_id in cell_assignments.iter() {
+        cell_population[cell_id as usize] += 1;
+    }
+
+    return cell_population;
+}
+
+
 fn read_transcripts_csv_xy<T>(
     rdr: &mut csv::Reader<T>,
     transcript_column: &str,
     x_column: &str,
     y_column: &str,
-) -> (Vec<String>, Vec<Transcript>)
+) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
 where
     T: std::io::Read,
 {
@@ -71,10 +102,13 @@ where
     let transcript_col = find_column(headers, transcript_column);
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
+    let cell_id_col = find_column(headers, "cell_id");
+    let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map = HashMap::new();
     let mut transcript_names = Vec::new();
+    let mut cell_assignments = Vec::new();
 
     for result in rdr.records() {
         let row = result.unwrap();
@@ -98,9 +132,19 @@ where
             z: 0.0,
             gene: gene as u32,
         });
+
+        let cell_id = row[cell_id_col].parse::<i32>().unwrap();
+        let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
+        if cell_id >= 0 && overlaps_nucleus > 0 {
+            cell_assignments.push(cell_id as u32);
+        } else {
+            cell_assignments.push(u32::MAX);
+        }
     }
 
-    return (transcript_names, transcripts);
+    let cell_population = postprocess_cell_assignments(&mut cell_assignments);
+
+    return (transcript_names, transcripts, cell_assignments, cell_population);
 }
 
 fn read_transcripts_csv_xyz<T>(
@@ -109,7 +153,7 @@ fn read_transcripts_csv_xyz<T>(
     x_column: &str,
     y_column: &str,
     z_column: &str,
-) -> (Vec<String>, Vec<Transcript>)
+) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
 where
     T: std::io::Read,
 {
@@ -120,9 +164,16 @@ where
     let y_col = find_column(headers, y_column);
     let z_col = find_column(headers, z_column);
 
+    // TODO:
+    // Just assuming we have xeinum output at this point.
+    // We'll have to specialize for various platforms in the future.
+    let cell_id_col = find_column(headers, "cell_id");
+    let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
+
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
     let mut transcript_names = Vec::new();
+    let mut cell_assignments = Vec::new();
 
     for result in rdr.records() {
         let row = result.unwrap();
@@ -147,9 +198,19 @@ where
             z,
             gene: gene as u32,
         });
+
+        let cell_id = row[cell_id_col].parse::<i32>().unwrap();
+        let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
+        if cell_id >= 0 && overlaps_nucleus > 0 {
+            cell_assignments.push(cell_id as u32);
+        } else {
+            cell_assignments.push(u32::MAX);
+        }
     }
 
-    return (transcript_names, transcripts);
+    let cell_population = postprocess_cell_assignments(&mut cell_assignments);
+
+    return (transcript_names, transcripts, cell_assignments, cell_population);
 }
 
 pub fn read_nuclei_csv(path: &str, x_column: &str, y_column: &str) -> Vec<NucleiCentroid> {
@@ -240,10 +301,7 @@ pub fn neighborhood_graph(
     return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), avg_edge_length);
 }
 
-pub fn coordinate_span(
-    transcripts: &Vec<Transcript>,
-    nuclei_centroids: &Vec<NucleiCentroid>,
-) -> (f32, f32, f32, f32) {
+pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
     let mut max_x = std::f32::MIN;
     let mut min_y = std::f32::MAX;
@@ -254,13 +312,6 @@ pub fn coordinate_span(
         max_x = max_x.max(t.x);
         min_y = min_y.min(t.y);
         max_y = max_y.max(t.y);
-    }
-
-    for n in nuclei_centroids {
-        min_x = min_x.min(n.x);
-        max_x = max_x.max(n.x);
-        min_y = min_y.min(n.y);
-        max_y = max_y.max(n.y);
     }
 
     return (min_x, max_x, min_y, max_y);

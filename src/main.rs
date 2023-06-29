@@ -20,7 +20,7 @@ use flate2::write::GzEncoder;
 #[command(author, version, about)]
 struct Args{
     transcript_csv: String,
-    cell_centers_csv: String,
+    // cell_centers_csv: String,
 
     #[arg(long, default_value="feature_name")]
     transcript_column: String,
@@ -73,19 +73,20 @@ fn main() {
 
     assert!(args.ncomponents > 0);
 
-    let (transcript_names, transcripts) = read_transcripts_csv(
+    let (transcript_names, transcripts, init_cell_assignments, init_cell_population) = read_transcripts_csv(
         &args.transcript_csv, &args.transcript_column, &args.x_column,
         &args.y_column, args.z_column.as_deref());
     let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
+    let ncells = init_cell_population.len() - 1;
 
     println!("Read {} transcripts", ntranscripts);
 
-    let nuclei_centroids = read_nuclei_csv(
-        &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
-    let ncells = nuclei_centroids.len();
+    // let nuclei_centroids = read_nuclei_csv(
+    //     &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
+    // let ncells = nuclei_centroids.len();
 
-    let (xmin, xmax, ymin, ymax) = coordinate_span(&transcripts, &nuclei_centroids);
+    let (xmin, xmax, ymin, ymax) = coordinate_span(&transcripts);
     let (xspan, yspan) = (xmax - xmin, ymax - ymin);
 
     if let Some(nthreads) = args.nthreads {
@@ -93,8 +94,6 @@ fn main() {
     }
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
-
-    println!("Read {} nuclei centroids", ncells);
 
     // Find a reasonable grid size to use to chunk the data
     const CHUNK_FACTOR: usize = 4;
@@ -137,7 +136,7 @@ fn main() {
         f_r: 1.0,
     };
 
-    let mut seg = Segmentation::new(&transcripts, &nuclei_centroids, &adjacency);
+    let mut seg = Segmentation::new(&transcripts, &adjacency, init_cell_assignments, init_cell_population);
     let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, ngenes, chunk_size);
 
     for i in 0..args.niter {
@@ -207,18 +206,18 @@ fn main() {
     }
 
     // TODO: dumping nuclei
-    {
-        let file = File::create("nuclei.csv.gz").unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
+    // {
+    //     let file = File::create("nuclei.csv.gz").unwrap();
+    //     let encoder = GzEncoder::new(file, Compression::default());
+    //     let mut writer = csv::WriterBuilder::new()
+    //         .has_headers(false)
+    //         .from_writer(encoder);
 
-        writer.write_record(["x", "y"]).unwrap();
-        for centroid in &nuclei_centroids {
-            writer.write_record([centroid.x.to_string(), centroid.y.to_string()]).unwrap();
-        }
-    }
+    //     writer.write_record(["x", "y"]).unwrap();
+    //     for centroid in &nuclei_centroids {
+    //         writer.write_record([centroid.x.to_string(), centroid.y.to_string()]).unwrap();
+    //     }
+    // }
 
     // TODO
     // I think to really dig into the details, we are going to have to dump

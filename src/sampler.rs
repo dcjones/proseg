@@ -9,6 +9,8 @@ use core::fmt::Debug;
 use distributions::{
     gamma_logpdf, lfact, logaddexp, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast,
     odds_to_prob, prob_to_odds, rand_pois,
+    LogFactorial,
+    LogGammaPlus,
 };
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -75,6 +77,12 @@ pub struct ModelParams {
 
     // [ngenes, ncomponents] NB p parameters.
     θ: Array2<f32>,
+
+    // // log(ods_to_prob(θ))
+    // logp: Array2<f32>,
+
+    // // log(1 - ods_to_prob(θ))
+    // log1mp: Array2<f32>,
 
     // [ngenes, ncells] Poisson rates
     λ: Array2<f32>,
@@ -241,7 +249,6 @@ fn chunk_transcripts(
 // while modifying the sampler when generating proposals.
 pub struct Segmentation<'a> {
     transcripts: &'a Vec<Transcript>,
-    pub nuclei_centroids: &'a Vec<NucleiCentroid>,
     adjacency: &'a NeighborhoodGraph,
     pub cell_assignments: Vec<u32>,
     cell_population: Vec<usize>,
@@ -251,28 +258,26 @@ pub struct Segmentation<'a> {
 impl<'a> Segmentation<'a> {
     pub fn new(
         transcripts: &'a Vec<Transcript>,
-        nuclei_centroids: &'a Vec<NucleiCentroid>,
         adjacency: &'a NeighborhoodGraph,
+        init_cell_assignments: Vec<u32>,
+        init_cell_population: Vec<usize>,
     ) -> Segmentation<'a> {
+
+        let ncells = init_cell_population.len() - 1;
+
         // initialize cell assignments so roughly half of the transcripts are assigned.
         const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.5;
         let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64)
-            / (nuclei_centroids.len() as f64))
+            / (ncells as f64))
             .ceil() as usize;
-
-        let (cell_assignments, cell_population) =
-            init_cell_assignments(transcripts, nuclei_centroids, k);
-
-        let ncells = nuclei_centroids.len();
 
         let cell_logprobs = vec![0.0; ncells];
 
         return Segmentation {
             transcripts,
-            nuclei_centroids,
             adjacency,
-            cell_assignments,
-            cell_population,
+            cell_assignments: init_cell_assignments,
+            cell_population: init_cell_population,
             cell_logprobs,
         };
     }
@@ -287,7 +292,7 @@ impl<'a> Segmentation<'a> {
     }
 
     fn ncells(&self) -> usize {
-        return self.nuclei_centroids.len();
+        return self.cell_population.len() - 1;
     }
 
     pub fn apply_local_updates(&mut self, sampler: &mut Sampler) {
@@ -493,6 +498,8 @@ pub struct Sampler {
     sample_num: usize,
     ncells: usize,
     background_cell: u32,
+    logfact: LogFactorial,
+    loggammaplus: Vec<LogGammaPlus>,
 }
 
 impl Sampler {
@@ -503,7 +510,7 @@ impl Sampler {
         ngenes: usize,
         chunk_size: f32,
     ) -> Sampler {
-        let (xmin, xmax, ymin, ymax) = coordinate_span(seg.transcripts, seg.nuclei_centroids);
+        let (xmin, xmax, ymin, ymax) = coordinate_span(seg.transcripts);
 
         let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
@@ -511,7 +518,7 @@ impl Sampler {
         let chunked_transcripts =
             chunk_transcripts(seg.transcripts, xmin, ymin, chunk_size, nxchunks);
 
-        let ncells = seg.nuclei_centroids.len();
+        let ncells = seg.ncells();
 
         let mut chunkquads = Vec::with_capacity(4);
         for quad in 0..4 {
@@ -584,10 +591,13 @@ impl Sampler {
             sample_num: 0,
             ncells: ncells,
             background_cell: ncells as u32,
+            logfact: LogFactorial::new(),
+            loggammaplus: Vec::from_iter((0..ngenes).map(|_| LogGammaPlus::default())),
         };
 
         sampler.full_area = sampler.compute_full_area();
         dbg!(sampler.full_area);
+        sampler.pop_bubbles(seg);
         sampler.compute_cell_areas();
         sampler.compute_counts(seg);
         sampler.sample_global_params();
@@ -668,7 +678,7 @@ impl Sampler {
     }
 
     fn repoulate_proposals(&mut self, seg: &Segmentation) {
-        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.0;
+        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.05;
         let ncells = seg.ncells();
         self.proposals
             .par_iter_mut()
@@ -781,15 +791,20 @@ impl Sampler {
                 //     // TODO:
                 // }
 
-                // TODO: In particular, we need make sure "unassigned" is proposed
-                // with some probability, etherwise there is no reverse path and proposals
-                // to assign the last unassigned transcript are automatically rejected.
-
                 proposal.i = *i;
                 proposal.state = cell_to;
                 proposal.log_weight = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
                 proposal.accept = false;
                 proposal.ignore = false;
+
+                // TODO: It seems like we have some unpoppable bubbles.
+                // if !proposal.log_weight.is_finite() {
+                //     // let num_neighbors = seg.adjacency.neighbors(*i).count();
+                //     let neighbor_states: Vec<u32> = seg.adjacency.neighbors(*i).map(|j| seg.cell_assignments[j]).collect();
+                //     dbg!(proposal.log_weight, num_prev_state_neighbors,
+                //         &neighbor_states,
+                //         cell_from, cell_to, reverse_proposal_prob, proposal_prob.ln());
+                // }
             });
 
         self.quad = (self.quad + 1) % 4;
@@ -822,7 +837,7 @@ impl Sampler {
             μ_μ_a[*z_i as usize] += cell_area.ln() / self.params.σ_a[*z_i as usize].powi(2);
             component_population[*z_i as usize] += 1;
         }
-        dbg!(&component_population);
+        // dbg!(&component_population);
 
         μ_μ_a.iter_mut().enumerate().for_each(|(i, μ)| {
             *μ /= (1_f32 / self.priors.σ_μ_a.powi(2))
@@ -927,9 +942,10 @@ impl Sampler {
         // Sample r
         Zip::from(&mut self.params.r)
             .and(&mut self.params.lgamma_r)
+            .and(&mut self.loggammaplus)
             .and(self.params.θ.rows())
             // .and(self.counts.rows())
-            .par_for_each(|r, lgamma_r, θs| {
+            .par_for_each(|r, lgamma_r, loggammaplus, θs| {
                 let mut rng = thread_rng();
 
                 // self.cell_areas.slice(0..self.ncells)
@@ -955,6 +971,7 @@ impl Sampler {
                     .sample(&mut rng) as f32;
 
                 *lgamma_r = lgammaf(*r);
+                loggammaplus.reset(*r);
 
                 // TODO: any better solution here?
                 *r = r.min(100.0).max(1e-4);
@@ -1077,14 +1094,23 @@ impl Sampler {
             // loop over components
             for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.columns())
             {
+                // TODO: This is a big bottleneck due to negbinom pmf being so expensive. Because
+                // most counts are small, we should be able to precompute some values.
+                //  1. Precompute log(odds_to_prob(θ)) and log(1 - odds_to_prob(θ))
+                //  2. Implement a lookup table for log factorials
+                //  3. Possibly for each r we can compute lgamma(r + k) values of k.
+
                 // sum over genes
                 *zp = (*π as f64)
                     * (Zip::from(cs)
                         .and(&self.params.r)
                         .and(&self.params.lgamma_r)
+                        .and(&self.loggammaplus)
                         .and(&θs)
-                        .fold(0_f32, |accum, c, r, lgamma_r, θ| {
-                            accum + negbin_logpmf(*r, *lgamma_r, odds_to_prob(*θ * cell_area), *c)
+                        .fold(0_f32, |accum, c, r, lgamma_r, lgammaplus, θ| {
+                            accum + negbin_logpmf_fast(
+                                *r, *lgamma_r, lgammaplus.eval(*c),
+                                odds_to_prob(*θ * cell_area), *c, self.logfact.eval(*c))
                         }) as f64)
                         .exp();
             }
@@ -1126,11 +1152,21 @@ impl Sampler {
         );
 
         // Special case for background noise.
+        // Zip::from(&mut self.params.λ_bg)
+        //     .and(&self.background_counts)
+        //     .for_each(|λ, c| {
+        //         *λ = (*c as f32) / self.full_area;
+        //     });
+
+        // TODO: What if we instead force the background to be some
+        // proportion of the transcripts.
         Zip::from(&mut self.params.λ_bg)
-            .and(&self.background_counts)
+            .and(&self.total_gene_counts)
             .for_each(|λ, c| {
-                *λ = (*c as f32) / self.full_area;
+                *λ = 0.05 * (*c as f32) / self.full_area;
             });
+
+        // dbg!(&self.background_counts, &self.params.λ_bg);
 
         // Comptue γ_bg
         Zip::from(&mut self.params.γ_bg)
@@ -1233,6 +1269,30 @@ impl Sampler {
             });
 
         // dbg!(&seg.cell_logprobs);
+    }
+    
+    // Bubbles (a transcript of state u, with no state u neighbors) are impossible
+    // to burst while retaining detail balance, so we burst them on initialization
+    // and try to avoid introducing any by preserving local connectivity.
+    fn pop_bubbles(&mut self, seg: &Segmentation) {
+        let mut bubble_count = 0;
+        for i in 0..self.ncells {
+            let u = seg.cell_assignments[i];
+            let isbubble = !seg.adjacency.neighbors(i).any(|j| {
+                let v = seg.cell_assignments[j];
+                v == self.background_cell || v == u
+            });
+
+            if isbubble {
+                bubble_count += 1;
+            }
+        };
+
+        // TODO: We should implement this, but there are only a few bubbles, so
+        // this isn't a huge issue currently.
+
+        // dbg!(bubble_count);
+        // panic!();
     }
 
     pub fn check_mismatch_edges(&self, seg: &Segmentation) {
@@ -1345,9 +1405,6 @@ impl Proposal {
 
         // TODO: figure out what to do here wrt to background relative prob.
 
-
-
-
         if from_background {
             self.from_cell_logprob = 0.0;
         } else {
@@ -1418,10 +1475,11 @@ impl Proposal {
 
         self.accept = logu <= (proposal_logprob - current_logprob) + self.log_weight;
 
-        // // DEBUG: Why are we rejecting from background proposals?
+        // DEBUG: Why are we rejecting from background proposals?
         // if !self.accept && from_background {
         //     dbg!(self.log_weight, proposal_logprob, current_logprob,
-        //         seg.cell_logprobs[prev_state as usize], seg.cell_logprobs[self.state as usize],
+        //         // seg.cell_logprobs[prev_state as usize],
+        //         seg.cell_logprobs[self.state as usize],
         //         self.from_cell_logprob, self.to_cell_logprob);
         // }
 
