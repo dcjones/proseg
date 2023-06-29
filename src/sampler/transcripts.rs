@@ -202,6 +202,7 @@ where
         let cell_id = row[cell_id_col].parse::<i32>().unwrap();
         let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
         if cell_id >= 0 && overlaps_nucleus > 0 {
+        // if cell_id >= 0 {
             cell_assignments.push(cell_id as u32);
         } else {
             cell_assignments.push(u32::MAX);

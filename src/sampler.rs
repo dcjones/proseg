@@ -611,25 +611,28 @@ impl Sampler {
     }
 
     pub fn log_likelihood(&self, seg: &Segmentation) -> f32 {
-        let γ_factor = Zip::from(&self.total_gene_counts)
-            .and(&self.params.γ_fg)
-            .fold(0_f32, |accum, &c, γ_fg| {
-                accum + (c as f32) * γ_fg.ln()
+        let mut ll = Zip::from(self.params.λ.columns())
+            .and(&self.cell_areas)
+            .and(self.counts.columns())
+            .fold(0_f32, |accum, λs, cell_area, cs| {
+                accum + Zip::from(λs)
+                    .and(&self.params.λ_bg)
+                    .and(cs)
+                    .fold(0_f32, |accum, λ, λ_bg, &c| {
+                        accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_area
+                    })
             });
 
-        let bg_log_p = Zip::from(&self.params.log_p_bg)
+        // background terms
+        ll += Zip::from(&self.total_gene_counts)
             .and(self.counts.rows())
-            .and(&self.total_gene_counts)
-            .fold(0_f32, |accum, log_p_bg, cs, tc| {
-                accum + log_p_bg * ((tc - cs.sum()) as f32)
+            .and(&self.params.λ_bg)
+            .fold(0_f32, |accum, c_total, cs, &λ| {
+                let c_bg = c_total - cs.sum();
+                accum + (c_bg as f32) * λ.ln() - λ * self.full_area
             });
 
-        return
-            - self.params.γ_bg.sum()
-            - self.params.γ_fg.sum()
-            + γ_factor
-            + seg.cell_logprobs.iter().sum::<f32>()
-            + bg_log_p;
+        return ll;
     }
 
     fn compute_full_area(&self) -> f32 {
@@ -939,6 +942,11 @@ impl Sampler {
                 }
             });
 
+        // println!("θ span {} {} {}",
+        //     self.params.θ.mean().unwrap(),
+        //     self.params.θ.fold(f32::MAX, |accum, &x| accum.min(x)),
+        //     self.params.θ.fold(f32::MIN, |accum, &x| accum.max(x)));
+
         // Sample r
         Zip::from(&mut self.params.r)
             .and(&mut self.params.lgamma_r)
@@ -977,6 +985,11 @@ impl Sampler {
                 *r = r.min(100.0).max(1e-4);
             });
 
+        // println!("r span {} {} {}",
+        //     self.params.r.mean().unwrap(),
+        //     self.params.r.fold(f32::MAX, |accum, &x| accum.min(x)),
+        //     self.params.r.fold(f32::MIN, |accum, &x| accum.max(x)));
+
         // Sample λ
         Zip::from(self.params.λ.rows_mut())
             .and(self.foreground_counts.rows())
@@ -1005,6 +1018,11 @@ impl Sampler {
                     .max(1e-9) as f32;
                 }
             });
+
+        // println!("λ span {} {} {}",
+        //     self.params.λ.mean().unwrap(),
+        //     self.params.λ.fold(f32::MAX, |accum, &x| accum.min(x)),
+        //     self.params.λ.fold(f32::MIN, |accum, &x| accum.max(x)));
 
         // TODO: I think because we are wildly overdispersed, we just end
         // up with some extreme values of λ.
@@ -1097,8 +1115,9 @@ impl Sampler {
                 // TODO: This is a big bottleneck due to negbinom pmf being so expensive. Because
                 // most counts are small, we should be able to precompute some values.
                 //  1. Precompute log(odds_to_prob(θ)) and log(1 - odds_to_prob(θ))
-                //  2. Implement a lookup table for log factorials
-                //  3. Possibly for each r we can compute lgamma(r + k) values of k.
+                //  (Maybe not worth it)
+                //  2. Implement a lookup table for log factorials (DONE)
+                //  3. Implement a lookup table for lgamma(r + k) (DONE)
 
                 // sum over genes
                 *zp = (*π as f64)
