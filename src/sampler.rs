@@ -671,6 +671,7 @@ impl Sampler {
                 &self.z,
                 &self.counts,
                 &self.cell_transcripts,
+                &self.cell_areas,
                 areacalc,
             );
         });
@@ -1390,6 +1391,7 @@ impl Proposal {
         z: &Array1<u32>,
         counts: &Array2<u32>,
         cell_transcripts: &Vec<HashSet<usize>>,
+        cell_areas: &Array1<f32>,
         areacalc: RefMut<AreaCalcStorage>,
     ) {
         if self.ignore || seg.cell_assignments[self.i] == self.state {
@@ -1407,26 +1409,10 @@ impl Proposal {
         let this_transcript = &seg.transcripts[self.i];
         let log_p_bg = params.log_p_bg[this_transcript.gene as usize];
 
-        // Current total log prob
-        let current_logprob = if from_background {
-            log_p_bg
-        } else {
-            seg.cell_logprobs[prev_state as usize]
-        } + if to_background {
-            0_f32
-        } else {
-            seg.cell_logprobs[self.state as usize]
-        };
+        // Log Metropolis-Hastings acceptance ratio
+        let mut δ = 0.0;
 
-        // let mut proposal_logprob = 0.0;
-        //
-        //
-
-        // TODO: figure out what to do here wrt to background relative prob.
-
-        if from_background {
-            self.from_cell_logprob = 0.0;
-        } else {
+        if !from_background {
             // recompute area for `prev_state` after reassigning this transcript
             areacalc_vertices.clear();
             for j in cell_transcripts[prev_state as usize].iter() {
@@ -1439,25 +1425,13 @@ impl Proposal {
             self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
                 .max(priors.min_cell_size);
 
-            self.counts.assign(&counts.column(prev_state as usize));
-            self.counts[this_transcript.gene as usize] -= 1;
+            let current_from_cell_area = cell_areas[prev_state as usize];
 
-            let z_prev = if from_background {
-                u32::MAX
-            } else {
-                z[prev_state as usize]
-            };
-            self.from_cell_logprob = params.cell_logprob(
-                params.t.column(prev_state as usize),
-                self.from_cell_area,
-                z_prev,
-                &self.counts,
-            );
+            δ += Zip::from(params.λ.column(prev_state as usize))
+                    .fold(0_f32, |accum, λ| accum + λ * (current_from_cell_area - self.from_cell_area));
         }
 
-        if to_background {
-            self.to_cell_logprob = log_p_bg;
-        } else {
+        if !to_background {
             // recompute area for `self.state` after reassigning this transcript
             areacalc_vertices.clear();
             for j in cell_transcripts[self.state as usize].iter() {
@@ -1469,37 +1443,48 @@ impl Proposal {
             self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
                .max(priors.min_cell_size);
 
-            self.counts.assign(&counts.column(self.state as usize));
-            self.counts[this_transcript.gene as usize] += 1;
+            let current_to_cell_area = cell_areas[self.state as usize];
 
-            let z_to = if to_background {
-                u32::MAX
-            } else {
-                z[self.state as usize]
-            };
-            self.to_cell_logprob = params.cell_logprob(
-                params.t.column(self.state as usize),
-                self.to_cell_area,
-                z_to,
-                &self.counts,
-            );
+            δ += Zip::from(params.λ.column(self.state as usize))
+                    .fold(0_f32, |accum, λ| accum + λ * (current_to_cell_area - self.to_cell_area));
         }
+
+        let λ_bg = params.λ_bg[this_transcript.gene as usize];
+
+        if from_background {
+            δ -= λ_bg.ln();
+        } else {
+            let λ_from = params.λ[[this_transcript.gene as usize, prev_state as usize]];
+            δ -= (λ_from + λ_bg).ln();
+        }
+
+        if to_background {
+            δ += λ_bg.ln();
+        } else {
+            let λ_to = params.λ[[this_transcript.gene as usize, self.state as usize]];
+            δ += (λ_to + λ_bg).ln();
+        }
+
+
+        // TODO: Add to δ differences from cell size prior.
+
+        // dbg!(δ);
 
         let mut rng = thread_rng();
         let logu = rng.gen::<f32>().ln();
 
         // println!("Eval: {} {} {} {} {}", prev_state, self.state, proposal_logprob, current_logprob, self.log_weight);
 
-        let proposal_logprob = self.from_cell_logprob + self.to_cell_logprob;
-
-        self.accept = logu <= (proposal_logprob - current_logprob) + self.log_weight;
+        self.accept = logu <= δ + self.log_weight;
 
         // DEBUG: Why are we rejecting from background proposals?
         // if !self.accept && from_background {
-        //     dbg!(self.log_weight, proposal_logprob, current_logprob,
-        //         // seg.cell_logprobs[prev_state as usize],
-        //         seg.cell_logprobs[self.state as usize],
-        //         self.from_cell_logprob, self.to_cell_logprob);
+        //     let λ_to = params.λ[[this_transcript.gene as usize, self.state as usize]];
+        //     let current_to_cell_area = cell_areas[self.state as usize];
+        //     dbg!(self.log_weight, δ,
+        //         λ_bg, λ_to, 
+        //         current_to_cell_area,
+        //         self.to_cell_area);
         // }
 
         // DEBUG: Why are we accepting to_background proposals?
