@@ -7,7 +7,7 @@ pub mod transcripts;
 use connectivity::ConnectivityChecker;
 use core::fmt::Debug;
 use distributions::{
-    gamma_logpdf, lfact, logaddexp, lognormal_logpdf, negbin_logpmf, negbin_logpmf_fast,
+    negbin_logpmf_fast,
     odds_to_prob, prob_to_odds, rand_pois,
     LogFactorial,
     LogGammaPlus,
@@ -16,11 +16,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::izip;
-use kiddo::float::distance::squared_euclidean;
-use kiddo::float::kdtree::KdTree;
 use libm::{lgammaf, log1pf};
-use ndarray::{s, Array1, Array2, AsArray, Zip};
-use petgraph::visit::{EdgeRef, IntoNeighbors};
+use ndarray::{Array1, Array2, Zip};
+use petgraph::visit::IntoNeighbors;
 use rand::{thread_rng, Rng};
 use rand_distr::{Binomial, Distribution};
 use rayon::prelude::*;
@@ -31,7 +29,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use thread_local::ThreadLocal;
-use transcripts::{coordinate_span, NeighborhoodGraph, NucleiCentroid, Transcript};
+use transcripts::{coordinate_span, NeighborhoodGraph, Transcript};
 
 // use std::time::Instant;
 
@@ -87,18 +85,11 @@ pub struct ModelParams {
     // [ngenes, ncells] Poisson rates
     λ: Array2<f32>,
 
-    // [ngenes, ncells] Cell (and background) mixing coefficients.
-    t: Array2<f32>,
-
     γ_bg: Array1<f32>,
     γ_fg: Array1<f32>,
 
     // background rate
     λ_bg: Array1<f32>,
-
-    // background relative probability
-    p_bg: Array1<f32>,
-    log_p_bg: Array1<f32>,
 }
 
 impl ModelParams {
@@ -111,97 +102,19 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
             σ_a: vec![priors.σ_μ_a; ncomponents],
-            r: r,
-            lgamma_r: lgamma_r,
+            r,
+            lgamma_r,
             θ: Array2::<f32>::from_elem((ngenes, ncomponents), 0.1),
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
-            t: Array2::<f32>::from_elem((ngenes, ncells), (ncells as f32).recip()),
             γ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
             γ_fg: Array1::<f32>::from_elem(ngenes, 0.0),
             λ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
-            p_bg: Array1::<f32>::from_elem(ngenes, 0.0),
-            log_p_bg: Array1::<f32>::from_elem(ngenes, 0.0),
         };
     }
 
     fn ncomponents(&self) -> usize {
         return self.π.len();
     }
-
-    fn cell_logprob<'a, A: AsArray<'a, f32> + Debug, B: AsArray<'a, u32> + Debug>(
-        &self,
-        ts: A,
-        cell_area: f32,
-        z: u32,
-        counts: B,
-    ) -> f32 {
-        let ts = ts.into();
-        let counts = counts.into();
-
-        let count_logprob = Zip::from(&counts)
-            .and(&ts)
-            .and(&self.log_p_bg)
-            .fold(0_f32, |acc, c, t, &log_p_bg| {
-                acc + (*c as f32) * logaddexp(log_p_bg, t.ln() - cell_area.ln())
-            });
-
-        // if (!count_logprob.is_finite()) {
-        //     let tmin = ts.fold(f32::INFINITY, |acc, t| acc.min(*t));
-        //     let tmax = ts.fold(f32::NEG_INFINITY, |acc, t| acc.max(*t));
-        //     dbg!(count_logprob, &ts, tmin, tmax, cell_area, &counts, z);
-        // }
-        //
-        // TODO: looks like this fails because background has area zero somehow.
-        assert!(count_logprob.is_finite());
-
-        // let count_logprob =
-        //     Zip::from(&self.r)
-        //     .and(&self.lgamma_r)
-        //     .and(self.w.column(z))
-        //     .and(counts)
-        //     .fold(0_f32, |acc, r, lgamma_r, w, c| {
-        //         acc + negbin_logpmf(*r, *lgamma_r, odds_to_prob(*w * cell_area), *c)
-        //     });
-
-        // this condition is false when we are dealing with the background cell
-        if (z as usize) < self.μ_a.len() {
-            let area_logprob =
-                lognormal_logpdf(self.μ_a[z as usize], self.σ_a[z as usize], cell_area);
-            return count_logprob + area_logprob;
-        }
-
-        return count_logprob;
-
-        // return count_logprob;
-    }
-
-    // // with pre-computed log(factorial(counts))
-    // fn cell_logprob_fast<'a, A: AsArray<'a, u32>, B: AsArray<'a, f32>>(
-    //     &self, z: usize, cell_area: f32, counts: A, counts_ln_factorial: B) -> f32
-    // {
-    //     let counts = counts.into();
-    //     let counts_ln_factorial = counts_ln_factorial.into();
-    //     // TODO: This is super slow, and it doesn't seem to have that much to do
-    //     // with the actual function being computed here. It seems just really expensive
-    //     // to do this iteration. Why would that be?
-
-    //     let count_logprob = Zip::from(&self.r)
-    //         .and(&self.lgamma_r)
-    //         .and(self.w.column(z))
-    //         .and(counts)
-    //         .and(counts_ln_factorial)
-    //         .fold(0_f32, |acc, r, lgamma_r, w, c, clf| {
-    //             acc + negbin_logpmf_fast(*r, *lgamma_r, odds_to_prob(*w * cell_area), *c, *clf)
-    //         });
-
-    //     let area_logprob = lognormal_logpdf(
-    //         self.μ_a[z],
-    //         self.σ_a[z],
-    //         cell_area);
-
-    //     return count_logprob + area_logprob;
-    //     // return count_logprob;
-    // }
 }
 
 struct ChunkedTranscript {
@@ -237,8 +150,8 @@ fn chunk_transcripts(
 
             ChunkedTranscript {
                 transcript: transcript.clone(),
-                chunk: chunk,
-                quad: quad,
+                chunk,
+                quad,
             }
         })
         .collect();
@@ -264,13 +177,6 @@ impl<'a> Segmentation<'a> {
     ) -> Segmentation<'a> {
 
         let ncells = init_cell_population.len() - 1;
-
-        // initialize cell assignments so roughly half of the transcripts are assigned.
-        const INIT_NEIGHBORHOOD_PROPORTION: f64 = 0.5;
-        let k = (INIT_NEIGHBORHOOD_PROPORTION * (transcripts.len() as f64)
-            / (ncells as f64))
-            .ceil() as usize;
-
         let cell_logprobs = vec![0.0; ncells];
 
         return Segmentation {
@@ -387,13 +293,13 @@ impl<'a> Segmentation<'a> {
         )
         .unwrap();
 
-        let mut vertices: Vec<(f32, f32)> = Vec::new();
-        let mut hull: Vec<(f32, f32)> = Vec::new();
+        let vertices: Vec<(f32, f32)> = Vec::new();
+        let hull: Vec<(f32, f32)> = Vec::new();
 
-        let mut vertices_refcell = RefCell::new(vertices);
+        let vertices_refcell = RefCell::new(vertices);
         let mut vertices_ref = vertices_refcell.borrow_mut();
 
-        let mut hull_refcell = RefCell::new(hull);
+        let hull_refcell = RefCell::new(hull);
         let mut hull_ref = hull_refcell.borrow_mut();
 
         for (i, transcripts) in cell_transcripts.iter().enumerate() {
@@ -561,7 +467,7 @@ impl Sampler {
         }
 
         let cell_areas = Array1::<f32>::zeros(ncells);
-        let proposals = vec![Proposal::new(ngenes); nchunks];
+        let proposals = vec![Proposal::new(); nchunks];
 
         let mut rng = rand::thread_rng();
         let z = (0..ncells)
@@ -573,23 +479,23 @@ impl Sampler {
             priors,
             chunkquads,
             transcripts: chunked_transcripts,
-            params: params,
-            cell_transcripts: cell_transcripts,
-            cell_areas: cell_areas,
+            params,
+            cell_transcripts,
+            cell_areas,
             cell_area_calc_storage: ThreadLocal::new(),
             full_area: 0_f32,
             connectivity_checker: ThreadLocal::new(),
             z_probs: ThreadLocal::new(),
-            z: z,
+            z,
             counts: Array2::<u32>::zeros((ngenes, ncells)),
             foreground_counts: Array2::<u32>::zeros((ngenes, ncells)),
             background_counts: Array1::<u32>::zeros(ngenes),
             total_gene_counts: Array1::<u32>::zeros(ngenes),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
-            proposals: proposals,
+            proposals,
             quad: 0,
             sample_num: 0,
-            ncells: ncells,
+            ncells,
             background_cell: ncells as u32,
             logfact: LogFactorial::new(),
             loggammaplus: Vec::from_iter((0..ngenes).map(|_| LogGammaPlus::default())),
@@ -597,11 +503,10 @@ impl Sampler {
 
         sampler.full_area = sampler.compute_full_area();
         dbg!(sampler.full_area);
-        sampler.pop_bubbles(seg);
+        // sampler.pop_bubbles(seg);
         sampler.compute_cell_areas();
         sampler.compute_counts(seg);
         sampler.sample_global_params();
-        sampler.compute_cell_logprobs(seg);
 
         return sampler;
     }
@@ -610,7 +515,7 @@ impl Sampler {
         return self.counts.clone();
     }
 
-    pub fn log_likelihood(&self, seg: &Segmentation) -> f32 {
+    pub fn log_likelihood(&self) -> f32 {
         let mut ll = Zip::from(self.params.λ.columns())
             .and(&self.cell_areas)
             .and(self.counts.columns())
@@ -636,17 +541,17 @@ impl Sampler {
     }
 
     fn compute_full_area(&self) -> f32 {
-        let mut vertices = Vec::from_iter(
+        let vertices = Vec::from_iter(
             self.transcripts
                 .iter()
                 .map(|t| (t.transcript.x, t.transcript.y)),
         );
-        let mut hull = Vec::new();
+        let hull = Vec::new();
 
-        let mut vertices_refcell = RefCell::new(vertices);
+        let vertices_refcell = RefCell::new(vertices);
         let mut vertices_ref = vertices_refcell.borrow_mut();
 
-        let mut hull_refcell = RefCell::new(hull);
+        let hull_refcell = RefCell::new(hull);
         let mut hull_ref = hull_refcell.borrow_mut();
 
         return convex_hull_area(&mut vertices_ref, &mut hull_ref);
@@ -668,8 +573,6 @@ impl Sampler {
                 seg,
                 &self.priors,
                 &self.params,
-                &self.z,
-                &self.counts,
                 &self.cell_transcripts,
                 &self.cell_areas,
                 areacalc,
@@ -820,16 +723,7 @@ impl Sampler {
 
         let mut rng = thread_rng();
         let ncomponents = self.params.ncomponents();
-        let ngenes = self.params.λ.shape()[0];
 
-        // // sample π
-        // let mut α = vec![1_f64; self.params.ncomponents()];
-        // for z_i in self.z.iter() {
-        //     α[*z_i as usize] += 1.0;
-        // }
-
-        // self.params.π.clear();
-        // self.params.π.extend(Dirichlet::new(α).unwrap().sample(&mut rng).iter().map(|x| *x as f32));
 
         // sample μ_a
         let mut μ_μ_a =
@@ -882,17 +776,23 @@ impl Sampler {
             }));
 
         // Sample background/foreground counts
+        // (This seems a little pointless. As devised now, if a transcript is under a cell it has a
+        // very high probability of coming from that cell)
         self.background_counts.assign(&self.total_gene_counts);
         Zip::from(self.counts.rows())
             .and(self.foreground_counts.rows_mut())
-            .and(self.params.t.rows())
             .and(&mut self.background_counts)
-            .and(&self.params.p_bg)
-            .par_for_each(|cs, fcs, ts, bc, p_bg| {
+            .and(self.params.λ.rows())
+            .and(&self.params.λ_bg)
+            .par_for_each(|cs, fcs, bc, λs, λ_bg| {
                 let mut rng = thread_rng();
-                for (c, fc, t, cell_area) in izip!(cs, fcs, ts, &self.cell_areas) {
-                    let p_fg = t / cell_area;
+
+                let p_bg = λ_bg * (-λ_bg * self.full_area).exp();
+                for (c, fc, λ, cell_area) in izip!(cs, fcs, λs, &self.cell_areas) {
+                    let p_fg = λ * (-λ * cell_area).exp();
                     let p = p_fg / (p_fg + p_bg);
+
+
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
                     *bc -= *fc;
                 }
@@ -1020,83 +920,6 @@ impl Sampler {
                 }
             });
 
-        // println!("λ span {} {} {}",
-        //     self.params.λ.mean().unwrap(),
-        //     self.params.λ.fold(f32::MAX, |accum, &x| accum.min(x)),
-        //     self.params.λ.fold(f32::MIN, |accum, &x| accum.max(x)));
-
-        // TODO: I think because we are wildly overdispersed, we just end
-        // up with some extreme values of λ.
-        // dbg!(self.cell_areas[0]);
-        // println!();
-        // dbg!(self.counts.slice(s![0..ngenes, 0]));
-        // println!();
-        // dbg!(self.params.λ.slice(s![0..ngenes, 0]));
-        // println!();
-        // dbg!(self.params.θ.slice(s![0..ngenes, self.z[0] as usize]));
-        // println!();
-        // dbg!(&self.params.r);
-        // panic!();
-
-        // Sample z (assignment of cells to components)
-
-        // TODO: It seems super unstable to do this.
-
-        // outer loop is over cells
-        // Zip::from(&mut self.z)
-        //     .and(self.params.λ.slice(s![0..ngenes, 0..self.ncells]).columns())
-        //     .par_for_each(|z, λs| {
-        //         let mut z_probs = self.z_probs.get_or(|| RefCell::new(vec![0_f64; ncomponents])).borrow_mut();
-
-        //         // loop over components
-        //         for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.columns()) {
-        //             // sum over genes
-        //             *zp = (*π as f64) *
-        //                 (Zip::from(λs)
-        //                 .and(&self.params.r)
-        //                 .and(&θs)
-        //                 .fold(0_f32, |accum, λ, r, θ| {
-        //                     // TODO: seem to be getting some very large λ values
-        //                     // dbg!(*r, *θ, *λ, gamma_logpdf(*r, *θ, *λ));
-        //                     accum + gamma_logpdf(*r, *θ, *λ)
-        //                 }) as f64).exp();
-
-        //             let thing = (Zip::from(λs)
-        //                 .and(&self.params.r)
-        //                 .and(&θs)
-        //                 .fold(0_f32, |accum, λ, r, θ| {
-        //                     // TODO: seem to be getting some very large λ values
-        //                     dbg!(*r, *θ, *λ, gamma_logpdf(*r, *θ, *λ));
-        //                     accum + gamma_logpdf(*r, *θ, *λ)
-        //                 }) as f64);
-        //             dbg!(thing);
-
-        //             // TODO: What the fuck. It's actually too large. I guess from
-        //             // numbers near 0?
-        //             //
-        //             // How can this work if we occasionally get stupidly large
-        //             // probability densities. It's just going to be constantly
-        //             // swapping components.
-
-        //             // Try to understand why we are sampling such tiny values.
-
-        //             dbg!(*zp);
-        //         }
-        //         let z_prob_sum = z_probs.iter().sum::<f64>();
-        //         assert!(z_prob_sum.is_finite());
-
-        //         // cumulative probabilities in-place
-        //         z_probs.iter_mut().fold(0.0, |mut acc, x| {
-        //             acc += *x / z_prob_sum;
-        //             *x = acc;
-        //             acc
-        //         });
-
-        //         let rng = &mut thread_rng();
-        //         let u = rng.gen::<f64>();
-        //         *z = z_probs.partition_point(|x| *x < u) as u32;
-        //     });
-
         // Sample z
         Zip::from(
             self.foreground_counts
@@ -1204,26 +1027,6 @@ impl Sampler {
                     *γ += *λ * *cell_area;
                 }
             });
-
-        // Compute relative background probability (p_bg)
-        Zip::from(&mut self.params.p_bg)
-            .and(&mut self.params.log_p_bg)
-            .and(&self.params.γ_bg)
-            .and(&self.params.γ_fg)
-            .for_each(|p, lp, γ_bg, γ_fg| {
-                *p = (*γ_bg / *γ_fg) / self.full_area;
-                *lp = p.ln();
-            });
-
-        // Compute t (per-gene cell mixture coeficients)
-        Zip::from(self.params.t.rows_mut())
-            .and(self.params.λ.rows())
-            .and(&self.params.γ_fg)
-            .par_for_each(|mut ts, λs, γ| {
-                for (t, λ, cell_area) in izip!(&mut ts, λs, &self.cell_areas) {
-                    *t = (*λ * cell_area) / *γ;
-                }
-            });
     }
 
     fn compute_cell_areas(&mut self) {
@@ -1273,76 +1076,59 @@ impl Sampler {
         }
     }
 
-    pub fn compute_cell_logprobs(&self, seg: &mut Segmentation) {
-        // Assume at this point that cell areas and transcript counts are up to date
-        seg.cell_logprobs
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, logprob)| {
-                let cell_area = self.cell_areas[i];
-                *logprob = self.params.cell_logprob(
-                    self.params.t.column(i),
-                    cell_area,
-                    self.z[i],
-                    self.counts.column(i),
-                );
-            });
+    // // Bubbles (a transcript of state u, with no state u neighbors) are impossible
+    // // to burst while retaining detail balance, so we burst them on initialization
+    // // and try to avoid introducing any by preserving local connectivity.
+    // fn pop_bubbles(&mut self, seg: &Segmentation) {
+    //     let mut bubble_count = 0;
+    //     for i in 0..self.ncells {
+    //         let u = seg.cell_assignments[i];
+    //         let isbubble = !seg.adjacency.neighbors(i).any(|j| {
+    //             let v = seg.cell_assignments[j];
+    //             v == self.background_cell || v == u
+    //         });
 
-        // dbg!(&seg.cell_logprobs);
-    }
-    
-    // Bubbles (a transcript of state u, with no state u neighbors) are impossible
-    // to burst while retaining detail balance, so we burst them on initialization
-    // and try to avoid introducing any by preserving local connectivity.
-    fn pop_bubbles(&mut self, seg: &Segmentation) {
-        let mut bubble_count = 0;
-        for i in 0..self.ncells {
-            let u = seg.cell_assignments[i];
-            let isbubble = !seg.adjacency.neighbors(i).any(|j| {
-                let v = seg.cell_assignments[j];
-                v == self.background_cell || v == u
-            });
+    //         if isbubble {
+    //             bubble_count += 1;
+    //         }
+    //     };
 
-            if isbubble {
-                bubble_count += 1;
-            }
-        };
+    //     // TODO: We should implement this, but there are only a few bubbles, so
+    //     // this isn't a huge issue currently.
 
-        // TODO: We should implement this, but there are only a few bubbles, so
-        // this isn't a huge issue currently.
+    //     // dbg!(bubble_count);
+    //     // panic!();
+    // }
 
-        // dbg!(bubble_count);
-        // panic!();
-    }
+    // TODO: This should go in a test. Too expensive to survail like this in regular usage.
+    // pub fn check_mismatch_edges(&self, seg: &Segmentation) {
+    //     // check that mismatch edges are symmetric and really are mismatching
+    //     for quad in 0..4 {
+    //         for quadchunk in &self.chunkquads[quad] {
+    //             for (i, j) in quadchunk.mismatch_edges.iter() {
+    //                 assert!(seg.cell_assignments[*i] != seg.cell_assignments[*j]);
 
-    pub fn check_mismatch_edges(&self, seg: &Segmentation) {
-        // check that mismatch edges are symmetric and really are mismatching
-        for quad in 0..4 {
-            for quadchunk in &self.chunkquads[quad] {
-                for (i, j) in quadchunk.mismatch_edges.iter() {
-                    assert!(seg.cell_assignments[*i] != seg.cell_assignments[*j]);
+    //                 let quad_j = self.transcripts[*j].quad as usize;
+    //                 let chunk_j = self.transcripts[*j].chunk as usize;
+    //                 let quadchunk_j = &self.chunkquads[quad_j][chunk_j];
+    //                 assert!(quadchunk_j.mismatch_edges.contains(&(*j, *i)));
+    //             }
+    //         }
+    //     }
 
-                    let quad_j = self.transcripts[*j].quad as usize;
-                    let chunk_j = self.transcripts[*j].chunk as usize;
-                    let quadchunk_j = &self.chunkquads[quad_j][chunk_j];
-                    assert!(quadchunk_j.mismatch_edges.contains(&(*j, *i)));
-                }
-            }
-        }
-
-        // check that every mismatched edge is present in a set
-        for i in 0..self.transcripts.len() {
-            for edge in seg.adjacency.edges(i) {
-                let j = edge.target();
-                if seg.cell_assignments[i] != seg.cell_assignments[j] {
-                    let quad_i = self.transcripts[i].quad as usize;
-                    let chunk_i = self.transcripts[i].chunk as usize;
-                    let quadchunk_i = &self.chunkquads[quad_i][chunk_i];
-                    assert!(quadchunk_i.mismatch_edges.contains(&(i, j)));
-                }
-            }
-        }
-    }
+    //     // check that every mismatched edge is present in a set
+    //     for i in 0..self.transcripts.len() {
+    //         for edge in seg.adjacency.edges(i) {
+    //             let j = edge.target();
+    //             if seg.cell_assignments[i] != seg.cell_assignments[j] {
+    //                 let quad_i = self.transcripts[i].quad as usize;
+    //                 let chunk_i = self.transcripts[i].chunk as usize;
+    //                 let quadchunk_i = &self.chunkquads[quad_i][chunk_i];
+    //                 assert!(quadchunk_i.mismatch_edges.contains(&(i, j)));
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -1362,13 +1148,10 @@ struct Proposal {
 
     from_cell_area: f32,
     from_cell_logprob: f32,
-
-    // tempory transcript counts array
-    counts: Array1<u32>,
 }
 
 impl Proposal {
-    fn new(ngenes: usize) -> Self {
+    fn new() -> Self {
         Proposal {
             i: 0,
             state: 0,
@@ -1379,7 +1162,6 @@ impl Proposal {
             to_cell_logprob: 0.0,
             from_cell_area: 0.0,
             from_cell_logprob: 0.0,
-            counts: Array1::zeros(ngenes),
         }
     }
 
@@ -1388,8 +1170,6 @@ impl Proposal {
         seg: &Segmentation,
         priors: &ModelPriors,
         params: &ModelParams,
-        z: &Array1<u32>,
-        counts: &Array2<u32>,
         cell_transcripts: &Vec<HashSet<usize>>,
         cell_areas: &Array1<f32>,
         areacalc: RefMut<AreaCalcStorage>,
@@ -1407,7 +1187,6 @@ impl Proposal {
         let from_background = prev_state == seg.ncells() as u32;
         let to_background = self.state == seg.ncells() as u32;
         let this_transcript = &seg.transcripts[self.i];
-        let log_p_bg = params.log_p_bg[this_transcript.gene as usize];
 
         // Log Metropolis-Hastings acceptance ratio
         let mut δ = 0.0;
@@ -1497,30 +1276,3 @@ impl Proposal {
     }
 }
 
-fn init_cell_assignments(
-    transcripts: &Vec<Transcript>,
-    nuclei_centroids: &Vec<NucleiCentroid>,
-    k: usize,
-) -> (Vec<u32>, Vec<usize>) {
-    let mut kdtree: KdTree<f32, usize, 2, 32, u32> = KdTree::with_capacity(transcripts.len());
-
-    for (i, transcript) in transcripts.iter().enumerate() {
-        kdtree.add(&[transcript.x, transcript.y], i);
-    }
-
-    let ncells = nuclei_centroids.len();
-    let ntranscripts = transcripts.len();
-    let mut cell_assignments = vec![ncells as u32; ntranscripts];
-    let mut cell_population = vec![0; ncells + 1];
-    cell_population[ncells] = ntranscripts;
-
-    for (i, centroid) in nuclei_centroids.iter().enumerate() {
-        for neighbor in kdtree.nearest_n(&[centroid.x, centroid.y], k, &squared_euclidean) {
-            cell_assignments[neighbor.item] = i as u32;
-            cell_population[ncells] -= 1;
-            cell_population[i] += 1;
-        }
-    }
-
-    return (cell_assignments, cell_population);
-}

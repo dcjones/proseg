@@ -18,11 +18,6 @@ pub struct Transcript {
     pub gene: u32,
 }
 
-pub struct NucleiCentroid {
-    pub x: f32,
-    pub y: f32,
-}
-
 pub fn read_transcripts_csv(
     path: &str,
     transcript_column: &str,
@@ -212,26 +207,6 @@ where
     let cell_population = postprocess_cell_assignments(&mut cell_assignments);
 
     return (transcript_names, transcripts, cell_assignments, cell_population);
-}
-
-pub fn read_nuclei_csv(path: &str, x_column: &str, y_column: &str) -> Vec<NucleiCentroid> {
-    let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
-    let headers = rdr.headers().unwrap();
-
-    let x_col = find_column(headers, x_column);
-    let y_col = find_column(headers, y_column);
-    let mut centroids = Vec::new();
-
-    for result in rdr.records() {
-        let row = result.unwrap();
-
-        let x = row[x_col].parse::<f32>().unwrap();
-        let y = row[y_col].parse::<f32>().unwrap();
-
-        centroids.push(NucleiCentroid { x, y });
-    }
-
-    return centroids;
 }
 
 // Vertex type for doing the triangulation in 2D

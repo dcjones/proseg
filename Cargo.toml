@@ -14,7 +14,6 @@ clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
 itertools = "0.10.5"
-kiddo = "2.1.1"
 libm = "0.2.7"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 petgraph = "0.6.3"

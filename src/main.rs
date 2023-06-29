@@ -5,7 +5,7 @@ use clap::Parser;
 mod sampler;
 
 use sampler::{Sampler, Segmentation, ModelPriors};
-use sampler::transcripts::{read_transcripts_csv, read_nuclei_csv, neighborhood_graph, coordinate_span};
+use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span};
 use rayon::current_num_threads;
 use csv;
 use std::fs::File;
@@ -145,12 +145,11 @@ fn main() {
             seg.apply_local_updates(&mut sampler);
         }
         sampler.sample_global_params();
-        sampler.compute_cell_logprobs(&mut seg);
 
         // TODO: debugging
         // sampler.check_mismatch_edges(&seg);
 
-        println!("Log likelihood: {}", sampler.log_likelihood(&seg));
+        println!("Log likelihood: {}", sampler.log_likelihood());
 
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
