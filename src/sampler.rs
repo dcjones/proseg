@@ -1,12 +1,12 @@
 mod connectivity;
-mod distributions;
+mod math;
 mod hull;
 mod sampleset;
 pub mod transcripts;
 
 use connectivity::ConnectivityChecker;
 use core::fmt::Debug;
-use distributions::{
+use math::{
     negbin_logpmf_fast,
     odds_to_prob, prob_to_odds, rand_pois,
     LogFactorial,
@@ -995,19 +995,19 @@ impl Sampler {
         );
 
         // Special case for background noise.
-        // Zip::from(&mut self.params.λ_bg)
-        //     .and(&self.background_counts)
-        //     .for_each(|λ, c| {
-        //         *λ = (*c as f32) / self.full_area;
-        //     });
+        Zip::from(&mut self.params.λ_bg)
+            .and(&self.background_counts)
+            .for_each(|λ, c| {
+                *λ = (*c as f32) / self.full_area;
+            });
 
         // TODO: What if we instead force the background to be some
         // proportion of the transcripts.
-        Zip::from(&mut self.params.λ_bg)
-            .and(&self.total_gene_counts)
-            .for_each(|λ, c| {
-                *λ = 0.05 * (*c as f32) / self.full_area;
-            });
+        // Zip::from(&mut self.params.λ_bg)
+        //     .and(&self.total_gene_counts)
+        //     .for_each(|λ, c| {
+        //         *λ = 0.05 * (*c as f32) / self.full_area;
+        //     });
 
         // dbg!(&self.background_counts, &self.params.λ_bg);
 
