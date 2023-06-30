@@ -20,10 +20,9 @@ use libm::{lgammaf, log1pf};
 use ndarray::{Array1, Array2, Zip};
 use petgraph::visit::IntoNeighbors;
 use rand::{thread_rng, Rng};
-use rand_distr::{Binomial, Distribution};
+use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use sampleset::SampleSet;
-use statrs::distribution::{Beta, Dirichlet, Gamma, InverseGamma, Normal};
 use std::cell::{RefCell, RefMut};
 use std::collections::HashSet;
 use std::fs::File;
@@ -31,7 +30,7 @@ use std::io::Write;
 use thread_local::ThreadLocal;
 use transcripts::{coordinate_span, NeighborhoodGraph, Transcript};
 
-// use std::time::Instant;
+use std::time::Instant;
 
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -73,7 +72,7 @@ pub struct ModelParams {
     // Precomputing lgamma(r)
     lgamma_r: Array1<f32>,
 
-    // [ngenes, ncomponents] NB p parameters.
+    // [ncomponents, ngenes] NB p parameters.
     θ: Array2<f32>,
 
     // // log(ods_to_prob(θ))
@@ -104,7 +103,7 @@ impl ModelParams {
             σ_a: vec![priors.σ_μ_a; ncomponents],
             r,
             lgamma_r,
-            θ: Array2::<f32>::from_elem((ngenes, ncomponents), 0.1),
+            θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
             γ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
             γ_fg: Array1::<f32>::from_elem(ngenes, 0.0),
@@ -497,7 +496,7 @@ impl Sampler {
             z_probs: ThreadLocal::new(),
             z,
             counts: Array2::<u32>::zeros((ngenes, ncells)),
-            foreground_counts: Array2::<u32>::zeros((ngenes, ncells)),
+            foreground_counts: Array2::<u32>::zeros((ncells, ngenes)),
             background_counts: Array1::<u32>::zeros(ngenes),
             total_gene_counts: Array1::<u32>::zeros(ngenes),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
@@ -516,7 +515,10 @@ impl Sampler {
         // sampler.pop_bubbles(seg);
         sampler.compute_cell_areas();
         sampler.compute_counts(seg);
-        sampler.sample_global_params();
+
+        let t0 = Instant::now();
+        sampler.sample_global_params(None);
+        println!("Sampled global params in {:?}", t0.elapsed());
 
         return sampler;
     }
@@ -728,7 +730,7 @@ impl Sampler {
         self.quad = (self.quad + 1) % 4;
     }
 
-    pub fn sample_global_params(&mut self) {
+    pub fn sample_global_params(&mut self, background_proportion: Option<f32>) {
         // TODO: we are doing some allocation in this function that can be avoided
         // by pre-allocating and storing in Sampler.
 
@@ -761,9 +763,9 @@ impl Sampler {
         self.params
             .μ_a
             .extend(izip!(&μ_μ_a, &σ2_μ_a).map(|(μ, σ2)| {
-                Normal::new(*μ as f64, σ2.sqrt() as f64)
+                Normal::new(*μ, σ2.sqrt())
                     .unwrap()
-                    .sample(&mut rng) as f32
+                    .sample(&mut rng)
             }));
 
         // sample σ_a
@@ -777,21 +779,20 @@ impl Sampler {
         self.params
             .σ_a
             .extend(izip!(&component_population, &δ2s).map(|(n, δ2)| {
-                InverseGamma::new(
-                    self.priors.α_σ_a as f64 + 0.5 * *n as f64,
-                    self.priors.β_σ_a as f64 + 0.5 * *δ2 as f64,
-                )
-                .unwrap()
-                .sample(&mut rng)
-                .sqrt() as f32
+                Gamma::new(
+                    self.priors.α_σ_a + 0.5 * *n as f32,
+                    (self.priors.β_σ_a + 0.5 * *δ2).recip(),
+                ).unwrap().sample(&mut rng).recip().sqrt()
             }));
 
         // Sample background/foreground counts
         // (This seems a little pointless. As devised now, if a transcript is under a cell it has a
         // very high probability of coming from that cell)
+
+        let t0 = Instant::now();
         self.background_counts.assign(&self.total_gene_counts);
         Zip::from(self.counts.rows())
-            .and(self.foreground_counts.rows_mut())
+            .and(self.foreground_counts.columns_mut())
             .and(&mut self.background_counts)
             .and(self.params.λ.rows())
             .and(&self.params.λ_bg)
@@ -816,6 +817,8 @@ impl Sampler {
                     //     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
                     // }
 
+                    // TODO: Maybe add a special fast case for when `p` is exceptionally low?
+
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
 
                     // TODO: This seems fucked overall. I get
@@ -824,6 +827,7 @@ impl Sampler {
                     *bc -= *fc;
                 }
             });
+        println!("  Sample background counts: {:?}", t0.elapsed());
 
         // total component area
         let mut component_cell_area = vec![0_f32; self.params.ncomponents()];
@@ -838,7 +842,7 @@ impl Sampler {
         // compute per component transcript counts
         self.component_counts.fill(0);
         Zip::from(self.component_counts.rows_mut())
-            .and(self.foreground_counts.rows())
+            .and(self.foreground_counts.columns())
             .par_for_each(|mut compc, cellc| {
                 for (c, component) in cellc.iter().zip(&self.z) {
                     compc[*component as usize] += *c;
@@ -846,7 +850,8 @@ impl Sampler {
             });
 
         // Sample θ
-        Zip::from(self.params.θ.rows_mut())
+        let t0 = Instant::now();
+        Zip::from(self.params.θ.columns_mut())
             .and(self.component_counts.rows())
             .and(&self.params.r)
             .par_for_each(|θs, cs, r| {
@@ -854,11 +859,11 @@ impl Sampler {
                 for (θ, c, a) in izip!(θs, cs, &component_cell_area) {
                     *θ = prob_to_odds(
                         Beta::new(
-                            (self.priors.α_θ + *c as f32) as f64,
-                            (self.priors.β_θ + *a * *r) as f64,
+                            (self.priors.α_θ + *c as f32),
+                            (self.priors.β_θ + *a * *r),
                         )
                         .unwrap()
-                        .sample(&mut rng) as f32,
+                        .sample(&mut rng),
                     );
 
                     *θ = θ.max(1e-6);
@@ -869,6 +874,7 @@ impl Sampler {
                     // }
                 }
             });
+        println!("  Sample θ: {:?}", t0.elapsed());
 
         // println!("θ span {} {} {}",
         //     self.params.θ.mean().unwrap(),
@@ -876,10 +882,11 @@ impl Sampler {
         //     self.params.θ.fold(f32::MIN, |accum, &x| accum.max(x)));
 
         // Sample r
+        let t0 = Instant::now();
         Zip::from(&mut self.params.r)
             .and(&mut self.params.lgamma_r)
             .and(&mut self.loggammaplus)
-            .and(self.params.θ.rows())
+            .and(self.params.θ.columns())
             // .and(self.counts.rows())
             .par_for_each(|r, lgamma_r, loggammaplus, θs| {
                 let mut rng = thread_rng();
@@ -891,9 +898,12 @@ impl Sampler {
                     .fold(0, |accum, z, a| {
                         let θ = θs[*z as usize];
                         let λ = -*r * log1pf(-odds_to_prob(θ * *a));
-                        // assert!(λ >= 0.0);
-                        // accum + Poisson::new(λ as f64).unwrap().sample(&mut rng)
+
+                        // I gueess because there is less overhead, our simple Knuth
+                        // sampler is considerably faster here.
+                        // accum + Poisson::new(λ).unwrap().sample(&mut rng) as i32
                         accum + rand_pois(&mut rng, λ)
+
                     }) as f32;
                 let v = Zip::from(&self.z)
                     .and(&self.cell_areas)
@@ -902,9 +912,11 @@ impl Sampler {
                         accum + log1pf(-odds_to_prob(w * *a))
                     });
 
-                *r = Gamma::new((self.priors.e_r + u) as f64, (self.priors.f_r - v) as f64)
+                *r = Gamma::new((self.priors.e_r + u), (self.priors.f_r - v).recip())
                     .unwrap()
-                    .sample(&mut rng) as f32;
+                    .sample(&mut rng);
+
+                assert!(r.is_finite());
 
                 *lgamma_r = lgammaf(*r);
                 loggammaplus.reset(*r);
@@ -912,6 +924,7 @@ impl Sampler {
                 // TODO: any better solution here?
                 *r = r.min(100.0).max(1e-4);
             });
+        println!("  Sample r: {:?}", t0.elapsed());
 
         // println!("r span {} {} {}",
         //     self.params.r.mean().unwrap(),
@@ -919,9 +932,10 @@ impl Sampler {
         //     self.params.r.fold(f32::MIN, |accum, &x| accum.max(x)));
 
         // Sample λ
+        let t0 = Instant::now();
         Zip::from(self.params.λ.rows_mut())
-            .and(self.foreground_counts.rows())
-            .and(self.params.θ.rows())
+            .and(self.foreground_counts.columns())
+            .and(self.params.θ.columns())
             .and(&self.params.r)
             .par_for_each(|mut λs, cs, θs, r| {
                 let mut rng = thread_rng();
@@ -937,22 +951,38 @@ impl Sampler {
                 ) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
-                        *r as f64 + *c as f64,
-                        // (θ / (cell_area * θ + 1.0)) as f64
-                        ((cell_area * θ + 1.0) / θ) as f64,
+                        *r + *c as f32,
+                        θ / (cell_area * θ + 1.0)
+                        // ((cell_area * θ + 1.0) / θ) as f64,
                     )
                     .unwrap()
                     .sample(&mut rng)
-                    .max(1e-9) as f32;
+                    .max(1e-9);
+
+                    assert!(λ.is_finite());
 
                     // dbg!(*λ, *r, θ, *c, cell_area, *c as f32 / cell_area);
                 }
             });
+        println!("  Sample λ: {:?}", t0.elapsed());
+
+
+        // TODO:
+        // This is the most expensive part. We could sample this less frequently,
+        // but we should try to optimize as much as possible.
+        // Ideas:
+        //   - I suspect there's just a lot of overhead for the rayon parallel loop
+        //     over cells.
+        //   - foreground_counts is in row-major so we're processing it in a
+        //     suboptimal way. Maybe we should transpose it?
+        //   - 
+
 
         // Sample z
+        let t0 = Instant::now();
         Zip::from(
             self.foreground_counts
-                .columns(),
+                .rows(),
         )
         .and(&mut self.z)
         .and(&self.cell_areas)
@@ -963,15 +993,8 @@ impl Sampler {
                 .borrow_mut();
 
             // loop over components
-            for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.columns())
+            for (zp, π, θs) in izip!(z_probs.iter_mut(), &self.params.π, self.params.θ.rows())
             {
-                // TODO: This is a big bottleneck due to negbinom pmf being so expensive. Because
-                // most counts are small, we should be able to precompute some values.
-                //  1. Precompute log(odds_to_prob(θ)) and log(1 - odds_to_prob(θ))
-                //  (Maybe not worth it)
-                //  2. Implement a lookup table for log factorials (DONE)
-                //  3. Implement a lookup table for lgamma(r + k) (DONE)
-
                 // sum over genes
                 *zp = (*π as f64)
                     * (Zip::from(cs)
@@ -979,10 +1002,10 @@ impl Sampler {
                         .and(&self.params.lgamma_r)
                         .and(&self.loggammaplus)
                         .and(&θs)
-                        .fold(0_f32, |accum, c, r, lgamma_r, lgammaplus, θ| {
+                        .fold(0_f32, |accum, &c, &r, &lgamma_r, lgammaplus, θ| {
                             accum + negbin_logpmf_fast(
-                                *r, *lgamma_r, lgammaplus.eval(*c),
-                                odds_to_prob(*θ * cell_area), *c, self.logfact.eval(*c))
+                                r, lgamma_r, lgammaplus.eval(c),
+                                odds_to_prob(*θ * cell_area), c, self.logfact.eval(c))
                         }) as f64)
                         .exp();
             }
@@ -994,6 +1017,7 @@ impl Sampler {
             // });
 
             let z_prob_sum = z_probs.iter().sum::<f64>();
+
             assert!(z_prob_sum.is_finite());
 
             // cumulative probabilities in-place
@@ -1007,36 +1031,37 @@ impl Sampler {
             let u = rng.gen::<f64>();
             *z_i = z_probs.partition_point(|x| *x < u) as u32;
         });
+        println!("  Sample z: {:?}", t0.elapsed());
 
         // sample π
-        let mut α = vec![1_f64; self.params.ncomponents()];
+        let mut α = vec![1_f32; self.params.ncomponents()];
         for z_i in self.z.iter() {
             α[*z_i as usize] += 1.0;
         }
 
         self.params.π.clear();
         self.params.π.extend(
-            Dirichlet::new(α)
+            Dirichlet::new(&α)
                 .unwrap()
                 .sample(&mut rng)
                 .iter()
                 .map(|x| *x as f32),
         );
 
-        // Special case for background noise.
-        Zip::from(&mut self.params.λ_bg)
-            .and(&self.background_counts)
-            .for_each(|λ, c| {
-                *λ = (*c as f32) / self.full_area;
-            });
-
-        // TODO: What if we instead force the background to be some
-        // proportion of the transcripts.
-        // Zip::from(&mut self.params.λ_bg)
-        //     .and(&self.total_gene_counts)
-        //     .for_each(|λ, c| {
-        //         *λ = 0.05 * (*c as f32) / self.full_area;
-        //     });
+        // Sample background rates
+        if let Some(background_proportion) = background_proportion {
+            Zip::from(&mut self.params.λ_bg)
+                .and(&self.total_gene_counts)
+                .for_each(|λ, c| {
+                    *λ = background_proportion * (*c as f32) / self.full_area;
+                });
+        } else {
+            Zip::from(&mut self.params.λ_bg)
+                .and(&self.background_counts)
+                .for_each(|λ, c| {
+                    *λ = (*c as f32) / self.full_area;
+                });
+        }
 
         // dbg!(&self.background_counts, &self.params.λ_bg);
 

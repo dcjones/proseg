@@ -144,12 +144,21 @@ fn main() {
             sampler.sample_local_updates(&seg);
             seg.apply_local_updates(&mut sampler);
         }
-        sampler.sample_global_params();
+        // sampler.sample_global_params(Some(0.05));
+
+        // TODO: Can I sort of bootstrap things like this?
+        if i < 500 {
+            sampler.sample_global_params(Some(0.05));
+        } else {
+            sampler.sample_global_params(None);
+        }
 
         // TODO: debugging
         // sampler.check_mismatch_edges(&seg);
 
         println!("Log likelihood: {}", sampler.log_likelihood());
+        // dbg!(&sampler.proposal_stats);
+        sampler.proposal_stats.reset();
 
         if i % 100 == 0 {
             println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());

@@ -5,6 +5,7 @@ use petgraph::Directed;
 use spade::{
     DelaunayTriangulation, HasPosition, LastUsedVertexHintGenerator, Point2, Triangulation,
 };
+use spade::handles::VoronoiVertex::{Inner, Outer};
 use std::collections::HashMap;
 use std::fs::File;
 
@@ -174,6 +175,7 @@ where
         let row = result.unwrap();
 
         let transcript_name = &row[transcript_col];
+        // let transcript_name = "FAKE";
 
         let gene = if let Some(gene) = transcript_name_map.get(transcript_name) {
             *gene
@@ -248,6 +250,33 @@ pub fn neighborhood_graph(
         LastUsedVertexHintGenerator,
     > = DelaunayTriangulation::bulk_load(vertices).unwrap();
 
+    // Compute the area of each transcript's voronoi cell
+    let mut face_verts: Vec<(f32, f32)> = Vec::new();
+    for face in triangulation.voronoi_faces() {
+        let i = face.as_delaunay_vertex().data().idx;
+        for edge in face.adjacent_edges() {
+            // TODO: Figure out how to deal with outer vertices
+            match [edge.from().position(), edge.to().position()] {
+                [Some(from), Some(to)] => {
+
+                },
+                [Some(from), None] => {
+
+                },
+                [None, Some(to)] => {
+
+                },
+                [None, None] => {
+                    panic!("Strange Voronoi edge.")
+                },
+            }
+
+            // // TODO: What do I do with outer vertices?
+            // edge.to().position()
+        }
+    }
+
+    // Construct adjacency matrix
     let mut nrejected: usize = 0;
     let mut nedges: usize = 0;
     let mut edges = Vec::new();

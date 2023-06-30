@@ -29,11 +29,6 @@ pub fn negbin_logpmf_fast(r: f32, lgamma_r: f32, lgamma_rpk: f32, p: f32, k: u32
             + (k as f32) * p.ln() + r * (1.0 - p).ln()
     };
 
-    if !result.is_finite() {
-        println!("r: {}, p: {}, k: {}, k_ln_factorial: {}", r, p, k, k_ln_factorial);
-        panic!();
-    }
-
     return result;
 }
 
@@ -115,6 +110,6 @@ impl LogGammaPlus {
     pub fn eval(&self, k: u32) -> f32 {
         return self.values.get(k as usize).map_or_else(|| lgammaf(self.r + k as f32), |&value| value);
     }
-    
+
 }
 
