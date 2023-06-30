@@ -128,7 +128,7 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
     let xchunkquad = ((x - xmin) / (chunk_size / 2.0)).floor() as u32;
     let ychunkquad = ((y - ymin) / (chunk_size / 2.0)).floor() as u32;
 
-    let chunk = (xchunkquad / 4) + (ychunkquad / 4) * (nxchunks as u32);
+    let chunk = (xchunkquad / 2) + (ychunkquad / 2) * (nxchunks as u32);
     let quad = (xchunkquad % 2) + (ychunkquad % 2) * 2;
 
     return (chunk, quad);
@@ -209,10 +209,6 @@ impl<'a> Segmentation<'a> {
         // TODO: check if we are doing multiple updates on the same cell and warn
         // about it.
 
-        // let mut background_to_cell = 0;
-        // let mut cell_to_background = 0;
-        // let mut cell_to_cell = 0;
-
         // Update cell assignments
         for proposal in sampler.proposals.iter().filter(|p| p.accept) {
             let prev_state = self.cell_assignments[proposal.i];
@@ -234,16 +230,28 @@ impl<'a> Segmentation<'a> {
                 sampler.counts[[gene as usize, proposal.state as usize]] += 1;
             }
 
-            // if prev_state as usize == self.ncells() && proposal.state as usize != self.ncells() {
-            //     background_to_cell += 1;
-            // } else if prev_state as usize != self.ncells() && proposal.state as usize == self.ncells() {
-            //     cell_to_background += 1;
-            // } else if prev_state as usize != self.ncells() && proposal.state as usize != self.ncells() {
-            //     cell_to_cell += 1;
-            // }
+            if prev_state as usize == self.ncells() && proposal.state as usize != self.ncells() {
+                sampler.proposal_stats.background_to_cell_accept += 1;
+            } else if prev_state as usize != self.ncells() && proposal.state as usize == self.ncells() {
+                sampler.proposal_stats.cell_to_background_accept += 1;
+            } else if prev_state as usize != self.ncells() && proposal.state as usize != self.ncells() {
+                sampler.proposal_stats.cell_to_cell_accept += 1;
+            }
         }
 
-        // dbg!(background_to_cell, cell_to_background, cell_to_cell);
+        for proposal in sampler.proposals.iter().filter(|p| !p.accept) {
+            let prev_state = self.cell_assignments[proposal.i];
+            if prev_state as usize == self.ncells() && proposal.state as usize != self.ncells() {
+                sampler.proposal_stats.background_to_cell_reject += 1;
+                if proposal.ignore {
+                    sampler.proposal_stats.background_to_cell_ignore += 1;
+                }
+            } else if prev_state as usize != self.ncells() && proposal.state as usize == self.ncells() {
+                sampler.proposal_stats.cell_to_background_reject += 1;
+            } else if prev_state as usize != self.ncells() && proposal.state as usize != self.ncells() {
+                sampler.proposal_stats.cell_to_cell_reject += 1;
+            }
+        }
 
         // Update mismatch edges
         for quad in 0..4 {
@@ -388,6 +396,7 @@ pub struct Sampler {
     transcripts: Vec<ChunkedTranscript>,
     params: ModelParams,
     proposals: Vec<Proposal>,
+    pub proposal_stats: ProposalStats,
     cell_transcripts: Vec<HashSet<usize>>,
     cell_areas: Array1<f32>,
     cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
@@ -493,6 +502,7 @@ impl Sampler {
             total_gene_counts: Array1::<u32>::zeros(ngenes),
             component_counts: Array2::<u32>::zeros((ngenes, ncomponents)),
             proposals,
+            proposal_stats: ProposalStats::new(),
             quad: 0,
             sample_num: 0,
             ncells,
@@ -576,6 +586,7 @@ impl Sampler {
                 &self.cell_transcripts,
                 &self.cell_areas,
                 areacalc,
+                &self.counts,
             );
         });
         // let t2 = Instant::now();
@@ -788,12 +799,28 @@ impl Sampler {
                 let mut rng = thread_rng();
 
                 let p_bg = λ_bg * (-λ_bg * self.full_area).exp();
-                for (c, fc, λ, cell_area) in izip!(cs, fcs, λs, &self.cell_areas) {
-                    let p_fg = λ * (-λ * cell_area).exp();
-                    let p = p_fg / (p_fg + p_bg);
 
+                for (c, fc, λ, cell_area) in izip!(cs, fcs, λs, &self.cell_areas) {
+
+                    // let p_fg = λ * (-λ * cell_area).exp();
+                    // let p = p_fg / (p_fg + p_bg);
+                    //
+                    let p = λ / (λ + λ_bg);
+
+
+                    // if p == 0.0 {
+                    //     *fc = 0;
+                    // } else if p == 1.0 {
+                    //     *fc = *c;
+                    // } else {
+                    //     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
+                    // }
 
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
+
+                    // TODO: This seems fucked overall. I get
+                    // *fc = *c;
+
                     *bc -= *fc;
                 }
             });
@@ -917,6 +944,8 @@ impl Sampler {
                     .unwrap()
                     .sample(&mut rng)
                     .max(1e-9) as f32;
+
+                    // dbg!(*λ, *r, θ, *c, cell_area, *c as f32 / cell_area);
                 }
             });
 
@@ -1131,6 +1160,44 @@ impl Sampler {
     // }
 }
 
+
+#[derive(Clone, Debug)]
+pub struct ProposalStats {
+    cell_to_cell_accept: usize,
+    cell_to_cell_reject: usize,
+    background_to_cell_accept: usize,
+    background_to_cell_reject: usize,
+    background_to_cell_ignore: usize,
+    cell_to_background_accept: usize,
+    cell_to_background_reject: usize,
+}
+
+
+impl ProposalStats {
+    fn new() -> Self {
+        ProposalStats {
+            cell_to_cell_accept: 0,
+            cell_to_cell_reject: 0,
+            background_to_cell_accept: 0,
+            background_to_cell_reject: 0,
+            background_to_cell_ignore: 0,
+            cell_to_background_accept: 0,
+            cell_to_background_reject: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.cell_to_cell_accept = 0;
+        self.cell_to_cell_reject = 0;
+        self.background_to_cell_accept = 0;
+        self.background_to_cell_reject = 0;
+        self.background_to_cell_ignore = 0;
+        self.cell_to_background_accept = 0;
+        self.cell_to_background_reject = 0;
+    }
+}
+
+
 #[derive(Clone, Debug)]
 struct Proposal {
     i: usize,
@@ -1173,6 +1240,7 @@ impl Proposal {
         cell_transcripts: &Vec<HashSet<usize>>,
         cell_areas: &Array1<f32>,
         areacalc: RefMut<AreaCalcStorage>,
+        counts: &Array2<u32>,
     ) {
         if self.ignore || seg.cell_assignments[self.i] == self.state {
             self.accept = false;
@@ -1258,12 +1326,17 @@ impl Proposal {
 
         // DEBUG: Why are we rejecting from background proposals?
         // if !self.accept && from_background {
-        //     let λ_to = params.λ[[this_transcript.gene as usize, self.state as usize]];
-        //     let current_to_cell_area = cell_areas[self.state as usize];
-        //     dbg!(self.log_weight, δ,
-        //         λ_bg, λ_to, 
-        //         current_to_cell_area,
-        //         self.to_cell_area);
+        //     if rng.gen::<f64>() < 0.001 {
+        //         let to_cell_count = counts.column(self.state as usize).sum();
+        //         let λ_to = params.λ[[this_transcript.gene as usize, self.state as usize]];
+        //         let current_to_cell_area = cell_areas[self.state as usize];
+        //         dbg!(self.log_weight, δ,
+        //             λ_bg, λ_to, 
+        //             current_to_cell_area,
+        //             self.to_cell_area,
+        //             to_cell_count,
+        //         );
+        //     }
         // }
 
         // DEBUG: Why are we accepting to_background proposals?
