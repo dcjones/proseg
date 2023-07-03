@@ -1,3 +1,6 @@
+
+use super::hull::polygon_area;
+
 use csv;
 use flate2::read::GzDecoder;
 use petgraph::csr::Csr;
@@ -229,7 +232,7 @@ impl HasPosition for TranscriptPosIdx {
 pub fn neighborhood_graph(
     transcripts: &Vec<Transcript>,
     max_edge_length: f32,
-) -> (NeighborhoodGraph, f32) {
+) -> (NeighborhoodGraph, Vec<f32>, f32) {
     let max_edge_length_squared = max_edge_length * max_edge_length;
 
     let vertices = transcripts
@@ -252,27 +255,28 @@ pub fn neighborhood_graph(
 
     // Compute the area of each transcript's voronoi cell
     let mut face_verts: Vec<(f32, f32)> = Vec::new();
+    let mut transcript_areas: Vec<f32> = vec![0.0; transcripts.len()];
     for face in triangulation.voronoi_faces() {
         let i = face.as_delaunay_vertex().data().idx;
+        face_verts.clear();
         for edge in face.adjacent_edges() {
-            // TODO: Figure out how to deal with outer vertices
+
+            // The simplest thing to do with outer vertices is just to skip
+            // over them. Downside is that the cells for transcripts around
+            // the border might be slightly smaller than the ought to be.
             match [edge.from().position(), edge.to().position()] {
-                [Some(from), Some(to)] => {
-
+                [Some(from), _] => {
+                    face_verts.push((from.x, from.y));
                 },
-                [Some(from), None] => {
-
-                },
-                [None, Some(to)] => {
-
+                [None, Some(_)] => {
+                    // Ignored
                 },
                 [None, None] => {
                     panic!("Strange Voronoi edge.")
                 },
             }
 
-            // // TODO: What do I do with outer vertices?
-            // edge.to().position()
+            transcript_areas[i as usize] = polygon_area(&mut face_verts);
         }
     }
 
@@ -303,7 +307,7 @@ pub fn neighborhood_graph(
         nrejected as f64 / nedges as f64 * 100.0
     );
 
-    return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), avg_edge_length);
+    return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), transcript_areas, avg_edge_length);
 }
 
 pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32) {

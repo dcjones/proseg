@@ -397,6 +397,7 @@ pub struct Sampler {
     proposals: Vec<Proposal>,
     pub proposal_stats: ProposalStats,
     cell_transcripts: Vec<HashSet<usize>>,
+    transcripts_areas: Array1<f32>,
     cell_areas: Array1<f32>,
     cell_area_calc_storage: ThreadLocal<RefCell<AreaCalcStorage>>,
     full_area: f32,
@@ -420,6 +421,7 @@ impl Sampler {
     pub fn new(
         priors: ModelPriors,
         seg: &mut Segmentation,
+        transcript_areas: &Vec<f32>,
         ncomponents: usize,
         ngenes: usize,
         chunk_size: f32,
@@ -489,6 +491,7 @@ impl Sampler {
             transcripts: chunked_transcripts,
             params,
             cell_transcripts,
+            transcripts_areas: Array1::from_iter(transcript_areas.iter().cloned()),
             cell_areas,
             cell_area_calc_storage: ThreadLocal::new(),
             full_area: 0_f32,
@@ -516,9 +519,7 @@ impl Sampler {
         sampler.compute_cell_areas();
         sampler.compute_counts(seg);
 
-        let t0 = Instant::now();
         sampler.sample_global_params(None);
-        println!("Sampled global params in {:?}", t0.elapsed());
 
         return sampler;
     }
@@ -585,6 +586,7 @@ impl Sampler {
                 seg,
                 &self.priors,
                 &self.params,
+                &self.transcripts_areas,
                 &self.cell_transcripts,
                 &self.cell_areas,
                 areacalc,
@@ -827,7 +829,7 @@ impl Sampler {
                     *bc -= *fc;
                 }
             });
-        println!("  Sample background counts: {:?}", t0.elapsed());
+        // println!("  Sample background counts: {:?}", t0.elapsed());
 
         // total component area
         let mut component_cell_area = vec![0_f32; self.params.ncomponents()];
@@ -854,13 +856,13 @@ impl Sampler {
         Zip::from(self.params.θ.columns_mut())
             .and(self.component_counts.rows())
             .and(&self.params.r)
-            .par_for_each(|θs, cs, r| {
+            .par_for_each(|θs, cs, &r| {
                 let mut rng = thread_rng();
-                for (θ, c, a) in izip!(θs, cs, &component_cell_area) {
+                for (θ, &c, &a) in izip!(θs, cs, &component_cell_area) {
                     *θ = prob_to_odds(
                         Beta::new(
-                            (self.priors.α_θ + *c as f32),
-                            (self.priors.β_θ + *a * *r),
+                            self.priors.α_θ + c as f32,
+                            self.priors.β_θ + a * r,
                         )
                         .unwrap()
                         .sample(&mut rng),
@@ -874,12 +876,7 @@ impl Sampler {
                     // }
                 }
             });
-        println!("  Sample θ: {:?}", t0.elapsed());
-
-        // println!("θ span {} {} {}",
-        //     self.params.θ.mean().unwrap(),
-        //     self.params.θ.fold(f32::MAX, |accum, &x| accum.min(x)),
-        //     self.params.θ.fold(f32::MIN, |accum, &x| accum.max(x)));
+        // println!("  Sample θ: {:?}", t0.elapsed());
 
         // Sample r
         let t0 = Instant::now();
@@ -912,7 +909,7 @@ impl Sampler {
                         accum + log1pf(-odds_to_prob(w * *a))
                     });
 
-                *r = Gamma::new((self.priors.e_r + u), (self.priors.f_r - v).recip())
+                *r = Gamma::new(self.priors.e_r + u, (self.priors.f_r - v).recip())
                     .unwrap()
                     .sample(&mut rng);
 
@@ -924,12 +921,7 @@ impl Sampler {
                 // TODO: any better solution here?
                 *r = r.min(100.0).max(1e-4);
             });
-        println!("  Sample r: {:?}", t0.elapsed());
-
-        // println!("r span {} {} {}",
-        //     self.params.r.mean().unwrap(),
-        //     self.params.r.fold(f32::MAX, |accum, &x| accum.min(x)),
-        //     self.params.r.fold(f32::MIN, |accum, &x| accum.max(x)));
+        // println!("  Sample r: {:?}", t0.elapsed());
 
         // Sample λ
         let t0 = Instant::now();
@@ -964,18 +956,14 @@ impl Sampler {
                     // dbg!(*λ, *r, θ, *c, cell_area, *c as f32 / cell_area);
                 }
             });
-        println!("  Sample λ: {:?}", t0.elapsed());
+        // println!("  Sample λ: {:?}", t0.elapsed());
 
 
         // TODO:
         // This is the most expensive part. We could sample this less frequently,
         // but we should try to optimize as much as possible.
         // Ideas:
-        //   - I suspect there's just a lot of overhead for the rayon parallel loop
-        //     over cells.
-        //   - foreground_counts is in row-major so we're processing it in a
-        //     suboptimal way. Maybe we should transpose it?
-        //   - 
+        //   - Main bottlneck is computing log(p) and log(1-p).
 
 
         // Sample z
@@ -1031,7 +1019,7 @@ impl Sampler {
             let u = rng.gen::<f64>();
             *z_i = z_probs.partition_point(|x| *x < u) as u32;
         });
-        println!("  Sample z: {:?}", t0.elapsed());
+        // println!("  Sample z: {:?}", t0.elapsed());
 
         // sample π
         let mut α = vec![1_f32; self.params.ncomponents()];
@@ -1089,21 +1077,27 @@ impl Sampler {
                 return;
             }
 
-            let mut areacalc = self
-                .cell_area_calc_storage
-                .get_or(|| RefCell::new(AreaCalcStorage::new()))
-                .borrow_mut();
-            areacalc.vertices.clear();
-
-            for j in self.cell_transcripts[i].iter() {
-                let transcript = self.transcripts[*j].transcript;
-                areacalc.vertices.push((transcript.x, transcript.y));
+            *area = 0_f32;
+            for &j in self.cell_transcripts[i].iter() {
+                *area += self.transcripts_areas[j];
             }
+            *area = area.max(self.priors.min_cell_size);
 
-            let (mut vertices, mut hull) = RefMut::map_split(areacalc, |areacalc| {
-                (&mut areacalc.vertices, &mut areacalc.hull)
-            });
-            *area = convex_hull_area(&mut vertices, &mut hull).max(self.priors.min_cell_size);
+            // let mut areacalc = self
+            //     .cell_area_calc_storage
+            //     .get_or(|| RefCell::new(AreaCalcStorage::new()))
+            //     .borrow_mut();
+            // areacalc.vertices.clear();
+
+            // for j in self.cell_transcripts[i].iter() {
+            //     let transcript = self.transcripts[*j].transcript;
+            //     areacalc.vertices.push((transcript.x, transcript.y));
+            // }
+
+            // let (mut vertices, mut hull) = RefMut::map_split(areacalc, |areacalc| {
+            //     (&mut areacalc.vertices, &mut areacalc.hull)
+            // });
+            // *area = convex_hull_area(&mut vertices, &mut hull).max(self.priors.min_cell_size);
         });
 
         let mut minarea: f32 = 1e12;
@@ -1262,6 +1256,7 @@ impl Proposal {
         seg: &Segmentation,
         priors: &ModelPriors,
         params: &ModelParams,
+        transcript_areas: &Array1<f32>,
         cell_transcripts: &Vec<HashSet<usize>>,
         cell_areas: &Array1<f32>,
         areacalc: RefMut<AreaCalcStorage>,
@@ -1286,16 +1281,20 @@ impl Proposal {
 
         if !from_background {
             // recompute area for `prev_state` after reassigning this transcript
-            areacalc_vertices.clear();
-            for j in cell_transcripts[prev_state as usize].iter() {
-                let transcript = &seg.transcripts[*j];
-                if transcript != this_transcript {
-                    areacalc_vertices.push((transcript.x, transcript.y));
-                }
-            }
 
-            self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
-                .max(priors.min_cell_size);
+            self.from_cell_area =
+                (cell_areas[prev_state as usize] - transcript_areas[self.i]).max(priors.min_cell_size);
+
+            // areacalc_vertices.clear();
+            // for j in cell_transcripts[prev_state as usize].iter() {
+            //     let transcript = &seg.transcripts[*j];
+            //     if transcript != this_transcript {
+            //         areacalc_vertices.push((transcript.x, transcript.y));
+            //     }
+            // }
+
+            // self.from_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
+            //     .max(priors.min_cell_size);
 
             let current_from_cell_area = cell_areas[prev_state as usize];
 
@@ -1305,15 +1304,19 @@ impl Proposal {
 
         if !to_background {
             // recompute area for `self.state` after reassigning this transcript
-            areacalc_vertices.clear();
-            for j in cell_transcripts[self.state as usize].iter() {
-                let transcript = &seg.transcripts[*j];
-                areacalc_vertices.push((transcript.x, transcript.y));
-            }
-            areacalc_vertices.push((this_transcript.x, this_transcript.y));
 
-            self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
-               .max(priors.min_cell_size);
+            self.to_cell_area =
+                (cell_areas[self.state as usize] + transcript_areas[self.i]).max(priors.min_cell_size);
+
+            // areacalc_vertices.clear();
+            // for j in cell_transcripts[self.state as usize].iter() {
+            //     let transcript = &seg.transcripts[*j];
+            //     areacalc_vertices.push((transcript.x, transcript.y));
+            // }
+            // areacalc_vertices.push((this_transcript.x, this_transcript.y));
+
+            // self.to_cell_area = convex_hull_area(&mut areacalc_vertices, &mut areacalc_hull)
+            //    .max(priors.min_cell_size);
 
             let current_to_cell_area = cell_areas[self.state as usize];
 

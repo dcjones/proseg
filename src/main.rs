@@ -116,7 +116,8 @@ fn main() {
     println!("Using grid size {}. Chunks: {}", chunk_size, nchunks(chunk_size, xspan, yspan));
 
     let quadrant_size = chunk_size / 2.0;
-    let (adjacency, avg_edge_length) = neighborhood_graph(&transcripts, quadrant_size);
+    let (adjacency, transcript_areas, avg_edge_length) =
+        neighborhood_graph(&transcripts, quadrant_size);
 
     println!("Built neighborhood graph with {} edges", adjacency.edge_count()/2);
 
@@ -137,21 +138,24 @@ fn main() {
     };
 
     let mut seg = Segmentation::new(&transcripts, &adjacency, init_cell_assignments, init_cell_population);
-    let mut sampler = Sampler::new(priors, &mut seg, args.ncomponents, ngenes, chunk_size);
+    let mut sampler = Sampler::new(
+        priors, &mut seg, &&transcript_areas,
+        args.ncomponents, ngenes, chunk_size);
 
     for i in 0..args.niter {
         for _ in 0..args.local_steps_per_iter {
             sampler.sample_local_updates(&seg);
             seg.apply_local_updates(&mut sampler);
         }
+        sampler.sample_global_params(None);
         // sampler.sample_global_params(Some(0.05));
 
         // TODO: Can I sort of bootstrap things like this?
-        if i < 500 {
-            sampler.sample_global_params(Some(0.05));
-        } else {
-            sampler.sample_global_params(None);
-        }
+        // if i < 500 {
+        //     sampler.sample_global_params(Some(0.05));
+        // } else {
+        //     sampler.sample_global_params(None);
+        // }
 
         // TODO: debugging
         // sampler.check_mismatch_edges(&seg);

@@ -5,6 +5,7 @@
 use std::cell::RefMut;
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::ops::DerefMut;
 
 
 // All this is just a mechanism to to do static dispatch on whether we are above or
@@ -83,14 +84,24 @@ pub fn convex_hull_area(vertices: &mut RefMut<Vec<(f32,f32)>>, hull: &mut RefMut
     }
 
     // compute the area
-    let c = center(&hull);
-    hull.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b) );
+    return polygon_area(hull.deref_mut());
+}
+
+pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
+    let c = center(&vertices);
+    vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b) );
 
     let mut area = 0.0;
-    for (i, u) in hull.iter().enumerate() {
-        let j = (i + 1) % hull.len();
-        let v = hull[j];
-        area += u.0 * v.1 - u.1 * v.0;
+
+    for (i, u) in vertices.iter().enumerate() {
+        let j = (i + 1) % vertices.len();
+        let v = vertices[j];
+
+        // triangle formula.
+        // area += u.0 * v.1 - v.0 * u.1;
+
+        // trapezoid formula (this is more numerically stable with large coordinates)
+        area += (v.0 + u.0) * (v.1 - u.1);
     }
     area = area.abs() / 2.0;
 

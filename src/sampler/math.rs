@@ -21,12 +21,14 @@ pub fn negbin_logpmf_fast(r: f32, lgamma_r: f32, lgamma_rpk: f32, p: f32, k: u32
 
     let result = if k == 0 {
         // handle common case in sparse data efficiently
-        r * (1.0 - p).ln()
+        // r * (1.0 - p).ln()
+        r * (-p).ln_1p()
     } else {
             lgamma_rpk
             - lgamma_r
             - k_ln_factorial
-            + (k as f32) * p.ln() + r * (1.0 - p).ln()
+            // + (k as f32) * p.ln() + r * (1.0 - p).ln()
+            + (k as f32) * p.ln() + r * (-p).ln_1p()
     };
 
     return result;
