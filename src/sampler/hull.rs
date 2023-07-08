@@ -1,11 +1,11 @@
 
-// Quickhull algorithm
-// geo's implementation: https://docs.rs/geo/latest/src/geo/algorithm/convex_hull/qhull.rs.html#21-63
+use super::transcripts::Transcript;
 
 use std::cell::RefMut;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::ops::DerefMut;
+use std::cell::RefCell;
 
 
 // All this is just a mechanism to to do static dispatch on whether we are above or
@@ -30,6 +30,24 @@ impl QuickhullSide for QuickhullBelow {
     fn tricontains(u: (f32, f32), v: (f32, f32), w: (f32, f32), p: (f32, f32)) -> bool {
         return isabove(u, w, p) && isabove(w, v, p)
     }
+}
+
+
+pub fn compute_full_area(transcripts: &Vec<Transcript>) -> f32 {
+    let vertices = Vec::from_iter(
+        transcripts
+            .iter()
+            .map(|t| (t.x, t.y)),
+    );
+    let hull = Vec::new();
+
+    let vertices_refcell = RefCell::new(vertices);
+    let mut vertices_ref = vertices_refcell.borrow_mut();
+
+    let hull_refcell = RefCell::new(hull);
+    let mut hull_ref = hull_refcell.borrow_mut();
+
+    return convex_hull_area(&mut vertices_ref, &mut hull_ref);
 }
 
 

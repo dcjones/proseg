@@ -4,8 +4,9 @@ use clap::Parser;
 
 mod sampler;
 
-use sampler::{Sampler, Segmentation, ModelPriors};
+use sampler::{Sampler, ModelPriors, ModelParams};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span};
+use sampler::transcriptsampler::TranscriptSampler;
 use rayon::current_num_threads;
 use csv;
 use std::fs::File;
@@ -82,6 +83,9 @@ fn main() {
 
     println!("Read {} transcripts", ntranscripts);
 
+    let full_area = sampler::hull::compute_full_area(&transcripts);
+    println!("Full area: {}", full_area);
+
     // let nuclei_centroids = read_nuclei_csv(
     //     &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
     // let ncells = nuclei_centroids.len();
@@ -137,10 +141,22 @@ fn main() {
         f_r: 1.0,
     };
 
+    let mut params = ModelParams::new(
+        &priors,
+        full_area,
+        &transcripts,
+        &init_cell_assignments,
+        &init_cell_population,
+        &transcript_areas,
+        args.ncomponents,
+        ncells,
+        ngenes
+    );
+
     let mut seg = Segmentation::new(&transcripts, &adjacency, init_cell_assignments, init_cell_population);
     let mut sampler = Sampler::new(
         priors, &mut seg, &&transcript_areas,
-        args.ncomponents, ngenes, chunk_size);
+        args.ncomponents, ngenes, full_area, chunk_size);
 
     for i in 0..args.niter {
         for _ in 0..args.local_steps_per_iter {
