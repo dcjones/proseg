@@ -481,13 +481,6 @@ trait Proposal {
             self.accept();
         } else {
             self.reject();
-
-            // TODO: debugging
-            if from_background && !to_background {
-                // dbg!(params.λ.column(new_cell as usize));
-                // dbg!(&params.λ_bg);
-                dbg!(self.log_weight(), δ, self.new_cell_area_delta(), self.transcripts().len());
-            }
         }
     }
 }
@@ -551,8 +544,6 @@ pub trait Sampler<P> where P: Proposal + Send {
             }
 
             if new_cell as usize != params.ncells() {
-                params.cell_areas[new_cell as usize] = proposal.new_cell_area_delta();
-
                 let mut cell_area = params.cell_areas[new_cell as usize];
                 cell_area += proposal.new_cell_area_delta();
                 cell_area = cell_area.max(priors.min_cell_area);
@@ -649,8 +640,7 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(&mut params.background_counts)
             .and(params.λ.rows())
             .and(&params.λ_bg)
-            // .par_for_each(|cs, fcs, bc, λs, λ_bg| {
-            .for_each(|cs, fcs, bc, λs, λ_bg| {
+            .par_for_each(|cs, fcs, bc, λs, λ_bg| {
                 let mut rng = thread_rng();
 
                 let p_bg = λ_bg * (-λ_bg * params.full_area).exp();
@@ -673,12 +663,10 @@ pub trait Sampler<P> where P: Proposal + Send {
                     // TODO: Maybe add a special fast case for when `p` is exceptionally low?
 
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
-                    assert!(*fc <= *c);
 
                     // TODO: This seems fucked overall. I get
                     // *fc = *c;
 
-                    assert!(*bc >= *fc);
                     *bc -= *fc;
                 }
             });

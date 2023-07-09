@@ -181,7 +181,7 @@ fn main() {
 
         println!("Log likelihood: {}", params.log_likelihood());
 
-        dbg!(&proposal_stats);
+        // dbg!(&proposal_stats);
         proposal_stats.reset();
 
         if i % 100 == 0 {

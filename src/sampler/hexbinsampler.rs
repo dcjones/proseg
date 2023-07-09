@@ -91,6 +91,10 @@ impl HexCellMap {
     fn set(&mut self, hex: Hex, cell: u32) {
         self.index.insert(hex, cell);
     }
+
+    fn count(&self, cell: u32) -> usize {
+        return self.index.values().filter(|&&c| c == cell).count();
+    }
 }
 
 
