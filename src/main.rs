@@ -4,9 +4,9 @@ use clap::Parser;
 
 mod sampler;
 
-use sampler::{Sampler, ModelPriors, ModelParams};
+use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span};
-use sampler::transcriptsampler::TranscriptSampler;
+use sampler::hexbinsampler::HexBinSampler;
 use rayon::current_num_threads;
 use csv;
 use std::fs::File;
@@ -128,7 +128,7 @@ fn main() {
     // can't just divide area by number of cells, because a large portion may have to cells.
 
     let priors = ModelPriors {
-        min_cell_size: avg_edge_length,
+        min_cell_area: avg_edge_length,
         μ_μ_a: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
         σ_μ_a: 3.0_f32,
         α_σ_a: 0.1,
@@ -153,36 +153,39 @@ fn main() {
         ngenes
     );
 
-    let mut seg = Segmentation::new(&transcripts, &adjacency, init_cell_assignments, init_cell_population);
-    let mut sampler = Sampler::new(
-        priors, &mut seg, &&transcript_areas,
-        args.ncomponents, ngenes, full_area, chunk_size);
+    // TODO: Idea is to half this until we are down to mostly single transcripts.
+    let avghexpop = 5.0;
+
+    let mut sampler = HexBinSampler::new(
+        &priors,
+        &mut params,
+        &transcripts,
+        ncells,
+        ngenes,
+        full_area,
+        avghexpop,
+        chunk_size
+    );
+
+    sampler.sample_global_params(&priors, &mut params);
+    let mut proposal_stats = ProposalStats::new();
 
     for i in 0..args.niter {
         for _ in 0..args.local_steps_per_iter {
-            sampler.sample_local_updates(&seg);
-            seg.apply_local_updates(&mut sampler);
+            sampler.sample_cell_regions(&priors, &mut params, &mut proposal_stats, &transcripts);
         }
-        sampler.sample_global_params(None);
-        // sampler.sample_global_params(Some(0.05));
+        sampler.sample_global_params(&priors, &mut params);
 
-        // TODO: Can I sort of bootstrap things like this?
-        // if i < 500 {
-        //     sampler.sample_global_params(Some(0.05));
-        // } else {
-        //     sampler.sample_global_params(None);
-        // }
+    //     // TODO: debugging
+    //     // sampler.check_mismatch_edges(&seg);
 
-        // TODO: debugging
-        // sampler.check_mismatch_edges(&seg);
+        println!("Log likelihood: {}", params.log_likelihood());
 
-        println!("Log likelihood: {}", sampler.log_likelihood());
-        // dbg!(&sampler.proposal_stats);
-        sampler.proposal_stats.reset();
+        dbg!(&proposal_stats);
+        proposal_stats.reset();
 
         if i % 100 == 0 {
-            println!("Iteration {} ({} unassigned transcripts)", i, seg.nunassigned());
-            // dbg!(&seg.cell_logprobs);
+            println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
         }
     }
 
@@ -194,7 +197,7 @@ fn main() {
             .from_writer(encoder);
 
         writer.write_record(transcript_names.iter()).unwrap();
-        for row in sampler.counts().t().rows() {
+        for row in params.counts.t().rows() {
             writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
         }
     }
@@ -208,14 +211,13 @@ fn main() {
             .from_writer(encoder);
 
         writer.write_record(["z"]).unwrap();
-        for z in sampler.z.iter() {
+        for z in params.z.iter() {
             writer.write_record([z.to_string()]).unwrap();
         }
     }
 
-    seg.write_cell_hulls("cells.geojson.gz");
+    params.write_cell_hulls(&transcripts, "cells.geojson.gz");
 
-    // TODO: dumping cell assignments
     {
         let file = File::create("cell_assignments.csv.gz").unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
@@ -224,7 +226,7 @@ fn main() {
             .from_writer(encoder);
 
         writer.write_record(["x", "y", "gene", "assignment"]).unwrap();
-        for (cell, transcript) in seg.cell_assignments.iter().zip(&transcripts) {
+        for (cell, transcript) in params.cell_assignments.iter().zip(&transcripts) {
             writer.write_record([
                 transcript.x.to_string(),
                 transcript.y.to_string(),
@@ -232,25 +234,5 @@ fn main() {
                 cell.to_string().to_string()]).unwrap();
         }
     }
-
-    // TODO: dumping nuclei
-    // {
-    //     let file = File::create("nuclei.csv.gz").unwrap();
-    //     let encoder = GzEncoder::new(file, Compression::default());
-    //     let mut writer = csv::WriterBuilder::new()
-    //         .has_headers(false)
-    //         .from_writer(encoder);
-
-    //     writer.write_record(["x", "y"]).unwrap();
-    //     for centroid in &nuclei_centroids {
-    //         writer.write_record([centroid.x.to_string(), centroid.y.to_string()]).unwrap();
-    //     }
-    // }
-
-    // TODO
-    // I think to really dig into the details, we are going to have to dump
-    // cell polygons. That we we can plot the cell boundaries overlaid with
-    // the transcripts.
-
 
 }

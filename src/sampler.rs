@@ -3,10 +3,11 @@ mod math;
 pub mod hull;
 mod sampleset;
 pub mod transcripts;
-pub mod transcriptsampler;
-mod hexbinsampler;
+// pub mod transcriptsampler;
+pub mod hexbinsampler;
 
 use core::fmt::Debug;
+use std::arch::x86_64::_popcnt32;
 use math::{
     negbin_logpmf_fast,
     odds_to_prob, prob_to_odds, rand_pois,
@@ -55,7 +56,7 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
-    pub min_cell_size: f32,
+    pub min_cell_area: f32,
 
     // params for normal prior
     pub μ_μ_a: f32,
@@ -76,7 +77,7 @@ pub struct ModelPriors {
 
 // Model global parameters.
 pub struct ModelParams {
-    cell_assignments: Vec<u32>,
+    pub cell_assignments: Vec<u32>,
     cell_population: Vec<usize>,
 
     // per-cell areas
@@ -89,7 +90,7 @@ pub struct ModelParams {
     full_area: f32,
 
     // [ngenes, ncells] transcripts counts
-    counts: Array2<u32>,
+    pub counts: Array2<u32>,
 
     // [ncells, ngenes] foreground transcripts counts
     foreground_counts: Array2<u32>,
@@ -104,7 +105,7 @@ pub struct ModelParams {
     logfactorial: LogFactorial,
     loggammaplus: Vec<LogGammaPlus>,
 
-    z: Array1<u32>, // assignment of cells to components
+    pub z: Array1<u32>, // assignment of cells to components
 
     // [ngenes, ncomponents] number of transcripts of each gene assigned to each component
     component_counts: Array2<u32>,
@@ -161,19 +162,24 @@ impl ModelParams {
 
         // compute initial cell areas
         let mut cell_areas = Array1::<f32>::zeros(ncells);
-        for (i, j) in init_cell_assignments.iter().enumerate() {
-            cell_areas[*j as usize] += transcript_areas[i];
+        for (i, &j) in init_cell_assignments.iter().enumerate() {
+            if j < ncells as u32 {
+                cell_areas[j as usize] += transcript_areas[i];
+            }
         }
         for area in cell_areas.iter_mut() {
-            *area = area.max(priors.min_cell_size);
+            *area = area.max(priors.min_cell_area);
         }
 
         // compute initial counts
         let mut counts = Array2::<u32>::from_elem((ngenes, ncells), 0);
         let mut total_gene_counts = Array1::<u32>::from_elem(ngenes, 0);
-        for (i, j) in init_cell_assignments.iter().enumerate() {
-            counts[(transcripts[i].gene as usize, *j as usize)] += 1;
-            total_gene_counts[transcripts[i].gene as usize] += 1;
+        for (i, &j) in init_cell_assignments.iter().enumerate() {
+            let gene = transcripts[i].gene as usize;
+            if j < ncells as u32 {
+                counts[[gene, j as usize]] += 1;
+            }
+            total_gene_counts[gene] += 1;
         }
 
         // initial component assignments
@@ -213,6 +219,16 @@ impl ModelParams {
 
     fn ncomponents(&self) -> usize {
         return self.π.len();
+    }
+
+    fn recompute_counts(&mut self, ncells: usize, transcripts: &Vec<Transcript>) {
+        self.counts.fill(0);
+        for (i, &j) in self.cell_assignments.iter().enumerate() {
+            let gene = transcripts[i].gene as usize;
+            if j < ncells as u32 {
+                self.counts[[gene, j as usize]] += 1;
+            }
+        }
     }
 
     pub fn nunassigned(&self) -> usize {
@@ -349,7 +365,7 @@ pub struct ProposalStats {
 
 
 impl ProposalStats {
-    fn new() -> Self {
+    pub fn new() -> Self {
         ProposalStats {
             cell_to_cell_accept: 0,
             cell_to_cell_reject: 0,
@@ -374,28 +390,34 @@ impl ProposalStats {
 
 
 
-trait Proposal<I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item = (u32, u32)>{
+trait Proposal {
     fn accept(&mut self);
     fn reject(&mut self);
 
     fn ignored(&self) -> bool;
     fn accepted(&self) -> bool;
 
+    // Return updated cell size minus current cell size `old_cell`
+    fn old_cell_area_delta(&self) -> f32;
+
+    // Return updated cell size minus current cell size `new_cell`
+    fn new_cell_area_delta(&self) -> f32;
+
     fn old_cell(&self) -> u32;
     fn new_cell(&self) -> u32;
 
-    fn set_old_cell_area(&mut self, area: f32);
-    fn set_new_cell_area(&mut self, area: f32);
+    // fn set_old_cell_area(&mut self, area: f32);
+    // fn set_new_cell_area(&mut self, area: f32);
 
-    fn old_cell_area(&self) -> f32;
-    fn new_cell_area(&self) -> f32;
+    // fn old_cell_area(&self) -> f32;
+    // fn new_cell_area(&self) -> f32;
 
     fn log_weight(&self) -> f32;
 
-    fn transcripts(&self) -> I1;
+    fn transcripts<'b, 'c>(&'b self) -> &'c[usize] where 'b: 'c;
 
     // Iterator over number of transcripts in the proposal of each gene
-    fn gene_count(&self) -> I2;
+    fn gene_count<'b, 'c>(&'b self) -> &'c[u32] where 'b: 'c;
 
     fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
         if self.ignored() {
@@ -411,51 +433,44 @@ trait Proposal<I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item = (u3
         // Log Metropolis-Hastings acceptance ratio
         let mut δ = 0.0;
 
+        // TODO: Do all these terms change even for genes that aren't involved?
+
         if from_background {
-            for (i, count) in self.gene_count() {
+            for (i, &count) in self.gene_count().iter().enumerate() {
                 δ -= count as f32 * params.λ_bg[i].ln()
             }
         } else {
-            // recompute cell area for old cell
-            let mut old_cell_area = params.cell_areas[old_cell as usize];
-            for i in self.transcripts() {
-                old_cell_area -= params.transcript_areas[i];
-            }
-            old_cell_area = old_cell_area.max(priors.min_cell_size);
-            self.set_old_cell_area(old_cell_area);
-            let area_diff = params.cell_areas[old_cell_area as usize] - old_cell_area;
+            let area_diff = self.old_cell_area_delta();
 
             // normalization term difference
             δ += Zip::from(params.λ.column(old_cell as usize))
-                .fold(0.0, |acc, &λ| acc + λ * area_diff);
+                .fold(0.0, |acc, &λ| acc - λ * area_diff);
 
             // subtract out old cell likelihood terms
-            for (i, count) in self.gene_count() {
-                δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i as usize, old_cell as usize]]).ln();
+            for (i, &count) in self.gene_count().iter().enumerate() {
+                δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
             }
         }
 
         if to_background {
-            for (i, count) in self.gene_count() {
-                δ += count as f32 * params.λ_bg[i as usize].ln();
+            for (i, &count) in self.gene_count().iter().enumerate() {
+                δ += count as f32 * params.λ_bg[i].ln();
             }
         } else {
-            // recompute area for new cell
-            let mut new_cell_area = params.cell_areas[new_cell as usize];
-            for i in self.transcripts() {
-                new_cell_area += params.transcript_areas[i];
-            }
-            new_cell_area = new_cell_area.max(priors.min_cell_size);
-            self.set_new_cell_area(new_cell_area);
-            let area_diff = params.cell_areas[new_cell as usize] - new_cell_area;
+            let area_diff = self.new_cell_area_delta();
+
+            // TODO: Ok, the totality of the hugely negative score comes from this bit here.
+            // It seems we end up rejecting any more to enlarge cells because this
+            // is always negative a million.
 
             // normalization term difference
             δ += Zip::from(params.λ.column(new_cell as usize))
-                .fold(0.0, |acc, &λ| acc + λ * area_diff);
+                .fold(0.0, |acc, &λ| acc - λ * area_diff);
+
 
             // add in new cell likelihood terms
-            for (i, count) in self.gene_count() {
-                δ += count as f32 * (params.λ_bg[i as usize] + params.λ[[i as usize, new_cell as usize]]).ln();
+            for (i, &count) in self.gene_count().iter().enumerate() {
+                δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
             }
         }
 
@@ -466,33 +481,56 @@ trait Proposal<I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item = (u3
             self.accept();
         } else {
             self.reject();
+
+            // TODO: debugging
+            if from_background && !to_background {
+                // dbg!(params.λ.column(new_cell as usize));
+                // dbg!(&params.λ_bg);
+                dbg!(self.log_weight(), δ, self.new_cell_area_delta(), self.transcripts().len());
+            }
         }
     }
 }
 
 
-pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item = (u32, u32)>, P: Proposal<I1, I2> {
-    fn generate_proposals<'a> (&'a mut self, params: &ModelParams) -> &'a [P];
+pub trait Sampler<P> where P: Proposal + Send {
+    // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
+
+    fn repopulate_proposals(&mut self, params: &ModelParams);
+    fn proposals<'a, 'b>(&'a self) -> &'b [P] where 'a: 'b;
+    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [P] where 'a: 'b;
 
     // Called by `apply_accepted_proposals` to handle any sampler specific
     // updates needed after applying accepted proposals. This is mainly
     // updating mismatch edges.
-    fn update_sampler_state(&mut self, params: &ModelParams, proposals: &[P]);
+    fn update_sampler_state(&mut self, params: &ModelParams);
+
+    fn sample_cell_regions(
+        &mut self, priors: &ModelPriors, params: &mut ModelParams,
+        stats: &mut ProposalStats, transcripts: &Vec<Transcript>)
+    {
+        self.repopulate_proposals(params);
+        self.proposals_mut()
+            .par_iter_mut()
+            .for_each(|p| p.evaluate(priors, params));
+
+        self.apply_accepted_proposals(stats, transcripts, priors, params);
+    }
 
     fn apply_accepted_proposals(
         &mut self,
         stats: &mut ProposalStats,
         transcripts: &Vec<Transcript>,
-        params: &ModelParams,
-        proposals: &[P])
+        priors: &ModelPriors,
+        params: &mut ModelParams)
     {
         // Update cell assignments
-        for proposal in proposals.iter().filter(|p| p.accepted()) {
+        for proposal in self.proposals().iter().filter(|p| p.accepted() && !p.ignored()) {
             let old_cell = proposal.old_cell();
             let new_cell = proposal.new_cell();
 
             let mut count = 0;
-            for i in proposal.transcripts() {
+            for &i in proposal.transcripts() {
                 params.cell_assignments[i] = new_cell;
                 count += 1;
             }
@@ -501,16 +539,26 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
 
             // Update count matrix and areas
             if old_cell as usize != params.ncells() {
-                params.cell_areas[old_cell as usize] = proposal.old_cell_area();
-                for i in proposal.transcripts() {
+                let mut cell_area = params.cell_areas[old_cell as usize];
+                cell_area += proposal.old_cell_area_delta();
+                cell_area = cell_area.max(priors.min_cell_area);
+                params.cell_areas[old_cell as usize] = cell_area;
+
+                for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
                     params.counts[[gene as usize, old_cell as usize]] -= 1;
                 }
             }
 
             if new_cell as usize != params.ncells() {
-                params.cell_areas[new_cell as usize] = proposal.new_cell_area();
-                for i in proposal.transcripts() {
+                params.cell_areas[new_cell as usize] = proposal.new_cell_area_delta();
+
+                let mut cell_area = params.cell_areas[new_cell as usize];
+                cell_area += proposal.new_cell_area_delta();
+                cell_area = cell_area.max(priors.min_cell_area);
+                params.cell_areas[new_cell as usize] = cell_area;
+
+                for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
                     params.counts[[gene as usize, new_cell as usize]] += 1;
                 }
@@ -526,7 +574,20 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
             }
         }
 
-        self.update_sampler_state(params, proposals);
+        for proposal in self.proposals().iter().filter(|p| !p.accepted() && !p.ignored()) {
+            let old_cell = proposal.old_cell();
+            let new_cell = proposal.new_cell();
+
+            if old_cell as usize == params.ncells() && new_cell as usize != params.ncells() {
+                stats.background_to_cell_reject += 1;
+            } else if old_cell as usize != params.ncells() && new_cell as usize == params.ncells() {
+                stats.cell_to_background_reject += 1;
+            } else if old_cell as usize != params.ncells() && new_cell as usize != params.ncells() {
+                stats.cell_to_cell_reject += 1;
+            }
+        }
+
+        self.update_sampler_state(params);
 
     }
 
@@ -539,7 +600,7 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
         let mut μ_μ_a =
             vec![priors.μ_μ_a / (priors.σ_μ_a.powi(2)); params.ncomponents()];
         // let mut component_population = vec![0; self.params.ncomponents()];
-        let mut component_population = Array1::<u32>::from_elem(params.ncomponents(), 0_u32);
+        let component_population = Array1::<u32>::from_elem(params.ncomponents(), 0_u32);
 
         μ_μ_a.iter_mut().enumerate().for_each(|(i, μ)| {
             *μ /= (1_f32 / priors.σ_μ_a.powi(2))
@@ -588,7 +649,8 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
             .and(&mut params.background_counts)
             .and(params.λ.rows())
             .and(&params.λ_bg)
-            .par_for_each(|cs, fcs, bc, λs, λ_bg| {
+            // .par_for_each(|cs, fcs, bc, λs, λ_bg| {
+            .for_each(|cs, fcs, bc, λs, λ_bg| {
                 let mut rng = thread_rng();
 
                 let p_bg = λ_bg * (-λ_bg * params.full_area).exp();
@@ -599,7 +661,6 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
                     // let p = p_fg / (p_fg + p_bg);
                     //
                     let p = λ / (λ + λ_bg);
-
 
                     // if p == 0.0 {
                     //     *fc = 0;
@@ -612,10 +673,12 @@ pub trait Sampler<P, I1, I2> where I1: Iterator<Item = usize>, I2: Iterator<Item
                     // TODO: Maybe add a special fast case for when `p` is exceptionally low?
 
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
+                    assert!(*fc <= *c);
 
                     // TODO: This seems fucked overall. I get
                     // *fc = *c;
 
+                    assert!(*bc >= *fc);
                     *bc -= *fc;
                 }
             });
