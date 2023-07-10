@@ -7,7 +7,6 @@ pub mod transcripts;
 pub mod hexbinsampler;
 
 use core::fmt::Debug;
-use std::arch::x86_64::_popcnt32;
 use math::{
     negbin_logpmf_fast,
     odds_to_prob, prob_to_odds, rand_pois,
@@ -20,27 +19,18 @@ use hull::convex_hull_area;
 use itertools::izip;
 use libm::{lgammaf, log1pf};
 use ndarray::{Array1, Array2, Zip};
-use petgraph::visit::IntoNeighbors;
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
-use std::cell::{RefCell, RefMut};
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
-use transcripts::{coordinate_span, NeighborhoodGraph, Transcript, CellIndex, BACKGROUND_CELL};
-use sampleset::SampleSet;
+use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
-use std::time::Instant;
+// use std::time::Instant;
 
-
-#[derive(Clone)]
-struct ChunkQuad<T> {
-    pub chunk: u32,
-    pub quad: u32,
-    pub mismatch_edges: SampleSet<(T, T)>,
-}
 
 // Compute chunk and quadrant for a single a single (x,y) point.
 fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: usize) -> (u32, u32) {
@@ -82,9 +72,6 @@ pub struct ModelParams {
 
     // per-cell areas
     cell_areas: Array1<f32>,
-
-    // per-transcript areas
-    transcript_areas: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_area: f32,
@@ -193,7 +180,6 @@ impl ModelParams {
             cell_assignments: init_cell_assignments.clone(),
             cell_population: init_cell_population.clone(),
             cell_areas,
-            transcript_areas: Array1::<f32>::from(transcript_areas.clone()),
             full_area,
             counts,
             foreground_counts: Array2::<u32>::from_elem((ncells, ngenes), 0),
@@ -221,7 +207,7 @@ impl ModelParams {
         return self.π.len();
     }
 
-    fn recompute_counts(&mut self, ncells: usize, transcripts: &Vec<Transcript>) {
+    fn recompute_counts(&mut self, transcripts: &Vec<Transcript>) {
         self.counts.fill(0);
         for (i, &j) in self.cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
@@ -389,7 +375,7 @@ impl ProposalStats {
 
 
 
-trait Proposal {
+pub trait Proposal {
     fn accept(&mut self);
     fn reject(&mut self);
 
@@ -418,7 +404,7 @@ trait Proposal {
     // Iterator over number of transcripts in the proposal of each gene
     fn gene_count<'b, 'c>(&'b self) -> &'c[u32] where 'b: 'c;
 
-    fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
+    fn evaluate(&mut self, params: &ModelParams) {
         if self.ignored() {
             self.reject();
             return;
@@ -504,8 +490,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         self.repopulate_proposals(params);
         self.proposals_mut()
             .par_iter_mut()
-            .for_each(|p| p.evaluate(priors, params));
-
+            .for_each(|p| p.evaluate(params));
         self.apply_accepted_proposals(stats, transcripts, priors, params);
     }
 
@@ -634,7 +619,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         // (This seems a little pointless. As devised now, if a transcript is under a cell it has a
         // very high probability of coming from that cell)
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         params.background_counts.assign(&params.total_gene_counts);
         Zip::from(params.counts.rows())
             .and(params.foreground_counts.columns_mut())
@@ -643,31 +628,10 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(&params.λ_bg)
             .par_for_each(|cs, fcs, bc, λs, λ_bg| {
                 let mut rng = thread_rng();
-
-                let p_bg = λ_bg * (-λ_bg * params.full_area).exp();
-
-                for (c, fc, λ, cell_area) in izip!(cs, fcs, λs, &params.cell_areas) {
-
-                    // let p_fg = λ * (-λ * cell_area).exp();
-                    // let p = p_fg / (p_fg + p_bg);
-                    //
+                for (c, fc, λ) in izip!(cs, fcs, λs) {
                     let p = λ / (λ + λ_bg);
-
-                    // if p == 0.0 {
-                    //     *fc = 0;
-                    // } else if p == 1.0 {
-                    //     *fc = *c;
-                    // } else {
-                    //     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
-                    // }
-
                     // TODO: Maybe add a special fast case for when `p` is exceptionally low?
-
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
-
-                    // TODO: This seems fucked overall. I get
-                    // *fc = *c;
-
                     *bc -= *fc;
                 }
             });
@@ -693,7 +657,7 @@ pub trait Sampler<P> where P: Proposal + Send {
             });
 
         // Sample θ
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(params.θ.columns_mut())
             .and(params.component_counts.rows())
             .and(&params.r)
@@ -720,7 +684,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         // println!("  Sample θ: {:?}", t0.elapsed());
 
         // Sample r
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(&mut params.r)
             .and(&mut params.lgamma_r)
             .and(&mut params.loggammaplus)
@@ -765,7 +729,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         // println!("  Sample r: {:?}", t0.elapsed());
 
         // Sample λ
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(params.λ.rows_mut())
             .and(params.foreground_counts.columns())
             .and(params.θ.columns())
@@ -808,7 +772,7 @@ pub trait Sampler<P> where P: Proposal + Send {
 
 
         // Sample z
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(
             params.foreground_counts
                 .rows(),
@@ -911,21 +875,5 @@ pub trait Sampler<P> where P: Proposal + Send {
                 }
             });
 
-    }
-}
-
-
-// Pre-allocated thread-local storage used when computing cell areas.
-struct AreaCalcStorage {
-    vertices: Vec<(f32, f32)>,
-    hull: Vec<(f32, f32)>,
-}
-
-impl AreaCalcStorage {
-    fn new() -> Self {
-        return AreaCalcStorage {
-            vertices: Vec::new(),
-            hull: Vec::new(),
-        };
     }
 }

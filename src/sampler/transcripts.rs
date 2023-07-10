@@ -8,7 +8,6 @@ use petgraph::Directed;
 use spade::{
     DelaunayTriangulation, HasPosition, LastUsedVertexHintGenerator, Point2, Triangulation,
 };
-use spade::handles::VoronoiVertex::{Inner, Outer};
 use std::collections::HashMap;
 use std::fs::File;
 
