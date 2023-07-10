@@ -5,7 +5,7 @@ use clap::Parser;
 mod sampler;
 
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats};
-use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span};
+use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::HexBinSampler;
 use rayon::current_num_threads;
 use csv;
@@ -153,40 +153,29 @@ fn main() {
         ngenes
     );
 
-    // TODO: Idea is to half this until we are down to mostly single transcripts.
-    let avghexpop = 5.0;
+    // TODO: Need to somehow make this a command line argument.
+    // Maybe just set the total number of iterations
+    let sampler_schedule = [
+        (5.0_f32, 200),
+        (2.5_f32, 200),
+        (1.0_f32, 200),
+        (0.5_f32, 200),
+    ];
 
-    let mut sampler = HexBinSampler::new(
-        &priors,
-        &mut params,
-        &transcripts,
-        ncells,
-        ngenes,
-        full_area,
-        avghexpop,
-        chunk_size
-    );
 
-    sampler.sample_global_params(&priors, &mut params);
-    let mut proposal_stats = ProposalStats::new();
-
-    for i in 0..args.niter {
-        for _ in 0..args.local_steps_per_iter {
-            sampler.sample_cell_regions(&priors, &mut params, &mut proposal_stats, &transcripts);
-        }
-        sampler.sample_global_params(&priors, &mut params);
-
-    //     // TODO: debugging
-    //     // sampler.check_mismatch_edges(&seg);
-
-        println!("Log likelihood: {}", params.log_likelihood());
-
-        // dbg!(&proposal_stats);
-        proposal_stats.reset();
-
-        if i % 100 == 0 {
-            println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
-        }
+    for (avghexpop, niter) in sampler_schedule.iter() {
+        println!("Running sampler with avghexpop: {}, niter: {}", avghexpop, niter);
+        run_hexbin_sampler(
+            &priors,
+            &mut params,
+            &transcripts,
+            ncells,
+            ngenes,
+            chunk_size,
+            full_area,
+            *avghexpop,
+            *niter,
+            args.local_steps_per_iter);
     }
 
     {
@@ -235,4 +224,48 @@ fn main() {
         }
     }
 
+}
+
+
+fn run_hexbin_sampler(
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+        ncells: usize,
+        ngenes: usize,
+        chunk_size: f32,
+        full_area: f32,
+        avghexpop: f32,
+        niter: usize,
+        local_steps_per_iter: usize)
+{
+    let mut sampler = HexBinSampler::new(
+        priors,
+        params,
+        transcripts,
+        ncells,
+        ngenes,
+        full_area,
+        avghexpop,
+        chunk_size
+    );
+
+    sampler.sample_global_params(priors, params);
+    let mut proposal_stats = ProposalStats::new();
+
+    for i in 0..niter {
+        for _ in 0..local_steps_per_iter {
+            sampler.sample_cell_regions(priors, params, &mut proposal_stats, transcripts);
+        }
+        sampler.sample_global_params(priors, params);
+
+        println!("Log likelihood: {}", params.log_likelihood());
+
+        // dbg!(&proposal_stats);
+        proposal_stats.reset();
+
+        if i % 100 == 0 {
+            println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
+        }
+    }
 }
