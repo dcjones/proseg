@@ -79,7 +79,7 @@ fn main() {
         &args.y_column, args.z_column.as_deref());
     let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
-    let ncells = init_cell_population.len() - 1;
+    let ncells = init_cell_population.len();
 
     println!("Read {} transcripts", ntranscripts);
 

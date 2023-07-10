@@ -2,7 +2,7 @@
 
 use crate::sampler::connectivity;
 
-use super::transcripts::{Transcript, coordinate_span};
+use super::transcripts::{Transcript, coordinate_span, CellIndex, BACKGROUND_CELL};
 use super::{Sampler, ModelPriors, ModelParams, Proposal, ChunkQuad, chunkquad};
 use super::sampleset::SampleSet;
 use super::connectivity::ConnectivityChecker;
@@ -84,7 +84,7 @@ impl HexCellMap {
     fn get(&self, hex: Hex) -> u32 {
         match self.index.get(&hex) {
             Some(cell) => *cell,
-            None => self.ncells as u32,
+            None => BACKGROUND_CELL,
         }
     }
 
@@ -210,16 +210,20 @@ impl HexBinSampler {
 
             let winner = hex_assignments.iter()
                 .max_by_key(|(_, count)| *count)
-                .map(|(cell, _)| *cell).unwrap_or(ncells as u32);
+                .map(|(cell, _)| *cell).unwrap_or(BACKGROUND_CELL);
 
-            if winner != ncells as u32 {
+            if winner != BACKGROUND_CELL {
                 hexcells.insert(hexbin.hex, winner);
             }
 
             // homogenize the hex: assign every transcript in the hex to the winner
             for &t in hexbin.transcripts.iter() {
-                params.cell_population[params.cell_assignments[t] as usize] -= 1;
-                params.cell_population[winner as usize] += 1;
+                if params.cell_assignments[t] != BACKGROUND_CELL {
+                    params.cell_population[params.cell_assignments[t] as usize] -= 1;
+                }
+                if winner != BACKGROUND_CELL {
+                    params.cell_population[winner as usize] += 1;
+                }
                 params.cell_assignments[t] = winner;
             }
         }
@@ -229,7 +233,7 @@ impl HexBinSampler {
         params.cell_areas.fill(0.0_f32);
         for hexbin in &hexbins {
             let cell = hexcells.get(hexbin.hex);
-            if cell < ncells as u32 {
+            if cell != BACKGROUND_CELL {
                 params.cell_areas[cell as usize] += hexarea;
             }
         }
@@ -314,11 +318,11 @@ impl Sampler<HexBinProposal> for HexBinSampler {
                 let mut cell_to = self.hexcells.get(*j);
                 assert!(cell_from != cell_to);
 
-                let from_unassigned = cell_from == self.ncells as u32;
-                let to_unassigned = cell_to == self.ncells as u32;
+                let from_unassigned = cell_from == BACKGROUND_CELL;
+                let to_unassigned = cell_to == BACKGROUND_CELL;
 
                 if !from_unassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
-                    cell_to = self.ncells as u32;
+                    cell_to = BACKGROUND_CELL;
                 }
 
                 let hexbin = self.hexindex.get(i).map(|i| &self.hexbins[*i]);

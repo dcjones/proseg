@@ -29,7 +29,7 @@ use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
-use transcripts::{coordinate_span, NeighborhoodGraph, Transcript};
+use transcripts::{coordinate_span, NeighborhoodGraph, Transcript, CellIndex, BACKGROUND_CELL};
 use sampleset::SampleSet;
 
 use std::time::Instant;
@@ -77,7 +77,7 @@ pub struct ModelPriors {
 
 // Model global parameters.
 pub struct ModelParams {
-    pub cell_assignments: Vec<u32>,
+    pub cell_assignments: Vec<CellIndex>,
     cell_population: Vec<usize>,
 
     // per-cell areas
@@ -163,7 +163,7 @@ impl ModelParams {
         // compute initial cell areas
         let mut cell_areas = Array1::<f32>::zeros(ncells);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
-            if j < ncells as u32 {
+            if j != BACKGROUND_CELL {
                 cell_areas[j as usize] += transcript_areas[i];
             }
         }
@@ -176,7 +176,7 @@ impl ModelParams {
         let mut total_gene_counts = Array1::<u32>::from_elem(ngenes, 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
-            if j < ncells as u32 {
+            if j != BACKGROUND_CELL {
                 counts[[gene, j as usize]] += 1;
             }
             total_gene_counts[gene] += 1;
@@ -225,23 +225,22 @@ impl ModelParams {
         self.counts.fill(0);
         for (i, &j) in self.cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
-            if j < ncells as u32 {
+            if j != BACKGROUND_CELL {
                 self.counts[[gene, j as usize]] += 1;
             }
         }
     }
 
     pub fn nunassigned(&self) -> usize {
-        let ncells = self.ncells() as u32;
         return self
             .cell_assignments
             .iter()
-            .filter(|&c| *c == ncells)
+            .filter(|&c| *c == BACKGROUND_CELL)
             .count();
     }
 
     fn ncells(&self) -> usize {
-        return self.cell_population.len() - 1;
+        return self.cell_population.len();
     }
 
     pub fn log_likelihood(&self) -> f32 {
@@ -275,7 +274,7 @@ impl ModelParams {
         // TODO: We area already keeping track of this in Sampler!!
         let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
         for (i, &cell) in self.cell_assignments.iter().enumerate() {
-            if cell as usize != self.ncells() {
+            if cell != BACKGROUND_CELL {
                 cell_transcripts[cell as usize].push(i);
             }
         }
@@ -427,8 +426,8 @@ trait Proposal {
 
         let old_cell = self.old_cell();
         let new_cell = self.new_cell();
-        let from_background = old_cell == params.ncells() as u32;
-        let to_background = new_cell == params.ncells() as u32;
+        let from_background = old_cell == BACKGROUND_CELL;
+        let to_background = new_cell == BACKGROUND_CELL;
 
         // Log Metropolis-Hastings acceptance ratio
         let mut δ = 0.0;
@@ -527,11 +526,11 @@ pub trait Sampler<P> where P: Proposal + Send {
                 params.cell_assignments[i] = new_cell;
                 count += 1;
             }
-            params.cell_population[old_cell as usize] -= count;
-            params.cell_population[new_cell as usize] += count;
 
             // Update count matrix and areas
-            if old_cell as usize != params.ncells() {
+            if old_cell != BACKGROUND_CELL {
+                params.cell_population[old_cell as usize] -= count;
+
                 let mut cell_area = params.cell_areas[old_cell as usize];
                 cell_area += proposal.old_cell_area_delta();
                 cell_area = cell_area.max(priors.min_cell_area);
@@ -543,7 +542,9 @@ pub trait Sampler<P> where P: Proposal + Send {
                 }
             }
 
-            if new_cell as usize != params.ncells() {
+            if new_cell != BACKGROUND_CELL {
+                params.cell_population[new_cell as usize] += count;
+
                 let mut cell_area = params.cell_areas[new_cell as usize];
                 cell_area += proposal.new_cell_area_delta();
                 cell_area = cell_area.max(priors.min_cell_area);
@@ -556,11 +557,11 @@ pub trait Sampler<P> where P: Proposal + Send {
             }
 
             // Keep track of stats
-            if old_cell as usize == params.ncells() && new_cell as usize != params.ncells() {
+            if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                 stats.background_to_cell_accept += 1;
-            } else if old_cell as usize != params.ncells() && new_cell as usize == params.ncells() {
+            } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
                 stats.cell_to_background_accept += 1;
-            } else if old_cell as usize != params.ncells() && new_cell as usize != params.ncells() {
+            } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                 stats.cell_to_cell_accept += 1;
             }
         }
@@ -569,11 +570,11 @@ pub trait Sampler<P> where P: Proposal + Send {
             let old_cell = proposal.old_cell();
             let new_cell = proposal.new_cell();
 
-            if old_cell as usize == params.ncells() && new_cell as usize != params.ncells() {
+            if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                 stats.background_to_cell_reject += 1;
-            } else if old_cell as usize != params.ncells() && new_cell as usize == params.ncells() {
+            } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
                 stats.cell_to_background_reject += 1;
-            } else if old_cell as usize != params.ncells() && new_cell as usize != params.ncells() {
+            } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                 stats.cell_to_cell_reject += 1;
             }
         }

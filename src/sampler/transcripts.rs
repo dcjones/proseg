@@ -14,6 +14,9 @@ use std::fs::File;
 
 pub type NeighborhoodGraph = Csr<(), (), Directed, usize>;
 
+pub type CellIndex = u32;
+pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
+
 #[derive(Copy, Clone, PartialEq)]
 pub struct Transcript {
     pub x: f32,
@@ -57,10 +60,10 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
 }
 
 
-fn postprocess_cell_assignments(cell_assignments: &mut Vec<u32>) -> Vec<usize> {
+fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
     let mut ncells = usize::MAX;
     for &cell_id in cell_assignments.iter() {
-        if cell_id < u32::MAX {
+        if cell_id != BACKGROUND_CELL {
             if ncells == usize::MAX || cell_id as usize >= ncells {
                 ncells = (cell_id + 1) as usize;
             }
@@ -71,16 +74,11 @@ fn postprocess_cell_assignments(cell_assignments: &mut Vec<u32>) -> Vec<usize> {
         ncells = 0;
     }
 
-    // use `ncells` as a placeholder for unassigned/background transcripts
-    for cell_id in cell_assignments.iter_mut() {
-        if *cell_id == u32::MAX {
-            *cell_id = ncells as u32;
-        }
-    }
-
-    let mut cell_population = vec![0; ncells + 1];
+    let mut cell_population = vec![0; ncells];
     for &cell_id in cell_assignments.iter() {
-        cell_population[cell_id as usize] += 1;
+        if cell_id != BACKGROUND_CELL {
+            cell_population[cell_id as usize] += 1;
+        }
     }
 
     return cell_population;
@@ -137,7 +135,7 @@ where
         if cell_id >= 0 && overlaps_nucleus > 0 {
             cell_assignments.push(cell_id as u32);
         } else {
-            cell_assignments.push(u32::MAX);
+            cell_assignments.push(BACKGROUND_CELL);
         }
     }
 
@@ -205,7 +203,7 @@ where
         // if cell_id >= 0 {
             cell_assignments.push(cell_id as u32);
         } else {
-            cell_assignments.push(u32::MAX);
+            cell_assignments.push(BACKGROUND_CELL);
         }
     }
 
