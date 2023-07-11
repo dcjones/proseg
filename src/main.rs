@@ -134,10 +134,10 @@ fn main() {
 
     let priors = ModelPriors {
         min_cell_area: avg_edge_length,
-        μ_μ_a: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
-        σ_μ_a: 3.0_f32,
-        α_σ_a: 0.1,
-        β_σ_a: 0.1,
+        μ_μ_area: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
+        σ_μ_area: 3.0_f32,
+        α_σ_area: 0.1,
+        β_σ_area: 0.1,
         // α_w: 1.0,
         // β_w: 1.0,
         α_θ: 1.0,

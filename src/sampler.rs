@@ -49,12 +49,12 @@ pub struct ModelPriors {
     pub min_cell_area: f32,
 
     // params for normal prior
-    pub μ_μ_a: f32,
-    pub σ_μ_a: f32,
+    pub μ_μ_area: f32,
+    pub σ_μ_area: f32,
 
     // params for inverse-gamma prior
-    pub α_σ_a: f32,
-    pub β_σ_a: f32,
+    pub α_σ_area: f32,
+    pub β_σ_area: f32,
 
     pub α_θ: f32,
     pub β_θ: f32,
@@ -106,13 +106,15 @@ pub struct ModelParams {
     // [ngenes, ncomponents] number of transcripts of each gene assigned to each component
     component_counts: Array2<u32>,
 
+    component_population: Array1<u32>, // number of cells assigned to each component
+
     // thread-local space used for sampling z
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
 
     π: Vec<f32>, // mixing proportions over components
 
-    μ_a: Vec<f32>, // area dist mean param by component
-    σ_a: Vec<f32>, // area dist std param by component
+    μ_area: Array1<f32>, // area dist mean param by component
+    σ_area: Array1<f32>, // area dist std param by component
 
     μ_depth: Array1<f32>,
     σ_depth: Array1<f32>,
@@ -207,10 +209,11 @@ impl ModelParams {
             loggammaplus: Vec::from_iter((0..ngenes).map(|_| LogGammaPlus::default())),
             z,
             component_counts: Array2::<u32>::from_elem((ngenes, ncomponents), 0),
+            component_population: Array1::<u32>::from_elem(ncomponents, 0),
             z_probs: ThreadLocal::new(),
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
-            μ_a: vec![priors.μ_μ_a; ncomponents],
-            σ_a: vec![priors.σ_μ_a; ncomponents],
+            μ_area: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_area),
+            σ_area: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_area),
             μ_depth: Array1::<f32>::from_elem(ncells, priors.μ_μ_depth),
             σ_depth: Array1::<f32>::from_elem(ncells, priors.σ_μ_depth),
             μ_depth_bg: priors.μ_μ_depth,
@@ -252,6 +255,10 @@ impl ModelParams {
     }
 
     pub fn log_likelihood(&self) -> f32 {
+        // TODO:
+        //   - depth terms
+        //   - area terms
+
         let mut ll = Zip::from(self.λ.columns())
             .and(&self.cell_areas)
             .and(self.counts.columns())
@@ -604,48 +611,9 @@ pub trait Sampler<P> where P: Proposal + Send {
         let mut rng = thread_rng();
         let ncomponents = params.ncomponents();
 
-        // sample μ_a
-        let mut μ_μ_a =
-            vec![priors.μ_μ_a / (priors.σ_μ_a.powi(2)); params.ncomponents()];
-        // let mut component_population = vec![0; self.params.ncomponents()];
-        let component_population = Array1::<u32>::from_elem(params.ncomponents(), 0_u32);
-
-        μ_μ_a.iter_mut().enumerate().for_each(|(i, μ)| {
-            *μ /= (1_f32 / priors.σ_μ_a.powi(2))
-                + (component_population[i] as f32 / params.σ_a[i].powi(2));
-        });
-
-        let σ2_μ_a: Vec<f32> = izip!(&params.σ_a, &component_population)
-            .map(|(σ, n)| (1_f32 / priors.σ_μ_a.powi(2) + (*n as f32) / σ.powi(2)).recip())
-            .collect();
-
-        params.μ_a.clear();
-        params
-            .μ_a
-            .extend(izip!(&μ_μ_a, &σ2_μ_a).map(|(μ, σ2)| {
-                Normal::new(*μ, σ2.sqrt())
-                    .unwrap()
-                    .sample(&mut rng)
-            }));
-
-
-        // sample σ_a
-        let mut δ2s = vec![0_f32; params.ncomponents()];
-        for (z_i, cell_area) in params.z.iter().zip(&params.cell_areas) {
-            δ2s[*z_i as usize] += (cell_area.ln() - μ_μ_a[*z_i as usize]).powi(2);
-        }
-
-        // sample σ_a
-        params.σ_a.clear();
-        params
-            .σ_a
-            .extend(izip!(&component_population, &δ2s).map(|(n, δ2)| {
-                Gamma::new(
-                    priors.α_σ_a + 0.5 * *n as f32,
-                    (priors.β_σ_a + 0.5 * *δ2).recip(),
-                ).unwrap().sample(&mut rng).recip().sqrt()
-            }));
-
+        self.sample_area_params(priors, params);
+        dbg!(&params.μ_area);
+        dbg!(&params.σ_area);
         self.sample_depth_params(priors, params);
 
         // Sample background/foreground counts
@@ -910,6 +878,8 @@ pub trait Sampler<P> where P: Proposal + Send {
 
     fn sample_depth_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut rng = thread_rng();
+        let ntranscripts = params.cell_assignments.len();
+        let nbackground = ntranscripts - params.cell_population.iter().sum::<usize>();
 
         // compute sample means
         params.μ_depth.fill(0_f32);
@@ -924,20 +894,6 @@ pub trait Sampler<P> where P: Proposal + Send {
                 }
             });
 
-        Zip::from(&mut params.μ_depth)
-            .and(&params.cell_population)
-            .for_each(|μ, &cell_pop| {
-                if cell_pop == 0 {
-                    *μ = priors.μ_μ_depth;
-                } else {
-                    *μ /= cell_pop as f32;
-                }
-            });
-
-        let ntranscripts = params.cell_assignments.len();
-        let nbackground = ntranscripts - params.cell_population.iter().sum::<usize>();
-        params.μ_depth_bg = params.μ_depth_bg / nbackground as f32;
-
         // sample μ parameters
         Zip::from(&mut params.μ_depth)
             .and(&params.σ_depth)
@@ -947,7 +903,7 @@ pub trait Sampler<P> where P: Proposal + Send {
 
                 let v = (1_f32 / priors.σ_μ_depth.powi(2) + cell_pop as f32 / σ.powi(2)).recip();
                 *μ = Normal::new(
-                    v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + (cell_pop as f32) * *μ / σ.powi(2)),
+                    v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + *μ / σ.powi(2)),
                     v.sqrt()
                 ).unwrap().sample(&mut rng);
             });
@@ -955,7 +911,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         {
             let v = (1_f32 / priors.σ_μ_depth.powi(2) + nbackground as f32 / params.σ_depth_bg.powi(2)).recip();
             params.μ_depth_bg = Normal::new(
-                v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + (nbackground as f32) * params.μ_depth_bg / params.σ_depth_bg.powi(2)),
+                v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + params.μ_depth_bg / params.σ_depth_bg.powi(2)),
                 v.sqrt()
             ).unwrap().sample(&mut rng);
         }
@@ -977,15 +933,58 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(&params.cell_population)
             .par_for_each(|σ, &cell_pop| {
                 let mut rng = thread_rng();
-                let v = *σ;
                 *σ = Gamma::new(
                     priors.α_σ_depth + (cell_pop as f32) / 2.0,
-                    (priors.β_σ_depth + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip();
+                    (priors.β_σ_depth + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
             });
 
         params.σ_depth_bg = Gamma::new(
             priors.α_σ_depth + (nbackground as f32) / 2.0,
-            (priors.β_σ_depth + params.σ_depth_bg / 2.0).recip()).unwrap().sample(&mut rng).recip();
+            (priors.β_σ_depth + params.σ_depth_bg / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+    }
+
+    fn sample_area_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // compute sample means
+        params.component_population.fill(0_u32);
+        params.μ_area.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_areas)
+            .for_each(|&z, &area| {
+                params.μ_area[z as usize] += area.ln();
+                params.component_population[z as usize] += 1;
+            });
+
+        // sample μ parameters
+        Zip::from(&mut params.μ_area)
+            .and(&params.σ_area)
+            .and(&params.component_population)
+            .par_for_each(|μ, &σ, &pop| {
+                let mut rng = thread_rng();
+
+                let v = (1_f32 / priors.σ_μ_area.powi(2) + pop as f32 / σ.powi(2)).recip();
+                *μ = Normal::new(
+                    v * (priors.μ_μ_area / priors.σ_μ_area.powi(2) + *μ / σ.powi(2)),
+                    v.sqrt()
+                ).unwrap().sample(&mut rng);
+            });
+
+        // compute sample variances
+        params.σ_area.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_areas)
+            .for_each(|&z, &area| {
+                params.σ_area[z as usize] += (params.μ_area[z as usize] - area.ln()).powi(2);
+            });
+
+        // sample σ parameters
+        Zip::from(&mut params.σ_area)
+            .and(&params.component_population)
+            .par_for_each(|σ, &pop| {
+                let mut rng = thread_rng();
+                *σ = Gamma::new(
+                    priors.α_σ_area + (pop as f32) / 2.0,
+                    (priors.β_σ_area + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+            });
     }
 
 }
