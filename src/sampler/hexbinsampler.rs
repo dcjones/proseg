@@ -8,10 +8,10 @@ use super::connectivity::ConnectivityChecker;
 use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 use std::collections::HashMap;
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
-
 
 type HexEdgeSampleSet = SampleSet<(Hex, Hex)>;
 
@@ -28,6 +28,22 @@ impl HexBin {
             hex,
             transcripts: Vec::new(),
         }
+    }
+}
+
+struct ChunkQuadMap {
+    layout: HexLayout,
+    xmin: f32,
+    ymin: f32,
+    chunk_size: f32,
+    nxchunks: usize,
+}
+
+
+impl ChunkQuadMap {
+    fn get(&self, hex: Hex) -> (u32, u32) {
+        let hex_xy = self.layout.hex_to_world_pos(hex);
+        return chunkquad(hex_xy.x, hex_xy.y, self.xmin, self.ymin, self.chunk_size, self.nxchunks);
     }
 }
 
@@ -93,20 +109,15 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, full_area: f32, avgpop: f32) -
 }
 
 pub struct HexBinSampler {
-    layout: HexLayout,
-    xmin: f32,
-    ymin: f32,
-    chunk_size: f32,
-    nxchunks: usize,
-
+    chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
 
-    mismatch_edges: [Vec<HexEdgeSampleSet>; 4],
+    mismatch_edges: [Vec<Arc<Mutex<HexEdgeSampleSet>>>; 4],
     hexbins: Vec<HexBin>,
     hexindex: HashMap<Hex, usize>,
 
     // assignment of hexbins to cells
-    // (Unassigned cells are either absent or set to `ncells`)
+    // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
     hexcells: HexCellMap,
 
     proposals: Vec<HexBinProposal>,
@@ -148,10 +159,11 @@ impl HexBinSampler {
         }
 
         // initialize mismatch_edges
-        let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        let mut mismatch_edges = [
+            Vec::new(), Vec::new(), Vec::new(), Vec::new() ];
         for chunks in mismatch_edges.iter_mut() {
             for _ in 0..nchunks {
-                chunks.push(SampleSet::new());
+                chunks.push(Arc::new(Mutex::new(HexEdgeSampleSet::new())));
             }
         }
 
@@ -206,11 +218,13 @@ impl HexBinSampler {
         let connectivity_checker = ThreadLocal::new();
 
         let mut sampler = HexBinSampler {
-            layout,
-            xmin,
-            ymin,
-            chunk_size,
-            nxchunks,
+            chunkquad: ChunkQuadMap {
+                layout,
+                xmin,
+                ymin,
+                chunk_size,
+                nxchunks,
+            },
             transcript_genes,
             mismatch_edges,
             hexbins,
@@ -231,27 +245,31 @@ impl HexBinSampler {
         // compute initial mismatch edges
         for hexbin in &self.hexbins {
             let cell = self.hexcells.get(hexbin.hex);
-            let (chunk, quad) = self.chunkquad(hexbin.hex);
+            let (chunk, quad) = self.chunkquad.get(hexbin.hex);
 
             for neighbor in hexbin.hex.all_neighbors() {
                 let neighbor_cell = self.hexcells.get(neighbor);
                 if cell != neighbor_cell {
-                    let (neighbor_chunk, neighbor_quad) = self.chunkquad(neighbor);
+                    let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
 
                     self.mismatch_edges[quad as usize][chunk as usize]
+                        .lock()
+                        .unwrap()
                         .insert((hexbin.hex, neighbor));
 
                     self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
+                        .lock()
+                        .unwrap()
                         .insert((neighbor, hexbin.hex));
                 }
             }
         }
     }
 
-    fn chunkquad(&self, hex: Hex) -> (u32, u32) {
-        let hex_xy = self.layout.hex_to_world_pos(hex);
-        return chunkquad(hex_xy.x, hex_xy.y, self.xmin, self.ymin, self.chunk_size, self.nxchunks);
-    }
+    // fn chunkquad(&self, hex: Hex) -> (u32, u32) {
+    //     let hex_xy = self.layout.hex_to_world_pos(hex);
+    //     return chunkquad(hex_xy.x, hex_xy.y, self.xmin, self.ymin, self.chunk_size, self.nxchunks);
+    // }
 }
 
 
@@ -264,6 +282,7 @@ impl Sampler<HexBinProposal> for HexBinSampler {
             .zip(&self.mismatch_edges[self.quad])
             .for_each(|(proposal, mismatch_edges)|
             {
+                let mismatch_edges = mismatch_edges.lock().unwrap();
                 if mismatch_edges.is_empty() {
                     proposal.ignore = true;
                     return;
@@ -272,7 +291,6 @@ impl Sampler<HexBinProposal> for HexBinSampler {
                 let mut rng = thread_rng();
                 let (i, j) = mismatch_edges.choose(&mut rng).unwrap();
 
-                // TODO: Ok, this has borrow issues.
                 let cell_from = self.hexcells.get(*i);
                 let mut cell_to = self.hexcells.get(*j);
                 assert!(cell_from != cell_to);
@@ -399,31 +417,40 @@ impl Sampler<HexBinProposal> for HexBinSampler {
     }
 
     fn update_sampler_state(&mut self, _: &ModelParams) {
-        for proposal in &self.proposals {
-            if proposal.accept {
-                let (chunk, quad) = self.chunkquad(proposal.hex);
-
-            // update hex cell assignments
+        for proposal in self.proposals.iter().filter(|p| !p.ignore && p.accept) {
             self.hexcells.set(proposal.hex, proposal.new_cell);
-
-            // update mismatch edges
-            for neighbor in proposal.hex.all_neighbors() {
-                let (neighbor_chunk, neighbor_quad) = self.chunkquad(neighbor);
-                let neighbor_cell = self.hexcells.get(neighbor);
-                if proposal.new_cell == neighbor_cell {
-                    self.mismatch_edges[quad as usize][chunk as usize]
-                        .remove((proposal.hex, neighbor));
-                    self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
-                        .remove((neighbor, proposal.hex));
-                } else {
-                    self.mismatch_edges[quad as usize][chunk as usize]
-                        .insert((proposal.hex, neighbor));
-                    self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
-                        .insert((neighbor, proposal.hex));
-                }
-            }
-            }
         }
+
+        self.proposals.par_iter()
+            .filter(|p| !p.ignore && p.accept)
+            .for_each(|proposal| {
+                let (chunk, quad) = self.chunkquad.get(proposal.hex);
+
+                // update mismatch edges
+                for neighbor in proposal.hex.all_neighbors() {
+                    let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
+                    let neighbor_cell = self.hexcells.get(neighbor);
+                    if proposal.new_cell == neighbor_cell {
+                        self.mismatch_edges[quad as usize][chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .remove((proposal.hex, neighbor));
+                        self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .remove((neighbor, proposal.hex));
+                    } else {
+                        self.mismatch_edges[quad as usize][chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .insert((proposal.hex, neighbor));
+                        self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .insert((neighbor, proposal.hex));
+                    }
+                }
+            });
     }
 }
 
