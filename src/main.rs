@@ -127,6 +127,11 @@ fn main() {
 
     // can't just divide area by number of cells, because a large portion may have to cells.
 
+    let z_mean = transcripts.iter().map(|t| t.z).sum::<f32>() / (ntranscripts as f32);
+    let z_std = (transcripts.iter().map(|t| (t.z - z_mean).powi(2)).sum::<f32>() / (ntranscripts as f32)).sqrt();
+
+    dbg!((z_mean, z_std));
+
     let priors = ModelPriors {
         min_cell_area: avg_edge_length,
         μ_μ_a: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
@@ -139,6 +144,11 @@ fn main() {
         β_θ: 1.0,
         e_r: 1.0,
         f_r: 1.0,
+
+        μ_μ_depth: z_mean,
+        σ_μ_depth: z_std,
+        α_σ_depth: 0.1,
+        β_σ_depth: 0.1,
     };
 
     let mut params = ModelParams::new(
@@ -155,11 +165,14 @@ fn main() {
 
     // TODO: Need to somehow make this a command line argument.
     // Maybe just set the total number of iterations
+    // TODO: This should probably halve every time. That way nothing much should
+    // change in order to homogenize.
     let sampler_schedule = [
-        (5.0_f32, 200),
-        (2.5_f32, 200),
-        (1.0_f32, 200),
-        (0.5_f32, 200),
+        // (5.0_f32, 200),
+        (4.0_f32, 50),
+        (2.0_f32, 100),
+        (1.0_f32, 100),
+        (0.5_f32, 400),
     ];
 
 
@@ -257,6 +270,8 @@ fn run_hexbin_sampler(
         sampler.sample_global_params(priors, params);
 
         println!("Log likelihood: {}", params.log_likelihood());
+        // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
+        // println!("Empty cells: {}", empty_cell_count);
 
         // dbg!(&proposal_stats);
         proposal_stats.reset();

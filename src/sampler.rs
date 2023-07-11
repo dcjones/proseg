@@ -8,7 +8,7 @@ pub mod hexbinsampler;
 
 use core::fmt::Debug;
 use math::{
-    negbin_logpmf_fast,
+    negbin_logpmf_fast, normal_logpdf,
     odds_to_prob, prob_to_odds, rand_pois,
     LogFactorial,
     LogGammaPlus,
@@ -62,19 +62,28 @@ pub struct ModelPriors {
     // gamma rate prior
     pub e_r: f32,
     pub f_r: f32,
+
+    pub μ_μ_depth: f32,
+    pub σ_μ_depth: f32,
+
+    pub α_σ_depth: f32,
+    pub β_σ_depth: f32,
 }
 
 
 // Model global parameters.
 pub struct ModelParams {
     pub cell_assignments: Vec<CellIndex>,
-    cell_population: Vec<usize>,
+    pub cell_population: Vec<usize>,
 
     // per-cell areas
     cell_areas: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_area: f32,
+
+    // depth coordinate for each transcript
+    depths: Array1<f32>,
 
     // [ngenes, ncells] transcripts counts
     pub counts: Array2<u32>,
@@ -104,6 +113,12 @@ pub struct ModelParams {
 
     μ_a: Vec<f32>, // area dist mean param by component
     σ_a: Vec<f32>, // area dist std param by component
+
+    μ_depth: Array1<f32>,
+    σ_depth: Array1<f32>,
+
+    μ_depth_bg: f32,
+    σ_depth_bg: f32,
 
     // [ngenes] NB r parameters.
     r: Array1<f32>,
@@ -169,6 +184,8 @@ impl ModelParams {
             total_gene_counts[gene] += 1;
         }
 
+        let depths = Array1::<f32>::from_iter(transcripts.iter().map(|t| t.z));
+
         // initial component assignments
         let mut rng = rand::thread_rng();
         let z = (0..ncells)
@@ -181,6 +198,7 @@ impl ModelParams {
             cell_population: init_cell_population.clone(),
             cell_areas,
             full_area,
+            depths,
             counts,
             foreground_counts: Array2::<u32>::from_elem((ncells, ngenes), 0),
             background_counts: Array1::<u32>::from_elem(ngenes, 0),
@@ -193,6 +211,10 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_a: vec![priors.μ_μ_a; ncomponents],
             σ_a: vec![priors.σ_μ_a; ncomponents],
+            μ_depth: Array1::<f32>::from_elem(ncells, priors.μ_μ_depth),
+            σ_depth: Array1::<f32>::from_elem(ncells, priors.σ_μ_depth),
+            μ_depth_bg: priors.μ_μ_depth,
+            σ_depth_bg: priors.σ_μ_depth,
             r,
             lgamma_r,
             θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -391,12 +413,6 @@ pub trait Proposal {
     fn old_cell(&self) -> u32;
     fn new_cell(&self) -> u32;
 
-    // fn set_old_cell_area(&mut self, area: f32);
-    // fn set_new_cell_area(&mut self, area: f32);
-
-    // fn old_cell_area(&self) -> f32;
-    // fn new_cell_area(&self) -> f32;
-
     fn log_weight(&self) -> f32;
 
     fn transcripts<'b, 'c>(&'b self) -> &'c[usize] where 'b: 'c;
@@ -418,11 +434,14 @@ pub trait Proposal {
         // Log Metropolis-Hastings acceptance ratio
         let mut δ = 0.0;
 
-        // TODO: Do all these terms change even for genes that aren't involved?
-
         if from_background {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ -= count as f32 * params.λ_bg[i].ln()
+            }
+
+            for &t in self.transcripts() {
+                δ -= normal_logpdf(
+                    params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
             }
         } else {
             let area_diff = self.old_cell_area_delta();
@@ -435,27 +454,39 @@ pub trait Proposal {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
             }
+
+            let μ_depth = params.μ_depth[old_cell as usize];
+            let σ_depth = params.σ_depth[old_cell as usize];
+            for &t in self.transcripts() {
+                δ -= normal_logpdf(μ_depth, σ_depth, params.depths[t]);
+            }
         }
 
         if to_background {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ += count as f32 * params.λ_bg[i].ln();
             }
+
+            for &t in self.transcripts() {
+                δ += normal_logpdf(
+                    params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
+            }
         } else {
             let area_diff = self.new_cell_area_delta();
-
-            // TODO: Ok, the totality of the hugely negative score comes from this bit here.
-            // It seems we end up rejecting any more to enlarge cells because this
-            // is always negative a million.
 
             // normalization term difference
             δ += Zip::from(params.λ.column(new_cell as usize))
                 .fold(0.0, |acc, &λ| acc - λ * area_diff);
 
-
             // add in new cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
+            }
+
+            let μ_depth = params.μ_depth[new_cell as usize];
+            let σ_depth = params.σ_depth[new_cell as usize];
+            for &t in self.transcripts() {
+                δ += normal_logpdf(μ_depth, σ_depth, params.depths[t]);
             }
         }
 
@@ -615,10 +646,9 @@ pub trait Sampler<P> where P: Proposal + Send {
                 ).unwrap().sample(&mut rng).recip().sqrt()
             }));
 
-        // Sample background/foreground counts
-        // (This seems a little pointless. As devised now, if a transcript is under a cell it has a
-        // very high probability of coming from that cell)
+        self.sample_depth_params(priors, params);
 
+        // Sample background/foreground counts
         // let t0 = Instant::now();
         params.background_counts.assign(&params.total_gene_counts);
         Zip::from(params.counts.rows())
@@ -630,7 +660,12 @@ pub trait Sampler<P> where P: Proposal + Send {
                 let mut rng = thread_rng();
                 for (c, fc, λ) in izip!(cs, fcs, λs) {
                     let p = λ / (λ + λ_bg);
-                    // TODO: Maybe add a special fast case for when `p` is exceptionally low?
+                    // TODO: We should be sampling the assignment of every transcript to background
+                    // taking into account the depth distribution.
+                    //
+                    // And then using those assignments when sampling depth distribution parameters.
+                    // I'm afraid that would be super expensive though.
+
                     *fc = Binomial::new(*c as u64, p as f64).unwrap().sample(&mut rng) as u32;
                     *bc -= *fc;
                 }
@@ -674,11 +709,6 @@ pub trait Sampler<P> where P: Proposal + Send {
                     );
 
                     *θ = θ.max(1e-6);
-
-                    // if *w > 1000.0 {
-                    //     dbg!(w, c, a, r);
-                    //     panic!("w is too large");
-                    // }
                 }
             });
         // println!("  Sample θ: {:?}", t0.elapsed());
@@ -876,4 +906,86 @@ pub trait Sampler<P> where P: Proposal + Send {
             });
 
     }
+
+
+    fn sample_depth_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        let mut rng = thread_rng();
+
+        // compute sample means
+        params.μ_depth.fill(0_f32);
+        params.μ_depth_bg = 0_f32;
+        Zip::from(&params.cell_assignments)
+            .and(&params.depths)
+            .for_each(|&cell, &depth| {
+                if cell != BACKGROUND_CELL {
+                    params.μ_depth[cell as usize] += depth;
+                } else {
+                    params.μ_depth_bg += depth;
+                }
+            });
+
+        Zip::from(&mut params.μ_depth)
+            .and(&params.cell_population)
+            .for_each(|μ, &cell_pop| {
+                if cell_pop == 0 {
+                    *μ = priors.μ_μ_depth;
+                } else {
+                    *μ /= cell_pop as f32;
+                }
+            });
+
+        let ntranscripts = params.cell_assignments.len();
+        let nbackground = ntranscripts - params.cell_population.iter().sum::<usize>();
+        params.μ_depth_bg = params.μ_depth_bg / nbackground as f32;
+
+        // sample μ parameters
+        Zip::from(&mut params.μ_depth)
+            .and(&params.σ_depth)
+            .and(&params.cell_population)
+            .par_for_each(|μ, &σ, &cell_pop| {
+                let mut rng = thread_rng();
+
+                let v = (1_f32 / priors.σ_μ_depth.powi(2) + cell_pop as f32 / σ.powi(2)).recip();
+                *μ = Normal::new(
+                    v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + (cell_pop as f32) * *μ / σ.powi(2)),
+                    v.sqrt()
+                ).unwrap().sample(&mut rng);
+            });
+
+        {
+            let v = (1_f32 / priors.σ_μ_depth.powi(2) + nbackground as f32 / params.σ_depth_bg.powi(2)).recip();
+            params.μ_depth_bg = Normal::new(
+                v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + (nbackground as f32) * params.μ_depth_bg / params.σ_depth_bg.powi(2)),
+                v.sqrt()
+            ).unwrap().sample(&mut rng);
+        }
+
+        // sample σ parameters
+        params.σ_depth.fill(0_f32);
+        params.σ_depth_bg = 0_f32;
+        Zip::from(&params.cell_assignments)
+            .and(&params.depths)
+            .for_each(|&cell, &depth| {
+                if cell != BACKGROUND_CELL {
+                    params.σ_depth[cell as usize] += (params.μ_depth[cell as usize] - depth).powi(2);
+                } else {
+                    params.σ_depth_bg += (params.μ_depth_bg - depth).powi(2);
+                }
+            });
+
+        Zip::from(&mut params.σ_depth)
+            .and(&params.cell_population)
+            .par_for_each(|σ, &cell_pop| {
+                let mut rng = thread_rng();
+                let v = *σ;
+                *σ = Gamma::new(
+                    priors.α_σ_depth + (cell_pop as f32) / 2.0,
+                    (priors.β_σ_depth + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip();
+            });
+
+        params.σ_depth_bg = Gamma::new(
+            priors.α_σ_depth + (nbackground as f32) / 2.0,
+            (priors.β_σ_depth + params.σ_depth_bg / 2.0).recip()).unwrap().sample(&mut rng).recip();
+    }
+
 }

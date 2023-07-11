@@ -13,6 +13,15 @@ pub fn lfact(k: u32) -> f32 {
 //     return negbin_logpmf_fast(r, lgamma_r, lgamma_rpk, p, k, k_ln_factorial);
 // }
 
+const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
+
+pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
+    return 
+        - LN_SQRT_TWO_PI
+        - σ.ln()
+        - ((x - μ) / σ).powi(2) / 2.0;
+}
+
 
 // Negative binomial log probability function with capacity for precomputing some values.
 pub fn negbin_logpmf_fast(r: f32, lgamma_r: f32, lgamma_rpk: f32, p: f32, k: u32, k_ln_factorial: f32) -> f32 {
