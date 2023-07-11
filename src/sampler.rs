@@ -8,7 +8,7 @@ pub mod hexbinsampler;
 
 use core::fmt::Debug;
 use math::{
-    negbin_logpmf_fast, normal_logpdf,
+    negbin_logpmf_fast, normal_logpdf, lognormal_logpdf,
     odds_to_prob, prob_to_odds, rand_pois,
     LogFactorial,
     LogGammaPlus,
@@ -467,6 +467,16 @@ pub trait Proposal {
             for &t in self.transcripts() {
                 δ -= normal_logpdf(μ_depth, σ_depth, params.depths[t]);
             }
+
+            let z = params.z[old_cell as usize];
+            δ -= lognormal_logpdf(
+                params.μ_area[z as usize],
+                params.σ_area[z as usize],
+                params.cell_areas[old_cell as usize]);
+            δ += lognormal_logpdf(
+                params.μ_area[z as usize],
+                params.σ_area[z as usize],
+                params.cell_areas[old_cell as usize] + area_diff);
         }
 
         if to_background {
@@ -495,6 +505,16 @@ pub trait Proposal {
             for &t in self.transcripts() {
                 δ += normal_logpdf(μ_depth, σ_depth, params.depths[t]);
             }
+
+            let z = params.z[new_cell as usize];
+            δ -= lognormal_logpdf(
+                params.μ_area[z as usize],
+                params.σ_area[z as usize],
+                params.cell_areas[new_cell as usize]);
+            δ += lognormal_logpdf(
+                params.μ_area[z as usize],
+                params.σ_area[z as usize],
+                params.cell_areas[new_cell as usize] + area_diff);
         }
 
         let mut rng = thread_rng();
@@ -612,8 +632,6 @@ pub trait Sampler<P> where P: Proposal + Send {
         let ncomponents = params.ncomponents();
 
         self.sample_area_params(priors, params);
-        dbg!(&params.μ_area);
-        dbg!(&params.σ_area);
         self.sample_depth_params(priors, params);
 
         // Sample background/foreground counts
@@ -784,7 +802,8 @@ pub trait Sampler<P> where P: Proposal + Send {
                 .borrow_mut();
 
             // loop over components
-            for (zp, π, θs) in izip!(z_probs.iter_mut(), &params.π, params.θ.rows())
+            for (zp, π, θs, &μ_area, &σ_area) in
+                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_area, &params.σ_area)
             {
                 // sum over genes
                 *zp = (*π as f64)
@@ -799,6 +818,9 @@ pub trait Sampler<P> where P: Proposal + Send {
                                 odds_to_prob(*θ * cell_area), c, params.logfactorial.eval(c))
                         }) as f64)
                         .exp();
+
+                *zp *= lognormal_logpdf(
+                    μ_area, σ_area, *cell_area).exp() as f64;
             }
 
             // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
