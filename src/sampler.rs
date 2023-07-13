@@ -446,10 +446,10 @@ pub trait Proposal {
                 δ -= count as f32 * params.λ_bg[i].ln()
             }
 
-            for &t in self.transcripts() {
-                δ -= normal_logpdf(
-                    params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
-            }
+            // for &t in self.transcripts() {
+            //     δ -= normal_logpdf(
+            //         params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
+            // }
         } else {
             let area_diff = self.old_cell_area_delta();
 
@@ -462,11 +462,11 @@ pub trait Proposal {
                 δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
             }
 
-            let μ_depth = params.μ_depth[old_cell as usize];
-            let σ_depth = params.σ_depth[old_cell as usize];
-            for &t in self.transcripts() {
-                δ -= normal_logpdf(μ_depth, σ_depth, params.depths[t]);
-            }
+            // let μ_depth = params.μ_depth[old_cell as usize];
+            // let σ_depth = params.σ_depth[old_cell as usize];
+            // for &t in self.transcripts() {
+            //     δ -= normal_logpdf(μ_depth, σ_depth, params.depths[t]);
+            // }
 
             let z = params.z[old_cell as usize];
             δ -= lognormal_logpdf(
@@ -484,10 +484,10 @@ pub trait Proposal {
                 δ += count as f32 * params.λ_bg[i].ln();
             }
 
-            for &t in self.transcripts() {
-                δ += normal_logpdf(
-                    params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
-            }
+            // for &t in self.transcripts() {
+            //     δ += normal_logpdf(
+            //         params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
+            // }
         } else {
             let area_diff = self.new_cell_area_delta();
 
@@ -500,11 +500,11 @@ pub trait Proposal {
                 δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
             }
 
-            let μ_depth = params.μ_depth[new_cell as usize];
-            let σ_depth = params.σ_depth[new_cell as usize];
-            for &t in self.transcripts() {
-                δ += normal_logpdf(μ_depth, σ_depth, params.depths[t]);
-            }
+            // let μ_depth = params.μ_depth[new_cell as usize];
+            // let σ_depth = params.σ_depth[new_cell as usize];
+            // for &t in self.transcripts() {
+            //     δ += normal_logpdf(μ_depth, σ_depth, params.depths[t]);
+            // }
 
             let z = params.z[new_cell as usize];
             δ -= lognormal_logpdf(

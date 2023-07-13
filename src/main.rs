@@ -6,12 +6,13 @@ mod sampler;
 
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
-use sampler::hexbinsampler::HexBinSampler;
+use sampler::hexbinsampler::RectBinSampler;
 use rayon::current_num_threads;
 use csv;
 use std::fs::File;
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use std::cell::RefCell;
 
 // use signal_hook::{consts::SIGINT, iterator::Signals};
 // use std::{error::Error, thread, time::Duration};
@@ -167,28 +168,67 @@ fn main() {
     // Maybe just set the total number of iterations
     // TODO: This should probably halve every time. That way nothing much should
     // change in order to homogenize.
+    // let sampler_schedule = [
+    //     (4.0_f32, 100),
+    //     (2.0_f32, 100),
+    //     (1.0_f32, 100),
+    //     (0.5_f32, 400),
+    // ];
+
+    let initial_avgbinpop = 8.0_f32;
     let sampler_schedule = [
-        // (5.0_f32, 200),
-        (4.0_f32, 50),
-        (2.0_f32, 100),
-        (1.0_f32, 100),
-        (0.5_f32, 400),
-    ];
+        100,  // 8
+        100,  // 2
+        100,  // 0.5
+        400]; // 0.125
 
 
-    for (avghexpop, niter) in sampler_schedule.iter() {
-        println!("Running sampler with avghexpop: {}, niter: {}", avghexpop, niter);
+    // TODO: previously we were halving the bin population, but now quartering
+    // it. Should consider that when scheduling
+
+    let mut sampler = RefCell::new(RectBinSampler::new(
+        &priors,
+        &mut params,
+        &transcripts,
+        ngenes,
+        full_area,
+        initial_avgbinpop,
+        chunk_size
+    ));
+
+    run_hexbin_sampler(
+        sampler.get_mut(),
+        &priors,
+        &mut params,
+        &transcripts,
+        sampler_schedule[0],
+        args.local_steps_per_iter);
+
+    for &niter in sampler_schedule[1..].iter() {
+        sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
         run_hexbin_sampler(
+            sampler.get_mut(),
             &priors,
             &mut params,
             &transcripts,
-            ngenes,
-            chunk_size,
-            full_area,
-            *avghexpop,
-            *niter,
+            niter,
             args.local_steps_per_iter);
     }
+
+
+    // for (avgbinpop, niter) in sampler_schedule.iter() {
+    //     println!("Running sampler with avgbinpop: {}, niter: {}", avgbinpop, niter);
+    //     run_hexbin_sampler(
+    //         &priors,
+    //         &mut params,
+    //         &transcripts,
+    //         ngenes,
+    //         chunk_size,
+    //         full_area,
+    //         *avgbinpop,
+    //         *niter,
+    //         args.local_steps_per_iter);
+    // }
 
     {
         let file = File::create(&args.output_counts).unwrap();
@@ -240,26 +280,13 @@ fn main() {
 
 
 fn run_hexbin_sampler(
+        sampler: &mut RectBinSampler,
         priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
-        ngenes: usize,
-        chunk_size: f32,
-        full_area: f32,
-        avghexpop: f32,
         niter: usize,
         local_steps_per_iter: usize)
 {
-    let mut sampler = HexBinSampler::new(
-        priors,
-        params,
-        transcripts,
-        ngenes,
-        full_area,
-        avghexpop,
-        chunk_size
-    );
-
     sampler.sample_global_params(priors, params);
     let mut proposal_stats = ProposalStats::new();
 
