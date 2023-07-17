@@ -4,7 +4,7 @@ use clap::Parser;
 
 mod sampler;
 
-use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats};
+use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::RectBinSampler;
 use rayon::current_num_threads;
@@ -56,6 +56,9 @@ struct Args{
 
     #[arg(short, long, default_value_t=100)]
     local_steps_per_iter: usize,
+
+    #[arg(long, default_value_t=0.5_f32)]
+    count_pr_cutoff: f32,
 
     #[arg(short, long, default_value="counts.csv.gz")]
     output_counts: String,
@@ -175,16 +178,28 @@ fn main() {
     //     (0.5_f32, 400),
     // ];
 
-    let initial_avgbinpop = 8.0_f32;
+    // TODO: maybe we should calibrate this to mean neighbor distance. Bin pop
+    // is too influenced by how much background is in the 
+
+    // let initial_avgbinpop = 8.0_f32;
+    // let sampler_schedule = [
+    //     100,  // 8
+    //     100,  // 2
+    //     100,  // 0.5
+    //     400]; // 0.125
+
+    let initial_avgbinpop = 16.0_f32;
     let sampler_schedule = [
-        100,  // 8
-        100,  // 2
-        100,  // 0.5
-        400]; // 0.125
+        100,  // 16
+        100,  // 4
+        100,  // 1
+        400]; // 0.25
 
 
     // TODO: previously we were halving the bin population, but now quartering
     // it. Should consider that when scheduling
+
+    let mut uncertainty = UncertaintyTracker::new();
 
     let mut sampler = RefCell::new(RectBinSampler::new(
         &priors,
@@ -202,9 +217,10 @@ fn main() {
         &mut params,
         &transcripts,
         sampler_schedule[0],
-        args.local_steps_per_iter);
+        args.local_steps_per_iter,
+        None);
 
-    for &niter in sampler_schedule[1..].iter() {
+    for &niter in sampler_schedule[1..sampler_schedule.len()-1].iter() {
         sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
         run_hexbin_sampler(
             sampler.get_mut(),
@@ -212,9 +228,23 @@ fn main() {
             &mut params,
             &transcripts,
             niter,
-            args.local_steps_per_iter);
+            args.local_steps_per_iter,
+            None);
     }
 
+    sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+    run_hexbin_sampler(
+        sampler.get_mut(),
+        &priors,
+        &mut params,
+        &transcripts,
+        sampler_schedule[sampler_schedule.len()-1],
+        args.local_steps_per_iter,
+        Some(&mut uncertainty));
+
+    uncertainty.finish(&params);
+    let counts = uncertainty.max_posterior_transcript_counts(
+        &params, &transcripts, args.count_pr_cutoff);
 
     // for (avgbinpop, niter) in sampler_schedule.iter() {
     //     println!("Running sampler with avgbinpop: {}, niter: {}", avgbinpop, niter);
@@ -238,7 +268,8 @@ fn main() {
             .from_writer(encoder);
 
         writer.write_record(transcript_names.iter()).unwrap();
-        for row in params.counts.t().rows() {
+        // for row in params.counts.t().rows() {
+        for row in counts.t().rows() {
             writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
         }
     }
@@ -257,7 +288,7 @@ fn main() {
         }
     }
 
-    params.write_cell_hulls(&transcripts, "cells.geojson.gz");
+    params.write_cell_hulls(&transcripts, &counts, "cells.geojson.gz");
 
     {
         let file = File::create("cell_assignments.csv.gz").unwrap();
@@ -266,11 +297,12 @@ fn main() {
             .has_headers(false)
             .from_writer(encoder);
 
-        writer.write_record(["x", "y", "gene", "assignment"]).unwrap();
+        writer.write_record(["x", "y", "z", "gene", "assignment"]).unwrap();
         for (cell, transcript) in params.cell_assignments.iter().zip(&transcripts) {
             writer.write_record([
                 transcript.x.to_string(),
                 transcript.y.to_string(),
+                transcript.z.to_string(),
                 transcript_names[transcript.gene as usize].clone(),
                 cell.to_string().to_string()]).unwrap();
         }
@@ -285,14 +317,15 @@ fn run_hexbin_sampler(
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
         niter: usize,
-        local_steps_per_iter: usize)
+        local_steps_per_iter: usize,
+        mut uncertainty: Option<&mut UncertaintyTracker>)
 {
     sampler.sample_global_params(priors, params);
     let mut proposal_stats = ProposalStats::new();
 
     for i in 0..niter {
         for _ in 0..local_steps_per_iter {
-            sampler.sample_cell_regions(priors, params, &mut proposal_stats, transcripts);
+            sampler.sample_cell_regions(priors, params, &mut proposal_stats, transcripts, &mut uncertainty);
         }
         sampler.sample_global_params(priors, params);
 

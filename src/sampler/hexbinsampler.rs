@@ -219,6 +219,7 @@ impl RectBinSampler {
         assert!(layout.rect_size.0 == layout.rect_size.1);
         let rect_size = layout.rect_size.0;
 
+        dbg!(rect_size);
         let rectarea = rect_size.powi(2);
 
         // build index
@@ -306,6 +307,7 @@ impl RectBinSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.len();
         let rectarea = self.rectarea / 4.0;
+        dbg!(rectarea.sqrt());
         let layout = self.chunkquad.layout.double_resolution();
 
         let proposals = vec![RectBinProposal::new(ngenes); nchunks];

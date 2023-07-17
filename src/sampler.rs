@@ -16,7 +16,7 @@ use math::{
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
-use itertools::izip;
+use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
 use ndarray::{Array1, Array2, Zip};
 use rand::{thread_rng, Rng};
@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
+use std::collections::HashMap;
 use thread_local::ThreadLocal;
 use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
@@ -74,6 +75,8 @@ pub struct ModelPriors {
 // Model global parameters.
 pub struct ModelParams {
     pub cell_assignments: Vec<CellIndex>,
+    pub cell_assignment_time: Vec<u32>,
+
     pub cell_population: Vec<usize>,
 
     // per-cell areas
@@ -145,6 +148,9 @@ pub struct ModelParams {
 
     // background rate
     λ_bg: Array1<f32>,
+
+    // time, which is incremented after every iteration
+    t: u32,
 }
 
 impl ModelParams {
@@ -197,6 +203,7 @@ impl ModelParams {
 
         return ModelParams {
             cell_assignments: init_cell_assignments.clone(),
+            cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
             cell_areas,
             full_area,
@@ -225,6 +232,7 @@ impl ModelParams {
             γ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
             γ_fg: Array1::<f32>::from_elem(ngenes, 0.0),
             λ_bg: Array1::<f32>::from_elem(ngenes, 0.0),
+            t: 0,
         };
     }
 
@@ -252,6 +260,10 @@ impl ModelParams {
 
     fn ncells(&self) -> usize {
         return self.cell_population.len();
+    }
+
+    fn ngenes(&self) -> usize {
+        return self.total_gene_counts.len();
     }
 
     pub fn log_likelihood(&self) -> f32 {
@@ -283,7 +295,7 @@ impl ModelParams {
         return ll;
     }
 
-    pub fn write_cell_hulls(&self, transcripts: &Vec<Transcript>, filename: &str) {
+    pub fn write_cell_hulls(&self, transcripts: &Vec<Transcript>, counts: &Array2<u32>, filename: &str) {
         // We are not maintaining any kind of per-cell array, so I guess I have
         // no choice but to compute such a thing here.
         // TODO: We area already keeping track of this in Sampler!!
@@ -319,6 +331,7 @@ impl ModelParams {
             }
 
             let area = convex_hull_area(&mut vertices_ref, &mut hull_ref);
+            let count = counts.column(i).sum();
 
             writeln!(
                 encoder,
@@ -328,13 +341,14 @@ impl ModelParams {
                     "      \"properties\": {{\n",
                     "        \"cell\": {},\n",
                     "        \"area\": {}\n",
+                    "        \"count\": {}\n",
                     "      }},\n",
                     "      \"geometry\": {{\n",
                     "        \"type\": \"Polygon\",\n",
                     "        \"coordinates\": [",
                     "          ["
                 ),
-                i, area
+                i, area, count
             )
             .unwrap();
             for (i, (x, y)) in hull_ref.iter().enumerate() {
@@ -399,6 +413,63 @@ impl ProposalStats {
         self.background_to_cell_ignore = 0;
         self.cell_to_background_accept = 0;
         self.cell_to_background_reject = 0;
+    }
+}
+
+
+pub struct UncertaintyTracker {
+    cell_assignment_duration: HashMap<(usize, CellIndex), u32>,
+}
+
+
+impl UncertaintyTracker {
+    pub fn new() -> UncertaintyTracker {
+        let cell_assignment_duration = HashMap::new();
+
+        return UncertaintyTracker {
+            cell_assignment_duration,
+        }
+    }
+
+    // record the duration of the current cell assignment. Called when the state
+    // is about to change.
+    fn update(&mut self, params: &ModelParams, i: usize) {
+        let duration = params.t - params.cell_assignment_time[i];
+        self.cell_assignment_duration
+            .entry((i, params.cell_assignments[i]))
+            .and_modify(|d| *d += duration)
+            .or_insert(duration);
+    }
+
+    pub fn finish(&mut self, params: &ModelParams) {
+        for ((i, &j), &t) in params.cell_assignments.iter().enumerate().zip(&params.cell_assignment_time) {
+            let duration = params.t - t + 1;
+            self.cell_assignment_duration
+                .entry((i, j))
+                .and_modify(|d| *d += duration)
+                .or_insert(duration);
+        }
+    }
+
+    pub fn max_posterior_transcript_counts(&self, params: &ModelParams, transcripts: &Vec<Transcript>, pr_cutoff: f32) -> Array2<u32> {
+        let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0);
+
+        // We need this to be descending on duration
+        let sorted_cell_assignment_durations: Vec<_> = self.cell_assignment_duration
+            .iter()
+            .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)|
+                (*i_b, **d_b).cmp(&(*i_a, **d_a)) )
+            .collect();
+
+        let mut i_prev = usize::MAX;
+        for ((i, j), &d) in sorted_cell_assignment_durations.iter() {
+            if *i != i_prev && *j != BACKGROUND_CELL && (d as f32 / params.t as f32) > pr_cutoff {
+                counts[[transcripts[*i].gene as usize, *j as usize]] += 1;
+            }
+            i_prev = *i;
+        }
+
+        return counts;
     }
 }
 
@@ -543,13 +614,18 @@ pub trait Sampler<P> where P: Proposal + Send {
 
     fn sample_cell_regions(
         &mut self, priors: &ModelPriors, params: &mut ModelParams,
-        stats: &mut ProposalStats, transcripts: &Vec<Transcript>)
+        stats: &mut ProposalStats, transcripts: &Vec<Transcript>,
+        uncertainty: &mut Option<&mut UncertaintyTracker>)
     {
+        // don't count time unless we are tracking uncertainty
+        if uncertainty.is_some() {
+            params.t += 1;
+        }
         self.repopulate_proposals(params);
         self.proposals_mut()
             .par_iter_mut()
             .for_each(|p| p.evaluate(params));
-        self.apply_accepted_proposals(stats, transcripts, priors, params);
+        self.apply_accepted_proposals(stats, transcripts, priors, params, uncertainty);
     }
 
     fn apply_accepted_proposals(
@@ -557,7 +633,8 @@ pub trait Sampler<P> where P: Proposal + Send {
         stats: &mut ProposalStats,
         transcripts: &Vec<Transcript>,
         priors: &ModelPriors,
-        params: &mut ModelParams)
+        params: &mut ModelParams,
+        uncertainty: &mut Option<&mut UncertaintyTracker>)
     {
         // Update cell assignments
         for proposal in self.proposals().iter().filter(|p| p.accepted() && !p.ignored()) {
@@ -566,7 +643,11 @@ pub trait Sampler<P> where P: Proposal + Send {
 
             let mut count = 0;
             for &i in proposal.transcripts() {
+                if let Some(uncertainty) = uncertainty.as_mut() {
+                    uncertainty.update(params, i);
+                }
                 params.cell_assignments[i] = new_cell;
+                params.cell_assignment_time[i] = params.t;
                 count += 1;
             }
 
