@@ -307,18 +307,22 @@ pub fn neighborhood_graph(
     return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), transcript_areas, avg_edge_length);
 }
 
-pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32) {
+pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
     let mut max_x = std::f32::MIN;
     let mut min_y = std::f32::MAX;
     let mut max_y = std::f32::MIN;
+    let mut min_z = std::f32::MAX;
+    let mut max_z = std::f32::MIN;
 
     for t in transcripts {
         min_x = min_x.min(t.x);
         max_x = max_x.max(t.x);
         min_y = min_y.min(t.y);
         max_y = max_y.max(t.y);
+        min_z = min_z.min(t.z);
+        max_z = max_z.max(t.z);
     }
 
-    return (min_x, max_x, min_y, max_y);
+    return (min_x, max_x, min_y, max_y, min_z, max_z);
 }

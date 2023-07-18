@@ -6,7 +6,7 @@ mod sampler;
 
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
-use sampler::hexbinsampler::RectBinSampler;
+use sampler::hexbinsampler::CubeBinSampler;
 use rayon::current_num_threads;
 use csv;
 use std::fs::File;
@@ -87,15 +87,17 @@ fn main() {
 
     println!("Read {} transcripts", ntranscripts);
 
-    let full_area = sampler::hull::compute_full_area(&transcripts);
-    println!("Full area: {}", full_area);
-
     // let nuclei_centroids = read_nuclei_csv(
     //     &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
     // let ncells = nuclei_centroids.len();
 
-    let (xmin, xmax, ymin, ymax) = coordinate_span(&transcripts);
-    let (xspan, yspan) = (xmax - xmin, ymax - ymin);
+    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
+    let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
+    dbg!((zmin, zmax));
+
+    let full_area = sampler::hull::compute_full_area(&transcripts) * zspan;
+    println!("Full area: {}", full_area);
+
 
     if let Some(nthreads) = args.nthreads {
         rayon::ThreadPoolBuilder::new().num_threads(nthreads).build_global().unwrap();
@@ -189,11 +191,18 @@ fn main() {
     //     400]; // 0.125
 
     let initial_avgbinpop = 16.0_f32;
+    // let sampler_schedule = [
+    //     100,  // 16
+    //     100,  // 4
+    //     100,  // 1
+    //     400]; // 0.25
+
     let sampler_schedule = [
-        100,  // 16
-        100,  // 4
-        100,  // 1
-        400]; // 0.25
+        100,
+        100,
+        100,
+        ];
+        // 100 ];
 
 
     // TODO: previously we were halving the bin population, but now quartering
@@ -201,7 +210,7 @@ fn main() {
 
     let mut uncertainty = UncertaintyTracker::new();
 
-    let mut sampler = RefCell::new(RectBinSampler::new(
+    let mut sampler = RefCell::new(CubeBinSampler::new(
         &priors,
         &mut params,
         &transcripts,
@@ -211,25 +220,27 @@ fn main() {
         chunk_size
     ));
 
-    run_hexbin_sampler(
-        sampler.get_mut(),
-        &priors,
-        &mut params,
-        &transcripts,
-        sampler_schedule[0],
-        args.local_steps_per_iter,
-        None);
-
-    for &niter in sampler_schedule[1..sampler_schedule.len()-1].iter() {
-        sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+    if sampler_schedule.len() > 1 {
         run_hexbin_sampler(
             sampler.get_mut(),
             &priors,
             &mut params,
             &transcripts,
-            niter,
+            sampler_schedule[0],
             args.local_steps_per_iter,
             None);
+
+        for &niter in sampler_schedule[1..sampler_schedule.len()-1].iter() {
+            sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+            run_hexbin_sampler(
+                sampler.get_mut(),
+                &priors,
+                &mut params,
+                &transcripts,
+                niter,
+                args.local_steps_per_iter,
+                None);
+        }
     }
 
     sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
@@ -312,7 +323,7 @@ fn main() {
 
 
 fn run_hexbin_sampler(
-        sampler: &mut RectBinSampler,
+        sampler: &mut CubeBinSampler,
         priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,

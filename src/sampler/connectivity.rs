@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use petgraph::Undirected;
 use petgraph::graph::{Graph, NodeIndex};
 // use hexx::Hex;
-use super::hexbinsampler::Rect;
+use super::hexbinsampler::Cube;
 
 // Using adjacency list representation for the subgraphs because they will typically be
 // very small, so I expect this to be fast and easier to resize/reset without allocating.
@@ -29,7 +29,7 @@ impl Default for DfsInfo {
 
 pub struct ConnectivityChecker {
     subgraph: NeighborhoodGraph,
-    rect_to_subgraph: HashMap<Rect, NodeIndex<usize>>,
+    cube_to_subgraph: HashMap<Cube, NodeIndex<usize>>,
     dfsinfo: HashMap<NodeIndex<usize>, DfsInfo>,
 }
 
@@ -39,32 +39,32 @@ impl ConnectivityChecker {
 
         return Self {
             subgraph: subgraph,
-            rect_to_subgraph: HashMap::new(),
+            cube_to_subgraph: HashMap::new(),
             dfsinfo: HashMap::new(),
         };
     }
 
-    pub fn rect_isarticulation<F>(&mut self, root: Rect, rectcell: F, cell: u32) -> bool where F: Fn(Rect) -> u32 {
-        self.construct_rect_subgraph(root, rectcell, cell);
+    pub fn cube_isarticulation<F>(&mut self, root: Cube, cubecell: F, cell: u32) -> bool where F: Fn(Cube) -> u32 {
+        self.construct_cube_subgraph(root, cubecell, cell);
         self.dfsinfo.clear();
         return is_articulation_dfs(
             &self.subgraph,
             &mut self.dfsinfo,
-            self.rect_to_subgraph[&root],
+            self.cube_to_subgraph[&root],
             NodeIndex::end(), 0);
     }
 
-    fn construct_rect_subgraph<F>(&mut self, root: Rect, rectcell: F, cell: u32) where F: Fn(Rect) -> u32 {
+    fn construct_cube_subgraph<F>(&mut self, root: Cube, cubecell: F, cell: u32) where F: Fn(Cube) -> u32 {
         self.subgraph.clear();
-        self.rect_to_subgraph.clear();
+        self.cube_to_subgraph.clear();
 
         let i_idx = self.subgraph.add_node(());
-        self.rect_to_subgraph.insert(root, i_idx);
+        self.cube_to_subgraph.insert(root, i_idx);
 
         for neighbor in root.moore_neighborhood() {
-            let neighbor_cell = rectcell(neighbor);
+            let neighbor_cell = cubecell(neighbor);
             if cell == neighbor_cell {
-                self.rect_to_subgraph.entry(neighbor).or_insert_with(|| {
+                self.cube_to_subgraph.entry(neighbor).or_insert_with(|| {
                     let j_idx = self.subgraph.add_node(());
                     j_idx
                 });
@@ -73,20 +73,20 @@ impl ConnectivityChecker {
 
         // add edges from i to neighbors, and neighbors' neighbors
         for neighbor in root.moore_neighborhood() {
-            if !self.rect_to_subgraph.contains_key(&neighbor) {
+            if !self.cube_to_subgraph.contains_key(&neighbor) {
                 continue;
             }
 
             self.subgraph.add_edge(
-                self.rect_to_subgraph[&root],
-                self.rect_to_subgraph[&neighbor], ());
+                self.cube_to_subgraph[&root],
+                self.cube_to_subgraph[&neighbor], ());
 
             for k in neighbor.moore_neighborhood() {
-                let k_cell = rectcell(k);
-                if self.rect_to_subgraph.contains_key(&k) && k_cell == cell {
+                let k_cell = cubecell(k);
+                if self.cube_to_subgraph.contains_key(&k) && k_cell == cell {
                     self.subgraph.add_edge(
-                        self.rect_to_subgraph[&neighbor],
-                        self.rect_to_subgraph[&k], ());
+                        self.cube_to_subgraph[&neighbor],
+                        self.cube_to_subgraph[&k], ());
                 }
             }
         }

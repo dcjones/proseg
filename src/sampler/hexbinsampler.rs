@@ -14,95 +14,135 @@ use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 
 
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Rect {
+pub struct Cube {
     i: i32,
     j: i32,
+    k: i32
 }
 
-impl Rect {
-    fn new(i: i32, j: i32) -> Rect {
-        return Rect {
-            i: i,
-            j: j,
+impl Cube {
+    fn new(i: i32, j: i32, k: i32) -> Cube {
+        return Cube {
+            i,
+            j,
+            k,
         };
     }
 
-    pub fn moore_neighborhood(&self) -> [Rect; 8] {
+    pub fn moore_neighborhood(&self) -> [Cube; 26] {
         return [
-            (-1, 0), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1)].map(
-                |(di, dj)| Rect::new(self.i + di, self.j + dj));
+            // top layer
+            ( 0,  0, -1),
+            (-1,  0, -1),
+            ( 1,  0, -1),
+            ( 0, -1, -1),
+            ( 0 , 1, -1),
+            (-1, -1, -1),
+            (-1,  1, -1),
+            ( 1, -1, -1),
+            ( 1,  1, -1),
+
+            // middle layer
+            (-1,  0, 0),
+            ( 1,  0, 0),
+            ( 0, -1, 0),
+            ( 0 , 1, 0),
+            (-1, -1, 0),
+            (-1,  1, 0),
+            ( 1, -1, 0),
+            ( 1,  1, 0),
+
+            // bottom layer
+            ( 0,  0, 1),
+            (-1,  0, 1),
+            ( 1,  0, 1),
+            ( 0, -1, 1),
+            ( 0 , 1, 1),
+            (-1, -1, 1),
+            (-1,  1, 1),
+            ( 1, -1, 1),
+            ( 1,  1, 1),
+            ].map(
+                |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
 
-    pub fn von_neumann_neighborhood(&self) -> [Rect; 4] {
-        return [(-1, 0), (1, 0), (0, -1), (0, 1)].map(
-            |(di, dj)| Rect::new(self.i + di, self.j + dj));
+    pub fn von_neumann_neighborhood(&self) -> [Cube; 6] {
+        return [
+            (-1,  0,  0),
+            ( 1,  0,  0),
+            ( 0, -1,  0),
+            ( 0,  1,  0),
+            ( 0,  0, -1),
+            ( 0,  0,  1),
+            ].map(
+            |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
 
-    fn double_resolution_children(&self) -> [Rect; 4] {
+    fn double_resolution_children(&self) -> [Cube; 8] {
         return [
-            Rect::new(2*self.i, 2*self.j),
-            Rect::new(2*self.i + 1, 2*self.j),
-            Rect::new(2*self.i, 2*self.j + 1),
-            Rect::new(2*self.i + 1, 2*self.j + 1),
+            Cube::new(2*self.i,     2*self.j,     2*self.k),
+            Cube::new(2*self.i + 1, 2*self.j,     2*self.k),
+            Cube::new(2*self.i,     2*self.j + 1, 2*self.k),
+            Cube::new(2*self.i + 1, 2*self.j + 1, 2*self.k),
+            Cube::new(2*self.i,     2*self.j,     2*self.k + 1),
+            Cube::new(2*self.i + 1, 2*self.j,     2*self.k + 1),
+            Cube::new(2*self.i,     2*self.j + 1, 2*self.k + 1),
+            Cube::new(2*self.i + 1, 2*self.j + 1, 2*self.k + 1),
         ];
     }
 }
 
-struct RectLayout {
-    origin: (f32, f32),
-    rect_size: (f32, f32),
+struct CubeLayout {
+    origin: (f32, f32, f32),
+    cube_size: (f32, f32, f32),
 }
 
-impl RectLayout {
-    // fn new(origin: (f32, f32), rect_size: (f32, f32)) -> RectLayout {
-    //     return RectLayout {
-    //         origin,
-    //         rect_size,
-    //     };
-    // }
-
-    fn double_resolution(&self) -> RectLayout {
-        return RectLayout {
-            origin: (self.origin.0, self.origin.1),
-            rect_size: (self.rect_size.0 / 2.0, self.rect_size.1 / 2.0),
+impl CubeLayout {
+    fn double_resolution(&self) -> CubeLayout {
+        return CubeLayout {
+            origin: (self.origin.0, self.origin.1, self.origin.2),
+            cube_size: (self.cube_size.0 / 2.0, self.cube_size.1 / 2.0, self.cube_size.2 / 2.0),
         };
     }
 
-    fn rect_to_world_pos(&self, rect: Rect) -> (f32, f32) {
+    fn cube_to_world_pos(&self, cube: Cube) -> (f32, f32, f32) {
         return (
-            self.origin.0 + (0.5 + rect.i as f32) * self.rect_size.0,
-            self.origin.1 + (0.5 + rect.j as f32) * self.rect_size.1);
+            self.origin.0 + (0.5 + cube.i as f32) * self.cube_size.0,
+            self.origin.1 + (0.5 + cube.j as f32) * self.cube_size.1,
+            self.origin.2 + (0.5 + cube.k as f32) * self.cube_size.2);
     }
 
-    fn world_pos_to_rect(&self, pos: (f32, f32)) -> Rect {
-        return Rect::new(
-            ((pos.0 - self.origin.0) / self.rect_size.0).floor() as i32,
-            ((pos.1 - self.origin.1) / self.rect_size.1).floor() as i32);
+    fn world_pos_to_cube(&self, pos: (f32, f32, f32)) -> Cube {
+        return Cube::new(
+            ((pos.0 - self.origin.0) / self.cube_size.0).floor() as i32,
+            ((pos.1 - self.origin.1) / self.cube_size.1).floor() as i32,
+            ((pos.2 - self.origin.2) / self.cube_size.2).floor() as i32,
+        );
     }
 }
 
-type RectEdgeSampleSet = SampleSet<(Rect, Rect)>;
+type CubeEdgeSampleSet = SampleSet<(Cube, Cube)>;
 
 
 #[derive(Clone, Debug)]
-struct RectBin {
-    rect: Rect,
+struct CubeBin {
+    cube: Cube,
     transcripts: Vec<usize>,
 }
 
-impl RectBin {
-    fn new(rect: Rect) -> Self {
+impl CubeBin {
+    fn new(cube: Cube) -> Self {
         Self {
-            rect,
+            cube,
             transcripts: Vec::new(),
         }
     }
 }
 
 struct ChunkQuadMap {
-    layout: RectLayout,
+    layout: CubeLayout,
     xmin: f32,
     ymin: f32,
     chunk_size: f32,
@@ -111,38 +151,38 @@ struct ChunkQuadMap {
 
 
 impl ChunkQuadMap {
-    fn get(&self, rect: Rect) -> (u32, u32) {
-        let rect_xy = self.layout.rect_to_world_pos(rect);
-        return chunkquad(rect_xy.0, rect_xy.1, self.xmin, self.ymin, self.chunk_size, self.nxchunks);
+    fn get(&self, cube: Cube) -> (u32, u32) {
+        let cube_xyz = self.layout.cube_to_world_pos(cube);
+        return chunkquad(cube_xyz.0, cube_xyz.1, self.xmin, self.ymin, self.chunk_size, self.nxchunks);
     }
 }
 
 
-struct RectCellMap {
-    index: HashMap<Rect, u32>,
+struct CubeCellMap {
+    index: HashMap<Cube, u32>,
 }
 
 
-impl RectCellMap {
+impl CubeCellMap {
     fn new() -> Self {
         Self {
             index: HashMap::new(),
         }
     }
 
-    fn insert(&mut self, rect: Rect, cell: u32) {
-        self.index.insert(rect, cell);
+    fn insert(&mut self, cube: Cube, cell: u32) {
+        self.index.insert(cube, cell);
     }
 
-    fn get(&self, rect: Rect) -> u32 {
-        match self.index.get(&rect) {
+    fn get(&self, cube: Cube) -> u32 {
+        match self.index.get(&cube) {
             Some(cell) => *cell,
             None => BACKGROUND_CELL,
         }
     }
 
-    fn set(&mut self, rect: Rect, cell: u32) {
-        self.index.insert(rect, cell);
+    fn set(&mut self, cube: Cube, cell: u32) {
+        self.index.insert(cube, cell);
     }
 
     // fn count(&self, cell: u32) -> usize {
@@ -151,53 +191,58 @@ impl RectCellMap {
 }
 
 
-fn bin_transcripts(transcripts: &Vec<Transcript>, full_area: f32, avgpop: f32) -> (RectLayout, Vec<RectBin>) {
-    let density = transcripts.len() as f32 / full_area;
-    let target_area = avgpop / density;
-    let rect_size = target_area.sqrt();
+// Initial binning of the transcripts
+fn bin_transcripts(transcripts: &Vec<Transcript>, avgpop: f32) -> (CubeLayout, Vec<CubeBin>) {
+    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
+    let xy_area = (xmax - xmin) * (ymax - ymin);
 
-    let layout = RectLayout {
-        origin: (0.0, 0.0),
-        rect_size: (rect_size, rect_size),
+    let height = zmax - zmin;
+    let density = transcripts.len() as f32 / xy_area;
+    let target_area = avgpop / density;
+    let cube_size = target_area.sqrt();
+
+    let layout = CubeLayout {
+        origin: (0.0, 0.0, zmin),
+        cube_size: (cube_size, cube_size, height),
     };
 
-    // Bin transcripts into RectBins
-    let mut rect_index = HashMap::new();
+    // Bin transcripts into CubeBins
+    let mut cube_index = HashMap::new();
 
     for (i, transcript) in transcripts.iter().enumerate() {
-        let rect = layout.world_pos_to_rect((transcript.x, transcript.y));
+        let cube = layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
 
-        rect_index.entry(rect)
-            .or_insert_with(|| RectBin::new(rect))
+        cube_index.entry(cube)
+            .or_insert_with(|| CubeBin::new(cube))
             .transcripts.push(i);
     }
 
-    let rectbins = rect_index.values().cloned().collect::<Vec<_>>();
+    let cubebins = cube_index.values().cloned().collect::<Vec<_>>();
 
-    return (layout, rectbins);
+    return (layout, cubebins);
 }
 
-pub struct RectBinSampler {
+pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
 
-    mismatch_edges: [Vec<Arc<Mutex<RectEdgeSampleSet>>>; 4],
-    rectbins: Vec<RectBin>,
-    rectindex: HashMap<Rect, usize>,
+    mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
+    cubebins: Vec<CubeBin>,
+    cubeindex: HashMap<Cube, usize>,
 
     // assignment of rectbins to cells
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
-    rectcells: RectCellMap,
+    cubecells: CubeCellMap,
 
-    proposals: Vec<RectBinProposal>,
+    proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
 
-    rectarea: f32,
+    cubevolume: f32,
     quad: usize,
 }
 
 
-impl RectBinSampler {
+impl CubeBinSampler {
     pub fn new(
         priors: &ModelPriors,
         params: &mut ModelParams,
@@ -207,25 +252,26 @@ impl RectBinSampler {
         avgrectpop: f32,
         chunk_size: f32) -> Self
     {
-        let (xmin, xmax, ymin, ymax) = coordinate_span(transcripts);
+        let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(transcripts);
         let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        let (layout, rectbins ) = bin_transcripts(transcripts, full_area, avgrectpop);
+        let (layout, cubebins ) = bin_transcripts(
+            transcripts, avgrectpop);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
 
-        assert!(layout.rect_size.0 == layout.rect_size.1);
-        let rect_size = layout.rect_size.0;
+        assert!(layout.cube_size.0 == layout.cube_size.1);
+        let cube_size = layout.cube_size.0;
 
-        dbg!(rect_size);
-        let rectarea = rect_size.powi(2);
+        dbg!(cube_size);
+        let cubevolume = cube_size.powi(2) * (zmax - zmin);
 
         // build index
-        let mut rectindex = HashMap::new();
-        for (i, rectbin) in rectbins.iter().enumerate() {
-            rectindex.insert(rectbin.rect, i);
+        let mut cubeindex = HashMap::new();
+        for (i, cubebin) in cubebins.iter().enumerate() {
+            cubeindex.insert(cubebin.cube, i);
         }
 
         // initialize mismatch_edges
@@ -233,34 +279,34 @@ impl RectBinSampler {
             Vec::new(), Vec::new(), Vec::new(), Vec::new() ];
         for chunks in mismatch_edges.iter_mut() {
             for _ in 0..nchunks {
-                chunks.push(Arc::new(Mutex::new(RectEdgeSampleSet::new())));
+                chunks.push(Arc::new(Mutex::new(CubeEdgeSampleSet::new())));
             }
         }
 
         // initial assignments
-        let mut rect_assignments = HashMap::new();
-        let mut rectcells = RectCellMap::new();
-        for rectbin in &rectbins {
-            rect_assignments.clear();
+        let mut cube_assignments = HashMap::new();
+        let mut cubecells = CubeCellMap::new();
+        for cubebin in &cubebins {
+            cube_assignments.clear();
 
             // vote on rect assignment
-            for &t in rectbin.transcripts.iter() {
-                rect_assignments
+            for &t in cubebin.transcripts.iter() {
+                cube_assignments
                     .entry(params.cell_assignments[t])
                     .and_modify(|count| *count += 1)
                     .or_insert(1);
             }
 
-            let winner = rect_assignments.iter()
+            let winner = cube_assignments.iter()
                 .max_by_key(|(_, count)| *count)
                 .map(|(cell, _)| *cell).unwrap_or(BACKGROUND_CELL);
 
             if winner != BACKGROUND_CELL {
-                rectcells.insert(rectbin.rect, winner);
+                cubecells.insert(cubebin.cube, winner);
             }
 
             // homogenize the rect: assign every transcript in the rect to the winner
-            for &t in rectbin.transcripts.iter() {
+            for &t in cubebin.transcripts.iter() {
                 if params.cell_assignments[t] != BACKGROUND_CELL {
                     params.cell_population[params.cell_assignments[t] as usize] -= 1;
                 }
@@ -273,10 +319,10 @@ impl RectBinSampler {
         params.recompute_counts(transcripts);
 
 
-        let proposals = vec![RectBinProposal::new(ngenes); nchunks];
+        let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
         let connectivity_checker = ThreadLocal::new();
 
-        let mut sampler = RectBinSampler {
+        let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
                 layout,
                 xmin,
@@ -286,12 +332,12 @@ impl RectBinSampler {
             },
             transcript_genes,
             mismatch_edges,
-            rectbins,
-            rectindex,
-            rectcells,
+            cubebins,
+            cubeindex,
+            cubecells,
             proposals,
             connectivity_checker,
-            rectarea,
+            cubevolume,
             quad: 0,
         };
 
@@ -303,72 +349,75 @@ impl RectBinSampler {
 
     // Allocate a new RectBinSampler with the same state as this one, but
     // grid resolution doubled (i.e. rect size halved).
-    pub fn double_resolution(&self, transcripts: &Vec<Transcript>) -> RectBinSampler {
+    pub fn double_resolution(&self, transcripts: &Vec<Transcript>) -> CubeBinSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.len();
-        let rectarea = self.rectarea / 4.0;
-        dbg!(rectarea.sqrt());
+        let cubevolume = self.cubevolume / 8.0;
         let layout = self.chunkquad.layout.double_resolution();
 
-        let proposals = vec![RectBinProposal::new(ngenes); nchunks];
+        let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
         let connectivity_checker = ThreadLocal::new();
 
-        let mut rectcells = RectCellMap::new();
-        let mut rectbins = Vec::new();
-        for rectbin in &self.rectbins {
-            let cell = self.rectcells.get(rectbin.rect);
-            if rectbin.transcripts.is_empty() && cell == BACKGROUND_CELL {
+        let mut cubecells = CubeCellMap::new();
+        let mut cubebins = Vec::new();
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
+            if cubebin.transcripts.is_empty() && cell == BACKGROUND_CELL {
                 continue;
             }
 
-            let subrects = rectbin.rect.double_resolution_children();
+            let subcubes = cubebin.cube.double_resolution_children();
 
-            let mut subrectbins = [
-                RectBin::new(subrects[0]),
-                RectBin::new(subrects[1]),
-                RectBin::new(subrects[2]),
-                RectBin::new(subrects[3]),
+            let mut subcubebins = [
+                CubeBin::new(subcubes[0]),
+                CubeBin::new(subcubes[1]),
+                CubeBin::new(subcubes[2]),
+                CubeBin::new(subcubes[3]),
+                CubeBin::new(subcubes[4]),
+                CubeBin::new(subcubes[5]),
+                CubeBin::new(subcubes[6]),
+                CubeBin::new(subcubes[7]),
             ];
 
             // allocate transcripts to children
-            for &t in rectbin.transcripts.iter() {
+            for &t in cubebin.transcripts.iter() {
                 let transcript = &transcripts[t];
-                let trect = layout.world_pos_to_rect((transcript.x, transcript.y));
+                let tcube = layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
 
-                for subrectbin in subrectbins.iter_mut() {
-                    if subrectbin.rect == trect {
-                        subrectbin.transcripts.push(t);
+                for subcubebin in subcubebins.iter_mut() {
+                    if subcubebin.cube == tcube {
+                        subcubebin.transcripts.push(t);
                         break;
                     }
                 }
             }
 
             // set cell states
-            for subrectbin in &subrectbins {
-                rectcells.insert(subrectbin.rect, cell);
+            for subcubebin in &subcubebins {
+                cubecells.insert(subcubebin.cube, cell);
             }
 
             // add to index
-            for subrectbin in subrectbins {
-                rectbins.push(subrectbin);
+            for subcubebin in subcubebins {
+                cubebins.push(subcubebin);
             }
         }
 
         // DEBUG: check that all transcripts are accounted for
         let mut prev_ntranscripts = 0;
-        for rectbin in &self.rectbins {
-            prev_ntranscripts += rectbin.transcripts.len();
+        for cubebin in &self.cubebins {
+            prev_ntranscripts += cubebin.transcripts.len();
         }
         let mut curr_ntranscripts = 0;
-        for rectbin in &rectbins {
-            curr_ntranscripts += rectbin.transcripts.len();
+        for cubebin in &cubebins {
+            curr_ntranscripts += cubebin.transcripts.len();
         }
         dbg!(prev_ntranscripts, curr_ntranscripts);
 
         // build index
-        let mut rectindex = HashMap::new();
-        for (i, rectbin) in rectbins.iter().enumerate() {
-            rectindex.insert(rectbin.rect, i);
+        let mut cubeindex = HashMap::new();
+        for (i, cubebin) in cubebins.iter().enumerate() {
+            cubeindex.insert(cubebin.cube, i);
         }
 
         // initialize mismatch_edges
@@ -376,11 +425,11 @@ impl RectBinSampler {
             Vec::new(), Vec::new(), Vec::new(), Vec::new() ];
         for chunks in mismatch_edges.iter_mut() {
             for _ in 0..nchunks {
-                chunks.push(Arc::new(Mutex::new(RectEdgeSampleSet::new())));
+                chunks.push(Arc::new(Mutex::new(CubeEdgeSampleSet::new())));
             }
         }
 
-        let mut sampler = RectBinSampler {
+        let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
                 layout,
                 xmin: self.chunkquad.xmin,
@@ -390,12 +439,12 @@ impl RectBinSampler {
             },
             transcript_genes: self.transcript_genes.clone(),
             mismatch_edges,
-            rectbins,
-            rectindex,
-            rectcells,
+            cubebins,
+            cubeindex,
+            cubecells,
             proposals,
             connectivity_checker,
-            rectarea,
+            cubevolume,
             quad: 0,
         };
 
@@ -410,10 +459,10 @@ impl RectBinSampler {
     fn recompute_cell_areas(&self, priors: &ModelPriors, params: &mut ModelParams) {
         // recompute cell areas as the sum of rect areas
         params.cell_areas.fill(0.0_f32);
-        for rectbin in &self.rectbins {
-            let cell = self.rectcells.get(rectbin.rect);
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
             if cell != BACKGROUND_CELL {
-                params.cell_areas[cell as usize] += self.rectarea;
+                params.cell_areas[cell as usize] += self.cubevolume;
             }
         }
         for cell_area in params.cell_areas.iter_mut() {
@@ -423,24 +472,24 @@ impl RectBinSampler {
 
     fn populate_mismatches(&mut self) {
         // compute initial mismatch edges
-        for rectbin in &self.rectbins {
-            let cell = self.rectcells.get(rectbin.rect);
-            let (chunk, quad) = self.chunkquad.get(rectbin.rect);
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
+            let (chunk, quad) = self.chunkquad.get(cubebin.cube);
 
-            for neighbor in rectbin.rect.von_neumann_neighborhood() {
-                let neighbor_cell = self.rectcells.get(neighbor);
+            for neighbor in cubebin.cube.von_neumann_neighborhood() {
+                let neighbor_cell = self.cubecells.get(neighbor);
                 if cell != neighbor_cell {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
 
                     self.mismatch_edges[quad as usize][chunk as usize]
                         .lock()
                         .unwrap()
-                        .insert((rectbin.rect, neighbor));
+                        .insert((cubebin.cube, neighbor));
 
                     self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
                         .lock()
                         .unwrap()
-                        .insert((neighbor, rectbin.rect));
+                        .insert((neighbor, cubebin.cube));
                 }
             }
         }
@@ -453,7 +502,7 @@ impl RectBinSampler {
 }
 
 
-impl Sampler<RectBinProposal> for RectBinSampler {
+impl Sampler<CubeBinProposal> for CubeBinSampler {
     fn repopulate_proposals(&mut self, params: &ModelParams) {
         const UNASSIGNED_PROPOSAL_PROB: f64 = 0.05;
 
@@ -471,8 +520,8 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                 let mut rng = thread_rng();
                 let (i, j) = mismatch_edges.choose(&mut rng).unwrap();
 
-                let cell_from = self.rectcells.get(*i);
-                let mut cell_to = self.rectcells.get(*j);
+                let cell_from = self.cubecells.get(*i);
+                let mut cell_to = self.cubecells.get(*j);
                 assert!(cell_from != cell_to);
 
                 let from_unassigned = cell_from == BACKGROUND_CELL;
@@ -482,10 +531,10 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                     cell_to = BACKGROUND_CELL;
                 }
 
-                let rectbin = self.rectindex.get(i).map(|i| &self.rectbins[*i]);
+                let cubebin = self.cubeindex.get(i).map(|i| &self.cubebins[*i]);
 
-                let transcripts = rectbin.map(
-                    |rectbin| &rectbin.transcripts);
+                let transcripts = cubebin.map(
+                    |cubebin| &cubebin.transcripts);
                 let i_pop = transcripts.map(|ts| ts.len()).unwrap_or(0);
 
                 // Don't propose removing the last transcript from a cell. (This is
@@ -505,14 +554,14 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                     .get_or(|| RefCell::new(ConnectivityChecker::new()))
                     .borrow_mut();
 
-                let art_from = connectivity_checker.rect_isarticulation(
+                let art_from = connectivity_checker.cube_isarticulation(
                     *i,
-                    |rect| self.rectcells.get(rect),
+                    |cube| self.cubecells.get(cube),
                     cell_from);
 
-                let art_to = connectivity_checker.rect_isarticulation(
+                let art_to = connectivity_checker.cube_isarticulation(
                     *i,
-                    |rect| self.rectcells.get(rect),
+                    |cube| self.cubecells.get(cube),
                     cell_to);
 
                 if art_from || art_to {
@@ -524,11 +573,11 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                 let num_mismatching_edges = mismatch_edges.len();
 
                 let num_new_state_neighbors = i.von_neumann_neighborhood().iter()
-                    .filter(|&&j| self.rectcells.get(j) == cell_to)
+                    .filter(|&&j| self.cubecells.get(j) == cell_to)
                     .count();
 
                 let num_prev_state_neighbors = i.von_neumann_neighborhood().iter()
-                    .filter(|&&j| self.rectcells.get(j) == cell_from)
+                    .filter(|&&j| self.cubecells.get(j) == cell_from)
                     .count();
 
                 let mut proposal_prob =
@@ -537,7 +586,7 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                 // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
                 if to_unassigned {
                     let num_mismatching_neighbors = i.von_neumann_neighborhood().iter()
-                        .filter(|&&j| self.rectcells.get(j) != cell_from)
+                        .filter(|&&j| self.cubecells.get(j) != cell_from)
                         .count();
 
                     proposal_prob = UNASSIGNED_PROPOSAL_PROB
@@ -555,14 +604,14 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                 // If this is a proposal from unassigned, account for multiple ways of reversing it
                 if from_unassigned {
                     let new_num_mismatching_neighbors = i.von_neumann_neighborhood().iter()
-                        .filter(|&&j| self.rectcells.get(j) != cell_to)
+                        .filter(|&&j| self.cubecells.get(j) != cell_to)
                         .count();
                     reverse_proposal_prob = UNASSIGNED_PROPOSAL_PROB
                         * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64)
                         + (1.0 - UNASSIGNED_PROPOSAL_PROB) * reverse_proposal_prob;
                 }
 
-                proposal.rect = *i;
+                proposal.cube = *i;
                 if let Some(transcripts) = transcripts {
                     proposal.transcripts.clone_from(transcripts);
                 } else {
@@ -573,8 +622,8 @@ impl Sampler<RectBinProposal> for RectBinSampler {
                 proposal.log_weight = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
                 proposal.ignore = false;
                 proposal.accept = false;
-                proposal.old_cell_area_delta = -self.rectarea;
-                proposal.new_cell_area_delta = self.rectarea;
+                proposal.old_cell_area_delta = -self.cubevolume;
+                proposal.new_cell_area_delta = self.cubevolume;
 
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
@@ -588,46 +637,46 @@ impl Sampler<RectBinProposal> for RectBinSampler {
         self.quad = (self.quad + 1) % 4;
     }
 
-    fn proposals<'a, 'b>(&'a self) -> &'b [RectBinProposal] where 'a: 'b {
+    fn proposals<'a, 'b>(&'a self) -> &'b [CubeBinProposal] where 'a: 'b {
         return &self.proposals;
     }
 
-    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [RectBinProposal] where 'a: 'b {
+    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [CubeBinProposal] where 'a: 'b {
         return &mut self.proposals;
     }
 
     fn update_sampler_state(&mut self, _: &ModelParams) {
         for proposal in self.proposals.iter().filter(|p| !p.ignore && p.accept) {
-            self.rectcells.set(proposal.rect, proposal.new_cell);
+            self.cubecells.set(proposal.cube, proposal.new_cell);
         }
 
         self.proposals.par_iter()
             .filter(|p| !p.ignore && p.accept)
             .for_each(|proposal| {
-                let (chunk, quad) = self.chunkquad.get(proposal.rect);
+                let (chunk, quad) = self.chunkquad.get(proposal.cube);
 
                 // update mismatch edges
-                for neighbor in proposal.rect.von_neumann_neighborhood() {
+                for neighbor in proposal.cube.von_neumann_neighborhood() {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
-                    let neighbor_cell = self.rectcells.get(neighbor);
+                    let neighbor_cell = self.cubecells.get(neighbor);
                     if proposal.new_cell == neighbor_cell {
                         self.mismatch_edges[quad as usize][chunk as usize]
                             .lock()
                             .unwrap()
-                            .remove((proposal.rect, neighbor));
+                            .remove((proposal.cube, neighbor));
                         self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
                             .lock()
                             .unwrap()
-                            .remove((neighbor, proposal.rect));
+                            .remove((neighbor, proposal.cube));
                     } else {
                         self.mismatch_edges[quad as usize][chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((proposal.rect, neighbor));
+                            .insert((proposal.cube, neighbor));
                         self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((neighbor, proposal.rect));
+                            .insert((neighbor, proposal.cube));
                     }
                 }
             });
@@ -635,8 +684,8 @@ impl Sampler<RectBinProposal> for RectBinSampler {
 }
 
 #[derive(Clone, Debug)]
-pub struct RectBinProposal {
-    rect: Rect,
+pub struct CubeBinProposal {
+    cube: Cube,
     transcripts: Vec<usize>,
 
     // gene count for this rect
@@ -656,10 +705,10 @@ pub struct RectBinProposal {
     new_cell_area_delta: f32,
 }
 
-impl RectBinProposal {
-    fn new(ngenes: usize) -> RectBinProposal {
-        return RectBinProposal {
-            rect: Rect::new(0, 0),
+impl CubeBinProposal {
+    fn new(ngenes: usize) -> CubeBinProposal {
+        return CubeBinProposal {
+            cube: Cube::new(0, 0, 0),
             transcripts: Vec::new(),
             genepop: vec![0; ngenes],
             old_cell: 0,
@@ -673,7 +722,7 @@ impl RectBinProposal {
     }
 }
 
-impl Proposal for RectBinProposal {
+impl Proposal for CubeBinProposal {
     fn accept(&mut self) {
         self.accept = true;
     }
