@@ -62,6 +62,9 @@ struct Args{
 
     #[arg(short, long, default_value="counts.csv.gz")]
     output_counts: String,
+
+    #[arg(long, default_value=None)]
+    output_cell_cubes: Option<String>,
 }
 
 
@@ -150,11 +153,6 @@ fn main() {
         β_θ: 1.0,
         e_r: 1.0,
         f_r: 1.0,
-
-        μ_μ_depth: z_mean,
-        σ_μ_depth: z_std,
-        α_σ_depth: 0.1,
-        β_σ_depth: 0.1,
     };
 
     let mut params = ModelParams::new(
@@ -198,11 +196,14 @@ fn main() {
     //     400]; // 0.25
 
     let sampler_schedule = [
-        100,
-        100,
-        100,
+        200, // 16
+        200, // 2
+        200, // 0.5
         ];
-        // 100 ];
+
+    // let sampler_schedule = [
+    //     200, // 16
+    //     ];
 
 
     // TODO: previously we were halving the bin population, but now quartering
@@ -215,7 +216,6 @@ fn main() {
         &mut params,
         &transcripts,
         ngenes,
-        full_area,
         initial_avgbinpop,
         chunk_size
     ));
@@ -256,6 +256,10 @@ fn main() {
     uncertainty.finish(&params);
     let counts = uncertainty.max_posterior_transcript_counts(
         &params, &transcripts, args.count_pr_cutoff);
+
+    if let Some(output_cell_cubes) = args.output_cell_cubes {
+        sampler.borrow().write_cell_cubes(&output_cell_cubes);
+    }
 
     // for (avgbinpop, niter) in sampler_schedule.iter() {
     //     println!("Running sampler with avgbinpop: {}, niter: {}", avgbinpop, niter);

@@ -1,6 +1,6 @@
 
 
-use super::transcripts::{Transcript, coordinate_span, BACKGROUND_CELL};
+use super::transcripts::{Transcript, coordinate_span, BACKGROUND_CELL, CellIndex};
 use super::{Sampler, ModelPriors, ModelParams, Proposal, chunkquad};
 use super::sampleset::SampleSet;
 use super::connectivity::ConnectivityChecker;
@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
+use std::fs::File;
+use std::io::Write;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 
 
 
@@ -34,36 +38,36 @@ impl Cube {
     pub fn moore_neighborhood(&self) -> [Cube; 26] {
         return [
             // top layer
-            ( 0,  0, -1),
             (-1,  0, -1),
+            ( 0,  0, -1),
             ( 1,  0, -1),
-            ( 0, -1, -1),
-            ( 0 , 1, -1),
-            (-1, -1, -1),
             (-1,  1, -1),
-            ( 1, -1, -1),
+            ( 0 , 1, -1),
             ( 1,  1, -1),
+            (-1, -1, -1),
+            ( 0, -1, -1),
+            ( 1, -1, -1),
 
             // middle layer
             (-1,  0, 0),
             ( 1,  0, 0),
-            ( 0, -1, 0),
-            ( 0 , 1, 0),
-            (-1, -1, 0),
             (-1,  1, 0),
-            ( 1, -1, 0),
+            ( 0 , 1, 0),
             ( 1,  1, 0),
+            (-1, -1, 0),
+            ( 0, -1, 0),
+            ( 1, -1, 0),
 
             // bottom layer
-            ( 0,  0, 1),
             (-1,  0, 1),
+            ( 0,  0, 1),
             ( 1,  0, 1),
-            ( 0, -1, 1),
-            ( 0 , 1, 1),
-            (-1, -1, 1),
             (-1,  1, 1),
-            ( 1, -1, 1),
+            ( 0 , 1, 1),
             ( 1,  1, 1),
+            (-1, -1, 1),
+            ( 0, -1, 1),
+            ( 1, -1, 1),
             ].map(
                 |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
@@ -121,6 +125,19 @@ impl CubeLayout {
             ((pos.2 - self.origin.2) / self.cube_size.2).floor() as i32,
         );
     }
+
+    fn cube_to_world_coords(&self, cube: Cube) -> (f32, f32, f32, f32, f32, f32) {
+        let x0 = self.origin.0 + cube.i as f32 * self.cube_size.0;
+        let y0 = self.origin.1 + cube.j as f32 * self.cube_size.1;
+        let z0 = self.origin.2 + cube.k as f32 * self.cube_size.2;
+
+        return (
+            x0, y0, z0,
+            x0 + self.cube_size.0,
+            y0 + self.cube_size.1,
+            z0 + self.cube_size.2,
+        );
+    }
 }
 
 type CubeEdgeSampleSet = SampleSet<(Cube, Cube)>;
@@ -159,7 +176,7 @@ impl ChunkQuadMap {
 
 
 struct CubeCellMap {
-    index: HashMap<Cube, u32>,
+    index: HashMap<Cube, CellIndex>,
 }
 
 
@@ -170,18 +187,18 @@ impl CubeCellMap {
         }
     }
 
-    fn insert(&mut self, cube: Cube, cell: u32) {
+    fn insert(&mut self, cube: Cube, cell: CellIndex) {
         self.index.insert(cube, cell);
     }
 
-    fn get(&self, cube: Cube) -> u32 {
+    fn get(&self, cube: Cube) -> CellIndex {
         match self.index.get(&cube) {
             Some(cell) => *cell,
             None => BACKGROUND_CELL,
         }
     }
 
-    fn set(&mut self, cube: Cube, cell: u32) {
+    fn set(&mut self, cube: Cube, cell: CellIndex) {
         self.index.insert(cube, cell);
     }
 
@@ -248,7 +265,6 @@ impl CubeBinSampler {
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
         ngenes: usize,
-        full_area: f32,
         avgrectpop: f32,
         chunk_size: f32) -> Self
     {
@@ -492,6 +508,29 @@ impl CubeBinSampler {
                         .insert((neighbor, cubebin.cube));
                 }
             }
+        }
+    }
+
+    pub fn write_cell_cubes(&self, filename: &str) {
+        let file = File::create(filename).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+
+        writeln!(encoder, "x0,y0,z0,x1,y1,z1,cell").unwrap();
+        for (cube, &cell) in self.cubecells.index.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let (x0, y0, z0, x1, y1, z1) =
+                self.chunkquad.layout.cube_to_world_coords(*cube);
+
+
+            writeln!(
+                encoder,
+                "{},{},{},{},{},{},{cell}",
+                x0, y0, z0, x1, y1, z1,
+                cell=cell
+            ).unwrap();
         }
     }
 
