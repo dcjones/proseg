@@ -63,12 +63,6 @@ pub struct ModelPriors {
     // gamma rate prior
     pub e_r: f32,
     pub f_r: f32,
-
-    pub μ_μ_depth: f32,
-    pub σ_μ_depth: f32,
-
-    pub α_σ_depth: f32,
-    pub β_σ_depth: f32,
 }
 
 
@@ -84,9 +78,6 @@ pub struct ModelParams {
 
     // area of the convex hull containing all transcripts
     full_area: f32,
-
-    // depth coordinate for each transcript
-    depths: Array1<f32>,
 
     // [ngenes, ncells] transcripts counts
     pub counts: Array2<u32>,
@@ -118,12 +109,6 @@ pub struct ModelParams {
 
     μ_area: Array1<f32>, // area dist mean param by component
     σ_area: Array1<f32>, // area dist std param by component
-
-    μ_depth: Array1<f32>,
-    σ_depth: Array1<f32>,
-
-    μ_depth_bg: f32,
-    σ_depth_bg: f32,
 
     // [ngenes] NB r parameters.
     r: Array1<f32>,
@@ -192,8 +177,6 @@ impl ModelParams {
             total_gene_counts[gene] += 1;
         }
 
-        let depths = Array1::<f32>::from_iter(transcripts.iter().map(|t| t.z));
-
         // initial component assignments
         let mut rng = rand::thread_rng();
         let z = (0..ncells)
@@ -207,7 +190,6 @@ impl ModelParams {
             cell_population: init_cell_population.clone(),
             cell_areas,
             full_area,
-            depths,
             counts,
             foreground_counts: Array2::<u32>::from_elem((ncells, ngenes), 0),
             background_counts: Array1::<u32>::from_elem(ngenes, 0),
@@ -221,10 +203,6 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_area: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_area),
             σ_area: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_area),
-            μ_depth: Array1::<f32>::from_elem(ncells, priors.μ_μ_depth),
-            σ_depth: Array1::<f32>::from_elem(ncells, priors.σ_μ_depth),
-            μ_depth_bg: priors.μ_μ_depth,
-            σ_depth_bg: priors.σ_μ_depth,
             r,
             lgamma_r,
             θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -268,7 +246,6 @@ impl ModelParams {
 
     pub fn log_likelihood(&self) -> f32 {
         // TODO:
-        //   - depth terms
         //   - area terms
 
         let mut ll = Zip::from(self.λ.columns())
@@ -340,7 +317,7 @@ impl ModelParams {
                     "      \"type\": \"Feature\",\n",
                     "      \"properties\": {{\n",
                     "        \"cell\": {},\n",
-                    "        \"area\": {}\n",
+                    "        \"area\": {},\n",
                     "        \"count\": {}\n",
                     "      }},\n",
                     "      \"geometry\": {{\n",
@@ -516,11 +493,6 @@ pub trait Proposal {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ -= count as f32 * params.λ_bg[i].ln()
             }
-
-            // for &t in self.transcripts() {
-            //     δ -= normal_logpdf(
-            //         params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
-            // }
         } else {
             let area_diff = self.old_cell_area_delta();
 
@@ -532,12 +504,6 @@ pub trait Proposal {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
             }
-
-            // let μ_depth = params.μ_depth[old_cell as usize];
-            // let σ_depth = params.σ_depth[old_cell as usize];
-            // for &t in self.transcripts() {
-            //     δ -= normal_logpdf(μ_depth, σ_depth, params.depths[t]);
-            // }
 
             let z = params.z[old_cell as usize];
             δ -= lognormal_logpdf(
@@ -554,11 +520,6 @@ pub trait Proposal {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ += count as f32 * params.λ_bg[i].ln();
             }
-
-            // for &t in self.transcripts() {
-            //     δ += normal_logpdf(
-            //         params.μ_depth_bg, params.σ_depth_bg, params.depths[t]);
-            // }
         } else {
             let area_diff = self.new_cell_area_delta();
 
@@ -570,12 +531,6 @@ pub trait Proposal {
             for (i, &count) in self.gene_count().iter().enumerate() {
                 δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
             }
-
-            // let μ_depth = params.μ_depth[new_cell as usize];
-            // let σ_depth = params.σ_depth[new_cell as usize];
-            // for &t in self.transcripts() {
-            //     δ += normal_logpdf(μ_depth, σ_depth, params.depths[t]);
-            // }
 
             let z = params.z[new_cell as usize];
             δ -= lognormal_logpdf(
@@ -713,7 +668,6 @@ pub trait Sampler<P> where P: Proposal + Send {
         let ncomponents = params.ncomponents();
 
         self.sample_area_params(priors, params);
-        self.sample_depth_params(priors, params);
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
@@ -976,74 +930,6 @@ pub trait Sampler<P> where P: Proposal + Send {
                 }
             });
 
-    }
-
-
-    fn sample_depth_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        let mut rng = thread_rng();
-        let ntranscripts = params.cell_assignments.len();
-        let nbackground = ntranscripts - params.cell_population.iter().sum::<usize>();
-
-        // compute sample means
-        params.μ_depth.fill(0_f32);
-        params.μ_depth_bg = 0_f32;
-        Zip::from(&params.cell_assignments)
-            .and(&params.depths)
-            .for_each(|&cell, &depth| {
-                if cell != BACKGROUND_CELL {
-                    params.μ_depth[cell as usize] += depth;
-                } else {
-                    params.μ_depth_bg += depth;
-                }
-            });
-
-        // sample μ parameters
-        Zip::from(&mut params.μ_depth)
-            .and(&params.σ_depth)
-            .and(&params.cell_population)
-            .par_for_each(|μ, &σ, &cell_pop| {
-                let mut rng = thread_rng();
-
-                let v = (1_f32 / priors.σ_μ_depth.powi(2) + cell_pop as f32 / σ.powi(2)).recip();
-                *μ = Normal::new(
-                    v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + *μ / σ.powi(2)),
-                    v.sqrt()
-                ).unwrap().sample(&mut rng);
-            });
-
-        {
-            let v = (1_f32 / priors.σ_μ_depth.powi(2) + nbackground as f32 / params.σ_depth_bg.powi(2)).recip();
-            params.μ_depth_bg = Normal::new(
-                v * (priors.μ_μ_depth / priors.σ_μ_depth.powi(2) + params.μ_depth_bg / params.σ_depth_bg.powi(2)),
-                v.sqrt()
-            ).unwrap().sample(&mut rng);
-        }
-
-        // sample σ parameters
-        params.σ_depth.fill(0_f32);
-        params.σ_depth_bg = 0_f32;
-        Zip::from(&params.cell_assignments)
-            .and(&params.depths)
-            .for_each(|&cell, &depth| {
-                if cell != BACKGROUND_CELL {
-                    params.σ_depth[cell as usize] += (params.μ_depth[cell as usize] - depth).powi(2);
-                } else {
-                    params.σ_depth_bg += (params.μ_depth_bg - depth).powi(2);
-                }
-            });
-
-        Zip::from(&mut params.σ_depth)
-            .and(&params.cell_population)
-            .par_for_each(|σ, &cell_pop| {
-                let mut rng = thread_rng();
-                *σ = Gamma::new(
-                    priors.α_σ_depth + (cell_pop as f32) / 2.0,
-                    (priors.β_σ_depth + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
-            });
-
-        params.σ_depth_bg = Gamma::new(
-            priors.α_σ_depth + (nbackground as f32) / 2.0,
-            (priors.β_σ_depth + params.σ_depth_bg / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
     }
 
     fn sample_area_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
