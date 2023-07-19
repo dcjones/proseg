@@ -228,6 +228,14 @@ impl ModelParams {
         }
     }
 
+    pub fn nassigned(&self) -> usize {
+        return self
+            .cell_assignments
+            .iter()
+            .filter(|&c| *c != BACKGROUND_CELL)
+            .count();
+    }
+
     pub fn nunassigned(&self) -> usize {
         return self
             .cell_assignments

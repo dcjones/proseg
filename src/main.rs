@@ -8,6 +8,7 @@ use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTrack
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::CubeBinSampler;
 use rayon::current_num_threads;
+use indicatif::{ProgressBar, ProgressStyle};
 use csv;
 use std::fs::File;
 use flate2::Compression;
@@ -63,8 +64,14 @@ struct Args{
     #[arg(short, long, default_value="counts.csv.gz")]
     output_counts: String,
 
+    #[arg(long, default_value="cells.geojson.gz")]
+    output_cells: Option<String>,
+
     #[arg(long, default_value=None)]
     output_cell_cubes: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_transcripts: Option<String>,
 }
 
 
@@ -96,11 +103,9 @@ fn main() {
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
-    dbg!((zmin, zmax));
 
     let full_area = sampler::hull::compute_full_area(&transcripts) * zspan;
-    println!("Full area: {}", full_area);
-
+    println!("Full volume: {}", full_area);
 
     if let Some(nthreads) = args.nthreads {
         rayon::ThreadPoolBuilder::new().num_threads(nthreads).build_global().unwrap();
@@ -136,19 +141,12 @@ fn main() {
 
     // can't just divide area by number of cells, because a large portion may have to cells.
 
-    let z_mean = transcripts.iter().map(|t| t.z).sum::<f32>() / (ntranscripts as f32);
-    let z_std = (transcripts.iter().map(|t| (t.z - z_mean).powi(2)).sum::<f32>() / (ntranscripts as f32)).sqrt();
-
-    dbg!((z_mean, z_std));
-
     let priors = ModelPriors {
         min_cell_area: avg_edge_length,
         μ_μ_area: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
         σ_μ_area: 3.0_f32,
         α_σ_area: 0.1,
         β_σ_area: 0.1,
-        // α_w: 1.0,
-        // β_w: 1.0,
         α_θ: 1.0,
         β_θ: 1.0,
         e_r: 1.0,
@@ -168,32 +166,7 @@ fn main() {
     );
 
     // TODO: Need to somehow make this a command line argument.
-    // Maybe just set the total number of iterations
-    // TODO: This should probably halve every time. That way nothing much should
-    // change in order to homogenize.
-    // let sampler_schedule = [
-    //     (4.0_f32, 100),
-    //     (2.0_f32, 100),
-    //     (1.0_f32, 100),
-    //     (0.5_f32, 400),
-    // ];
-
-    // TODO: maybe we should calibrate this to mean neighbor distance. Bin pop
-    // is too influenced by how much background is in the 
-
-    // let initial_avgbinpop = 8.0_f32;
-    // let sampler_schedule = [
-    //     100,  // 8
-    //     100,  // 2
-    //     100,  // 0.5
-    //     400]; // 0.125
-
     let initial_avgbinpop = 16.0_f32;
-    // let sampler_schedule = [
-    //     100,  // 16
-    //     100,  // 4
-    //     100,  // 1
-    //     400]; // 0.25
 
     let sampler_schedule = [
         200, // 16
@@ -201,13 +174,13 @@ fn main() {
         200, // 0.5
         ];
 
-    // let sampler_schedule = [
-    //     200, // 16
-    //     ];
-
-
-    // TODO: previously we were halving the bin population, but now quartering
-    // it. Should consider that when scheduling
+    let total_iterations = sampler_schedule.iter().sum::<usize>();
+    let mut prog = ProgressBar::new(total_iterations as u64);
+    prog.set_style(
+        ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
+        .unwrap()
+        .progress_chars("##-")
+    );
 
     let mut uncertainty = UncertaintyTracker::new();
 
@@ -222,6 +195,7 @@ fn main() {
 
     if sampler_schedule.len() > 1 {
         run_hexbin_sampler(
+            &mut prog,
             sampler.get_mut(),
             &priors,
             &mut params,
@@ -233,6 +207,7 @@ fn main() {
         for &niter in sampler_schedule[1..sampler_schedule.len()-1].iter() {
             sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
             run_hexbin_sampler(
+                &mut prog,
                 sampler.get_mut(),
                 &priors,
                 &mut params,
@@ -245,6 +220,7 @@ fn main() {
 
     sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
     run_hexbin_sampler(
+        &mut prog,
         sampler.get_mut(),
         &priors,
         &mut params,
@@ -253,6 +229,8 @@ fn main() {
         args.local_steps_per_iter,
         Some(&mut uncertainty));
 
+    prog.finish();
+
     uncertainty.finish(&params);
     let counts = uncertainty.max_posterior_transcript_counts(
         &params, &transcripts, args.count_pr_cutoff);
@@ -260,20 +238,6 @@ fn main() {
     if let Some(output_cell_cubes) = args.output_cell_cubes {
         sampler.borrow().write_cell_cubes(&output_cell_cubes);
     }
-
-    // for (avgbinpop, niter) in sampler_schedule.iter() {
-    //     println!("Running sampler with avgbinpop: {}, niter: {}", avgbinpop, niter);
-    //     run_hexbin_sampler(
-    //         &priors,
-    //         &mut params,
-    //         &transcripts,
-    //         ngenes,
-    //         chunk_size,
-    //         full_area,
-    //         *avgbinpop,
-    //         *niter,
-    //         args.local_steps_per_iter);
-    // }
 
     {
         let file = File::create(&args.output_counts).unwrap();
@@ -289,7 +253,7 @@ fn main() {
         }
     }
 
-    // TODO: dumping component assignments for debugging
+    // TODO: Make a proper optional cell metadata csv with area/volume along with 
     {
         let file = File::create("z.csv.gz").unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
@@ -303,10 +267,12 @@ fn main() {
         }
     }
 
-    params.write_cell_hulls(&transcripts, &counts, "cells.geojson.gz");
+    if let Some(output_cells) = args.output_cells {
+        params.write_cell_hulls(&transcripts, &counts, &output_cells);
+    }
 
-    {
-        let file = File::create("cell_assignments.csv.gz").unwrap();
+    if let Some(output_transcripts) = args.output_transcripts {
+        let file = File::create(output_transcripts).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut writer = csv::WriterBuilder::new()
             .has_headers(false)
@@ -327,6 +293,7 @@ fn main() {
 
 
 fn run_hexbin_sampler(
+        prog: &mut ProgressBar,
         sampler: &mut CubeBinSampler,
         priors: &ModelPriors,
         params: &mut ModelParams,
@@ -344,15 +311,26 @@ fn run_hexbin_sampler(
         }
         sampler.sample_global_params(priors, params);
 
-        println!("Log likelihood: {}", params.log_likelihood());
+        let nassigned = params.nassigned();
+        prog.inc(1);
+        prog.set_message(format!(
+            "log-likelihood: {ll} | assigned transcripts: {n_assigned} / {n} ({perc_assigned:.2}%)",
+            ll=params.log_likelihood(),
+            n_assigned=nassigned,
+            n=transcripts.len(),
+            perc_assigned=100.0 * (nassigned as f32) / (transcripts.len() as f32)
+        ));
+
+        // println!("Log likelihood: {}", params.log_likelihood());
+
         // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
         // println!("Empty cells: {}", empty_cell_count);
 
         // dbg!(&proposal_stats);
         proposal_stats.reset();
 
-        if i % 100 == 0 {
-            println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
-        }
+        // if i % 100 == 0 {
+        //     println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
+        // }
     }
 }

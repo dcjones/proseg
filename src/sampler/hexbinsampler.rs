@@ -283,8 +283,6 @@ impl CubeBinSampler {
 
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cube_size = layout.cube_size.0;
-
-        dbg!(cube_size);
         let cubevolume = cube_size.powi(2) * (zmax - zmin);
 
         // build index
@@ -423,17 +421,6 @@ impl CubeBinSampler {
                 cubebins.push(subcubebin);
             }
         }
-
-        // DEBUG: check that all transcripts are accounted for
-        let mut prev_ntranscripts = 0;
-        for cubebin in &self.cubebins {
-            prev_ntranscripts += cubebin.transcripts.len();
-        }
-        let mut curr_ntranscripts = 0;
-        for cubebin in &cubebins {
-            curr_ntranscripts += cubebin.transcripts.len();
-        }
-        dbg!(prev_ntranscripts, curr_ntranscripts);
 
         // build index
         let mut cubeindex = HashMap::new();
