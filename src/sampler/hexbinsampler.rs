@@ -254,6 +254,9 @@ pub struct CubeBinSampler {
     proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
 
+    zmin: f32,
+    zmax: f32,
+
     cubevolume: f32,
     quad: usize,
 }
@@ -353,6 +356,8 @@ impl CubeBinSampler {
             cubecells,
             proposals,
             connectivity_checker,
+            zmin,
+            zmax,
             cubevolume,
             quad: 0,
         };
@@ -460,6 +465,8 @@ impl CubeBinSampler {
             cubecells,
             proposals,
             connectivity_checker,
+            zmin: self.zmin,
+            zmax: self.zmax,
             cubevolume,
             quad: 0,
         };
@@ -565,6 +572,17 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 let from_unassigned = cell_from == BACKGROUND_CELL;
                 let to_unassigned = cell_to == BACKGROUND_CELL;
+
+                // don't let the cell grow in the z-dimension past the extents
+                // of the data. Not strictly necessary to restrict it this way,
+                // but lessens the tendency to produce weird shaped cells.
+                if from_unassigned && !to_unassigned {
+                    let (_, _, z0, _, _, z1) = self.chunkquad.layout.cube_to_world_coords(*i);
+                    if z1 < self.zmin || z0 > self.zmax {
+                        proposal.ignore = true;
+                        return;
+                    }
+                }
 
                 if !from_unassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
                     cell_to = BACKGROUND_CELL;
