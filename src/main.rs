@@ -141,12 +141,23 @@ fn main() {
 
     // can't just divide area by number of cells, because a large portion may have to cells.
 
+    let min_cell_area = avg_edge_length;
+    let min_cell_surface_area = 10.0_f32 * min_cell_area;
+
     let priors = ModelPriors {
-        min_cell_area: avg_edge_length,
+        min_cell_area,
+        min_cell_surface_area,
+
         μ_μ_area: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
         σ_μ_area: 3.0_f32,
         α_σ_area: 0.1,
         β_σ_area: 0.1,
+
+        μ_μ_comp: 3.0,
+        σ_μ_comp: 4.0_f32,
+        α_σ_comp: 0.1,
+        β_σ_comp: 0.1,
+
         α_θ: 1.0,
         β_θ: 1.0,
         e_r: 1.0,
@@ -166,12 +177,19 @@ fn main() {
     );
 
     // TODO: Need to somehow make this a command line argument.
-    let initial_avgbinpop = 16.0_f32;
+    // let initial_avgbinpop = 64.0_f32;
+    // let sampler_schedule = [
+    //     // 200, // 64
+    //     // 200, // 16
+    //     // 200, // 2
+    //     // 200, // 0.5
+    //     ];
 
+    let initial_avgbinpop = 16.0_f32;
     let sampler_schedule = [
         200, // 16
-        200, // 2
-        200, // 0.5
+        // 200, // 2
+        // 200, // 0.5
         ];
 
     let total_iterations = sampler_schedule.iter().sum::<usize>();

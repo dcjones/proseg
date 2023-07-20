@@ -46,6 +46,9 @@ impl ConnectivityChecker {
 
     pub fn cube_isarticulation<F>(&mut self, root: Cube, cubecell: F, cell: u32) -> bool where F: Fn(Cube) -> u32 {
         self.construct_cube_subgraph(root, cubecell, cell);
+
+        // dbg!(self.subgraph.node_count(), self.subgraph.edge_count(), cell);
+
         self.dfsinfo.clear();
         return is_articulation_dfs(
             &self.subgraph,
@@ -62,6 +65,7 @@ impl ConnectivityChecker {
         self.cube_to_subgraph.insert(root, i_idx);
 
         for neighbor in root.moore_neighborhood() {
+        // for neighbor in root.von_neumann_neighborhood() {
             let neighbor_cell = cubecell(neighbor);
             if cell == neighbor_cell {
                 self.cube_to_subgraph.entry(neighbor).or_insert_with(|| {
@@ -73,6 +77,7 @@ impl ConnectivityChecker {
 
         // add edges from i to neighbors, and neighbors' neighbors
         for neighbor in root.moore_neighborhood() {
+        // for neighbor in root.von_neumann_neighborhood() {
             if !self.cube_to_subgraph.contains_key(&neighbor) {
                 continue;
             }
@@ -82,6 +87,7 @@ impl ConnectivityChecker {
                 self.cube_to_subgraph[&neighbor], ());
 
             for k in neighbor.moore_neighborhood() {
+            // for k in neighbor.von_neumann_neighborhood() {
                 let k_cell = cubecell(k);
                 if self.cube_to_subgraph.contains_key(&k) && k_cell == cell {
                     self.subgraph.add_edge(
@@ -113,6 +119,8 @@ fn is_articulation_dfs(
     let mut child_count = 0;
     let mut is_articulation = false;
 
+    // wikipedia version
+
     for j in subgraph.neighbors(i) {
         if let Some(j_info_depth) = dfsinfo.get(&j).map(|j_info| j_info.depth) {
             if j != parent {
@@ -131,12 +139,15 @@ fn is_articulation_dfs(
             }
             i_info.low = i_info.low.min(j_info_low);
         }
+    }
 
-        let i_info = &dfsinfo[&i];
+    let i_info = &dfsinfo[&i];
 
-        if i_info.parent == NodeIndex::end() {
-            is_articulation = child_count > 1;
-        }
+    // This whole thing is very simple for the root node: we just recurse
+    // on a child and either every child is visited or this is an articulation point.
+
+    if i_info.parent == NodeIndex::end() {
+        is_articulation = child_count > 1;
     }
 
     return is_articulation;

@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::Write;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use ndarray::{Array1, s};
 
 
 
@@ -78,6 +79,24 @@ impl Cube {
             ( 1,  0,  0),
             ( 0, -1,  0),
             ( 0,  1,  0),
+            ( 0,  0, -1),
+            ( 0,  0,  1),
+            ].map(
+            |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
+    }
+
+    pub fn von_neumann_xy_neighborhood(&self) -> [Cube; 4] {
+        return [
+            (-1,  0,  0),
+            ( 1,  0,  0),
+            ( 0, -1,  0),
+            ( 0,  1,  0),
+            ].map(
+            |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
+    }
+
+    pub fn von_neumann_z_neighborhood(&self) -> [Cube; 2] {
+        return [
             ( 0,  0, -1),
             ( 0,  0,  1),
             ].map(
@@ -257,6 +276,8 @@ pub struct CubeBinSampler {
     zmin: f32,
     zmax: f32,
 
+    side_surface_area: f32,
+    top_surface_area: f32,
     cubevolume: f32,
     quad: usize,
 }
@@ -284,6 +305,11 @@ impl CubeBinSampler {
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cube_size = layout.cube_size.0;
         let cubevolume = cube_size.powi(2) * (zmax - zmin);
+
+        let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
+        let top_surface_area = layout.cube_size.0.powi(2);
+
+        dbg!(side_surface_area, top_surface_area);
 
         // build index
         let mut cubeindex = HashMap::new();
@@ -356,11 +382,14 @@ impl CubeBinSampler {
             connectivity_checker,
             zmin,
             zmax,
+            side_surface_area,
+            top_surface_area,
             cubevolume,
             quad: 0,
         };
 
         sampler.recompute_cell_areas(priors, params);
+        sampler.recompute_cell_surface_areas(priors, params);
         sampler.populate_mismatches();
 
         return sampler;
@@ -373,6 +402,9 @@ impl CubeBinSampler {
         let ngenes = self.proposals[0].genepop.len();
         let cubevolume = self.cubevolume / 8.0;
         let layout = self.chunkquad.layout.double_resolution();
+
+        let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
+        let top_surface_area = layout.cube_size.0.powi(2);
 
         let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -452,14 +484,13 @@ impl CubeBinSampler {
             cubecells,
             proposals,
             connectivity_checker,
+            side_surface_area,
+            top_surface_area,
             zmin: self.zmin,
             zmax: self.zmax,
             cubevolume,
             quad: 0,
         };
-
-        // TODO: areas should not change if we did this correctly
-        // sampler.recompute_cell_areas(priors, params);
 
         sampler.populate_mismatches();
 
@@ -480,6 +511,34 @@ impl CubeBinSampler {
         }
     }
 
+    fn recompute_cell_surface_areas(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        params.cell_surface_areas.fill(0.0_f32);
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in cubebin.cube.von_neumann_xy_neighborhood() {
+                let neighbor_cell = self.cubecells.get(neighbor);
+                if neighbor_cell != cell {
+                    params.cell_surface_areas[cell as usize] += self.side_surface_area;
+                }
+            }
+
+            for neighbor in cubebin.cube.von_neumann_z_neighborhood() {
+                let neighbor_cell = self.cubecells.get(neighbor);
+                if neighbor_cell != cell {
+                    params.cell_surface_areas[cell as usize] += self.top_surface_area;
+                }
+            }
+        }
+
+        for cell_surface_area in params.cell_surface_areas.iter_mut() {
+            *cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+        }
+    }
+
     fn populate_mismatches(&mut self) {
         // compute initial mismatch edges
         for cubebin in &self.cubebins {
@@ -487,6 +546,13 @@ impl CubeBinSampler {
             let (chunk, quad) = self.chunkquad.get(cubebin.cube);
 
             for neighbor in cubebin.cube.von_neumann_neighborhood() {
+                // // don't consider neighbors that are out of bounds on the z-axis
+                // // otherwise there are too many oppourtunities to poke holes in cells
+                // let (_, _, z0, _, _, z1) = self.chunkquad.layout.cube_to_world_coords(neighbor);
+                // if z1 < self.zmin || z0 > self.zmax {
+                //     continue;
+                // }
+
                 let neighbor_cell = self.cubecells.get(neighbor);
                 if cell != neighbor_cell {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
@@ -598,20 +664,22 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .get_or(|| RefCell::new(ConnectivityChecker::new()))
                     .borrow_mut();
 
-                let art_from = connectivity_checker.cube_isarticulation(
-                    *i,
-                    |cube| self.cubecells.get(cube),
-                    cell_from);
+                // // TODO: This really doesn't seem to work as intended. We end up
+                // // with more disconnected components than without it.
+                // let art_from = connectivity_checker.cube_isarticulation(
+                //     *i,
+                //     |cube| self.cubecells.get(cube),
+                //     cell_from);
 
-                let art_to = connectivity_checker.cube_isarticulation(
-                    *i,
-                    |cube| self.cubecells.get(cube),
-                    cell_to);
+                // let art_to = connectivity_checker.cube_isarticulation(
+                //     *i,
+                //     |cube| self.cubecells.get(cube),
+                //     cell_to);
 
-                if art_from || art_to {
-                    proposal.ignore = true;
-                    return;
-                }
+                // if art_from || art_to {
+                //     proposal.ignore = true;
+                //     return;
+                // }
 
                 // compute the probability of selecting the proposal (k, c)
                 let num_mismatching_edges = mismatch_edges.len();
@@ -668,6 +736,54 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 proposal.accept = false;
                 proposal.old_cell_area_delta = -self.cubevolume;
                 proposal.new_cell_area_delta = self.cubevolume;
+
+                proposal.old_cell_surface_area_delta = 0.0;
+                proposal.new_cell_surface_area_delta = 0.0;
+                for neighbor in i.von_neumann_xy_neighborhood() {
+                    let neighbor_cell = self.cubecells.get(neighbor);
+
+                    // old cell: newly exposed sides
+                    if neighbor_cell == cell_from {
+                        proposal.old_cell_surface_area_delta += self.side_surface_area;
+                    }
+
+                    // old cell: newly unexpoed sides
+                    if neighbor_cell != cell_from {
+                        proposal.old_cell_surface_area_delta -= self.side_surface_area;
+                    }
+
+                    // new cell: newly unexposed sides
+                    if neighbor_cell == cell_to {
+                        proposal.new_cell_surface_area_delta -= self.side_surface_area;
+                    }
+
+                    if neighbor_cell != cell_to {
+                        proposal.new_cell_surface_area_delta += self.side_surface_area;
+                    }
+                }
+
+                for neighbor in i.von_neumann_z_neighborhood() {
+                    let neighbor_cell = self.cubecells.get(neighbor);
+
+                    // old cell: newly exposed sides
+                    if neighbor_cell == cell_from {
+                        proposal.old_cell_surface_area_delta += self.top_surface_area;
+                    }
+
+                    // old cell: newly unexpoed tops
+                    if neighbor_cell != cell_from {
+                        proposal.old_cell_surface_area_delta -= self.top_surface_area;
+                    }
+
+                    // new cell: newly unexposed tops
+                    if neighbor_cell == cell_to {
+                        proposal.new_cell_surface_area_delta -= self.top_surface_area;
+                    }
+
+                    if neighbor_cell != cell_to {
+                        proposal.new_cell_surface_area_delta += self.top_surface_area;
+                    }
+                }
 
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
@@ -747,6 +863,9 @@ pub struct CubeBinProposal {
     // updated cell areas and logprobs if the proposal is accepted
     old_cell_area_delta: f32,
     new_cell_area_delta: f32,
+
+    old_cell_surface_area_delta: f32,
+    new_cell_surface_area_delta: f32,
 }
 
 impl CubeBinProposal {
@@ -762,6 +881,8 @@ impl CubeBinProposal {
             accept: false,
             old_cell_area_delta: 0.0,
             new_cell_area_delta: 0.0,
+            old_cell_surface_area_delta: 0.0,
+            new_cell_surface_area_delta: 0.0,
         };
     }
 }
@@ -795,6 +916,14 @@ impl Proposal for CubeBinProposal {
 
     fn new_cell_area_delta(&self) -> f32 {
         return self.new_cell_area_delta;
+    }
+
+    fn old_cell_surface_area_delta(&self) -> f32 {
+        return self.old_cell_surface_area_delta;
+    }
+
+    fn new_cell_surface_area_delta(&self) -> f32 {
+        return self.new_cell_surface_area_delta;
     }
 
     fn log_weight(&self) -> f32 {

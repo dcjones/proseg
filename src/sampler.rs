@@ -18,7 +18,7 @@ use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
-use ndarray::{Array1, Array2, Zip};
+use ndarray::{Array1, Array2, Zip, s};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -48,6 +48,7 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
     pub min_cell_area: f32,
+    pub min_cell_surface_area: f32,
 
     // params for normal prior
     pub μ_μ_area: f32,
@@ -56,6 +57,14 @@ pub struct ModelPriors {
     // params for inverse-gamma prior
     pub α_σ_area: f32,
     pub β_σ_area: f32,
+
+    // params for normal prior on compactness
+    pub μ_μ_comp: f32,
+    pub σ_μ_comp: f32,
+
+    // params for inverse-gamma prior on compactness
+    pub α_σ_comp: f32,
+    pub β_σ_comp: f32,
 
     pub α_θ: f32,
     pub β_θ: f32,
@@ -75,6 +84,12 @@ pub struct ModelParams {
 
     // per-cell areas
     cell_areas: Array1<f32>,
+
+    // per-cell surface areas
+    cell_surface_areas: Array1<f32>,
+
+    // per-cell compactness, computed when sampling
+    cell_compactness: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_area: f32,
@@ -109,6 +124,9 @@ pub struct ModelParams {
 
     μ_area: Array1<f32>, // area dist mean param by component
     σ_area: Array1<f32>, // area dist std param by component
+
+    μ_comp: Array1<f32>, // compactness dist mean param by component
+    σ_comp: Array1<f32>, // compactness dist std param by component
 
     // [ngenes] NB r parameters.
     r: Array1<f32>,
@@ -166,6 +184,9 @@ impl ModelParams {
             *area = area.max(priors.min_cell_area);
         }
 
+        let cell_surface_areas = Array1::<f32>::from_elem(ncells, 0.0);
+        let cell_compactness = Array1::<f32>::from_elem(ncells, 0.0);
+
         // compute initial counts
         let mut counts = Array2::<u32>::from_elem((ngenes, ncells), 0);
         let mut total_gene_counts = Array1::<u32>::from_elem(ngenes, 0);
@@ -189,6 +210,8 @@ impl ModelParams {
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
             cell_areas,
+            cell_surface_areas,
+            cell_compactness,
             full_area,
             counts,
             foreground_counts: Array2::<u32>::from_elem((ncells, ngenes), 0),
@@ -203,6 +226,8 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_area: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_area),
             σ_area: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_area),
+            μ_comp: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_comp),
+            σ_comp: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_comp),
             r,
             lgamma_r,
             θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -255,6 +280,7 @@ impl ModelParams {
     pub fn log_likelihood(&self) -> f32 {
         // TODO:
         //   - area terms
+        //   - compactness terms
 
         let mut ll = Zip::from(self.λ.columns())
             .and(&self.cell_areas)
@@ -473,6 +499,12 @@ pub trait Proposal {
     // Return updated cell size minus current cell size `new_cell`
     fn new_cell_area_delta(&self) -> f32;
 
+    // Return updated cell surface area minus current cell size `old_cell`
+    fn old_cell_surface_area_delta(&self) -> f32;
+
+    // Return updated cell surface area minus current cell size `new_cell`
+    fn new_cell_surface_area_delta(&self) -> f32;
+
     fn old_cell(&self) -> u32;
     fn new_cell(&self) -> u32;
 
@@ -503,6 +535,16 @@ pub trait Proposal {
             }
         } else {
             let area_diff = self.old_cell_area_delta();
+            let surface_area_diff = self.old_cell_surface_area_delta();
+
+            let prev_area = params.cell_areas[old_cell as usize];
+            let new_area = prev_area + area_diff;
+
+            let prev_surface_area = params.cell_surface_areas[old_cell as usize];
+            let new_surface_area = prev_surface_area + surface_area_diff;
+
+            let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
+            let new_compactness = new_surface_area.powf(1.5) / new_area;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(old_cell as usize))
@@ -517,11 +559,20 @@ pub trait Proposal {
             δ -= lognormal_logpdf(
                 params.μ_area[z as usize],
                 params.σ_area[z as usize],
-                params.cell_areas[old_cell as usize]);
+                prev_area);
             δ += lognormal_logpdf(
                 params.μ_area[z as usize],
                 params.σ_area[z as usize],
-                params.cell_areas[old_cell as usize] + area_diff);
+                new_area);
+
+            δ -= lognormal_logpdf(
+                params.μ_comp[z as usize],
+                params.σ_comp[z as usize],
+                prev_compactness);
+            δ += lognormal_logpdf(
+                params.μ_comp[z as usize],
+                params.σ_comp[z as usize],
+                new_compactness);
         }
 
         if to_background {
@@ -530,6 +581,16 @@ pub trait Proposal {
             }
         } else {
             let area_diff = self.new_cell_area_delta();
+            let surface_area_diff = self.new_cell_surface_area_delta();
+
+            let prev_area = params.cell_areas[new_cell as usize];
+            let new_area = prev_area + area_diff;
+
+            let prev_surface_area = params.cell_surface_areas[new_cell as usize];
+            let new_surface_area = prev_surface_area + surface_area_diff;
+
+            let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
+            let new_compactness = new_surface_area.powf(1.5) / new_area;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(new_cell as usize))
@@ -544,11 +605,20 @@ pub trait Proposal {
             δ -= lognormal_logpdf(
                 params.μ_area[z as usize],
                 params.σ_area[z as usize],
-                params.cell_areas[new_cell as usize]);
+                prev_area);
             δ += lognormal_logpdf(
                 params.μ_area[z as usize],
                 params.σ_area[z as usize],
-                params.cell_areas[new_cell as usize] + area_diff);
+                new_area);
+
+            δ -= lognormal_logpdf(
+                params.μ_comp[z as usize],
+                params.σ_comp[z as usize],
+                prev_compactness);
+            δ += lognormal_logpdf(
+                params.μ_comp[z as usize],
+                params.σ_comp[z as usize],
+                new_compactness);
         }
 
         let mut rng = thread_rng();
@@ -623,6 +693,11 @@ pub trait Sampler<P> where P: Proposal + Send {
                 cell_area = cell_area.max(priors.min_cell_area);
                 params.cell_areas[old_cell as usize] = cell_area;
 
+                let mut cell_surface_area = params.cell_surface_areas[old_cell as usize];
+                cell_surface_area += proposal.old_cell_surface_area_delta();
+                cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+                params.cell_surface_areas[old_cell as usize] = cell_surface_area;
+
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
                     params.counts[[gene as usize, old_cell as usize]] -= 1;
@@ -636,6 +711,11 @@ pub trait Sampler<P> where P: Proposal + Send {
                 cell_area += proposal.new_cell_area_delta();
                 cell_area = cell_area.max(priors.min_cell_area);
                 params.cell_areas[new_cell as usize] = cell_area;
+
+                let mut cell_surface_area = params.cell_surface_areas[new_cell as usize];
+                cell_surface_area += proposal.new_cell_surface_area_delta();
+                cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+                params.cell_surface_areas[new_cell as usize] = cell_surface_area;
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
@@ -676,6 +756,11 @@ pub trait Sampler<P> where P: Proposal + Send {
         let ncomponents = params.ncomponents();
 
         self.sample_area_params(priors, params);
+        self.sample_compactness_params(priors, params);
+
+        // dbg!(params.cell_areas.slice(s![0..10]));
+        // dbg!(params.cell_surface_areas.slice(s![0..10]));
+        // dbg!(params.cell_compactness.slice(s![0..10]));
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
@@ -838,15 +923,16 @@ pub trait Sampler<P> where P: Proposal + Send {
         )
         .and(&mut params.z)
         .and(&params.cell_areas)
-        .par_for_each(|cs, z_i, cell_area| {
+        .and(&params.cell_compactness)
+        .par_for_each(|cs, z_i, cell_area, cell_compactness| {
             let mut z_probs = params
                 .z_probs
                 .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
                 .borrow_mut();
 
             // loop over components
-            for (zp, π, θs, &μ_area, &σ_area) in
-                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_area, &params.σ_area)
+            for (zp, π, θs, &μ_area, &σ_area, &μ_comp, &σ_comp) in
+                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_area, &params.σ_area, &params.μ_comp, &params.σ_comp)
             {
                 // sum over genes
                 *zp = (*π as f64)
@@ -864,6 +950,9 @@ pub trait Sampler<P> where P: Proposal + Send {
 
                 *zp *= lognormal_logpdf(
                     μ_area, σ_area, *cell_area).exp() as f64;
+
+                *zp *= lognormal_logpdf(
+                    μ_comp, σ_comp, *cell_compactness).exp() as f64;
             }
 
             // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
@@ -981,6 +1070,57 @@ pub trait Sampler<P> where P: Proposal + Send {
                 *σ = Gamma::new(
                     priors.α_σ_area + (pop as f32) / 2.0,
                     (priors.β_σ_area + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+            });
+    }
+
+    fn sample_compactness_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // compute cell compactness
+        Zip::from(&mut params.cell_compactness)
+            .and(&params.cell_areas)
+            .and(&params.cell_surface_areas)
+            .for_each(|c, &a, &sa| {
+                *c = sa.powf(1.5) / a;
+            });
+
+        // compute sample means
+        // NOTE: assuming component_population has been computed at this point
+        params.μ_comp.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_compactness)
+            .for_each(|&z, &c| {
+                params.μ_comp[z as usize] += c.ln();
+            });
+
+        // sample μ parameters
+        Zip::from(&mut params.μ_comp)
+            .and(&params.σ_comp)
+            .and(&params.component_population)
+            .par_for_each(|μ, &σ, &pop| {
+                let mut rng = thread_rng();
+
+                let v = (1_f32 / priors.σ_μ_comp.powi(2) + pop as f32 / σ.powi(2)).recip();
+                *μ = Normal::new(
+                    v * (priors.μ_μ_comp / priors.σ_μ_comp.powi(2) + *μ / σ.powi(2)),
+                    v.sqrt()
+                ).unwrap().sample(&mut rng);
+            });
+
+        // compute sample variances
+        params.σ_comp.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_compactness)
+            .for_each(|&z, &c| {
+                params.σ_comp[z as usize] += (params.μ_comp[z as usize] - c.ln()).powi(2);
+            });
+
+        // sample σ parameters
+        Zip::from(&mut params.σ_comp)
+            .and(&params.component_population)
+            .par_for_each(|σ, &pop| {
+                let mut rng = thread_rng();
+                *σ = Gamma::new(
+                    priors.α_σ_comp + (pop as f32) / 2.0,
+                    (priors.β_σ_comp + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
             });
     }
 
