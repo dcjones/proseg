@@ -666,20 +666,20 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // // TODO: This really doesn't seem to work as intended. We end up
                 // // with more disconnected components than without it.
-                // let art_from = connectivity_checker.cube_isarticulation(
-                //     *i,
-                //     |cube| self.cubecells.get(cube),
-                //     cell_from);
+                let art_from = connectivity_checker.cube_isarticulation(
+                    *i,
+                    |cube| self.cubecells.get(cube),
+                    cell_from);
 
-                // let art_to = connectivity_checker.cube_isarticulation(
-                //     *i,
-                //     |cube| self.cubecells.get(cube),
-                //     cell_to);
+                let art_to = connectivity_checker.cube_isarticulation(
+                    *i,
+                    |cube| self.cubecells.get(cube),
+                    cell_to);
 
-                // if art_from || art_to {
-                //     proposal.ignore = true;
-                //     return;
-                // }
+                if art_from || art_to {
+                    proposal.ignore = true;
+                    return;
+                }
 
                 // compute the probability of selecting the proposal (k, c)
                 let num_mismatching_edges = mismatch_edges.len();

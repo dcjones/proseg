@@ -4,6 +4,7 @@ use clap::Parser;
 
 mod sampler;
 
+use itertools::Itertools;
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::CubeBinSampler;
@@ -37,12 +38,6 @@ struct Args{
     #[arg(short, long, default_value=None)]
     z_column: Option<String>,
 
-    #[arg(long, default_value="x_centroid")]
-    cell_x_column: String,
-
-    #[arg(long, default_value="y_centroid")]
-    cell_y_column: String,
-
     #[arg(short, long, default_value_t=20)]
     ncomponents: usize,
 
@@ -51,9 +46,6 @@ struct Args{
 
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
-
-    #[arg(short, long, default_value_t=0.05_f32)]
-    background_prob: f32,
 
     #[arg(short, long, default_value_t=100)]
     local_steps_per_iter: usize,
@@ -88,18 +80,29 @@ fn main() {
 
     assert!(args.ncomponents > 0);
 
-    let (transcript_names, transcripts, init_cell_assignments, init_cell_population) = read_transcripts_csv(
+    let (transcript_names, mut transcripts, init_cell_assignments, init_cell_population) = read_transcripts_csv(
         &args.transcript_csv, &args.transcript_column, &args.x_column,
         &args.y_column, args.z_column.as_deref());
     let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
     let ncells = init_cell_population.len();
 
-    println!("Read {} transcripts", ntranscripts);
+    // Clamp transcript depth
+    // This is we get some reasonable depth slices when we step up to
+    // 3d sampling.
+    let zs: Vec<f32> = transcripts.iter()
+        .map(|t| t.z)
+        .sorted_by(|a, b| a.partial_cmp(b).unwrap())
+        .collect();
 
-    // let nuclei_centroids = read_nuclei_csv(
-    //     &args.cell_centers_csv, &args.cell_x_column, &args.cell_y_column);
-    // let ncells = nuclei_centroids.len();
+    let (q0, q1) = (0.01, 0.99);
+    let zmin = zs[(q0 * (zs.len() as f32)) as usize];
+    let zmax = zs[(q1 * (zs.len() as f32)) as usize];
+    for t in &mut transcripts {
+        t.z = t.z.max(zmin).min(zmax);
+    }
+
+    println!("Read {} transcripts", ntranscripts);
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
@@ -153,8 +156,8 @@ fn main() {
         α_σ_area: 0.1,
         β_σ_area: 0.1,
 
-        μ_μ_comp: 3.0,
-        σ_μ_comp: 4.0_f32,
+        μ_μ_comp: 0.0,
+        σ_μ_comp: 0.5_f32,
         α_σ_comp: 0.1,
         β_σ_comp: 0.1,
 
@@ -188,8 +191,8 @@ fn main() {
     let initial_avgbinpop = 16.0_f32;
     let sampler_schedule = [
         200, // 16
-        // 200, // 2
-        // 200, // 0.5
+        200, // 2
+        200, // 0.5
         ];
 
     let total_iterations = sampler_schedule.iter().sum::<usize>();

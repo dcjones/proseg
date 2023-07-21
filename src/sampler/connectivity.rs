@@ -1,5 +1,5 @@
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use petgraph::Undirected;
 use petgraph::graph::{Graph, NodeIndex};
 // use hexx::Hex;
@@ -30,7 +30,8 @@ impl Default for DfsInfo {
 pub struct ConnectivityChecker {
     subgraph: NeighborhoodGraph,
     cube_to_subgraph: HashMap<Cube, NodeIndex<usize>>,
-    dfsinfo: HashMap<NodeIndex<usize>, DfsInfo>,
+    // dfsinfo: HashMap<NodeIndex<usize>, DfsInfo>,
+    visited: HashSet<NodeIndex<usize>>,
 }
 
 impl ConnectivityChecker {
@@ -40,7 +41,7 @@ impl ConnectivityChecker {
         return Self {
             subgraph: subgraph,
             cube_to_subgraph: HashMap::new(),
-            dfsinfo: HashMap::new(),
+            visited: HashSet::new(),
         };
     }
 
@@ -49,12 +50,11 @@ impl ConnectivityChecker {
 
         // dbg!(self.subgraph.node_count(), self.subgraph.edge_count(), cell);
 
-        self.dfsinfo.clear();
+        self.visited.clear();
         return is_articulation_dfs(
             &self.subgraph,
-            &mut self.dfsinfo,
-            self.cube_to_subgraph[&root],
-            NodeIndex::end(), 0);
+            &mut self.visited,
+            self.cube_to_subgraph[&root]);
     }
 
     fn construct_cube_subgraph<F>(&mut self, root: Cube, cubecell: F, cell: u32) where F: Fn(Cube) -> u32 {
@@ -104,51 +104,22 @@ impl ConnectivityChecker {
 // Recursive traversal function to find articulation points
 fn is_articulation_dfs(
     subgraph: &NeighborhoodGraph,
-    dfsinfo: &mut HashMap<NodeIndex<usize>, DfsInfo>,
-    i: NodeIndex<usize>,
-    parent: NodeIndex<usize>,
-    depth: u32) -> bool
+    visited: &mut HashSet<NodeIndex<usize>>,
+    i: NodeIndex<usize>) -> bool
 {
-    dfsinfo.entry(i).or_insert_with(||
-        DfsInfo{
-            parent,
-            depth,
-            low: depth
-        });
-
+    visited.insert(i);
     let mut child_count = 0;
-    let mut is_articulation = false;
 
     // wikipedia version
 
     for j in subgraph.neighbors(i) {
-        if let Some(j_info_depth) = dfsinfo.get(&j).map(|j_info| j_info.depth) {
-            if j != parent {
-                let mut i_info = dfsinfo.get_mut(&i).unwrap();
-                i_info.low = i_info.low.min(j_info_depth);
-            }
-        } else {
-            // j is unvisited
-            is_articulation_dfs(subgraph, dfsinfo, j, i, depth + 1);
-            let j_info_low = dfsinfo[&j].low;
-            child_count += 1;
-
-            let mut i_info = dfsinfo.get_mut(&i).unwrap();
-            if j_info_low >= i_info.depth {
-                is_articulation = true;
-            }
-            i_info.low = i_info.low.min(j_info_low);
+        if visited.contains(&j) {
+            continue;
         }
+
+        child_count += 1;
+        is_articulation_dfs(subgraph, visited, j);
     }
 
-    let i_info = &dfsinfo[&i];
-
-    // This whole thing is very simple for the root node: we just recurse
-    // on a child and either every child is visited or this is an articulation point.
-
-    if i_info.parent == NodeIndex::end() {
-        is_articulation = child_count > 1;
-    }
-
-    return is_articulation;
+    return child_count > 1;
 }
