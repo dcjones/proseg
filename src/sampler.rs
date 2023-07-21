@@ -782,6 +782,8 @@ pub trait Sampler<P> where P: Proposal + Send {
         // dbg!(params.cell_areas.slice(s![0..10]));
         // dbg!(params.cell_surface_areas.slice(s![0..10]));
         // dbg!(params.cell_compactness.slice(s![0..10]));
+        // dbg!(&params.μ_comp);
+        // dbg!(&params.σ_comp);
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
@@ -1107,44 +1109,44 @@ pub trait Sampler<P> where P: Proposal + Send {
 
         // compute sample means
         // NOTE: assuming component_population has been computed at this point
-        // params.μ_comp.fill(0_f32);
-        // Zip::from(&params.z)
-        //     .and(&params.cell_compactness)
-        //     .for_each(|&z, &c| {
-        //         params.μ_comp[z as usize] += c.ln();
-        //     });
+        params.μ_comp.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_compactness)
+            .for_each(|&z, &c| {
+                params.μ_comp[z as usize] += c.ln();
+            });
 
-        // // sample μ parameters
-        // Zip::from(&mut params.μ_comp)
-        //     .and(&params.σ_comp)
-        //     .and(&params.component_population)
-        //     .par_for_each(|μ, &σ, &pop| {
-        //         let mut rng = thread_rng();
+        // sample μ parameters
+        Zip::from(&mut params.μ_comp)
+            .and(&params.σ_comp)
+            .and(&params.component_population)
+            .par_for_each(|μ, &σ, &pop| {
+                let mut rng = thread_rng();
 
-        //         let v = (1_f32 / priors.σ_μ_comp.powi(2) + pop as f32 / σ.powi(2)).recip();
-        //         *μ = Normal::new(
-        //             v * (priors.μ_μ_comp / priors.σ_μ_comp.powi(2) + *μ / σ.powi(2)),
-        //             v.sqrt()
-        //         ).unwrap().sample(&mut rng);
-        //     });
+                let v = (1_f32 / priors.σ_μ_comp.powi(2) + pop as f32 / σ.powi(2)).recip();
+                *μ = Normal::new(
+                    v * (priors.μ_μ_comp / priors.σ_μ_comp.powi(2) + *μ / σ.powi(2)),
+                    v.sqrt()
+                ).unwrap().sample(&mut rng);
+            });
 
-        // // compute sample variances
-        // params.σ_comp.fill(0_f32);
-        // Zip::from(&params.z)
-        //     .and(&params.cell_compactness)
-        //     .for_each(|&z, &c| {
-        //         params.σ_comp[z as usize] += (params.μ_comp[z as usize] - c.ln()).powi(2);
-        //     });
+        // compute sample variances
+        params.σ_comp.fill(0_f32);
+        Zip::from(&params.z)
+            .and(&params.cell_compactness)
+            .for_each(|&z, &c| {
+                params.σ_comp[z as usize] += (params.μ_comp[z as usize] - c.ln()).powi(2);
+            });
 
-        // // sample σ parameters
-        // Zip::from(&mut params.σ_comp)
-        //     .and(&params.component_population)
-        //     .par_for_each(|σ, &pop| {
-        //         let mut rng = thread_rng();
-        //         *σ = Gamma::new(
-        //             priors.α_σ_comp + (pop as f32) / 2.0,
-        //             (priors.β_σ_comp + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
-        //     });
+        // sample σ parameters
+        Zip::from(&mut params.σ_comp)
+            .and(&params.component_population)
+            .par_for_each(|σ, &pop| {
+                let mut rng = thread_rng();
+                *σ = Gamma::new(
+                    priors.α_σ_comp + (pop as f32) / 2.0,
+                    (priors.β_σ_comp + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+            });
     }
 
 }

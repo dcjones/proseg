@@ -103,6 +103,24 @@ impl Cube {
             |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
 
+    pub fn radius2_xy_neighborhood(&self) -> [Cube; 12] {
+        return [
+            ( 0, -2,  0),
+            (-1, -1,  0),
+            ( 0, -1,  0),
+            ( 1, -1,  0),
+            (-2,  0,  0),
+            (-1,  0,  0),
+            ( 1,  0,  0),
+            ( 2,  0,  0),
+            (-1,  1,  0),
+            ( 0,  1,  0),
+            ( 1,  1,  0),
+            ( 0,  2,  0),
+            ].map(
+            |(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
+    }
+
     fn double_resolution_children(&self) -> [Cube; 8] {
         return [
             Cube::new(2*self.i,     2*self.j,     2*self.k),
@@ -276,6 +294,7 @@ pub struct CubeBinSampler {
     zmin: f32,
     zmax: f32,
 
+    cube_height: f32,
     side_surface_area: f32,
     top_surface_area: f32,
     cubevolume: f32,
@@ -303,8 +322,8 @@ impl CubeBinSampler {
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
 
         assert!(layout.cube_size.0 == layout.cube_size.1);
-        let cube_size = layout.cube_size.0;
-        let cubevolume = cube_size.powi(2) * (zmax - zmin);
+        let cube_height = layout.cube_size.2;
+        let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
 
         let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
         let top_surface_area = layout.cube_size.0.powi(2);
@@ -382,6 +401,7 @@ impl CubeBinSampler {
             connectivity_checker,
             zmin,
             zmax,
+            cube_height,
             side_surface_area,
             top_surface_area,
             cubevolume,
@@ -405,6 +425,7 @@ impl CubeBinSampler {
 
         let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
         let top_surface_area = layout.cube_size.0.powi(2);
+        let cube_height = layout.cube_size.2;
 
         let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -484,6 +505,7 @@ impl CubeBinSampler {
             cubecells,
             proposals,
             connectivity_checker,
+            cube_height,
             side_surface_area,
             top_surface_area,
             zmin: self.zmin,
@@ -519,17 +541,10 @@ impl CubeBinSampler {
                 continue;
             }
 
-            for neighbor in cubebin.cube.von_neumann_xy_neighborhood() {
+            for neighbor in cubebin.cube.radius2_xy_neighborhood() {
                 let neighbor_cell = self.cubecells.get(neighbor);
                 if neighbor_cell != cell {
-                    params.cell_surface_areas[cell as usize] += self.side_surface_area;
-                }
-            }
-
-            for neighbor in cubebin.cube.von_neumann_z_neighborhood() {
-                let neighbor_cell = self.cubecells.get(neighbor);
-                if neighbor_cell != cell {
-                    params.cell_surface_areas[cell as usize] += self.top_surface_area;
+                    params.cell_surface_areas[cell as usize] += self.cube_height;
                 }
             }
         }
@@ -739,51 +754,76 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 proposal.old_cell_surface_area_delta = 0.0;
                 proposal.new_cell_surface_area_delta = 0.0;
-                for neighbor in i.von_neumann_xy_neighborhood() {
+
+                for neighbor in i.radius2_xy_neighborhood() {
                     let neighbor_cell = self.cubecells.get(neighbor);
 
-                    // old cell: newly exposed sides
-                    if neighbor_cell == cell_from {
-                        proposal.old_cell_surface_area_delta += self.side_surface_area;
-                    }
-
-                    // old cell: newly unexpoed sides
-                    if neighbor_cell != cell_from {
-                        proposal.old_cell_surface_area_delta -= self.side_surface_area;
-                    }
-
-                    // new cell: newly unexposed sides
-                    if neighbor_cell == cell_to {
-                        proposal.new_cell_surface_area_delta -= self.side_surface_area;
-                    }
-
+                    // cube i's new mismatches
                     if neighbor_cell != cell_to {
-                        proposal.new_cell_surface_area_delta += self.side_surface_area;
+                        proposal.new_cell_surface_area_delta += self.cube_height;
+                    }
+
+                    // neighbors for whom i is no longer a mismatch
+                    if neighbor_cell == cell_to {
+                        proposal.new_cell_surface_area_delta -= self.cube_height;
+                    }
+
+                    // neighbors for whom i is now a mismatch
+                    if neighbor_cell == cell_from {
+                        proposal.old_cell_surface_area_delta += self.cube_height;
+                    }
+
+                    // neighbors of i that were previously counted as a mismatch
+                    if neighbor_cell != cell_from {
+                        proposal.old_cell_surface_area_delta -= self.cube_height;
                     }
                 }
 
-                for neighbor in i.von_neumann_z_neighborhood() {
-                    let neighbor_cell = self.cubecells.get(neighbor);
+                // for neighbor in i.von_neumann_xy_neighborhood() {
+                //     let neighbor_cell = self.cubecells.get(neighbor);
 
-                    // old cell: newly exposed sides
-                    if neighbor_cell == cell_from {
-                        proposal.old_cell_surface_area_delta += self.top_surface_area;
-                    }
+                //     // old cell: newly exposed sides
+                //     if neighbor_cell == cell_from {
+                //         proposal.old_cell_surface_area_delta += self.side_surface_area;
+                //     }
 
-                    // old cell: newly unexpoed tops
-                    if neighbor_cell != cell_from {
-                        proposal.old_cell_surface_area_delta -= self.top_surface_area;
-                    }
+                //     // old cell: newly unexpoed sides
+                //     if neighbor_cell != cell_from {
+                //         proposal.old_cell_surface_area_delta -= self.side_surface_area;
+                //     }
 
-                    // new cell: newly unexposed tops
-                    if neighbor_cell == cell_to {
-                        proposal.new_cell_surface_area_delta -= self.top_surface_area;
-                    }
+                //     // new cell: newly unexposed sides
+                //     if neighbor_cell == cell_to {
+                //         proposal.new_cell_surface_area_delta -= self.side_surface_area;
+                //     }
 
-                    if neighbor_cell != cell_to {
-                        proposal.new_cell_surface_area_delta += self.top_surface_area;
-                    }
-                }
+                //     if neighbor_cell != cell_to {
+                //         proposal.new_cell_surface_area_delta += self.side_surface_area;
+                //     }
+                // }
+
+                // for neighbor in i.von_neumann_z_neighborhood() {
+                //     let neighbor_cell = self.cubecells.get(neighbor);
+
+                //     // old cell: newly exposed sides
+                //     if neighbor_cell == cell_from {
+                //         proposal.old_cell_surface_area_delta += self.top_surface_area;
+                //     }
+
+                //     // old cell: newly unexpoed tops
+                //     if neighbor_cell != cell_from {
+                //         proposal.old_cell_surface_area_delta -= self.top_surface_area;
+                //     }
+
+                //     // new cell: newly unexposed tops
+                //     if neighbor_cell == cell_to {
+                //         proposal.new_cell_surface_area_delta -= self.top_surface_area;
+                //     }
+
+                //     if neighbor_cell != cell_to {
+                //         proposal.new_cell_surface_area_delta += self.top_surface_area;
+                //     }
+                // }
 
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
