@@ -395,7 +395,7 @@ impl CubeBinSampler {
         };
 
         sampler.recompute_cell_population();
-        sampler.recompute_cell_areas(priors, params);
+        sampler.recompute_cell_volume(priors, params);
         sampler.populate_mismatches();
 
         return sampler;
@@ -507,18 +507,18 @@ impl CubeBinSampler {
         return sampler;
     }
 
-    fn recompute_cell_areas(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn recompute_cell_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // recompute cell areas as the sum of rect areas
-        params.cell_areas.fill(0.0_f32);
+        params.cell_volume.fill(0.0_f32);
         for cubebin in &self.cubebins {
             let cell = self.cubecells.get(cubebin.cube);
             if cell == BACKGROUND_CELL {
                 continue;
             }
-            params.cell_areas[cell as usize] += self.cubevolume;
+            params.cell_volume[cell as usize] += self.cubevolume;
         }
-        for cell_area in params.cell_areas.iter_mut() {
-            *cell_area = cell_area.max(priors.min_cell_area);
+        for cell_volume in params.cell_volume.iter_mut() {
+            *cell_volume = cell_volume.max(priors.min_cell_volume);
         }
     }
 
@@ -756,8 +756,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 proposal.log_weight = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
                 proposal.ignore = false;
                 proposal.accept = false;
-                proposal.old_cell_area_delta = -self.cubevolume;
-                proposal.new_cell_area_delta = self.cubevolume;
+                proposal.old_cell_volume_delta = -self.cubevolume;
+                proposal.new_cell_volume_delta = self.cubevolume;
 
                 proposal.old_cell_perimeter_delta = 0.0;
                 proposal.new_cell_perimeter_delta = 0.0;
@@ -792,7 +792,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let old_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_from as usize]] + proposal.old_cell_perimeter_delta;
                     let bound = perimeter_bound(
                         priors.perimeter_eta,
-                        priors.perimeter_limit,
+                        priors.perimeter_bound,
                         self.cell_population[[i.k as usize, cell_from as usize]] - 1.0);
                     if old_cell_perimeter > bound {
                         proposal.ignore = true;
@@ -804,7 +804,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let pop = self.cell_population[[i.k as usize, cell_to as usize]] + 1.0;
                     let bound = perimeter_bound(
                         priors.perimeter_eta,
-                        priors.perimeter_limit,
+                        priors.perimeter_bound,
                         pop);
                     // dbg!(new_cell_perimeter, pop, bound);
                     if new_cell_perimeter > bound {
@@ -903,9 +903,9 @@ pub struct CubeBinProposal {
     ignore: bool,
     accept: bool,
 
-    // updated cell areas and logprobs if the proposal is accepted
-    old_cell_area_delta: f32,
-    new_cell_area_delta: f32,
+    // updated cell volumes and logprobs if the proposal is accepted
+    old_cell_volume_delta: f32,
+    new_cell_volume_delta: f32,
 
     old_cell_perimeter_delta: f32,
     new_cell_perimeter_delta: f32,
@@ -922,8 +922,8 @@ impl CubeBinProposal {
             log_weight: 0.0,
             ignore: false,
             accept: false,
-            old_cell_area_delta: 0.0,
-            new_cell_area_delta: 0.0,
+            old_cell_volume_delta: 0.0,
+            new_cell_volume_delta: 0.0,
             old_cell_perimeter_delta: 0.0,
             new_cell_perimeter_delta: 0.0,
         };
@@ -953,12 +953,12 @@ impl Proposal for CubeBinProposal {
         return self.new_cell;
     }
 
-    fn old_cell_area_delta(&self) -> f32 {
-        return self.old_cell_area_delta;
+    fn old_cell_volume_delta(&self) -> f32 {
+        return self.old_cell_volume_delta;
     }
 
-    fn new_cell_area_delta(&self) -> f32 {
-        return self.new_cell_area_delta;
+    fn new_cell_volume_delta(&self) -> f32 {
+        return self.new_cell_volume_delta;
     }
 
     fn log_weight(&self) -> f32 {

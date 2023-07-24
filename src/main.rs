@@ -36,7 +36,7 @@ struct Args{
     #[arg(long, default_value="y_location")]
     y_column: String,
 
-    #[arg(short, long, default_value=None)]
+    #[arg(short, long, default_value="z_location")]
     z_column: Option<String>,
 
     #[arg(short, long, default_value_t=20)]
@@ -59,6 +59,9 @@ struct Args{
 
     #[arg(long, default_value_t=0.5_f32)]
     count_pr_cutoff: f32,
+
+    #[arg(long, default_value_t=2.5_f32)]
+    perimeter_bound: f32,
 
     #[arg(short, long, default_value="counts.csv.gz")]
     output_counts: String,
@@ -117,8 +120,8 @@ fn main() {
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
-    let full_area = sampler::hull::compute_full_area(&transcripts) * zspan;
-    println!("Full volume: {}", full_area);
+    let full_volume = sampler::hull::compute_full_area(&transcripts) * zspan;
+    println!("Full volume: {}", full_volume);
 
     if let Some(nthreads) = args.nthreads {
         rayon::ThreadPoolBuilder::new().num_threads(nthreads).build_global().unwrap();
@@ -146,15 +149,15 @@ fn main() {
     let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / (ncells as f32);
 
-    let min_cell_area = 1e-6 * mean_nucleus_area * zspan;
+    let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
-        min_cell_area,
+        min_cell_volume,
 
-        μ_μ_area: (2.0 * mean_nucleus_area * zspan).ln(),
-        σ_μ_area: 3.0_f32,
-        α_σ_area: 0.1,
-        β_σ_area: 0.1,
+        μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
+        σ_μ_volume: 3.0_f32,
+        α_σ_volume: 0.1,
+        β_σ_volume: 0.1,
 
         α_θ: 1.0,
         β_θ: 1.0,
@@ -162,12 +165,12 @@ fn main() {
         f_r: 1.0,
 
         perimeter_eta: 5.3,
-        perimeter_limit: 2.5,
+        perimeter_bound: args.perimeter_bound,
     };
 
     let mut params = ModelParams::new(
         &priors,
-        full_area,
+        full_volume,
         &transcripts,
         &init_cell_assignments,
         &init_cell_population,
@@ -265,7 +268,7 @@ fn main() {
         writer.write_record(["cell", "cluster", "volume", "population"]).unwrap();
         for cell in 0..ncells {
             let cluster = params.z[cell];
-            let volume = params.cell_areas[cell];
+            let volume = params.cell_volume[cell];
             let population = params.cell_population[cell];
             writer.write_record([
                 cell.to_string(),

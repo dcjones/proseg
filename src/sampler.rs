@@ -38,8 +38,13 @@ use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 // same volume. This of course is all on a lattice, so it's approximate.
 // `eta` is the scaling factor between number of mismatching neighbors on the
 // lattice and perimeter.
-pub fn perimeter_bound(eta: f32, limit: f32, population: f32) -> f32 {
-    return limit * eta * (2.0 * population) / (f32::consts::PI * population).sqrt();
+//
+// This is inspired by:
+// Magno,R., Grieneisen,V.A. and Marée,A.F. (2015) The biophysical nature of
+// cells: potential cell behaviours revealed by analytical and computational
+// studies of cell surface mechanics. BMC Biophys., 8, 8.
+pub fn perimeter_bound(eta: f32, bound: f32, population: f32) -> f32 {
+    return bound * eta * (2.0 * population) / (f32::consts::PI * population).sqrt();
 }
 
 
@@ -57,15 +62,15 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
-    pub min_cell_area: f32,
+    pub min_cell_volume: f32,
 
     // params for normal prior
-    pub μ_μ_area: f32,
-    pub σ_μ_area: f32,
+    pub μ_μ_volume: f32,
+    pub σ_μ_volume: f32,
 
     // params for inverse-gamma prior
-    pub α_σ_area: f32,
-    pub β_σ_area: f32,
+    pub α_σ_volume: f32,
+    pub β_σ_volume: f32,
 
     pub α_θ: f32,
     pub β_θ: f32,
@@ -76,7 +81,7 @@ pub struct ModelPriors {
 
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
-    pub perimeter_limit: f32,
+    pub perimeter_bound: f32,
 }
 
 
@@ -87,11 +92,14 @@ pub struct ModelParams {
 
     pub cell_population: Vec<usize>,
 
-    // per-cell areas
-    pub cell_areas: Array1<f32>,
+    // per-cell volumes
+    pub cell_volume: Array1<f32>,
+
+    // per-component volumes
+    pub component_volume: Array1<f32>,
 
     // area of the convex hull containing all transcripts
-    full_area: f32,
+    full_volume: f32,
 
     // [ngenes, ncells] transcripts counts
     pub counts: Array2<u32>,
@@ -121,8 +129,8 @@ pub struct ModelParams {
 
     π: Vec<f32>, // mixing proportions over components
 
-    μ_area: Array1<f32>, // area dist mean param by component
-    σ_area: Array1<f32>, // area dist std param by component
+    μ_volume: Array1<f32>, // volume dist mean param by component
+    σ_volume: Array1<f32>, // volume dist std param by component
 
     // [ngenes] NB r parameters.
     r: Array1<f32>,
@@ -157,7 +165,7 @@ impl ModelParams {
     // and other parameterz unninitialized.
     pub fn new(
         priors: &ModelPriors,
-        full_area: f32,
+        full_volume: f32,
         transcripts: &Vec<Transcript>,
         init_cell_assignments: &Vec<u32>,
         init_cell_population: &Vec<usize>,
@@ -167,9 +175,7 @@ impl ModelParams {
 
         let r = Array1::<f32>::from_elem(ngenes, 100.0_f32);
         let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x)));
-
-        // compute initial cell areas
-        let cell_areas = Array1::<f32>::zeros(ncells);
+        let cell_volume = Array1::<f32>::zeros(ncells);
 
         // compute initial counts
         let mut counts = Array2::<u32>::from_elem((ngenes, ncells), 0);
@@ -189,12 +195,15 @@ impl ModelParams {
             .collect::<Vec<_>>()
             .into();
 
+        let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
+
         return ModelParams {
             cell_assignments: init_cell_assignments.clone(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
-            cell_areas,
-            full_area,
+            cell_volume,
+            component_volume,
+            full_volume,
             counts,
             foreground_counts: Array2::<u32>::from_elem((ncells, ngenes), 0),
             background_counts: Array1::<u32>::from_elem(ngenes, 0),
@@ -206,8 +215,8 @@ impl ModelParams {
             component_population: Array1::<u32>::from_elem(ncomponents, 0),
             z_probs: ThreadLocal::new(),
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
-            μ_area: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_area),
-            σ_area: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_area),
+            μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
+            σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             r,
             lgamma_r,
             θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -254,14 +263,14 @@ impl ModelParams {
         //   - area terms
 
         let mut ll = Zip::from(self.λ.columns())
-            .and(&self.cell_areas)
+            .and(&self.cell_volume)
             .and(self.counts.columns())
-            .fold(0_f32, |accum, λs, cell_area, cs| {
+            .fold(0_f32, |accum, λs, cell_volume, cs| {
                 accum + Zip::from(λs)
                     .and(&self.λ_bg)
                     .and(cs)
                     .fold(0_f32, |accum, λ, λ_bg, &c| {
-                        accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_area
+                        accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_volume
                     })
             });
 
@@ -271,7 +280,7 @@ impl ModelParams {
             .and(&self.λ_bg)
             .fold(0_f32, |accum, c_total, cs, &λ| {
                 let c_bg = c_total - cs.sum();
-                accum + (c_bg as f32) * λ.ln() - λ * self.full_area
+                accum + (c_bg as f32) * λ.ln() - λ * self.full_volume
             });
 
         return ll;
@@ -280,7 +289,6 @@ impl ModelParams {
     pub fn write_cell_hulls(&self, transcripts: &Vec<Transcript>, counts: &Array2<u32>, filename: &str) {
         // We are not maintaining any kind of per-cell array, so I guess I have
         // no choice but to compute such a thing here.
-        // TODO: We area already keeping track of this in Sampler!!
         let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
         for (i, &cell) in self.cell_assignments.iter().enumerate() {
             if cell != BACKGROUND_CELL {
@@ -296,23 +304,17 @@ impl ModelParams {
         )
         .unwrap();
 
-        let vertices: Vec<(f32, f32)> = Vec::new();
-        let hull: Vec<(f32, f32)> = Vec::new();
-
-        let vertices_refcell = RefCell::new(vertices);
-        let mut vertices_ref = vertices_refcell.borrow_mut();
-
-        let hull_refcell = RefCell::new(hull);
-        let mut hull_ref = hull_refcell.borrow_mut();
+        let mut vertices: Vec<(f32, f32)> = Vec::new();
+        let mut hull: Vec<(f32, f32)> = Vec::new();
 
         for (i, js) in cell_transcripts.iter().enumerate() {
-            vertices_ref.clear();
+            vertices.clear();
             for j in js {
                 let transcript = transcripts[*j];
-                vertices_ref.push((transcript.x, transcript.y));
+                vertices.push((transcript.x, transcript.y));
             }
 
-            let area = convex_hull_area(&mut vertices_ref, &mut hull_ref);
+            let area = convex_hull_area(&mut vertices, &mut hull);
             let count = counts.column(i).sum();
 
             writeln!(
@@ -333,9 +335,9 @@ impl ModelParams {
                 i, area, count
             )
             .unwrap();
-            for (i, (x, y)) in hull_ref.iter().enumerate() {
+            for (i, (x, y)) in hull.iter().enumerate() {
                 writeln!(encoder, "            [{}, {}]", x, y).unwrap();
-                if i < hull_ref.len() - 1 {
+                if i < hull.len() - 1 {
                     write!(encoder, ",").unwrap();
                 }
             }
@@ -468,10 +470,10 @@ pub trait Proposal {
     fn accepted(&self) -> bool;
 
     // Return updated cell size minus current cell size `old_cell`
-    fn old_cell_area_delta(&self) -> f32;
+    fn old_cell_volume_delta(&self) -> f32;
 
     // Return updated cell size minus current cell size `new_cell`
-    fn new_cell_area_delta(&self) -> f32;
+    fn new_cell_volume_delta(&self) -> f32;
 
     fn old_cell(&self) -> u32;
     fn new_cell(&self) -> u32;
@@ -502,14 +504,14 @@ pub trait Proposal {
                 δ -= count as f32 * params.λ_bg[i].ln()
             }
         } else {
-            let area_diff = self.old_cell_area_delta();
+            let volume_diff = self.old_cell_volume_delta();
 
-            let prev_area = params.cell_areas[old_cell as usize];
-            let new_area = prev_area + area_diff;
+            let prev_volume = params.cell_volume[old_cell as usize];
+            let new_volume = prev_volume + volume_diff;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(old_cell as usize))
-                .fold(0.0, |acc, &λ| acc - λ * area_diff);
+                .fold(0.0, |acc, &λ| acc - λ * volume_diff);
 
             // subtract out old cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
@@ -518,13 +520,13 @@ pub trait Proposal {
 
             let z = params.z[old_cell as usize];
             δ -= lognormal_logpdf(
-                params.μ_area[z as usize],
-                params.σ_area[z as usize],
-                prev_area);
+                params.μ_volume[z as usize],
+                params.σ_volume[z as usize],
+                prev_volume);
             δ += lognormal_logpdf(
-                params.μ_area[z as usize],
-                params.σ_area[z as usize],
-                new_area);
+                params.μ_volume[z as usize],
+                params.σ_volume[z as usize],
+                new_volume);
         }
 
         if to_background {
@@ -532,14 +534,14 @@ pub trait Proposal {
                 δ += count as f32 * params.λ_bg[i].ln();
             }
         } else {
-            let area_diff = self.new_cell_area_delta();
+            let volume_diff = self.new_cell_volume_delta();
 
-            let prev_area = params.cell_areas[new_cell as usize];
-            let new_area = prev_area + area_diff;
+            let prev_volume = params.cell_volume[new_cell as usize];
+            let new_volume = prev_volume + volume_diff;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(new_cell as usize))
-                .fold(0.0, |acc, &λ| acc - λ * area_diff);
+                .fold(0.0, |acc, &λ| acc - λ * volume_diff);
 
             // add in new cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
@@ -548,13 +550,13 @@ pub trait Proposal {
 
             let z = params.z[new_cell as usize];
             δ -= lognormal_logpdf(
-                params.μ_area[z as usize],
-                params.σ_area[z as usize],
-                prev_area);
+                params.μ_volume[z as usize],
+                params.σ_volume[z as usize],
+                prev_volume);
             δ += lognormal_logpdf(
-                params.μ_area[z as usize],
-                params.σ_area[z as usize],
-                new_area);
+                params.μ_volume[z as usize],
+                params.σ_volume[z as usize],
+                new_volume);
         }
 
         let mut rng = thread_rng();
@@ -624,10 +626,10 @@ pub trait Sampler<P> where P: Proposal + Send {
             if old_cell != BACKGROUND_CELL {
                 params.cell_population[old_cell as usize] -= count;
 
-                let mut cell_area = params.cell_areas[old_cell as usize];
-                cell_area += proposal.old_cell_area_delta();
-                cell_area = cell_area.max(priors.min_cell_area);
-                params.cell_areas[old_cell as usize] = cell_area;
+                let mut cell_volume = params.cell_volume[old_cell as usize];
+                cell_volume += proposal.old_cell_volume_delta();
+                cell_volume = cell_volume.max(priors.min_cell_volume);
+                params.cell_volume[old_cell as usize] = cell_volume;
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
@@ -638,10 +640,10 @@ pub trait Sampler<P> where P: Proposal + Send {
             if new_cell != BACKGROUND_CELL {
                 params.cell_population[new_cell as usize] += count;
 
-                let mut cell_area = params.cell_areas[new_cell as usize];
-                cell_area += proposal.new_cell_area_delta();
-                cell_area = cell_area.max(priors.min_cell_area);
-                params.cell_areas[new_cell as usize] = cell_area;
+                let mut cell_volume = params.cell_volume[new_cell as usize];
+                cell_volume += proposal.new_cell_volume_delta();
+                cell_volume = cell_volume.max(priors.min_cell_volume);
+                params.cell_volume[new_cell as usize] = cell_volume;
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
@@ -681,7 +683,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         let mut rng = thread_rng();
         let ncomponents = params.ncomponents();
 
-        self.sample_area_params(priors, params);
+        self.sample_volume_params(priors, params);
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
@@ -708,12 +710,13 @@ pub trait Sampler<P> where P: Proposal + Send {
         // println!("  Sample background counts: {:?}", t0.elapsed());
 
         // total component area
-        let mut component_cell_area = vec![0_f32; params.ncomponents()];
-        params.cell_areas
+        // let mut component_cell_area = vec![0_f32; params.ncomponents()];
+        params.component_volume.fill(0.0);
+        params.cell_volume
             .iter()
             .zip(&params.z)
-            .for_each(|(area, z_i)| {
-                component_cell_area[*z_i as usize] += *area;
+            .for_each(|(volume, z_i)| {
+                params.component_volume[*z_i as usize] += *volume;
             });
 
         // compute per component transcript counts
@@ -733,7 +736,7 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(&params.r)
             .par_for_each(|θs, cs, &r| {
                 let mut rng = thread_rng();
-                for (θ, &c, &a) in izip!(θs, cs, &component_cell_area) {
+                for (θ, &c, &a) in izip!(θs, cs, &params.component_volume) {
                     *θ = prob_to_odds(
                         Beta::new(
                             priors.α_θ + c as f32,
@@ -761,7 +764,7 @@ pub trait Sampler<P> where P: Proposal + Send {
                 // self.cell_areas.slice(0..self.ncells)
 
                 let u = Zip::from(&params.z)
-                    .and(&params.cell_areas)
+                    .and(&params.cell_volume)
                     .fold(0, |accum, z, a| {
                         let θ = θs[*z as usize];
                         let λ = -*r * log1pf(-odds_to_prob(θ * *a));
@@ -773,7 +776,7 @@ pub trait Sampler<P> where P: Proposal + Send {
 
                     }) as f32;
                 let v = Zip::from(&params.z)
-                    .and(&params.cell_areas)
+                    .and(&params.cell_volume)
                     .fold(0.0, |accum, z, a| {
                         let w = θs[*z as usize];
                         accum + log1pf(-odds_to_prob(w * *a))
@@ -809,7 +812,7 @@ pub trait Sampler<P> where P: Proposal + Send {
                     &mut λs,
                     &params.z,
                     cs,
-                    &params.cell_areas
+                    &params.cell_volume
                 ) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
@@ -843,16 +846,16 @@ pub trait Sampler<P> where P: Proposal + Send {
                 .rows(),
         )
         .and(&mut params.z)
-        .and(&params.cell_areas)
-        .par_for_each(|cs, z_i, cell_area| {
+        .and(&params.cell_volume)
+        .par_for_each(|cs, z_i, cell_volume| {
             let mut z_probs = params
                 .z_probs
                 .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
                 .borrow_mut();
 
             // loop over components
-            for (zp, π, θs, &μ_area, &σ_area) in
-                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_area, &params.σ_area)
+            for (zp, π, θs, &μ_volume, &σ_volume) in
+                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_volume, &params.σ_volume)
             {
                 // sum over genes
                 *zp = (*π as f64)
@@ -864,12 +867,12 @@ pub trait Sampler<P> where P: Proposal + Send {
                         .fold(0_f32, |accum, &c, &r, &lgamma_r, lgammaplus, θ| {
                             accum + negbin_logpmf_fast(
                                 r, lgamma_r, lgammaplus.eval(c),
-                                odds_to_prob(*θ * cell_area), c, params.logfactorial.eval(c))
+                                odds_to_prob(*θ * cell_volume), c, params.logfactorial.eval(c))
                         }) as f64)
                         .exp();
 
                 *zp *= lognormal_logpdf(
-                    μ_area, σ_area, *cell_area).exp() as f64;
+                    μ_volume, σ_volume, *cell_volume).exp() as f64;
             }
 
             // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
@@ -921,7 +924,7 @@ pub trait Sampler<P> where P: Proposal + Send {
             Zip::from(&mut params.λ_bg)
                 .and(&params.background_counts)
                 .for_each(|λ, c| {
-                    *λ = (*c as f32) / params.full_area;
+                    *λ = (*c as f32) / params.full_volume;
                 });
         // }
 
@@ -931,7 +934,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         Zip::from(&mut params.γ_bg)
             .and(&params.λ_bg)
             .for_each(|γ, λ| {
-                *γ = λ * params.full_area;
+                *γ = λ * params.full_volume;
             });
 
         // Compute γ_fg
@@ -939,54 +942,54 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(params.λ.rows())
             .par_for_each(|γ, λs| {
                 *γ = 0.0;
-                for (λ, cell_area) in izip!(λs, &params.cell_areas) {
-                    *γ += *λ * *cell_area;
+                for (λ, cell_volume) in izip!(λs, &params.cell_volume) {
+                    *γ += *λ * *cell_volume;
                 }
             });
 
     }
 
-    fn sample_area_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_volume_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // compute sample means
         params.component_population.fill(0_u32);
-        params.μ_area.fill(0_f32);
+        params.μ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_areas)
-            .for_each(|&z, &area| {
-                params.μ_area[z as usize] += area.ln();
+            .and(&params.cell_volume)
+            .for_each(|&z, &volume| {
+                params.μ_volume[z as usize] += volume.ln();
                 params.component_population[z as usize] += 1;
             });
 
         // sample μ parameters
-        Zip::from(&mut params.μ_area)
-            .and(&params.σ_area)
+        Zip::from(&mut params.μ_volume)
+            .and(&params.σ_volume)
             .and(&params.component_population)
             .par_for_each(|μ, &σ, &pop| {
                 let mut rng = thread_rng();
 
-                let v = (1_f32 / priors.σ_μ_area.powi(2) + pop as f32 / σ.powi(2)).recip();
+                let v = (1_f32 / priors.σ_μ_volume.powi(2) + pop as f32 / σ.powi(2)).recip();
                 *μ = Normal::new(
-                    v * (priors.μ_μ_area / priors.σ_μ_area.powi(2) + *μ / σ.powi(2)),
+                    v * (priors.μ_μ_volume / priors.σ_μ_volume.powi(2) + *μ / σ.powi(2)),
                     v.sqrt()
                 ).unwrap().sample(&mut rng);
             });
 
         // compute sample variances
-        params.σ_area.fill(0_f32);
+        params.σ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_areas)
-            .for_each(|&z, &area| {
-                params.σ_area[z as usize] += (params.μ_area[z as usize] - area.ln()).powi(2);
+            .and(&params.cell_volume)
+            .for_each(|&z, &volume| {
+                params.σ_volume[z as usize] += (params.μ_volume[z as usize] - volume.ln()).powi(2);
             });
 
         // sample σ parameters
-        Zip::from(&mut params.σ_area)
+        Zip::from(&mut params.σ_volume)
             .and(&params.component_population)
             .par_for_each(|σ, &pop| {
                 let mut rng = thread_rng();
                 *σ = Gamma::new(
-                    priors.α_σ_area + (pop as f32) / 2.0,
-                    (priors.β_σ_area + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+                    priors.α_σ_volume + (pop as f32) / 2.0,
+                    (priors.β_σ_volume + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
             });
     }
 }
