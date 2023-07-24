@@ -1,17 +1,8 @@
 
-use super::hull::polygon_area;
-
 use csv;
 use flate2::read::GzDecoder;
-use petgraph::csr::Csr;
-use petgraph::Directed;
-use spade::{
-    DelaunayTriangulation, HasPosition, LastUsedVertexHintGenerator, Point2, Triangulation,
-};
 use std::collections::HashMap;
 use std::fs::File;
-
-pub type NeighborhoodGraph = Csr<(), (), Directed, usize>;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
@@ -211,101 +202,6 @@ where
     return (transcript_names, transcripts, cell_assignments, cell_population);
 }
 
-// Vertex type for doing the triangulation in 2D
-struct TranscriptPosIdx {
-    x: f32,
-    y: f32,
-    idx: u32,
-}
-
-impl HasPosition for TranscriptPosIdx {
-    type Scalar = f32;
-
-    fn position(&self) -> Point2<Self::Scalar> {
-        Point2::new(self.x, self.y)
-    }
-}
-
-pub fn neighborhood_graph(
-    transcripts: &Vec<Transcript>,
-    max_edge_length: f32,
-) -> (NeighborhoodGraph, Vec<f32>, f32) {
-    let max_edge_length_squared = max_edge_length * max_edge_length;
-
-    let vertices = transcripts
-        .iter()
-        .enumerate()
-        .map(|(i, t)| TranscriptPosIdx {
-            x: t.x,
-            y: t.y,
-            idx: i as u32,
-        })
-        .collect();
-
-    let triangulation: DelaunayTriangulation<
-        TranscriptPosIdx,
-        (),
-        (),
-        (),
-        LastUsedVertexHintGenerator,
-    > = DelaunayTriangulation::bulk_load(vertices).unwrap();
-
-    // Compute the area of each transcript's voronoi cell
-    let mut face_verts: Vec<(f32, f32)> = Vec::new();
-    let mut transcript_areas: Vec<f32> = vec![0.0; transcripts.len()];
-    for face in triangulation.voronoi_faces() {
-        let i = face.as_delaunay_vertex().data().idx;
-        face_verts.clear();
-        for edge in face.adjacent_edges() {
-
-            // The simplest thing to do with outer vertices is just to skip
-            // over them. Downside is that the cells for transcripts around
-            // the border might be slightly smaller than the ought to be.
-            match [edge.from().position(), edge.to().position()] {
-                [Some(from), _] => {
-                    face_verts.push((from.x, from.y));
-                },
-                [None, Some(_)] => {
-                    // Ignored
-                },
-                [None, None] => {
-                    panic!("Strange Voronoi edge.")
-                },
-            }
-
-            transcript_areas[i as usize] = polygon_area(&mut face_verts);
-        }
-    }
-
-    // Construct adjacency matrix
-    let mut nrejected: usize = 0;
-    let mut nedges: usize = 0;
-    let mut edges = Vec::new();
-    let mut avg_edge_length = 0.0;
-    for edge in triangulation.directed_edges() {
-        if edge.length_2() >= max_edge_length_squared {
-            nrejected += 1;
-            continue;
-        }
-        avg_edge_length += edge.length_2();
-
-        let [from, to] = edge.vertices();
-        edges.push((from.data().idx as usize, to.data().idx as usize));
-        nedges += 1;
-    }
-    avg_edge_length = (avg_edge_length / nedges as f32).sqrt();
-    assert!(avg_edge_length > 0.0);
-
-    edges.sort();
-
-    println!(
-        "Rejected {} edges ({:0.3}%)",
-        nrejected,
-        nrejected as f64 / nedges as f64 * 100.0
-    );
-
-    return (NeighborhoodGraph::from_sorted_edges(&edges).unwrap(), transcript_areas, avg_edge_length);
-}
 
 pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;

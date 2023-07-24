@@ -1,11 +1,8 @@
 
-use super::transcripts::Transcript;
+use super::transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
-use std::cell::RefMut;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::ops::DerefMut;
-use std::cell::RefCell;
 
 
 // All this is just a mechanism to to do static dispatch on whether we are above or
@@ -34,25 +31,36 @@ impl QuickhullSide for QuickhullBelow {
 
 
 pub fn compute_full_area(transcripts: &Vec<Transcript>) -> f32 {
-    let vertices = Vec::from_iter(
+    let mut vertices = Vec::from_iter(
         transcripts
             .iter()
             .map(|t| (t.x, t.y)),
     );
-    let hull = Vec::new();
+    let mut hull = Vec::new();
 
-    let vertices_refcell = RefCell::new(vertices);
-    let mut vertices_ref = vertices_refcell.borrow_mut();
+    return convex_hull_area(&mut vertices, &mut hull);
+}
 
-    let hull_refcell = RefCell::new(hull);
-    let mut hull_ref = hull_refcell.borrow_mut();
 
-    return convex_hull_area(&mut vertices_ref, &mut hull_ref);
+pub fn compute_cell_areas(ncells: usize, transcripts: &Vec<Transcript>, cell_assignments: &Vec<CellIndex>) -> Vec<f32> {
+    let mut vertices: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ncells];
+    for (&c, &t) in cell_assignments.iter().zip(transcripts.iter()) {
+        if c != BACKGROUND_CELL {
+            vertices[c as usize].push((t.x, t.y));
+        }
+    }
+
+    let mut hull = Vec::new();
+    let areas = vertices.iter_mut()
+        .map(|vs| convex_hull_area(vs, &mut hull))
+        .collect();
+
+    return areas;
 }
 
 
 /// Compute the convex hull and return it's area.
-pub fn convex_hull_area(vertices: &mut RefMut<Vec<(f32,f32)>>, hull: &mut RefMut<Vec<(f32,f32)>>) -> f32 {
+pub fn convex_hull_area(vertices: &mut Vec<(f32,f32)>, hull: &mut Vec<(f32,f32)>) -> f32 {
     if vertices.len() < 3 {
         hull.clear();
         hull.extend(vertices.iter().cloned());
@@ -102,7 +110,7 @@ pub fn convex_hull_area(vertices: &mut RefMut<Vec<(f32,f32)>>, hull: &mut RefMut
     }
 
     // compute the area
-    return polygon_area(hull.deref_mut());
+    return polygon_area(hull);
 }
 
 pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
@@ -173,7 +181,7 @@ fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
 }
 
 
-fn quickhull_part<T>(side: T, vertices: &mut [(f32, f32)], hull: &mut RefMut<Vec<(f32,f32)>>, u: (f32, f32), v: (f32, f32)) where T: QuickhullSide + Debug {
+fn quickhull_part<T>(side: T, vertices: &mut [(f32, f32)], hull: &mut Vec<(f32,f32)>, u: (f32, f32), v: (f32, f32)) where T: QuickhullSide + Debug {
     if vertices.len() == 0 {
         return;
     }

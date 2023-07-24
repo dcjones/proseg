@@ -161,7 +161,6 @@ impl ModelParams {
         transcripts: &Vec<Transcript>,
         init_cell_assignments: &Vec<u32>,
         init_cell_population: &Vec<usize>,
-        transcript_areas: &Vec<f32>,
         ncomponents: usize,
         ncells: usize,
         ngenes: usize) -> Self {
@@ -170,15 +169,7 @@ impl ModelParams {
         let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x)));
 
         // compute initial cell areas
-        let mut cell_areas = Array1::<f32>::zeros(ncells);
-        for (i, &j) in init_cell_assignments.iter().enumerate() {
-            if j != BACKGROUND_CELL {
-                cell_areas[j as usize] += transcript_areas[i];
-            }
-        }
-        for area in cell_areas.iter_mut() {
-            *area = area.max(priors.min_cell_area);
-        }
+        let cell_areas = Array1::<f32>::zeros(ncells);
 
         // compute initial counts
         let mut counts = Array2::<u32>::from_elem((ngenes, ncells), 0);

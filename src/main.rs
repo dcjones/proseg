@@ -6,8 +6,9 @@ mod sampler;
 
 use itertools::Itertools;
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
-use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
+use sampler::transcripts::{read_transcripts_csv, coordinate_span, Transcript};
 use sampler::hexbinsampler::CubeBinSampler;
+use sampler::hull::compute_cell_areas;
 use rayon::current_num_threads;
 use indicatif::{ProgressBar, ProgressStyle};
 use csv;
@@ -41,13 +42,19 @@ struct Args{
     #[arg(short, long, default_value_t=20)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=100000)]
-    niter: usize,
+    // #[arg(long, default_value_t=100000)]
+    // niter: usize,
+
+    #[arg(long, default_value_t=16.0_f32)]
+    inital_bin_population: f32,
+
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[200, 200, 200])]
+    schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
 
-    #[arg(short, long, default_value_t=100)]
+    #[arg(short, long, default_value_t=1000)]
     local_steps_per_iter: usize,
 
     #[arg(long, default_value_t=0.5_f32)]
@@ -134,25 +141,17 @@ fn main() {
         chunk_size *= std::f32::consts::SQRT_2;
     }
 
-    // while (ncells as f64) / ((grid_size * grid_size) as f64) < min_cells_per_chunk {
-    //     grid_size *= std::f32::consts::SQRT_2;
-    // }
     println!("Using grid size {}. Chunks: {}", chunk_size, nchunks(chunk_size, xspan, yspan));
 
-    let quadrant_size = chunk_size / 2.0;
-    let (adjacency, transcript_areas, avg_edge_length) =
-        neighborhood_graph(&transcripts, quadrant_size);
+    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
+    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / (ncells as f32);
 
-    println!("Built neighborhood graph with {} edges", adjacency.edge_count()/2);
-
-    // can't just divide area by number of cells, because a large portion may have to cells.
-
-    let min_cell_area = avg_edge_length;
+    let min_cell_area = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
         min_cell_area,
 
-        μ_μ_area: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
+        μ_μ_area: (2.0 * mean_nucleus_area * zspan).ln(),
         σ_μ_area: 3.0_f32,
         α_σ_area: 0.1,
         β_σ_area: 0.1,
@@ -172,30 +171,12 @@ fn main() {
         &transcripts,
         &init_cell_assignments,
         &init_cell_population,
-        &transcript_areas,
         args.ncomponents,
         ncells,
         ngenes
     );
 
-    // TODO: Need to somehow make this a command line argument.
-    // let initial_avgbinpop = 64.0_f32;
-    // let sampler_schedule = [
-    //     // 200, // 64
-    //     // 200, // 16
-    //     // 200, // 2
-    //     // 200, // 0.5
-    //     ];
-
-    let initial_avgbinpop = 16.0_f32;
-    // let initial_avgbinpop = 4.0_f32;
-    let sampler_schedule = [
-        200, // 16
-        200, // 2
-        200, // 0.5
-        ];
-
-    let total_iterations = sampler_schedule.iter().sum::<usize>();
+    let total_iterations = args.schedule.iter().sum::<usize>();
     let mut prog = ProgressBar::new(total_iterations as u64);
     prog.set_style(
         ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
@@ -210,22 +191,22 @@ fn main() {
         &mut params,
         &transcripts,
         ngenes,
-        initial_avgbinpop,
+        args.inital_bin_population,
         chunk_size
     ));
 
-    if sampler_schedule.len() > 1 {
+    if args.schedule.len() > 1 {
         run_hexbin_sampler(
             &mut prog,
             sampler.get_mut(),
             &priors,
             &mut params,
             &transcripts,
-            sampler_schedule[0],
+            args.schedule[0],
             args.local_steps_per_iter,
             None);
 
-        for &niter in sampler_schedule[1..sampler_schedule.len()-1].iter() {
+        for &niter in args.schedule[1..args.schedule.len()-1].iter() {
             sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
             run_hexbin_sampler(
                 &mut prog,
@@ -246,7 +227,7 @@ fn main() {
         &priors,
         &mut params,
         &transcripts,
-        sampler_schedule[sampler_schedule.len()-1],
+        args.schedule[args.schedule.len()-1],
         args.local_steps_per_iter,
         Some(&mut uncertainty));
 
@@ -293,20 +274,6 @@ fn main() {
                 population.to_string(),
                 ]
             ).unwrap();
-        }
-    }
-
-    // TODO: Make a proper optional cell metadata csv with area/volume along with
-    {
-        let file = File::create("z.csv.gz").unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
-
-        writer.write_record(["z"]).unwrap();
-        for z in params.z.iter() {
-            writer.write_record([z.to_string()]).unwrap();
         }
     }
 
@@ -369,7 +336,7 @@ fn run_hexbin_sampler(
         // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
         // println!("Empty cells: {}", empty_cell_count);
 
-        dbg!(&proposal_stats);
+        // dbg!(&proposal_stats);
         proposal_stats.reset();
 
         // if i % 100 == 0 {
