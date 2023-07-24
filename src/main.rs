@@ -5,7 +5,7 @@ use clap::Parser;
 mod sampler;
 
 use itertools::Itertools;
-use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
+use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker, perimeter_bound};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::CubeBinSampler;
 use rayon::current_num_threads;
@@ -58,6 +58,9 @@ struct Args{
 
     #[arg(long, default_value="cells.geojson.gz")]
     output_cells: Option<String>,
+
+    #[arg(long, default_value="cell_metadata.csv.gz")]
+    output_cell_metadata: Option<String>,
 
     #[arg(long, default_value=None)]
     output_cell_cubes: Option<String>,
@@ -156,8 +159,12 @@ fn main() {
         α_σ_area: 0.1,
         β_σ_area: 0.1,
 
-        μ_μ_comp: 2.0,
-        σ_μ_comp: 1.0_f32,
+        // μ_μ_comp: 2.0,
+        // σ_μ_comp: 0.5_f32,
+
+        μ_μ_comp: 0.5_f32,
+        σ_μ_comp: 0.5_f32,
+
         α_σ_comp: 0.1,
         β_σ_comp: 0.1,
 
@@ -165,6 +172,9 @@ fn main() {
         β_θ: 1.0,
         e_r: 1.0,
         f_r: 1.0,
+
+        perimeter_eta: 5.3,
+        perimeter_limit: 2.5,
     };
 
     let mut params = ModelParams::new(
@@ -189,6 +199,7 @@ fn main() {
     //     ];
 
     let initial_avgbinpop = 16.0_f32;
+    // let initial_avgbinpop = 4.0_f32;
     let sampler_schedule = [
         200, // 16
         200, // 2
@@ -237,9 +248,9 @@ fn main() {
                 args.local_steps_per_iter,
                 None);
         }
+        sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
     }
 
-    sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
     run_hexbin_sampler(
         &mut prog,
         sampler.get_mut(),
@@ -274,7 +285,35 @@ fn main() {
         }
     }
 
-    // TODO: Make a proper optional cell metadata csv with area/volume along with 
+    if let Some(output_cell_metadata) = args.output_cell_metadata {
+        let file = File::create(output_cell_metadata).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(["cell", "cluster", "volume", "area", "population"]).unwrap();
+        for cell in 0..ncells {
+            let cluster = params.z[cell];
+            let volume = params.cell_areas[cell];
+            let area = params.cell_surface_areas[cell];
+            let population = params.cell_population[cell];
+            // let allowed_area = priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, population as f32);
+            // let compactness = params.cell_compactness[cell];
+            writer.write_record([
+                cell.to_string(),
+                cluster.to_string(),
+                volume.to_string(),
+                area.to_string(),
+                population.to_string(),
+                // allowed_area.to_string(),
+                // compactness.to_string()
+                ]
+            ).unwrap();
+        }
+    }
+
+    // TODO: Make a proper optional cell metadata csv with area/volume along with
     {
         let file = File::create("z.csv.gz").unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
@@ -347,7 +386,7 @@ fn run_hexbin_sampler(
         // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
         // println!("Empty cells: {}", empty_cell_count);
 
-        // dbg!(&proposal_stats);
+        dbg!(&proposal_stats);
         proposal_stats.reset();
 
         // if i % 100 == 0 {

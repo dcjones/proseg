@@ -27,10 +27,21 @@ use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
 use std::collections::HashMap;
+use std::f32;
 use thread_local::ThreadLocal;
 use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
 // use std::time::Instant;
+
+
+// TODO: This isn't quite right either. We need to scale population by 1/num_z_bins.
+// We are treating the stacks as parital counts.
+// pub fn circle_perimeter_neighbors(eta: f32, volume: f32) -> f32 {
+//     return eta * (2.0 * volume) / (f32::consts::PI * volume).sqrt();
+// }
+pub fn perimeter_bound(eta: f32, limit: f32, population: f32) -> f32 {
+    return limit * eta * (2.0 * population) / (f32::consts::PI * population).sqrt();
+}
 
 
 // Compute chunk and quadrant for a single a single (x,y) point.
@@ -72,6 +83,10 @@ pub struct ModelPriors {
     // gamma rate prior
     pub e_r: f32,
     pub f_r: f32,
+
+    // scaling factor for circle perimeters
+    pub perimeter_eta: f32,
+    pub perimeter_limit: f32,
 }
 
 
@@ -83,13 +98,13 @@ pub struct ModelParams {
     pub cell_population: Vec<usize>,
 
     // per-cell areas
-    cell_areas: Array1<f32>,
+    pub cell_areas: Array1<f32>,
 
     // per-cell surface areas
-    cell_surface_areas: Array1<f32>,
+    pub cell_surface_areas: Array1<f32>,
 
     // per-cell compactness, computed when sampling
-    cell_compactness: Array1<f32>,
+    pub cell_compactness: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_area: f32,
@@ -269,7 +284,7 @@ impl ModelParams {
             .count();
     }
 
-    fn ncells(&self) -> usize {
+    pub fn ncells(&self) -> usize {
         return self.cell_population.len();
     }
 
@@ -518,7 +533,7 @@ pub trait Proposal {
     // Iterator over number of transcripts in the proposal of each gene
     fn gene_count<'b, 'c>(&'b self) -> &'c[u32] where 'b: 'c;
 
-    fn evaluate(&mut self, params: &ModelParams) {
+    fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
         if self.ignored() {
             self.reject();
             return;
@@ -546,12 +561,24 @@ pub trait Proposal {
             let prev_surface_area = params.cell_surface_areas[old_cell as usize];
             let new_surface_area = prev_surface_area + surface_area_diff;
 
-            let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
-            let new_compactness = new_surface_area.powf(1.5) / new_area;
+            // dbg!(new_surface_area, priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, new_area));
+
+            // let pop = params.cell_population[old_cell as usize];
+            // if new_surface_area > priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, new_area) {
+            //     self.reject();
+            //     return;
+            // }
+
+            // let prev_compactness = prev_surface_area / prev_area;
+            // let new_compactness = new_surface_area / new_area;
+            // let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
+            // let new_compactness = new_surface_area.powf(1.5) / new_area;
+            // let prev_compactness = prev_surface_area.powf(2.0) / prev_area;
+            // let new_compactness = new_surface_area.powf(2.0) / new_area;
             // let prev_compactness = (prev_surface_area / 4.0).powi(2) / prev_area;
             // let new_compactness = (new_surface_area / 4.0).powi(2) / new_area;
-            // let prev_compactness = prev_surface_area;
-            // let new_compactness = new_surface_area;
+            let prev_compactness = prev_surface_area;
+            let new_compactness = new_surface_area;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(old_cell as usize))
@@ -572,14 +599,14 @@ pub trait Proposal {
                 params.σ_area[z as usize],
                 new_area);
 
-            δ -= lognormal_logpdf(
-                params.μ_comp[z as usize],
-                params.σ_comp[z as usize],
-                prev_compactness);
-            δ += lognormal_logpdf(
-                params.μ_comp[z as usize],
-                params.σ_comp[z as usize],
-                new_compactness);
+            // δ -= lognormal_logpdf(
+            //     params.μ_comp[z as usize],
+            //     params.σ_comp[z as usize],
+            //     prev_compactness);
+            // δ += lognormal_logpdf(
+            //     params.μ_comp[z as usize],
+            //     params.σ_comp[z as usize],
+            //     new_compactness);
 
             // dbg!(
             //     params.μ_comp[z as usize],
@@ -606,12 +633,24 @@ pub trait Proposal {
             let prev_surface_area = params.cell_surface_areas[new_cell as usize];
             let new_surface_area = prev_surface_area + surface_area_diff;
 
-            let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
-            let new_compactness = new_surface_area.powf(1.5) / new_area;
+            // dbg!(new_surface_area, priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, new_area));
+
+            // let pop = params.cell_population[new_cell as usize];
+            // if new_surface_area > priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, new_area) {
+            //     self.reject();
+            //     return;
+            // }
+
+            // let prev_compactness = prev_surface_area / prev_area;
+            // let new_compactness = new_surface_area / new_area;
+            // let prev_compactness = prev_surface_area.powf(1.5) / prev_area;
+            // let new_compactness = new_surface_area.powf(1.5) / new_area;
+            // let prev_compactness = prev_surface_area.powf(2.0) / prev_area;
+            // let new_compactness = new_surface_area.powf(2.0) / new_area;
             // let prev_compactness = (prev_surface_area / 4.0).powi(2) / prev_area;
             // let new_compactness = (new_surface_area / 4.0).powi(2) / new_area;
-            // let prev_compactness = prev_surface_area;
-            // let new_compactness = new_surface_area;
+            let prev_compactness = prev_surface_area;
+            let new_compactness = new_surface_area;
 
             // normalization term difference
             δ += Zip::from(params.λ.column(new_cell as usize))
@@ -632,14 +671,14 @@ pub trait Proposal {
                 params.σ_area[z as usize],
                 new_area);
 
-            δ -= lognormal_logpdf(
-                params.μ_comp[z as usize],
-                params.σ_comp[z as usize],
-                prev_compactness);
-            δ += lognormal_logpdf(
-                params.μ_comp[z as usize],
-                params.σ_comp[z as usize],
-                new_compactness);
+            // δ -= lognormal_logpdf(
+            //     params.μ_comp[z as usize],
+            //     params.σ_comp[z as usize],
+            //     prev_compactness);
+            // δ += lognormal_logpdf(
+            //     params.μ_comp[z as usize],
+            //     params.σ_comp[z as usize],
+            //     new_compactness);
         }
 
         let mut rng = thread_rng();
@@ -657,7 +696,7 @@ pub trait Proposal {
 pub trait Sampler<P> where P: Proposal + Send {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
 
-    fn repopulate_proposals(&mut self, params: &ModelParams);
+    fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams);
     fn proposals<'a, 'b>(&'a self) -> &'b [P] where 'a: 'b;
     fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [P] where 'a: 'b;
 
@@ -675,10 +714,10 @@ pub trait Sampler<P> where P: Proposal + Send {
         if uncertainty.is_some() {
             params.t += 1;
         }
-        self.repopulate_proposals(params);
+        self.repopulate_proposals(priors, params);
         self.proposals_mut()
             .par_iter_mut()
-            .for_each(|p| p.evaluate(params));
+            .for_each(|p| p.evaluate(priors, params));
         self.apply_accepted_proposals(stats, transcripts, priors, params, uncertainty);
     }
 
@@ -716,7 +755,7 @@ pub trait Sampler<P> where P: Proposal + Send {
 
                 let mut cell_surface_area = params.cell_surface_areas[old_cell as usize];
                 cell_surface_area += proposal.old_cell_surface_area_delta();
-                cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+                // cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
                 params.cell_surface_areas[old_cell as usize] = cell_surface_area;
 
                 for &i in proposal.transcripts() {
@@ -735,7 +774,7 @@ pub trait Sampler<P> where P: Proposal + Send {
 
                 let mut cell_surface_area = params.cell_surface_areas[new_cell as usize];
                 cell_surface_area += proposal.new_cell_surface_area_delta();
-                cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+                // cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
                 params.cell_surface_areas[new_cell as usize] = cell_surface_area;
 
                 for &i in proposal.transcripts() {
@@ -777,7 +816,7 @@ pub trait Sampler<P> where P: Proposal + Send {
         let ncomponents = params.ncomponents();
 
         self.sample_area_params(priors, params);
-        self.sample_compactness_params(priors, params);
+        // self.sample_compactness_params(priors, params);
 
         // dbg!(params.cell_areas.slice(s![0..10]));
         // dbg!(params.cell_surface_areas.slice(s![0..10]));
@@ -974,8 +1013,8 @@ pub trait Sampler<P> where P: Proposal + Send {
                 *zp *= lognormal_logpdf(
                     μ_area, σ_area, *cell_area).exp() as f64;
 
-                *zp *= lognormal_logpdf(
-                    μ_comp, σ_comp, *cell_compactness).exp() as f64;
+                // *zp *= lognormal_logpdf(
+                //     μ_comp, σ_comp, *cell_compactness).exp() as f64;
             }
 
             // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
@@ -1102,9 +1141,11 @@ pub trait Sampler<P> where P: Proposal + Send {
             .and(&params.cell_areas)
             .and(&params.cell_surface_areas)
             .for_each(|c, &a, &sa| {
-                *c = sa.powf(1.5) / a;
+                // *c = sa / a;
+                // *c = sa.powf(1.5) / a;
+                // *c = sa.powf(2.0) / a;
                 // *c = (sa / 4.0).powi(2) / a;
-                // *c = sa;
+                *c = sa;
             });
 
         // compute sample means

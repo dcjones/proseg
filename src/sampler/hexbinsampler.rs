@@ -1,7 +1,7 @@
 
 
 use super::transcripts::{Transcript, coordinate_span, BACKGROUND_CELL, CellIndex};
-use super::{Sampler, ModelPriors, ModelParams, Proposal, chunkquad};
+use super::{Sampler, ModelPriors, ModelParams, Proposal, chunkquad, perimeter_bound};
 use super::sampleset::SampleSet;
 use super::connectivity::ConnectivityChecker;
 
@@ -16,8 +16,8 @@ use std::fs::File;
 use std::io::Write;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use ndarray::{Array1, s};
-
+use std::f32;
+use ndarray::{Array1, Array2, s};
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -247,10 +247,14 @@ impl CubeCellMap {
 
 // Initial binning of the transcripts
 fn bin_transcripts(transcripts: &Vec<Transcript>, avgpop: f32) -> (CubeLayout, Vec<CubeBin>) {
-    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
+    let (xmin, xmax, ymin, ymax, mut zmin, mut zmax) = coordinate_span(&transcripts);
     let xy_area = (xmax - xmin) * (ymax - ymin);
 
+    let eps = (zmax - zmin) * 1e-6;
+    zmin -= eps;
+    zmax += eps;
     let height = zmax - zmin;
+
     let density = transcripts.len() as f32 / xy_area;
     let target_area = avgpop / density;
     let cube_size = target_area.sqrt();
@@ -288,6 +292,12 @@ pub struct CubeBinSampler {
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
     cubecells: CubeCellMap,
 
+    // need to track the per z-layer cell population and perimeter in order
+    // to implement perimeter constraints.
+    nlayers: usize,
+    cell_population: Array2<f32>,
+    cell_perimeter: Array2<f32>,
+
     proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
 
@@ -324,8 +334,7 @@ impl CubeBinSampler {
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cube_height = layout.cube_size.2;
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
-
-        let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
+        let side_surface_area = 1.0_f32;
         let top_surface_area = layout.cube_size.0.powi(2);
 
         dbg!(side_surface_area, top_surface_area);
@@ -380,6 +389,9 @@ impl CubeBinSampler {
         }
         params.recompute_counts(transcripts);
 
+        let nlayers = 1;
+        let cell_population = Array2::from_elem((nlayers, params.ncells()), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((nlayers, params.ncells()), 0.0_f32);
 
         let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -397,6 +409,9 @@ impl CubeBinSampler {
             cubebins,
             cubeindex,
             cubecells,
+            nlayers,
+            cell_population,
+            cell_perimeter,
             proposals,
             connectivity_checker,
             zmin,
@@ -408,6 +423,7 @@ impl CubeBinSampler {
             quad: 0,
         };
 
+        sampler.recompute_cell_population();
         sampler.recompute_cell_areas(priors, params);
         sampler.recompute_cell_surface_areas(priors, params);
         sampler.populate_mismatches();
@@ -423,7 +439,7 @@ impl CubeBinSampler {
         let cubevolume = self.cubevolume / 8.0;
         let layout = self.chunkquad.layout.double_resolution();
 
-        let side_surface_area = layout.cube_size.0 * layout.cube_size.2;
+        let side_surface_area = self.side_surface_area / 2.0;
         let top_surface_area = layout.cube_size.0.powi(2);
         let cube_height = layout.cube_size.2;
 
@@ -490,6 +506,10 @@ impl CubeBinSampler {
             }
         }
 
+        let nlayers = 2*self.nlayers;
+        let cell_population = Array2::from_elem((nlayers, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((nlayers, self.cell_perimeter.shape()[1]), 0.0_f32);
+
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
                 layout,
@@ -503,6 +523,9 @@ impl CubeBinSampler {
             cubebins,
             cubeindex,
             cubecells,
+            nlayers,
+            cell_population,
+            cell_perimeter,
             proposals,
             connectivity_checker,
             cube_height,
@@ -515,21 +538,52 @@ impl CubeBinSampler {
         };
 
         sampler.populate_mismatches();
+        sampler.recompute_cell_population();
+        sampler.recompute_cell_perimeter();
 
         return sampler;
     }
 
-    fn recompute_cell_areas(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn recompute_cell_areas(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // recompute cell areas as the sum of rect areas
         params.cell_areas.fill(0.0_f32);
         for cubebin in &self.cubebins {
             let cell = self.cubecells.get(cubebin.cube);
-            if cell != BACKGROUND_CELL {
-                params.cell_areas[cell as usize] += self.cubevolume;
+            if cell == BACKGROUND_CELL {
+                continue;
             }
+            params.cell_areas[cell as usize] += self.cubevolume;
         }
         for cell_area in params.cell_areas.iter_mut() {
             *cell_area = cell_area.max(priors.min_cell_area);
+        }
+    }
+
+    fn recompute_cell_population(&mut self) {
+        self.cell_population.fill(0.0_f32);
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+            self.cell_population[[cubebin.cube.k as usize, cell as usize]] += 1.0_f32;
+        }
+    }
+
+    fn recompute_cell_perimeter(&mut self) {
+        self.cell_perimeter.fill(0.0_f32);
+        for cubebin in &self.cubebins {
+            let cell = self.cubecells.get(cubebin.cube);
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in cubebin.cube.radius2_xy_neighborhood() {
+                let neighbor_cell = self.cubecells.get(neighbor);
+                if neighbor_cell != cell {
+                    self.cell_perimeter[[cubebin.cube.k as usize, cell as usize]] += 1.0_f32;
+                }
+            }
         }
     }
 
@@ -542,16 +596,19 @@ impl CubeBinSampler {
             }
 
             for neighbor in cubebin.cube.radius2_xy_neighborhood() {
+            // for neighbor in cubebin.cube.von_neumann_xy_neighborhood() {
                 let neighbor_cell = self.cubecells.get(neighbor);
                 if neighbor_cell != cell {
-                    params.cell_surface_areas[cell as usize] += self.cube_height;
+                    // params.cell_surface_areas[cell as usize] += self.cube_height;
+                    // params.cell_surface_areas[cell as usize] += self.side_surface_area;
+                    params.cell_surface_areas[cell as usize] += self.cubevolume;
                 }
             }
         }
 
-        for cell_surface_area in params.cell_surface_areas.iter_mut() {
-            *cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
-        }
+        // for cell_surface_area in params.cell_surface_areas.iter_mut() {
+        //     *cell_surface_area = cell_surface_area.max(priors.min_cell_surface_area);
+        // }
     }
 
     fn populate_mismatches(&mut self) {
@@ -561,12 +618,10 @@ impl CubeBinSampler {
             let (chunk, quad) = self.chunkquad.get(cubebin.cube);
 
             for neighbor in cubebin.cube.von_neumann_neighborhood() {
-                // // don't consider neighbors that are out of bounds on the z-axis
-                // // otherwise there are too many oppourtunities to poke holes in cells
-                // let (_, _, z0, _, _, z1) = self.chunkquad.layout.cube_to_world_coords(neighbor);
-                // if z1 < self.zmin || z0 > self.zmax {
-                //     continue;
-                // }
+                // don't consider neighbors that are out of bounds on the z-axis
+                if neighbor.k < 0 || neighbor.k >= self.nlayers as i32 {
+                    continue;
+                }
 
                 let neighbor_cell = self.cubecells.get(neighbor);
                 if cell != neighbor_cell {
@@ -617,7 +672,7 @@ impl CubeBinSampler {
 
 
 impl Sampler<CubeBinProposal> for CubeBinSampler {
-    fn repopulate_proposals(&mut self, params: &ModelParams) {
+    fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams) {
         const UNASSIGNED_PROPOSAL_PROB: f64 = 0.05;
 
         self.proposals
@@ -679,8 +734,19 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .get_or(|| RefCell::new(ConnectivityChecker::new()))
                     .borrow_mut();
 
-                // // TODO: This really doesn't seem to work as intended. We end up
-                // // with more disconnected components than without it.
+
+                // TODO:
+                //  - Should we allow art_to
+                //  - Does it matter if either cell in BACKGROUND?
+                //
+                // The reason we might restrict this for BACKGROUND_CELL is that
+                // we otherwise end up with unclosable bubbles within the cell.
+                // I don't think this is all that consquential in most cases,
+                // but still isn't ideal.
+                //
+                // We could allow bubble popping if we introduce a spotaneous
+                // bubble nucleation move.
+
                 let art_from = connectivity_checker.cube_isarticulation(
                     *i,
                     |cube| self.cubecells.get(cube),
@@ -691,7 +757,9 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     |cube| self.cubecells.get(cube),
                     cell_to);
 
-                if art_from || art_to {
+                // if art_from || art_to {
+                // if art_from && !from_unassigned {
+                if (art_from && !from_unassigned) || (art_to && !to_unassigned) {
                     proposal.ignore = true;
                     return;
                 }
@@ -755,27 +823,43 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 proposal.old_cell_surface_area_delta = 0.0;
                 proposal.new_cell_surface_area_delta = 0.0;
 
+                proposal.old_cell_perimeter_delta = 0.0;
+                proposal.new_cell_perimeter_delta = 0.0;
+
                 for neighbor in i.radius2_xy_neighborhood() {
+                // for neighbor in i.von_neumann_xy_neighborhood() {
                     let neighbor_cell = self.cubecells.get(neighbor);
 
                     // cube i's new mismatches
                     if neighbor_cell != cell_to {
-                        proposal.new_cell_surface_area_delta += self.cube_height;
+                        // proposal.new_cell_surface_area_delta += self.cube_height;
+                        // proposal.new_cell_surface_area_delta += self.side_surface_area;
+                        proposal.new_cell_surface_area_delta += self.cubevolume;
+                        proposal.new_cell_perimeter_delta += 1.0;
                     }
 
                     // neighbors for whom i is no longer a mismatch
                     if neighbor_cell == cell_to {
-                        proposal.new_cell_surface_area_delta -= self.cube_height;
+                        // proposal.new_cell_surface_area_delta -= self.cube_height;
+                        // proposal.new_cell_surface_area_delta -= self.side_surface_area;
+                        proposal.new_cell_surface_area_delta -= self.cubevolume;
+                        proposal.new_cell_perimeter_delta -= 1.0;
                     }
 
                     // neighbors for whom i is now a mismatch
                     if neighbor_cell == cell_from {
-                        proposal.old_cell_surface_area_delta += self.cube_height;
+                        // proposal.old_cell_surface_area_delta += self.cube_height;
+                        // proposal.old_cell_surface_area_delta += self.side_surface_area;
+                        proposal.old_cell_surface_area_delta += self.cubevolume;
+                        proposal.old_cell_perimeter_delta += 1.0;
                     }
 
                     // neighbors of i that were previously counted as a mismatch
                     if neighbor_cell != cell_from {
-                        proposal.old_cell_surface_area_delta -= self.cube_height;
+                        // proposal.old_cell_surface_area_delta -= self.cube_height;
+                        // proposal.old_cell_surface_area_delta -= self.side_surface_area;
+                        proposal.old_cell_surface_area_delta -= self.cubevolume;
+                        proposal.old_cell_perimeter_delta -= 1.0;
                     }
                 }
 
@@ -825,6 +909,33 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 //     }
                 // }
 
+
+                // reject in advance if the perimeter for this layer surpases
+                // the limit.
+                if cell_from != BACKGROUND_CELL && proposal.old_cell_surface_area_delta > 0.0 {
+                    let old_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_from as usize]] + proposal.old_cell_perimeter_delta;
+                    let bound = perimeter_bound(
+                        priors.perimeter_eta,
+                        priors.perimeter_limit,
+                        self.cell_population[[i.k as usize, cell_from as usize]] - 1.0);
+                    if old_cell_perimeter > bound {
+                        proposal.ignore = true;
+                    }
+                }
+
+                if cell_to != BACKGROUND_CELL && proposal.new_cell_perimeter_delta > 0.0 {
+                    let new_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_to as usize]] + proposal.new_cell_perimeter_delta;
+                    let pop = self.cell_population[[i.k as usize, cell_to as usize]] + 1.0;
+                    let bound = perimeter_bound(
+                        priors.perimeter_eta,
+                        priors.perimeter_limit,
+                        pop);
+                    // dbg!(new_cell_perimeter, pop, bound);
+                    if new_cell_perimeter > bound {
+                        proposal.ignore = true;
+                    }
+                }
+
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
                     for &t in transcripts.iter() {
@@ -848,6 +959,17 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     fn update_sampler_state(&mut self, _: &ModelParams) {
         for proposal in self.proposals.iter().filter(|p| !p.ignore && p.accept) {
             self.cubecells.set(proposal.cube, proposal.new_cell);
+
+            // update cell population and perimeter
+            if proposal.old_cell != BACKGROUND_CELL {
+                self.cell_population[[proposal.cube.k as usize, proposal.old_cell as usize]] -= 1.0_f32;
+                self.cell_perimeter[[proposal.cube.k as usize, proposal.old_cell as usize]] += proposal.old_cell_perimeter_delta;
+            }
+
+            if proposal.new_cell != BACKGROUND_CELL {
+                self.cell_population[[proposal.cube.k as usize, proposal.new_cell as usize]] += 1.0_f32;
+                self.cell_perimeter[[proposal.cube.k as usize, proposal.new_cell as usize]] += proposal.new_cell_perimeter_delta;
+            }
         }
 
         self.proposals.par_iter()
@@ -855,8 +977,13 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
             .for_each(|proposal| {
                 let (chunk, quad) = self.chunkquad.get(proposal.cube);
 
+
                 // update mismatch edges
                 for neighbor in proposal.cube.von_neumann_neighborhood() {
+                    if neighbor.k < 0 || neighbor.k >= self.nlayers as i32 {
+                        continue;
+                    }
+
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
                     let neighbor_cell = self.cubecells.get(neighbor);
                     if proposal.new_cell == neighbor_cell {
@@ -906,6 +1033,9 @@ pub struct CubeBinProposal {
 
     old_cell_surface_area_delta: f32,
     new_cell_surface_area_delta: f32,
+
+    old_cell_perimeter_delta: f32,
+    new_cell_perimeter_delta: f32,
 }
 
 impl CubeBinProposal {
@@ -923,6 +1053,8 @@ impl CubeBinProposal {
             new_cell_area_delta: 0.0,
             old_cell_surface_area_delta: 0.0,
             new_cell_surface_area_delta: 0.0,
+            old_cell_perimeter_delta: 0.0,
+            new_cell_perimeter_delta: 0.0,
         };
     }
 }
