@@ -5,7 +5,7 @@ use clap::Parser;
 mod sampler;
 
 use itertools::Itertools;
-use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker, perimeter_bound};
+use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
 use sampler::transcripts::{read_transcripts_csv, neighborhood_graph, coordinate_span, Transcript};
 use sampler::hexbinsampler::CubeBinSampler;
 use rayon::current_num_threads;
@@ -148,25 +148,14 @@ fn main() {
     // can't just divide area by number of cells, because a large portion may have to cells.
 
     let min_cell_area = avg_edge_length;
-    let min_cell_surface_area = 10.0_f32 * min_cell_area;
 
     let priors = ModelPriors {
         min_cell_area,
-        min_cell_surface_area,
 
         μ_μ_area: (avg_edge_length * avg_edge_length * (ntranscripts as f32) / (ncells as f32)).ln(),
         σ_μ_area: 3.0_f32,
         α_σ_area: 0.1,
         β_σ_area: 0.1,
-
-        // μ_μ_comp: 2.0,
-        // σ_μ_comp: 0.5_f32,
-
-        μ_μ_comp: 0.5_f32,
-        σ_μ_comp: 0.5_f32,
-
-        α_σ_comp: 0.1,
-        β_σ_comp: 0.1,
 
         α_θ: 1.0,
         β_θ: 1.0,
@@ -292,22 +281,16 @@ fn main() {
             .has_headers(false)
             .from_writer(encoder);
 
-        writer.write_record(["cell", "cluster", "volume", "area", "population"]).unwrap();
+        writer.write_record(["cell", "cluster", "volume", "population"]).unwrap();
         for cell in 0..ncells {
             let cluster = params.z[cell];
             let volume = params.cell_areas[cell];
-            let area = params.cell_surface_areas[cell];
             let population = params.cell_population[cell];
-            // let allowed_area = priors.perimeter_limit * circle_perimeter_neighbors(priors.perimeter_eta, population as f32);
-            // let compactness = params.cell_compactness[cell];
             writer.write_record([
                 cell.to_string(),
                 cluster.to_string(),
                 volume.to_string(),
-                area.to_string(),
                 population.to_string(),
-                // allowed_area.to_string(),
-                // compactness.to_string()
                 ]
             ).unwrap();
         }
@@ -365,7 +348,7 @@ fn run_hexbin_sampler(
     sampler.sample_global_params(priors, params);
     let mut proposal_stats = ProposalStats::new();
 
-    for i in 0..niter {
+    for _ in 0..niter {
         for _ in 0..local_steps_per_iter {
             sampler.sample_cell_regions(priors, params, &mut proposal_stats, transcripts, &mut uncertainty);
         }

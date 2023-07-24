@@ -15,14 +15,6 @@ pub fn lfact(k: u32) -> f32 {
 
 const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
 
-pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
-    return
-        - LN_SQRT_TWO_PI
-        - σ.ln()
-        - ((x - μ) / σ).powi(2) / 2.0;
-}
-
-
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
     return
