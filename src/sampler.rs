@@ -31,7 +31,7 @@ use std::f32;
 use thread_local::ThreadLocal;
 use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
-// use std::time::Instant;
+use std::time::Instant;
 
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
@@ -82,11 +82,16 @@ pub struct ModelPriors {
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
     pub perimeter_bound: f32,
+
+    pub nuclear_reassignment_log_prob: f32,
+    pub nuclear_reassignment_1mlog_prob: f32,
 }
 
 
 // Model global parameters.
 pub struct ModelParams {
+    init_nuclear_cell_assignment: Vec<CellIndex>,
+
     pub cell_assignments: Vec<CellIndex>,
     pub cell_assignment_time: Vec<u32>,
 
@@ -198,6 +203,7 @@ impl ModelParams {
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
 
         return ModelParams {
+            init_nuclear_cell_assignment: init_cell_assignments.clone(),
             cell_assignments: init_cell_assignments.clone(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
@@ -258,10 +264,7 @@ impl ModelParams {
         return self.total_gene_counts.len();
     }
 
-    pub fn log_likelihood(&self) -> f32 {
-        // TODO:
-        //   - area terms
-
+    pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
         let mut ll = Zip::from(self.λ.columns())
             .and(&self.cell_volume)
             .and(self.counts.columns())
@@ -273,6 +276,27 @@ impl ModelParams {
                         accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_volume
                     })
             });
+
+        // nuclear reassignment terms
+        ll += Zip::from(&self.cell_assignments)
+            .and(&self.init_nuclear_cell_assignment)
+            .fold(0_f32, |accum, &cell, &nuc_cell| {
+                if nuc_cell != BACKGROUND_CELL {
+                    if cell == nuc_cell {
+                        accum + priors.nuclear_reassignment_1mlog_prob
+                    } else {
+                        accum + priors.nuclear_reassignment_log_prob
+                    }
+                } else {
+                    accum
+                }
+            });
+
+        // cell volume terms
+        ll += Zip::from(&self.cell_volume)
+            .and(&self.z)
+            .fold(0_f32, |accum, &v, &z|
+                accum + lognormal_logpdf(self.μ_volume[z as usize], self.σ_volume[z as usize], v));
 
         // background terms
         ll += Zip::from(&self.total_gene_counts)
@@ -485,7 +509,7 @@ pub trait Proposal {
     // Iterator over number of transcripts in the proposal of each gene
     fn gene_count<'b, 'c>(&'b self) -> &'c[u32] where 'b: 'c;
 
-    fn evaluate(&mut self, _priors: &ModelPriors, params: &ModelParams) {
+    fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
         if self.ignored() {
             self.reject();
             return;
@@ -498,6 +522,24 @@ pub trait Proposal {
 
         // Log Metropolis-Hastings acceptance ratio
         let mut δ = 0.0;
+
+        // Tally penalties from mis-assigning nuclear transcripts
+        for &t in self.transcripts() {
+            let cell = params.init_nuclear_cell_assignment[t];
+            if cell != BACKGROUND_CELL {
+                if cell == old_cell {
+                    δ -= priors.nuclear_reassignment_1mlog_prob;
+                } else {
+                    δ -= priors.nuclear_reassignment_log_prob;
+                }
+
+                if cell == new_cell {
+                    δ += priors.nuclear_reassignment_1mlog_prob;
+                } else {
+                    δ += priors.nuclear_reassignment_log_prob;
+                }
+            }
+        }
 
         if from_background {
             for (i, &count) in self.gene_count().iter().enumerate() {
@@ -678,15 +720,89 @@ pub trait Sampler<P> where P: Proposal + Send {
 
     }
 
-
     fn sample_global_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut rng = thread_rng();
-        let ncomponents = params.ncomponents();
 
         self.sample_volume_params(priors, params);
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
+        self.sample_background_counts(priors, params);
+        // println!("  Sample background counts: {:?}", t0.elapsed());
+
+        // let t0 = Instant::now();
+        self.sample_component_nb_params(priors, params);
+        // println!("  Sample nb params: {:?}", t0.elapsed());
+
+        // Sample λ
+        // let t0 = Instant::now();
+        self.sample_rates(priors, params);
+        // println!("  Sample λ: {:?}", t0.elapsed());
+
+        // TODO:
+        // This is the most expensive part. We could sample this less frequently,
+        // but we should try to optimize as much as possible.
+        // Ideas:
+        //   - Main bottlneck is computing log(p) and log(1-p). I don't see
+        //     anything obvious to do about that.
+
+        // Sample z
+        // let t0 = Instant::now();
+        self.sample_component_assignments(priors, params);
+        // println!("  Sample z: {:?}", t0.elapsed());
+
+        // sample π
+        let mut α = vec![1_f32; params.ncomponents()];
+        for z_i in params.z.iter() {
+            α[*z_i as usize] += 1.0;
+        }
+
+        params.π.clear();
+        params.π.extend(
+            Dirichlet::new(&α)
+                .unwrap()
+                .sample(&mut rng)
+                .iter()
+                .map(|x| *x as f32),
+        );
+
+        // Sample background rates
+        // if let Some(background_proportion) = background_proportion {
+        //     Zip::from(&mut params.λ_bg)
+        //         .and(&params.total_gene_counts)
+        //         .for_each(|λ, c| {
+        //             *λ = background_proportion * (*c as f32) / params.full_area;
+        //         });
+        // } else {
+            Zip::from(&mut params.λ_bg)
+                .and(&params.background_counts)
+                .for_each(|λ, c| {
+                    *λ = (*c as f32) / params.full_volume;
+                });
+        // }
+
+        // dbg!(&self.background_counts, &self.params.λ_bg);
+
+        // Comptue γ_bg
+        Zip::from(&mut params.γ_bg)
+            .and(&params.λ_bg)
+            .for_each(|γ, λ| {
+                *γ = λ * params.full_volume;
+            });
+
+        // Compute γ_fg
+        Zip::from(&mut params.γ_fg)
+            .and(params.λ.rows())
+            .par_for_each(|γ, λs| {
+                *γ = 0.0;
+                for (λ, cell_volume) in izip!(λs, &params.cell_volume) {
+                    *γ += *λ * *cell_volume;
+                }
+            });
+
+    }
+
+    fn sample_background_counts(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         params.background_counts.assign(&params.total_gene_counts);
         Zip::from(params.counts.rows())
             .and(params.foreground_counts.columns_mut())
@@ -707,8 +823,9 @@ pub trait Sampler<P> where P: Proposal + Send {
                     *bc -= *fc;
                 }
             });
-        // println!("  Sample background counts: {:?}", t0.elapsed());
+    }
 
+    fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // total component area
         // let mut component_cell_area = vec![0_f32; params.ncomponents()];
         params.component_volume.fill(0.0);
@@ -795,9 +912,10 @@ pub trait Sampler<P> where P: Proposal + Send {
                 *r = r.min(100.0).max(1e-4);
             });
         // println!("  Sample r: {:?}", t0.elapsed());
+    }
 
-        // Sample λ
-        // let t0 = Instant::now();
+
+    fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         Zip::from(params.λ.rows_mut())
             .and(params.foreground_counts.columns())
             .and(params.θ.columns())
@@ -829,18 +947,11 @@ pub trait Sampler<P> where P: Proposal + Send {
                     // dbg!(*λ, *r, θ, *c, cell_area, *c as f32 / cell_area);
                 }
             });
-        // println!("  Sample λ: {:?}", t0.elapsed());
+    }
 
+    fn sample_component_assignments(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
+        let ncomponents = params.ncomponents();
 
-        // TODO:
-        // This is the most expensive part. We could sample this less frequently,
-        // but we should try to optimize as much as possible.
-        // Ideas:
-        //   - Main bottlneck is computing log(p) and log(1-p).
-
-
-        // Sample z
-        // let t0 = Instant::now();
         Zip::from(
             params.foreground_counts
                 .rows(),
@@ -896,57 +1007,6 @@ pub trait Sampler<P> where P: Proposal + Send {
             let u = rng.gen::<f64>();
             *z_i = z_probs.partition_point(|x| *x < u) as u32;
         });
-        // println!("  Sample z: {:?}", t0.elapsed());
-
-        // sample π
-        let mut α = vec![1_f32; params.ncomponents()];
-        for z_i in params.z.iter() {
-            α[*z_i as usize] += 1.0;
-        }
-
-        params.π.clear();
-        params.π.extend(
-            Dirichlet::new(&α)
-                .unwrap()
-                .sample(&mut rng)
-                .iter()
-                .map(|x| *x as f32),
-        );
-
-        // Sample background rates
-        // if let Some(background_proportion) = background_proportion {
-        //     Zip::from(&mut params.λ_bg)
-        //         .and(&params.total_gene_counts)
-        //         .for_each(|λ, c| {
-        //             *λ = background_proportion * (*c as f32) / params.full_area;
-        //         });
-        // } else {
-            Zip::from(&mut params.λ_bg)
-                .and(&params.background_counts)
-                .for_each(|λ, c| {
-                    *λ = (*c as f32) / params.full_volume;
-                });
-        // }
-
-        // dbg!(&self.background_counts, &self.params.λ_bg);
-
-        // Comptue γ_bg
-        Zip::from(&mut params.γ_bg)
-            .and(&params.λ_bg)
-            .for_each(|γ, λ| {
-                *γ = λ * params.full_volume;
-            });
-
-        // Compute γ_fg
-        Zip::from(&mut params.γ_fg)
-            .and(params.λ.rows())
-            .par_for_each(|γ, λs| {
-                *γ = 0.0;
-                for (λ, cell_volume) in izip!(λs, &params.cell_volume) {
-                    *γ += *λ * *cell_volume;
-                }
-            });
-
     }
 
     fn sample_volume_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {

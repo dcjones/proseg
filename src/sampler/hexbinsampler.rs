@@ -673,19 +673,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .get_or(|| RefCell::new(ConnectivityChecker::new()))
                     .borrow_mut();
 
-
-                // TODO:
-                //  - Should we allow art_to
-                //  - Does it matter if either cell in BACKGROUND?
-                //
-                // The reason we might restrict this for BACKGROUND_CELL is that
-                // we otherwise end up with unclosable bubbles within the cell.
-                // I don't think this is all that consquential in most cases,
-                // but still isn't ideal.
-                //
-                // We could allow bubble popping if we introduce a spotaneous
-                // bubble nucleation move.
-
                 let art_from = connectivity_checker.cube_isarticulation(
                     *i,
                     |cube| self.cubecells.get(cube),
@@ -696,8 +683,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     |cube| self.cubecells.get(cube),
                     cell_to);
 
-                // if art_from || art_to {
-                // if art_from && !from_unassigned {
                 if (art_from && !from_unassigned) || (art_to && !to_unassigned) {
                     proposal.ignore = true;
                     return;
@@ -790,12 +775,14 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 // the limit.
                 if cell_from != BACKGROUND_CELL && proposal.old_cell_perimeter_delta > 0.0 {
                     let old_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_from as usize]] + proposal.old_cell_perimeter_delta;
+                    let pop = self.cell_population[[i.k as usize, cell_from as usize]] - 1.0;
                     let bound = perimeter_bound(
                         priors.perimeter_eta,
                         priors.perimeter_bound,
-                        self.cell_population[[i.k as usize, cell_from as usize]] - 1.0);
+                        pop);
                     if old_cell_perimeter > bound {
                         proposal.ignore = true;
+                        return;
                     }
                 }
 
@@ -806,9 +793,9 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         priors.perimeter_eta,
                         priors.perimeter_bound,
                         pop);
-                    // dbg!(new_cell_perimeter, pop, bound);
                     if new_cell_perimeter > bound {
                         proposal.ignore = true;
+                        return;
                     }
                 }
 

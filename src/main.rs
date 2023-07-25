@@ -17,7 +17,6 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::cell::RefCell;
 
-// use signal_hook::{consts::SIGINT, iterator::Signals};
 // use std::{error::Error, thread, time::Duration};
 
 
@@ -39,16 +38,18 @@ struct Args{
     #[arg(short, long, default_value="z_location")]
     z_column: Option<String>,
 
-    #[arg(short, long, default_value_t=20)]
+    #[arg(short, long, default_value_t=10)]
     ncomponents: usize,
 
     // #[arg(long, default_value_t=100000)]
     // niter: usize,
 
-    #[arg(long, default_value_t=16.0_f32)]
+    #[arg(long, default_value_t=32.0_f32)]
     inital_bin_population: f32,
 
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[200, 200, 200])]
+    // 32, 4, 1
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[100, 200, 400])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0, 500, 500])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -60,7 +61,7 @@ struct Args{
     #[arg(long, default_value_t=0.5_f32)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t=2.5_f32)]
+    #[arg(long, default_value_t=6.0_f32)]
     perimeter_bound: f32,
 
     #[arg(short, long, default_value="counts.csv.gz")]
@@ -150,6 +151,7 @@ fn main() {
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / (ncells as f32);
 
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
+    let nuclear_reassignment_prob = 1e-2_f32;
 
     let priors = ModelPriors {
         min_cell_volume,
@@ -166,6 +168,9 @@ fn main() {
 
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
+
+        nuclear_reassignment_log_prob: nuclear_reassignment_prob.ln(),
+        nuclear_reassignment_1mlog_prob: (1.0 - nuclear_reassignment_prob).ln(),
     };
 
     let mut params = ModelParams::new(
@@ -328,7 +333,7 @@ fn run_hexbin_sampler(
         prog.inc(1);
         prog.set_message(format!(
             "log-likelihood: {ll} | assigned transcripts: {n_assigned} / {n} ({perc_assigned:.2}%)",
-            ll=params.log_likelihood(),
+            ll=params.log_likelihood(priors),
             n_assigned=nassigned,
             n=transcripts.len(),
             perc_assigned=100.0 * (nassigned as f32) / (transcripts.len() as f32)
