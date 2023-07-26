@@ -2,8 +2,7 @@
 use std::collections::{HashMap, HashSet};
 use petgraph::Undirected;
 use petgraph::graph::{Graph, NodeIndex};
-// use hexx::Hex;
-use super::hexbinsampler::Cube;
+use super::cubebinsampler::Cube;
 
 // Using adjacency list representation for the subgraphs because they will typically be
 // very small, so I expect this to be fast and easier to resize/reset without allocating.

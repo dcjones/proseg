@@ -7,7 +7,7 @@ mod sampler;
 use itertools::Itertools;
 use sampler::{Sampler, ModelPriors, ModelParams, ProposalStats, UncertaintyTracker};
 use sampler::transcripts::{read_transcripts_csv, coordinate_span, Transcript};
-use sampler::hexbinsampler::CubeBinSampler;
+use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
 use rayon::current_num_threads;
 use indicatif::{ProgressBar, ProgressStyle};

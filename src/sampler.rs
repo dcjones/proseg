@@ -3,8 +3,7 @@ mod math;
 pub mod hull;
 mod sampleset;
 pub mod transcripts;
-// pub mod transcriptsampler;
-pub mod hexbinsampler;
+pub mod cubebinsampler;
 
 use core::fmt::Debug;
 use math::{
