@@ -19,6 +19,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::f32;
 use ndarray::Array2;
+use arrow;
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -609,12 +610,12 @@ impl CubeBinSampler {
         }
     }
 
-    pub fn write_cell_cubes(&self, filename: &str) {
+    pub fn write_cell_cubes_csv(&self, filename: &str) {
         let file = File::create(filename).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
 
         writeln!(encoder, "x0,y0,z0,x1,y1,z1,cell").unwrap();
-        for (cube, &cell) in self.cubecells.index.iter() {
+        for (cube, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
@@ -629,6 +630,75 @@ impl CubeBinSampler {
                 cell=cell
             ).unwrap();
         }
+    }
+
+    pub fn write_cell_cubes_arrow(&self, filename: &str) {
+
+        let schema = arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("x0", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("y0", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("z0", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("x1", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("y1", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("z1", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("cell", arrow::datatypes::DataType::UInt32, false),
+            ]
+        );
+
+        let file = File::create(filename).unwrap();
+        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+            file, &schema,
+            arrow::ipc::writer::IpcWriteOptions::default().try_with_compression(
+                Some(arrow::ipc::CompressionType::ZSTD)).unwrap(),
+        ).unwrap();
+
+        let mut ncubes = 0;
+        for (_, &cell) in self.cubecells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+            ncubes += 1;
+        }
+
+        let mut x0s = Vec::with_capacity(ncubes);
+        let mut y0s = Vec::with_capacity(ncubes);
+        let mut z0s = Vec::with_capacity(ncubes);
+        let mut x1s = Vec::with_capacity(ncubes);
+        let mut y1s = Vec::with_capacity(ncubes);
+        let mut z1s = Vec::with_capacity(ncubes);
+        let mut cells = Vec::with_capacity(ncubes);
+        for (cube, &cell) in self.cubecells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let (x0, y0, z0, x1, y1, z1) =
+                self.chunkquad.layout.cube_to_world_coords(*cube);
+
+            x0s.push(x0);
+            y0s.push(y0);
+            z0s.push(z0);
+            x1s.push(x1);
+            y1s.push(y1);
+            z1s.push(z1);
+            cells.push(cell);
+        }
+
+        let recbatch = arrow::record_batch::RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(arrow::array::Float32Array::from(x0s)),
+                Arc::new(arrow::array::Float32Array::from(y0s)),
+                Arc::new(arrow::array::Float32Array::from(z0s)),
+                Arc::new(arrow::array::Float32Array::from(x1s)),
+                Arc::new(arrow::array::Float32Array::from(y1s)),
+                Arc::new(arrow::array::Float32Array::from(z1s)),
+                Arc::new(arrow::array::UInt32Array::from(cells)),
+            ]
+        ).unwrap();
+
+        writer.write(&recbatch).unwrap();
+
     }
 
     pub fn check_consistency(&mut self, priors: &ModelPriors, params: &mut ModelParams) {

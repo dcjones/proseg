@@ -31,7 +31,7 @@ use std::f32;
 use thread_local::ThreadLocal;
 use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 
-use std::time::Instant;
+// use std::time::Instant;
 
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the

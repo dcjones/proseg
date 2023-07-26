@@ -16,6 +16,8 @@ use std::fs::File;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::cell::RefCell;
+use std::sync::Arc;
+use arrow;
 
 // use std::{error::Error, thread, time::Duration};
 
@@ -29,10 +31,10 @@ struct Args{
     #[arg(long, default_value="feature_name")]
     transcript_column: String,
 
-    #[arg(long, default_value="x_location")]
+    #[arg(short, long, default_value="x_location")]
     x_column: String,
 
-    #[arg(long, default_value="y_location")]
+    #[arg(short, long, default_value="y_location")]
     y_column: String,
 
     #[arg(short, long, default_value="z_location")]
@@ -44,13 +46,13 @@ struct Args{
     // #[arg(long, default_value_t=100000)]
     // niter: usize,
 
-    #[arg(long, default_value_t=16.0_f32)]
+    #[arg(long, default_value_t=8.0_f32)]
     inital_bin_population: f32,
 
     // 32, 4, 1
     // 16, 2, 0.25
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0, 200, 200, 200])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[200, 200, 200])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[100, 100, 100])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -62,14 +64,17 @@ struct Args{
     #[arg(long, default_value_t=0.5_f32)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t=4.0_f32)]
+    #[arg(long, default_value_t=6.0_f32)]
     perimeter_bound: f32,
 
-    #[arg(long, default_value_t=5e-2_f32)]
+    #[arg(long, default_value_t=1e-2_f32)]
     nuclear_reassignment_prob: f32,
 
-    #[arg(short, long, default_value="counts.csv.gz")]
-    output_counts: String,
+    #[arg(long, default_value="counts.csv.gz")]
+    output_counts_csv: Option<String>,
+
+    #[arg(long, default_value="counts.arrow")]
+    output_counts_arrow: Option<String>,
 
     #[arg(long, default_value="cells.geojson.gz")]
     output_cells: Option<String>,
@@ -81,7 +86,10 @@ struct Args{
     output_normalized_expression: Option<String>,
 
     #[arg(long, default_value=None)]
-    output_cell_cubes: Option<String>,
+    output_cell_cubes_csv: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_cell_cubes_arrow: Option<String>,
 
     #[arg(long, default_value=None)]
     output_transcripts: Option<String>,
@@ -264,12 +272,16 @@ fn main() {
     let counts = uncertainty.max_posterior_transcript_counts(
         &params, &transcripts, args.count_pr_cutoff);
 
-    if let Some(output_cell_cubes) = args.output_cell_cubes {
-        sampler.borrow().write_cell_cubes(&output_cell_cubes);
+    if let Some(output_cell_cubes_csv) = args.output_cell_cubes_csv {
+        sampler.borrow().write_cell_cubes_csv(&output_cell_cubes_csv);
     }
 
-    {
-        let file = File::create(&args.output_counts).unwrap();
+    if let Some(output_cell_cubes_arrow) = args.output_cell_cubes_arrow {
+        sampler.borrow().write_cell_cubes_arrow(&output_cell_cubes_arrow);
+    }
+
+    if let Some(output_counts_csv) = args.output_counts_csv {
+        let file = File::create(&output_counts_csv).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut writer = csv::WriterBuilder::new()
             .has_headers(false)
@@ -280,6 +292,33 @@ fn main() {
         for row in counts.t().rows() {
             writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
         }
+    }
+
+    if let Some(output_counts_arrow) = args.output_counts_arrow {
+        let schema = arrow::datatypes::Schema::new(
+            transcript_names.iter().map(
+                |name| arrow::datatypes::Field::new(name, arrow::datatypes::DataType::UInt32, false))
+                .collect::<Vec<_>>());
+
+        // unimplemented!();
+        let file = File::create(&output_counts_arrow).unwrap();
+        // let mut writer = arrow::ipc::writer::FileWriter::try_new(file, &schema).unwrap();
+        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+            file, &schema,
+            arrow::ipc::writer::IpcWriteOptions::default().try_with_compression(
+                Some(arrow::ipc::CompressionType::ZSTD)).unwrap(),
+        ).unwrap();
+
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+        for row in counts.rows() {
+            columns.push(Arc::new(arrow::array::UInt32Array::from_iter(row.iter().cloned())));
+        }
+
+        let recbatch = arrow::record_batch::RecordBatch::try_new(
+            Arc::new(schema), columns,
+        ).unwrap();
+
+        writer.write(&recbatch).unwrap();
     }
 
     if let Some(output_normalized_expression) = args.output_normalized_expression {
