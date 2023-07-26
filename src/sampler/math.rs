@@ -1,8 +1,6 @@
-
-use libm::{lgammaf, expf};
+use libm::{expf, lgammaf};
 use rand::rngs::ThreadRng;
 use rand::Rng;
-
 
 pub fn relerr(a: f32, b: f32) -> f32 {
     return ((a - b) / a).abs();
@@ -22,16 +20,18 @@ const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
 
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
-    return
-        - LN_SQRT_TWO_PI
-        - σ.ln()
-        - xln
-        - ((xln - μ) / σ).powi(2) / 2.0;
+    return -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0;
 }
 
-
 // Negative binomial log probability function with capacity for precomputing some values.
-pub fn negbin_logpmf_fast(r: f32, lgamma_r: f32, lgamma_rpk: f32, p: f32, k: u32, k_ln_factorial: f32) -> f32 {
+pub fn negbin_logpmf_fast(
+    r: f32,
+    lgamma_r: f32,
+    lgamma_rpk: f32,
+    p: f32,
+    k: u32,
+    k_ln_factorial: f32,
+) -> f32 {
     const MINP: f32 = 0.999999_f32;
     let p = p.min(MINP);
 
@@ -40,7 +40,7 @@ pub fn negbin_logpmf_fast(r: f32, lgamma_r: f32, lgamma_rpk: f32, p: f32, k: u32
         // r * (1.0 - p).ln()
         r * (-p).ln_1p()
     } else {
-            lgamma_rpk
+        lgamma_rpk
             - lgamma_r
             - k_ln_factorial
             // + (k as f32) * p.ln() + r * (1.0 - p).ln()
@@ -74,7 +74,6 @@ pub fn prob_to_odds(p: f32) -> f32 {
     return p / (1.0 - p);
 }
 
-
 // log-factorial with precomputed values for small numbers
 pub struct LogFactorial {
     values: Vec<f32>,
@@ -84,7 +83,7 @@ impl LogFactorial {
     fn new_with_n(n: usize) -> Self {
         return LogFactorial {
             values: Vec::from_iter((0..n as u32).map(|x| lfact(x))),
-        }
+        };
     }
 
     pub fn new() -> Self {
@@ -92,14 +91,17 @@ impl LogFactorial {
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        return self.values.get(k as usize).map_or_else(|| lfact(k), |&value| value);
+        return self
+            .values
+            .get(k as usize)
+            .map_or_else(|| lfact(k), |&value| value);
     }
 }
 
 // Partially memoized lgamma(r + k), memoized over k.
 pub struct LogGammaPlus {
     r: f32,
-    values: Vec<f32>
+    values: Vec<f32>,
 }
 
 impl LogGammaPlus {
@@ -107,7 +109,7 @@ impl LogGammaPlus {
         return LogGammaPlus {
             r,
             values: Vec::from_iter((0..n as u32).map(|x| lgammaf(r + x as f32))),
-        }
+        };
     }
 
     pub fn new(r: f32) -> Self {
@@ -126,8 +128,9 @@ impl LogGammaPlus {
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        return self.values.get(k as usize).map_or_else(|| lgammaf(self.r + k as f32), |&value| value);
+        return self
+            .values
+            .get(k as usize)
+            .map_or_else(|| lgammaf(self.r + k as f32), |&value| value);
     }
-
 }
-

@@ -1,9 +1,7 @@
-
-use super::transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
+use super::transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
-
 
 // All this is just a mechanism to to do static dispatch on whether we are above or
 // below the line in quickhull_part.
@@ -16,7 +14,7 @@ struct QuickhullAbove;
 
 impl QuickhullSide for QuickhullAbove {
     fn tricontains(u: (f32, f32), v: (f32, f32), w: (f32, f32), p: (f32, f32)) -> bool {
-        return !isabove(u, w, p) && !isabove(w, v, p)
+        return !isabove(u, w, p) && !isabove(w, v, p);
     }
 }
 
@@ -25,24 +23,22 @@ struct QuickhullBelow;
 
 impl QuickhullSide for QuickhullBelow {
     fn tricontains(u: (f32, f32), v: (f32, f32), w: (f32, f32), p: (f32, f32)) -> bool {
-        return isabove(u, w, p) && isabove(w, v, p)
+        return isabove(u, w, p) && isabove(w, v, p);
     }
 }
 
-
 pub fn compute_full_area(transcripts: &Vec<Transcript>) -> f32 {
-    let mut vertices = Vec::from_iter(
-        transcripts
-            .iter()
-            .map(|t| (t.x, t.y)),
-    );
+    let mut vertices = Vec::from_iter(transcripts.iter().map(|t| (t.x, t.y)));
     let mut hull = Vec::new();
 
     return convex_hull_area(&mut vertices, &mut hull);
 }
 
-
-pub fn compute_cell_areas(ncells: usize, transcripts: &Vec<Transcript>, cell_assignments: &Vec<CellIndex>) -> Vec<f32> {
+pub fn compute_cell_areas(
+    ncells: usize,
+    transcripts: &Vec<Transcript>,
+    cell_assignments: &Vec<CellIndex>,
+) -> Vec<f32> {
     let mut vertices: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ncells];
     for (&c, &t) in cell_assignments.iter().zip(transcripts.iter()) {
         if c != BACKGROUND_CELL {
@@ -51,16 +47,16 @@ pub fn compute_cell_areas(ncells: usize, transcripts: &Vec<Transcript>, cell_ass
     }
 
     let mut hull = Vec::new();
-    let areas = vertices.iter_mut()
+    let areas = vertices
+        .iter_mut()
         .map(|vs| convex_hull_area(vs, &mut hull))
         .collect();
 
     return areas;
 }
 
-
 /// Compute the convex hull and return it's area.
-pub fn convex_hull_area(vertices: &mut Vec<(f32,f32)>, hull: &mut Vec<(f32,f32)>) -> f32 {
+pub fn convex_hull_area(vertices: &mut Vec<(f32, f32)>, hull: &mut Vec<(f32, f32)>) -> f32 {
     if vertices.len() < 3 {
         hull.clear();
         hull.extend(vertices.iter().cloned());
@@ -105,8 +101,8 @@ pub fn convex_hull_area(vertices: &mut Vec<(f32,f32)>, hull: &mut Vec<(f32,f32)>
             vertices.swap(i, j);
         }
 
-        quickhull_part(QuickhullAbove{}, &mut vertices[2..i], hull, u, v);
-        quickhull_part(QuickhullBelow{}, &mut vertices[i..], hull, u, v);
+        quickhull_part(QuickhullAbove {}, &mut vertices[2..i], hull, u, v);
+        quickhull_part(QuickhullBelow {}, &mut vertices[i..], hull, u, v);
     }
 
     // compute the area
@@ -115,7 +111,7 @@ pub fn convex_hull_area(vertices: &mut Vec<(f32,f32)>, hull: &mut Vec<(f32,f32)>
 
 pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
     let c = center(&vertices);
-    vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b) );
+    vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b));
 
     let mut area = 0.0;
 
@@ -134,7 +130,7 @@ pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
     return area;
 }
 
-fn center(vertices: &[(f32,f32)]) -> (f32, f32) {
+fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
     let mut x = 0.0;
     let mut y = 0.0;
     for v in vertices {
@@ -180,8 +176,15 @@ fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
     }
 }
 
-
-fn quickhull_part<T>(side: T, vertices: &mut [(f32, f32)], hull: &mut Vec<(f32,f32)>, u: (f32, f32), v: (f32, f32)) where T: QuickhullSide + Debug {
+fn quickhull_part<T>(
+    side: T,
+    vertices: &mut [(f32, f32)],
+    hull: &mut Vec<(f32, f32)>,
+    u: (f32, f32),
+    v: (f32, f32),
+) where
+    T: QuickhullSide + Debug,
+{
     if vertices.len() == 0 {
         return;
     }
@@ -222,11 +225,9 @@ fn quickhull_part<T>(side: T, vertices: &mut [(f32, f32)], hull: &mut Vec<(f32,f
     }
 
     quickhull_part(side, &mut vertices[i..], hull, u, v);
-
 }
 
-
-fn horizontal_extrema_indices(vertices: &[(f32,f32)]) -> (usize, usize) {
+fn horizontal_extrema_indices(vertices: &[(f32, f32)]) -> (usize, usize) {
     let (mut i_min, mut i_max) = (0, 0);
     for (i, v) in vertices.iter().enumerate() {
         if v.0 < vertices[i_min].0 {
@@ -244,7 +245,7 @@ fn horizontal_extrema_indices(vertices: &[(f32,f32)]) -> (usize, usize) {
 fn linedist(u: (f32, f32), v: (f32, f32), w: (f32, f32)) -> f32 {
     let a = v.0 - u.0;
     let b = v.1 - u.1;
-    return (a * (u.1 - w.1) - b * (u.0 - w.0)).abs() / (a * a + b * b).sqrt()
+    return (a * (u.1 - w.1) - b * (u.0 - w.0)).abs() / (a * a + b * b).sqrt();
 }
 
 // Test if the point w is above the line from u to v.

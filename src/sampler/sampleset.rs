@@ -1,9 +1,8 @@
-
-use std::collections::HashMap;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::hash::Hash;
-use rand::Rng;
 use rand::rngs::ThreadRng;
+use rand::Rng;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::collections::HashMap;
+use std::hash::Hash;
 
 // A set you can sample random elements from.
 // Inspired by this solution: https://stackoverflow.com/a/53773240
@@ -13,9 +12,9 @@ pub struct SampleSet<T> {
     vec: Vec<T>,
 }
 
-
 impl<T> SampleSet<T>
-where T: Eq + Hash + Copy
+where
+    T: Eq + Hash + Copy,
 {
     pub fn new() -> Self {
         return SampleSet {
@@ -79,4 +78,3 @@ where T: Eq + Hash + Copy
     //     return self.vec.iter();
     // }
 }
-

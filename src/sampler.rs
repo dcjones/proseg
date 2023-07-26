@@ -1,37 +1,34 @@
 mod connectivity;
-mod math;
+pub mod cubebinsampler;
 pub mod hull;
+mod math;
 mod sampleset;
 pub mod transcripts;
-pub mod cubebinsampler;
 
 use core::fmt::Debug;
-use math::{
-    negbin_logpmf_fast, lognormal_logpdf,
-    odds_to_prob, prob_to_odds, rand_pois,
-    LogFactorial,
-    LogGammaPlus,
-};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
+use math::{
+    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_pois, LogFactorial,
+    LogGammaPlus,
+};
 use ndarray::{Array1, Array2, Zip};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::f32;
 use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
-use std::collections::HashMap;
-use std::f32;
 use thread_local::ThreadLocal;
-use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
+use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 // use std::time::Instant;
-
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -45,7 +42,6 @@ use transcripts::{Transcript, CellIndex, BACKGROUND_CELL};
 pub fn perimeter_bound(eta: f32, bound: f32, population: f32) -> f32 {
     return bound * eta * (2.0 * population) / (f32::consts::PI * population).sqrt();
 }
-
 
 // Compute chunk and quadrant for a single a single (x,y) point.
 fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: usize) -> (u32, u32) {
@@ -85,7 +81,6 @@ pub struct ModelPriors {
     pub nuclear_reassignment_log_prob: f32,
     pub nuclear_reassignment_1mlog_prob: f32,
 }
-
 
 // Model global parameters.
 pub struct ModelParams {
@@ -175,8 +170,8 @@ impl ModelParams {
         init_cell_population: &Vec<usize>,
         ncomponents: usize,
         ncells: usize,
-        ngenes: usize) -> Self {
-
+        ngenes: usize,
+    ) -> Self {
         let r = Array1::<f32>::from_elem(ngenes, 100.0_f32);
         let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x)));
         let cell_volume = Array1::<f32>::zeros(ncells);
@@ -268,12 +263,13 @@ impl ModelParams {
             .and(&self.cell_volume)
             .and(self.counts.columns())
             .fold(0_f32, |accum, λs, cell_volume, cs| {
-                accum + Zip::from(λs)
-                    .and(&self.λ_bg)
-                    .and(cs)
-                    .fold(0_f32, |accum, λ, λ_bg, &c| {
-                        accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_volume
-                    })
+                accum
+                    + Zip::from(λs)
+                        .and(&self.λ_bg)
+                        .and(cs)
+                        .fold(0_f32, |accum, λ, λ_bg, &c| {
+                            accum + (c as f32) * (λ + λ_bg).ln() - λ * cell_volume
+                        })
             });
 
         // nuclear reassignment terms
@@ -294,8 +290,9 @@ impl ModelParams {
         // cell volume terms
         ll += Zip::from(&self.cell_volume)
             .and(&self.z)
-            .fold(0_f32, |accum, &v, &z|
-                accum + lognormal_logpdf(self.μ_volume[z as usize], self.σ_volume[z as usize], v));
+            .fold(0_f32, |accum, &v, &z| {
+                accum + lognormal_logpdf(self.μ_volume[z as usize], self.σ_volume[z as usize], v)
+            });
 
         // background terms
         ll += Zip::from(&self.total_gene_counts)
@@ -309,7 +306,12 @@ impl ModelParams {
         return ll;
     }
 
-    pub fn write_cell_hulls(&self, transcripts: &Vec<Transcript>, counts: &Array2<u32>, filename: &str) {
+    pub fn write_cell_hulls(
+        &self,
+        transcripts: &Vec<Transcript>,
+        counts: &Array2<u32>,
+        filename: &str,
+    ) {
         // We are not maintaining any kind of per-cell array, so I guess I have
         // no choice but to compute such a thing here.
         let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
@@ -382,10 +384,7 @@ impl ModelParams {
 
         writeln!(encoder, "\n  ]\n}}").unwrap();
     }
-
-
 }
-
 
 #[derive(Clone, Debug)]
 pub struct ProposalStats {
@@ -397,7 +396,6 @@ pub struct ProposalStats {
     cell_to_background_accept: usize,
     cell_to_background_reject: usize,
 }
-
 
 impl ProposalStats {
     pub fn new() -> Self {
@@ -423,11 +421,9 @@ impl ProposalStats {
     }
 }
 
-
 pub struct UncertaintyTracker {
     cell_assignment_duration: HashMap<(usize, CellIndex), u32>,
 }
-
 
 impl UncertaintyTracker {
     pub fn new() -> UncertaintyTracker {
@@ -435,7 +431,7 @@ impl UncertaintyTracker {
 
         return UncertaintyTracker {
             cell_assignment_duration,
-        }
+        };
     }
 
     // record the duration of the current cell assignment. Called when the state
@@ -449,7 +445,12 @@ impl UncertaintyTracker {
     }
 
     pub fn finish(&mut self, params: &ModelParams) {
-        for ((i, &j), &t) in params.cell_assignments.iter().enumerate().zip(&params.cell_assignment_time) {
+        for ((i, &j), &t) in params
+            .cell_assignments
+            .iter()
+            .enumerate()
+            .zip(&params.cell_assignment_time)
+        {
             let duration = params.t - t + 1;
             self.cell_assignment_duration
                 .entry((i, j))
@@ -458,14 +459,19 @@ impl UncertaintyTracker {
         }
     }
 
-    pub fn max_posterior_transcript_counts(&self, params: &ModelParams, transcripts: &Vec<Transcript>, pr_cutoff: f32) -> Array2<u32> {
+    pub fn max_posterior_transcript_counts(
+        &self,
+        params: &ModelParams,
+        transcripts: &Vec<Transcript>,
+        pr_cutoff: f32,
+    ) -> Array2<u32> {
         let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0);
 
         // We need this to be descending on duration
-        let sorted_cell_assignment_durations: Vec<_> = self.cell_assignment_duration
+        let sorted_cell_assignment_durations: Vec<_> = self
+            .cell_assignment_duration
             .iter()
-            .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)|
-                (*i_b, **d_b).cmp(&(*i_a, **d_a)) )
+            .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)| (*i_b, **d_b).cmp(&(*i_a, **d_a)))
             .collect();
 
         let mut i_prev = usize::MAX;
@@ -482,8 +488,6 @@ impl UncertaintyTracker {
         return counts;
     }
 }
-
-
 
 pub trait Proposal {
     fn accept(&mut self);
@@ -503,10 +507,14 @@ pub trait Proposal {
 
     fn log_weight(&self) -> f32;
 
-    fn transcripts<'b, 'c>(&'b self) -> &'c[usize] where 'b: 'c;
+    fn transcripts<'b, 'c>(&'b self) -> &'c [usize]
+    where
+        'b: 'c;
 
     // Iterator over number of transcripts in the proposal of each gene
-    fn gene_count<'b, 'c>(&'b self) -> &'c[u32] where 'b: 'c;
+    fn gene_count<'b, 'c>(&'b self) -> &'c [u32]
+    where
+        'b: 'c;
 
     fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
         if self.ignored() {
@@ -556,18 +564,21 @@ pub trait Proposal {
 
             // subtract out old cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
-                δ -= count as f32 * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
+                δ -= count as f32
+                    * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
             }
 
             let z = params.z[old_cell as usize];
             δ -= lognormal_logpdf(
                 params.μ_volume[z as usize],
                 params.σ_volume[z as usize],
-                prev_volume);
+                prev_volume,
+            );
             δ += lognormal_logpdf(
                 params.μ_volume[z as usize],
                 params.σ_volume[z as usize],
-                new_volume);
+                new_volume,
+            );
         }
 
         if to_background {
@@ -593,11 +604,13 @@ pub trait Proposal {
             δ -= lognormal_logpdf(
                 params.μ_volume[z as usize],
                 params.σ_volume[z as usize],
-                prev_volume);
+                prev_volume,
+            );
             δ += lognormal_logpdf(
                 params.μ_volume[z as usize],
                 params.σ_volume[z as usize],
-                new_volume);
+                new_volume,
+            );
         }
 
         let mut rng = thread_rng();
@@ -620,13 +633,19 @@ pub trait Proposal {
     }
 }
 
-
-pub trait Sampler<P> where P: Proposal + Send {
+pub trait Sampler<P>
+where
+    P: Proposal + Send,
+{
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
 
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams);
-    fn proposals<'a, 'b>(&'a self) -> &'b [P] where 'a: 'b;
-    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [P] where 'a: 'b;
+    fn proposals<'a, 'b>(&'a self) -> &'b [P]
+    where
+        'a: 'b;
+    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [P]
+    where
+        'a: 'b;
 
     // Called by `apply_accepted_proposals` to handle any sampler specific
     // updates needed after applying accepted proposals. This is mainly
@@ -634,10 +653,13 @@ pub trait Sampler<P> where P: Proposal + Send {
     fn update_sampler_state(&mut self, params: &ModelParams);
 
     fn sample_cell_regions(
-        &mut self, priors: &ModelPriors, params: &mut ModelParams,
-        stats: &mut ProposalStats, transcripts: &Vec<Transcript>,
-        uncertainty: &mut Option<&mut UncertaintyTracker>)
-    {
+        &mut self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        stats: &mut ProposalStats,
+        transcripts: &Vec<Transcript>,
+        uncertainty: &mut Option<&mut UncertaintyTracker>,
+    ) {
         // don't count time unless we are tracking uncertainty
         if uncertainty.is_some() {
             params.t += 1;
@@ -655,10 +677,14 @@ pub trait Sampler<P> where P: Proposal + Send {
         transcripts: &Vec<Transcript>,
         priors: &ModelPriors,
         params: &mut ModelParams,
-        uncertainty: &mut Option<&mut UncertaintyTracker>)
-    {
+        uncertainty: &mut Option<&mut UncertaintyTracker>,
+    ) {
         // Update cell assignments
-        for proposal in self.proposals().iter().filter(|p| p.accepted() && !p.ignored()) {
+        for proposal in self
+            .proposals()
+            .iter()
+            .filter(|p| p.accepted() && !p.ignored())
+        {
             let old_cell = proposal.old_cell();
             let new_cell = proposal.new_cell();
 
@@ -711,7 +737,11 @@ pub trait Sampler<P> where P: Proposal + Send {
             }
         }
 
-        for proposal in self.proposals().iter().filter(|p| !p.accepted() && !p.ignored()) {
+        for proposal in self
+            .proposals()
+            .iter()
+            .filter(|p| !p.accepted() && !p.ignored())
+        {
             let old_cell = proposal.old_cell();
             let new_cell = proposal.new_cell();
 
@@ -725,7 +755,6 @@ pub trait Sampler<P> where P: Proposal + Send {
         }
 
         self.update_sampler_state(params);
-
     }
 
     fn sample_global_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -782,11 +811,11 @@ pub trait Sampler<P> where P: Proposal + Send {
         //             *λ = background_proportion * (*c as f32) / params.full_area;
         //         });
         // } else {
-            Zip::from(&mut params.λ_bg)
-                .and(&params.background_counts)
-                .for_each(|λ, c| {
-                    *λ = (*c as f32) / params.full_volume;
-                });
+        Zip::from(&mut params.λ_bg)
+            .and(&params.background_counts)
+            .for_each(|λ, c| {
+                *λ = (*c as f32) / params.full_volume;
+            });
         // }
 
         // dbg!(&self.background_counts, &self.params.λ_bg);
@@ -807,7 +836,6 @@ pub trait Sampler<P> where P: Proposal + Send {
                     *γ += *λ * *cell_volume;
                 }
             });
-
     }
 
     fn sample_background_counts(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
@@ -837,7 +865,8 @@ pub trait Sampler<P> where P: Proposal + Send {
         // total component area
         // let mut component_cell_area = vec![0_f32; params.ncomponents()];
         params.component_volume.fill(0.0);
-        params.cell_volume
+        params
+            .cell_volume
             .iter()
             .zip(&params.z)
             .for_each(|(volume, z_i)| {
@@ -863,12 +892,9 @@ pub trait Sampler<P> where P: Proposal + Send {
                 let mut rng = thread_rng();
                 for (θ, &c, &a) in izip!(θs, cs, &params.component_volume) {
                     *θ = prob_to_odds(
-                        Beta::new(
-                            priors.α_θ + c as f32,
-                            priors.β_θ + a * r,
-                        )
-                        .unwrap()
-                        .sample(&mut rng),
+                        Beta::new(priors.α_θ + c as f32, priors.β_θ + a * r)
+                            .unwrap()
+                            .sample(&mut rng),
                     );
 
                     *θ = θ.max(1e-6);
@@ -898,7 +924,6 @@ pub trait Sampler<P> where P: Proposal + Send {
                         // sampler is considerably faster here.
                         // accum + Poisson::new(λ).unwrap().sample(&mut rng) as i32
                         accum + rand_pois(&mut rng, λ)
-
                     }) as f32;
                 let v = Zip::from(&params.z)
                     .and(&params.cell_volume)
@@ -922,7 +947,6 @@ pub trait Sampler<P> where P: Proposal + Send {
         // println!("  Sample r: {:?}", t0.elapsed());
     }
 
-
     fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         Zip::from(params.λ.rows_mut())
             .and(params.foreground_counts.columns())
@@ -934,17 +958,11 @@ pub trait Sampler<P> where P: Proposal + Send {
                 // TODO: Afraid this is where we'll get killed on performance. Look for
                 // a Gamma distribution sampler that runs as f32 precision. Maybe in rand_distr
 
-                for (λ, z, c, cell_area) in izip!(
-                    &mut λs,
-                    &params.z,
-                    cs,
-                    &params.cell_volume
-                ) {
+                for (λ, z, c, cell_area) in izip!(&mut λs, &params.z, cs, &params.cell_volume) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
                         *r + *c as f32,
-                        θ / (cell_area * θ + 1.0)
-                        // ((cell_area * θ + 1.0) / θ) as f64,
+                        θ / (cell_area * θ + 1.0), // ((cell_area * θ + 1.0) / θ) as f64,
                     )
                     .unwrap()
                     .sample(&mut rng)
@@ -960,61 +978,67 @@ pub trait Sampler<P> where P: Proposal + Send {
     fn sample_component_assignments(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         let ncomponents = params.ncomponents();
 
-        Zip::from(
-            params.foreground_counts
-                .rows(),
-        )
-        .and(&mut params.z)
-        .and(&params.cell_volume)
-        .par_for_each(|cs, z_i, cell_volume| {
-            let mut z_probs = params
-                .z_probs
-                .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
-                .borrow_mut();
+        Zip::from(params.foreground_counts.rows())
+            .and(&mut params.z)
+            .and(&params.cell_volume)
+            .par_for_each(|cs, z_i, cell_volume| {
+                let mut z_probs = params
+                    .z_probs
+                    .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
+                    .borrow_mut();
 
-            // loop over components
-            for (zp, π, θs, &μ_volume, &σ_volume) in
-                izip!(z_probs.iter_mut(), &params.π, params.θ.rows(), &params.μ_volume, &params.σ_volume)
-            {
-                // sum over genes
-                *zp = (*π as f64)
-                    * (Zip::from(cs)
-                        .and(&params.r)
-                        .and(&params.lgamma_r)
-                        .and(&params.loggammaplus)
-                        .and(&θs)
-                        .fold(0_f32, |accum, &c, &r, &lgamma_r, lgammaplus, θ| {
-                            accum + negbin_logpmf_fast(
-                                r, lgamma_r, lgammaplus.eval(c),
-                                odds_to_prob(*θ * cell_volume), c, params.logfactorial.eval(c))
-                        }) as f64)
-                        .exp();
+                // loop over components
+                for (zp, π, θs, &μ_volume, &σ_volume) in izip!(
+                    z_probs.iter_mut(),
+                    &params.π,
+                    params.θ.rows(),
+                    &params.μ_volume,
+                    &params.σ_volume
+                ) {
+                    // sum over genes
+                    *zp = (*π as f64)
+                        * (Zip::from(cs)
+                            .and(&params.r)
+                            .and(&params.lgamma_r)
+                            .and(&params.loggammaplus)
+                            .and(&θs)
+                            .fold(0_f32, |accum, &c, &r, &lgamma_r, lgammaplus, θ| {
+                                accum
+                                    + negbin_logpmf_fast(
+                                        r,
+                                        lgamma_r,
+                                        lgammaplus.eval(c),
+                                        odds_to_prob(*θ * cell_volume),
+                                        c,
+                                        params.logfactorial.eval(c),
+                                    )
+                            }) as f64)
+                            .exp();
 
-                *zp *= lognormal_logpdf(
-                    μ_volume, σ_volume, *cell_volume).exp() as f64;
-            }
+                    *zp *= lognormal_logpdf(μ_volume, σ_volume, *cell_volume).exp() as f64;
+                }
 
-            // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
-            //     *zp = (self.params.π[j] as f64) *
-            //         negbin_logpmf(r, lgamma_r, p, k)
-            //         // (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
-            // });
+                // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
+                //     *zp = (self.params.π[j] as f64) *
+                //         negbin_logpmf(r, lgamma_r, p, k)
+                //         // (self.params.cell_logprob_fast(j as usize, *cell_area, &cs, &clfs) as f64).exp();
+                // });
 
-            let z_prob_sum = z_probs.iter().sum::<f64>();
+                let z_prob_sum = z_probs.iter().sum::<f64>();
 
-            assert!(z_prob_sum.is_finite());
+                assert!(z_prob_sum.is_finite());
 
-            // cumulative probabilities in-place
-            z_probs.iter_mut().fold(0.0, |mut acc, x| {
-                acc += *x / z_prob_sum;
-                *x = acc;
-                acc
+                // cumulative probabilities in-place
+                z_probs.iter_mut().fold(0.0, |mut acc, x| {
+                    acc += *x / z_prob_sum;
+                    *x = acc;
+                    acc
+                });
+
+                let rng = &mut thread_rng();
+                let u = rng.gen::<f64>();
+                *z_i = z_probs.partition_point(|x| *x < u) as u32;
             });
-
-            let rng = &mut thread_rng();
-            let u = rng.gen::<f64>();
-            *z_i = z_probs.partition_point(|x| *x < u) as u32;
-        });
     }
 
     fn sample_volume_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1038,8 +1062,10 @@ pub trait Sampler<P> where P: Proposal + Send {
                 let v = (1_f32 / priors.σ_μ_volume.powi(2) + pop as f32 / σ.powi(2)).recip();
                 *μ = Normal::new(
                     v * (priors.μ_μ_volume / priors.σ_μ_volume.powi(2) + *μ / σ.powi(2)),
-                    v.sqrt()
-                ).unwrap().sample(&mut rng);
+                    v.sqrt(),
+                )
+                .unwrap()
+                .sample(&mut rng);
             });
 
         // compute sample variances
@@ -1057,7 +1083,12 @@ pub trait Sampler<P> where P: Proposal + Send {
                 let mut rng = thread_rng();
                 *σ = Gamma::new(
                     priors.α_σ_volume + (pop as f32) / 2.0,
-                    (priors.β_σ_volume + *σ / 2.0).recip()).unwrap().sample(&mut rng).recip().sqrt();
+                    (priors.β_σ_volume + *σ / 2.0).recip(),
+                )
+                .unwrap()
+                .sample(&mut rng)
+                .recip()
+                .sqrt();
             });
     }
 }

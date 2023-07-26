@@ -1,4 +1,3 @@
-
 use csv;
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
@@ -49,7 +48,6 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-
 fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
     let mut ncells = usize::MAX;
     for &cell_id in cell_assignments.iter() {
@@ -73,7 +71,6 @@ fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<us
 
     return cell_population;
 }
-
 
 fn read_transcripts_csv_xy<T>(
     rdr: &mut csv::Reader<T>,
@@ -131,7 +128,12 @@ where
 
     let cell_population = postprocess_cell_assignments(&mut cell_assignments);
 
-    return (transcript_names, transcripts, cell_assignments, cell_population);
+    return (
+        transcript_names,
+        transcripts,
+        cell_assignments,
+        cell_population,
+    );
 }
 
 fn read_transcripts_csv_xyz<T>(
@@ -190,7 +192,7 @@ where
         let cell_id = row[cell_id_col].parse::<i32>().unwrap();
         let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
         if cell_id >= 0 && overlaps_nucleus > 0 {
-        // if cell_id >= 0 {
+            // if cell_id >= 0 {
             cell_assignments.push(cell_id as u32);
         } else {
             cell_assignments.push(BACKGROUND_CELL);
@@ -199,9 +201,13 @@ where
 
     let cell_population = postprocess_cell_assignments(&mut cell_assignments);
 
-    return (transcript_names, transcripts, cell_assignments, cell_population);
+    return (
+        transcript_names,
+        transcripts,
+        cell_assignments,
+        cell_population,
+    );
 }
-
 
 pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
