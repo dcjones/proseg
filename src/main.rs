@@ -44,12 +44,13 @@ struct Args{
     // #[arg(long, default_value_t=100000)]
     // niter: usize,
 
-    #[arg(long, default_value_t=32.0_f32)]
+    #[arg(long, default_value_t=16.0_f32)]
     inital_bin_population: f32,
 
     // 32, 4, 1
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[100, 200, 400])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0, 500, 500])]
+    // 16, 2, 0.25
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0, 200, 200, 200])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[200, 200, 200])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -61,8 +62,11 @@ struct Args{
     #[arg(long, default_value_t=0.5_f32)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t=6.0_f32)]
+    #[arg(long, default_value_t=4.0_f32)]
     perimeter_bound: f32,
+
+    #[arg(long, default_value_t=5e-2_f32)]
+    nuclear_reassignment_prob: f32,
 
     #[arg(short, long, default_value="counts.csv.gz")]
     output_counts: String,
@@ -74,10 +78,16 @@ struct Args{
     output_cell_metadata: Option<String>,
 
     #[arg(long, default_value=None)]
+    output_normalized_expression: Option<String>,
+
+    #[arg(long, default_value=None)]
     output_cell_cubes: Option<String>,
 
     #[arg(long, default_value=None)]
     output_transcripts: Option<String>,
+
+    #[arg(long, default_value_t=false)]
+    check_consistency: bool,
 }
 
 
@@ -151,7 +161,6 @@ fn main() {
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / (ncells as f32);
 
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
-    let nuclear_reassignment_prob = 1e-2_f32;
 
     let priors = ModelPriors {
         min_cell_volume,
@@ -169,8 +178,8 @@ fn main() {
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
 
-        nuclear_reassignment_log_prob: nuclear_reassignment_prob.ln(),
-        nuclear_reassignment_1mlog_prob: (1.0 - nuclear_reassignment_prob).ln(),
+        nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
+        nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
     };
 
     let mut params = ModelParams::new(
@@ -215,6 +224,10 @@ fn main() {
             None);
 
         for &niter in args.schedule[1..args.schedule.len()-1].iter() {
+            if args.check_consistency {
+                sampler.borrow_mut().check_consistency(&priors, &mut params);
+            }
+
             sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
             run_hexbin_sampler(
                 &mut prog,
@@ -225,6 +238,9 @@ fn main() {
                 niter,
                 args.local_steps_per_iter,
                 None);
+        }
+        if args.check_consistency {
+            sampler.borrow_mut().check_consistency(&priors, &mut params);
         }
         sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
     }
@@ -239,6 +255,9 @@ fn main() {
         args.local_steps_per_iter,
         Some(&mut uncertainty));
 
+    if args.check_consistency {
+        sampler.borrow_mut().check_consistency(&priors, &mut params);
+    }
     prog.finish();
 
     uncertainty.finish(&params);
@@ -259,6 +278,19 @@ fn main() {
         writer.write_record(transcript_names.iter()).unwrap();
         // for row in params.counts.t().rows() {
         for row in counts.t().rows() {
+            writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
+        }
+    }
+
+    if let Some(output_normalized_expression) = args.output_normalized_expression {
+        let file = File::create(output_normalized_expression).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(transcript_names.iter()).unwrap();
+        for row in params.λ.t().rows() {
             writer.write_record(row.iter().map(|x| x.to_string())).unwrap();
         }
     }

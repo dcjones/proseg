@@ -3,6 +3,11 @@ use libm::{lgammaf, expf};
 use rand::rngs::ThreadRng;
 use rand::Rng;
 
+
+pub fn relerr(a: f32, b: f32) -> f32 {
+    return ((a - b) / a).abs();
+}
+
 pub fn lfact(k: u32) -> f32 {
     return lgammaf(k as f32 + 1.0);
 }

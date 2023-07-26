@@ -4,9 +4,10 @@ use super::transcripts::{Transcript, coordinate_span, BACKGROUND_CELL, CellIndex
 use super::{Sampler, ModelPriors, ModelParams, Proposal, chunkquad, perimeter_bound};
 use super::sampleset::SampleSet;
 use super::connectivity::ConnectivityChecker;
+use super::math::relerr;
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
@@ -221,9 +222,17 @@ impl CubeCellMap {
         self.index.insert(cube, cell);
     }
 
+    // fn len(&self) -> usize {
+    //     return self.index.len();
+    // }
+
     // fn count(&self, cell: u32) -> usize {
     //     return self.index.values().filter(|&&c| c == cell).count();
     // }
+
+    fn iter(&self) -> std::collections::hash_map::Iter<Cube, CellIndex>{
+        return self.index.iter();
+    }
 }
 
 
@@ -395,6 +404,7 @@ impl CubeBinSampler {
         };
 
         sampler.recompute_cell_population();
+        sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
         sampler.populate_mismatches();
 
@@ -414,46 +424,68 @@ impl CubeBinSampler {
 
         let mut cubecells = CubeCellMap::new();
         let mut cubebins = Vec::new();
-        for cubebin in &self.cubebins {
-            let cell = self.cubecells.get(cubebin.cube);
-            if cubebin.transcripts.is_empty() && cell == BACKGROUND_CELL {
-                continue;
+
+        // Build a set of every cube that is either populated with transcripts
+        // or assigned to a cell.
+        let mut cubeset = HashSet::<Cube>::new();
+        for (&cube, &cell) in self.cubecells.iter() {
+            if cell != BACKGROUND_CELL {
+                cubeset.insert(cube);
             }
+        }
 
-            let subcubes = cubebin.cube.double_resolution_children();
+        for cubebin in self.cubebins.iter() {
+            cubeset.insert(cubebin.cube);
+        }
 
-            let mut subcubebins = [
-                CubeBin::new(subcubes[0]),
-                CubeBin::new(subcubes[1]),
-                CubeBin::new(subcubes[2]),
-                CubeBin::new(subcubes[3]),
-                CubeBin::new(subcubes[4]),
-                CubeBin::new(subcubes[5]),
-                CubeBin::new(subcubes[6]),
-                CubeBin::new(subcubes[7]),
-            ];
+        // TODO: NOOOO! I have to consider both everycube in cubecells and in cubebins.
+        // The latter may have  populated but unassigned cubes. :(
 
-            // allocate transcripts to children
-            for &t in cubebin.transcripts.iter() {
-                let transcript = &transcripts[t];
-                let tcube = layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
+        for cube in cubeset {
+            let cell = self.cubecells.get(cube);
+            let subcubes = cube.double_resolution_children();
 
-                for subcubebin in subcubebins.iter_mut() {
-                    if subcubebin.cube == tcube {
-                        subcubebin.transcripts.push(t);
-                        break;
-                    }
+            if cell != BACKGROUND_CELL {
+                // set cell states
+                for subcube in &subcubes {
+                    cubecells.insert(subcube.clone(), cell);
                 }
             }
 
-            // set cell states
-            for subcubebin in &subcubebins {
-                cubecells.insert(subcubebin.cube, cell);
-            }
+            // if this is a populated cube, need to build sub cube bins
+            if let Some(&cubebin_idx) = self.cubeindex.get(&cube) {
+                let cubebin = &self.cubebins[cubebin_idx];
 
-            // add to index
-            for subcubebin in subcubebins {
-                cubebins.push(subcubebin);
+                let mut subcubebins = [
+                    CubeBin::new(subcubes[0]),
+                    CubeBin::new(subcubes[1]),
+                    CubeBin::new(subcubes[2]),
+                    CubeBin::new(subcubes[3]),
+                    CubeBin::new(subcubes[4]),
+                    CubeBin::new(subcubes[5]),
+                    CubeBin::new(subcubes[6]),
+                    CubeBin::new(subcubes[7]),
+                ];
+
+                // allocate transcripts to children
+                for &t in cubebin.transcripts.iter() {
+                    let transcript = &transcripts[t];
+                    let tcube = layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
+
+                    for subcubebin in subcubebins.iter_mut() {
+                        if subcubebin.cube == tcube {
+                            subcubebin.transcripts.push(t);
+                            break;
+                        }
+                    }
+                }
+
+                // add to index
+                for subcubebin in subcubebins {
+                    if !subcubebin.transcripts.is_empty() {
+                        cubebins.push(subcubebin);
+                    }
+                }
             }
         }
 
@@ -510,8 +542,7 @@ impl CubeBinSampler {
     fn recompute_cell_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // recompute cell areas as the sum of rect areas
         params.cell_volume.fill(0.0_f32);
-        for cubebin in &self.cubebins {
-            let cell = self.cubecells.get(cubebin.cube);
+        for (_, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
@@ -524,27 +555,25 @@ impl CubeBinSampler {
 
     fn recompute_cell_population(&mut self) {
         self.cell_population.fill(0.0_f32);
-        for cubebin in &self.cubebins {
-            let cell = self.cubecells.get(cubebin.cube);
+        for (&cube, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
-            self.cell_population[[cubebin.cube.k as usize, cell as usize]] += 1.0_f32;
+            self.cell_population[[cube.k as usize, cell as usize]] += 1.0_f32;
         }
     }
 
     fn recompute_cell_perimeter(&mut self) {
         self.cell_perimeter.fill(0.0_f32);
-        for cubebin in &self.cubebins {
-            let cell = self.cubecells.get(cubebin.cube);
+        for (&cube, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
 
-            for neighbor in cubebin.cube.radius2_xy_neighborhood() {
+            for neighbor in cube.radius2_xy_neighborhood() {
                 let neighbor_cell = self.cubecells.get(neighbor);
                 if neighbor_cell != cell {
-                    self.cell_perimeter[[cubebin.cube.k as usize, cell as usize]] += 1.0_f32;
+                    self.cell_perimeter[[cube.k as usize, cell as usize]] += 1.0_f32;
                 }
             }
         }
@@ -593,7 +622,6 @@ impl CubeBinSampler {
             let (x0, y0, z0, x1, y1, z1) =
                 self.chunkquad.layout.cube_to_world_coords(*cube);
 
-
             writeln!(
                 encoder,
                 "{},{},{},{},{},{},{cell}",
@@ -601,6 +629,56 @@ impl CubeBinSampler {
                 cell=cell
             ).unwrap();
         }
+    }
+
+    pub fn check_consistency(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        self.check_cell_volume(priors, params);
+        self.check_cell_perimeter();
+        self.check_cell_population();
+    }
+
+    // Since we have to update various values as we sample, here we are checking to
+    // make sure no inconsistencies emerged.
+    fn check_cell_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        let current_cell_volume = params.cell_volume.clone();
+        self.recompute_cell_volume(priors, params);
+
+        let ε = 1e-5_f32;
+        for (v0, v1) in params.cell_volume.iter().zip(current_cell_volume.iter()) {
+            if relerr(*v0, *v1) > ε {
+                dbg!(v0, v1);
+            }
+        }
+        // TODO: A small few are still off by one cubevolume
+
+        assert!(params.cell_volume.iter().zip(current_cell_volume.iter()).all(
+            |(&v0, &v1)| relerr(v0, v1) < ε));
+    }
+
+    fn check_cell_perimeter(&mut self) {
+        let current_cell_perimeter = self.cell_perimeter.clone();
+        self.recompute_cell_perimeter();
+        for (p0, p1) in self.cell_perimeter.iter().zip(current_cell_perimeter.iter()) {
+            if p0 != p1 {
+                dbg!(p0, p1);
+            }
+        }
+
+        assert!(self.cell_perimeter.iter().zip(current_cell_perimeter.iter()).all(
+            |(new_perimeter, old_perimeter)| new_perimeter == old_perimeter));
+    }
+
+    fn check_cell_population(&mut self) {
+        let current_cell_population = self.cell_population.clone();
+        self.recompute_cell_population();
+        for (p0, p1) in self.cell_population.iter().zip(current_cell_population.iter()) {
+            if p0 != p1 {
+                dbg!(p0, p1);
+            }
+        }
+
+        assert!(self.cell_population.iter().zip(current_cell_population.iter()).all(
+            |(new_population, old_population)| new_population == old_population));
     }
 
     // fn chunkquad(&self, hex: Hex) -> (u32, u32) {

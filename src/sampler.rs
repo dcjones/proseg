@@ -153,7 +153,7 @@ pub struct ModelParams {
     // log1mp: Array2<f32>,
 
     // [ngenes, ncells] Poisson rates
-    λ: Array2<f32>,
+    pub λ: Array2<f32>,
 
     γ_bg: Array1<f32>,
     γ_fg: Array1<f32>,
@@ -608,6 +608,15 @@ pub trait Proposal {
             self.accept();
         } else {
             self.reject();
+
+            //  if from_background {
+            //     dbg!(
+            //         // δ,
+            //         // self.log_weight(),
+            //         // self.new_cell_volume_delta(),
+            //         // self.old_cell_volume_delta(),
+            //         self.transcripts().len());
+            //  }
         }
     }
 }
