@@ -440,9 +440,6 @@ impl CubeBinSampler {
             cubeset.insert(cubebin.cube);
         }
 
-        // TODO: NOOOO! I have to consider both everycube in cubecells and in cubebins.
-        // The latter may have  populated but unassigned cubes. :(
-
         for cube in cubeset {
             let cell = self.cubecells.get(cube);
             let subcubes = cube.double_resolution_children();

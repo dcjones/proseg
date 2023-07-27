@@ -19,10 +19,10 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::sync::Arc;
 
-// use std::{error::Error, thread, time::Duration};
-
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(name="proseg")]
+#[command(author="Daniel C. Jones")]
+#[command(about="High-speed cell segmentation of transcript-resolution spatial transcriptomics data.")]
 struct Args {
     transcript_csv: String,
     // cell_centers_csv: String,
@@ -46,10 +46,8 @@ struct Args {
     #[arg(long, default_value_t = 8.0_f32)]
     inital_bin_population: f32,
 
-    // 32, 4, 1
-    // 16, 2, 0.25
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0, 200, 200, 200])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[100, 100, 100])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[250, 250, 250])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 150])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -77,7 +75,7 @@ struct Args {
     output_cells: Option<String>,
 
     #[arg(long, default_value = "cell_metadata.csv.gz")]
-    output_cell_metadata: Option<String>,
+    output_cell_metadata_csv: Option<String>,
 
     #[arg(long, default_value=None)]
     output_normalized_expression: Option<String>,
@@ -187,8 +185,8 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
-        α_θ: 1.0,
-        β_θ: 1.0,
+        α_θ: 0.1,
+        β_θ: 10.0,
         e_r: 1.0,
         f_r: 1.0,
 
@@ -362,23 +360,27 @@ fn main() {
         }
     }
 
-    if let Some(output_cell_metadata) = args.output_cell_metadata {
-        let file = File::create(output_cell_metadata).unwrap();
+    if let Some(output_cell_metadata_csv) = args.output_cell_metadata_csv {
+        let file = File::create(output_cell_metadata_csv).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut writer = csv::WriterBuilder::new()
             .has_headers(false)
             .from_writer(encoder);
 
+        let cell_centroids = params.cell_centroids(&transcripts);
         writer
-            .write_record(["cell", "cluster", "volume", "population"])
+            .write_record(["cell", "centroid_x", "centroid_y", "cluster", "volume", "population"])
             .unwrap();
         for cell in 0..ncells {
             let cluster = params.z[cell];
             let volume = params.cell_volume[cell];
             let population = params.cell_population[cell];
+            let (centroid_x, centroid_y) = cell_centroids[cell];
             writer
                 .write_record([
                     cell.to_string(),
+                    centroid_x.to_string(),
+                    centroid_y.to_string(),
                     cluster.to_string(),
                     volume.to_string(),
                     population.to_string(),

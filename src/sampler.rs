@@ -15,7 +15,7 @@ use math::{
     lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_pois, LogFactorial,
     LogGammaPlus,
 };
-use ndarray::{Array1, Array2, Zip};
+use ndarray::{Array1, Array2, Zip, s};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -300,10 +300,43 @@ impl ModelParams {
             .and(&self.λ_bg)
             .fold(0_f32, |accum, c_total, cs, &λ| {
                 let c_bg = c_total - cs.sum();
-                accum + (c_bg as f32) * λ.ln() - λ * self.full_volume
+                if c_bg > 0 {
+                    accum + (c_bg as f32) * λ.ln() - λ * self.full_volume
+                } else {
+                    accum - λ * self.full_volume
+                }
             });
 
         return ll;
+    }
+
+    pub fn cell_centroids(&self, transcripts: &Vec<Transcript>) -> Vec<(f32, f32)> {
+        let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
+        for (i, &cell) in self.cell_assignments.iter().enumerate() {
+            if cell != BACKGROUND_CELL {
+                cell_transcripts[cell as usize].push(i);
+            }
+        }
+
+        let mut centroids = Vec::with_capacity(self.ncells());
+        for ts in cell_transcripts.iter() {
+            if ts.len() == 0 {
+                centroids.push((f32::NAN, f32::NAN));
+                continue;
+            }
+
+            let mut x = 0.0;
+            let mut y = 0.0;
+            for &t in ts {
+                x += transcripts[t].x;
+                y += transcripts[t].y;
+            }
+            x /= transcripts.len() as f32;
+            y /= transcripts.len() as f32;
+            centroids.push((x, y));
+        }
+
+        return centroids;
     }
 
     pub fn write_cell_hulls(
@@ -550,7 +583,9 @@ pub trait Proposal {
 
         if from_background {
             for (i, &count) in self.gene_count().iter().enumerate() {
-                δ -= count as f32 * params.λ_bg[i].ln()
+                if count > 0 {
+                    δ -= count as f32 * params.λ_bg[i].ln()
+                }
             }
         } else {
             let volume_diff = self.old_cell_volume_delta();
@@ -564,8 +599,10 @@ pub trait Proposal {
 
             // subtract out old cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
-                δ -= count as f32
-                    * (params.λ_bg[i as usize] + params.λ[[i, old_cell as usize]]).ln();
+                if count > 0 {
+                    δ -= count as f32
+                        * (params.λ_bg[i] + params.λ[[i, old_cell as usize]]).ln();
+                }
             }
 
             let z = params.z[old_cell as usize];
@@ -583,7 +620,9 @@ pub trait Proposal {
 
         if to_background {
             for (i, &count) in self.gene_count().iter().enumerate() {
-                δ += count as f32 * params.λ_bg[i].ln();
+                if count > 0 {
+                    δ += count as f32 * params.λ_bg[i].ln();
+                }
             }
         } else {
             let volume_diff = self.new_cell_volume_delta();
@@ -597,7 +636,9 @@ pub trait Proposal {
 
             // add in new cell likelihood terms
             for (i, &count) in self.gene_count().iter().enumerate() {
-                δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
+                if count > 0 {
+                    δ += count as f32 * (params.λ_bg[i] + params.λ[[i, new_cell as usize]]).ln();
+                }
             }
 
             let z = params.z[new_cell as usize];
@@ -620,15 +661,6 @@ pub trait Proposal {
             self.accept();
         } else {
             self.reject();
-
-            //  if from_background {
-            //     dbg!(
-            //         // δ,
-            //         // self.log_weight(),
-            //         // self.new_cell_volume_delta(),
-            //         // self.old_cell_volume_delta(),
-            //         self.transcripts().len());
-            //  }
         }
     }
 }
@@ -803,6 +835,8 @@ where
                 .map(|x| *x as f32),
         );
 
+
+        // TODO: I should maybe actually sample here.
         // Sample background rates
         // if let Some(background_proportion) = background_proportion {
         //     Zip::from(&mut params.λ_bg)
@@ -941,23 +975,20 @@ where
                 *lgamma_r = lgammaf(*r);
                 loggammaplus.reset(*r);
 
-                // TODO: any better solution here?
-                *r = r.min(100.0).max(1e-4);
+                *r = r.min(200.0).max(1e-5);
             });
         // println!("  Sample r: {:?}", t0.elapsed());
     }
+
 
     fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         Zip::from(params.λ.rows_mut())
             .and(params.foreground_counts.columns())
             .and(params.θ.columns())
             .and(&params.r)
-            .par_for_each(|mut λs, cs, θs, r| {
+            .and(&params.λ_bg)
+            .par_for_each(|mut λs, cs, θs, r, λ_bg| {
                 let mut rng = thread_rng();
-
-                // TODO: Afraid this is where we'll get killed on performance. Look for
-                // a Gamma distribution sampler that runs as f32 precision. Maybe in rand_distr
-
                 for (λ, z, c, cell_area) in izip!(&mut λs, &params.z, cs, &params.cell_volume) {
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
@@ -970,7 +1001,11 @@ where
 
                     assert!(λ.is_finite());
 
-                    // dbg!(*λ, *r, θ, *c, cell_area, *c as f32 / cell_area);
+                    // DEBUG:
+                    // if params.t > 0 {
+                    //     // dbg!(*λ, *c as f32 / cell_area);
+                    //     dbg!(*λ, λ_bg, *r, θ, *c, cell_area, *c as f32 / cell_area);
+                    // }
                 }
             });
     }

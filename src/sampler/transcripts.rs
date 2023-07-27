@@ -158,6 +158,7 @@ where
     // We'll have to specialize for various platforms in the future.
     let cell_id_col = find_column(headers, "cell_id");
     let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
+    // let qv_col = find_column(headers, "qv");
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
@@ -166,6 +167,8 @@ where
 
     for result in rdr.records() {
         let row = result.unwrap();
+
+        // let qv = row[qv_col].parse::<f32>().unwrap();
 
         let transcript_name = &row[transcript_col];
         // let transcript_name = "FAKE";
