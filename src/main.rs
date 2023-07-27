@@ -38,8 +38,11 @@ struct Args {
     #[arg(short, long, default_value = "z_location")]
     z_column: Option<String>,
 
-    #[arg(short, long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10)]
     ncomponents: usize,
+
+    #[arg(long, default_value_t=4)]
+    nlayers: usize,
 
     // #[arg(long, default_value_t=100000)]
     // niter: usize,
@@ -48,6 +51,7 @@ struct Args {
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[250, 250, 250])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 150])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[15, 15, 15])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -134,12 +138,16 @@ fn main() {
         t.z = t.z.max(zmin).min(zmax);
     }
 
+    let eps = 1e-6;
+    let layer_depth = (zmax - zmin + eps) / (args.nlayers as f32);
+
     println!("Read {} transcripts", ntranscripts);
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
     let full_volume = sampler::hull::compute_full_area(&transcripts) * zspan;
+    let full_layer_volume = full_volume / (args.nlayers as f32);
     println!("Full volume: {}", full_volume);
 
     if let Some(nthreads) = args.nthreads {
@@ -185,8 +193,8 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
-        α_θ: 0.1,
-        β_θ: 10.0,
+        α_θ: 1.0,
+        β_θ: 1.0,
         e_r: 1.0,
         f_r: 1.0,
 
@@ -199,11 +207,14 @@ fn main() {
 
     let mut params = ModelParams::new(
         &priors,
-        full_volume,
+        full_layer_volume,
+        zmin,
+        layer_depth,
         &transcripts,
         &init_cell_assignments,
         &init_cell_population,
         args.ncomponents,
+        args.nlayers,
         ncells,
         ngenes,
     );
@@ -223,6 +234,9 @@ fn main() {
         &mut params,
         &transcripts,
         ngenes,
+        args.nlayers,
+        zmin,
+        layer_depth,
         args.inital_bin_population,
         chunk_size,
     ));

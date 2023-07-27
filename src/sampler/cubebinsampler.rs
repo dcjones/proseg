@@ -19,6 +19,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
 
+use std::time::Instant;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cube {
     i: i32,
@@ -277,6 +279,8 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, avgpop: f32) -> (CubeLayout, V
 pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
+    transcript_layers: Vec<u32>,
+    nlayers: usize,
 
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
     cubebins: Vec<CubeBin>,
@@ -288,7 +292,7 @@ pub struct CubeBinSampler {
 
     // need to track the per z-layer cell population and perimeter in order
     // to implement perimeter constraints.
-    nlayers: usize,
+    nzbins: usize,
     cell_population: Array2<f32>,
     cell_perimeter: Array2<f32>,
 
@@ -308,6 +312,9 @@ impl CubeBinSampler {
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
         ngenes: usize,
+        nlayers: usize,
+        z0: f32,
+        layer_depth: f32,
         avgrectpop: f32,
         chunk_size: f32,
     ) -> Self {
@@ -319,6 +326,7 @@ impl CubeBinSampler {
         let (layout, cubebins) = bin_transcripts(transcripts, avgrectpop);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
+        let transcript_layers = transcripts.iter().map(|t| ((t.z - z0) / layer_depth) as u32).collect::<Vec<_>>();
 
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
@@ -374,11 +382,11 @@ impl CubeBinSampler {
         }
         params.recompute_counts(transcripts);
 
-        let nlayers = 1;
-        let cell_population = Array2::from_elem((nlayers, params.ncells()), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((nlayers, params.ncells()), 0.0_f32);
+        let nzbins = 1;
+        let cell_population = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
 
-        let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
+        let proposals = vec![CubeBinProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
 
         let mut sampler = CubeBinSampler {
@@ -390,11 +398,13 @@ impl CubeBinSampler {
                 nxchunks,
             },
             transcript_genes,
+            transcript_layers,
+            nlayers,
             mismatch_edges,
             cubebins,
             cubeindex,
             cubecells,
-            nlayers,
+            nzbins,
             cell_population,
             cell_perimeter,
             proposals,
@@ -417,16 +427,18 @@ impl CubeBinSampler {
     // grid resolution doubled (i.e. rect size halved).
     pub fn double_resolution(&self, transcripts: &Vec<Transcript>) -> CubeBinSampler {
         let nchunks = self.mismatch_edges[0].len();
-        let ngenes = self.proposals[0].genepop.len();
+        let ngenes = self.proposals[0].genepop.shape()[0];
         let cubevolume = self.cubevolume / 8.0;
         let layout = self.chunkquad.layout.double_resolution();
 
-        let proposals = vec![CubeBinProposal::new(ngenes); nchunks];
+        let proposals = vec![CubeBinProposal::new(ngenes, self.nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
 
         let mut cubecells = CubeCellMap::new();
         let mut cubebins = Vec::new();
 
+        // 1.3s
+        let t0 = Instant::now();
         // Build a set of every cube that is either populated with transcripts
         // or assigned to a cell.
         let mut cubeset = HashSet::<Cube>::new();
@@ -439,7 +451,10 @@ impl CubeBinSampler {
         for cubebin in self.cubebins.iter() {
             cubeset.insert(cubebin.cube);
         }
+        println!("cubeset: {:?}", t0.elapsed());
 
+        // 15.3s
+        let t0 = Instant::now();
         for cube in cubeset {
             let cell = self.cubecells.get(cube);
             let subcubes = cube.double_resolution_children();
@@ -488,12 +503,16 @@ impl CubeBinSampler {
                 }
             }
         }
+        println!("cubebins: {:?}", t0.elapsed());
 
         // build index
+        // 1.2s
+        let t0 = Instant::now();
         let mut cubeindex = HashMap::new();
         for (i, cubebin) in cubebins.iter().enumerate() {
             cubeindex.insert(cubebin.cube, i);
         }
+        println!("cubeindex: {:?}", t0.elapsed());
 
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -503,10 +522,10 @@ impl CubeBinSampler {
             }
         }
 
-        let nlayers = 2 * self.nlayers;
+        let nzbins = 2 * self.nzbins;
         let cell_population =
-            Array2::from_elem((nlayers, self.cell_population.shape()[1]), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((nlayers, self.cell_perimeter.shape()[1]), 0.0_f32);
+            Array2::from_elem((nzbins, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((nzbins, self.cell_perimeter.shape()[1]), 0.0_f32);
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -517,11 +536,13 @@ impl CubeBinSampler {
                 nxchunks: self.chunkquad.nxchunks,
             },
             transcript_genes: self.transcript_genes.clone(),
+            transcript_layers: self.transcript_layers.clone(),
+            nlayers: self.nlayers,
             mismatch_edges,
             cubebins,
             cubeindex,
             cubecells,
-            nlayers,
+            nzbins,
             cell_population,
             cell_perimeter,
             proposals,
@@ -532,9 +553,20 @@ impl CubeBinSampler {
             quad: 0,
         };
 
+        // 11.3s
+        let t0 = Instant::now();
         sampler.populate_mismatches();
+        println!("populate_mismatches: {:?}", t0.elapsed());
+
+        // 141ms
+        let t0 = Instant::now();
         sampler.recompute_cell_population();
+        println!("recompute_cell_population: {:?}", t0.elapsed());
+
+        // 85.4s
+        let t0 = Instant::now();
         sampler.recompute_cell_perimeter();
+        println!("recompute_cell_perimeter: {:?}", t0.elapsed());
 
         return sampler;
     }
@@ -587,7 +619,7 @@ impl CubeBinSampler {
 
             for neighbor in cubebin.cube.von_neumann_neighborhood() {
                 // don't consider neighbors that are out of bounds on the z-axis
-                if neighbor.k < 0 || neighbor.k >= self.nlayers as i32 {
+                if neighbor.k < 0 || neighbor.k >= self.nzbins as i32 {
                     continue;
                 }
 
@@ -975,7 +1007,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
                     for &t in transcripts.iter() {
-                        proposal.genepop[self.transcript_genes[t] as usize] += 1;
+                        let layer = self.transcript_layers[t] as usize;
+                        proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
                     }
                 }
             });
@@ -1026,7 +1059,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // update mismatch edges
                 for neighbor in proposal.cube.von_neumann_neighborhood() {
-                    if neighbor.k < 0 || neighbor.k >= self.nlayers as i32 {
+                    if neighbor.k < 0 || neighbor.k >= self.nzbins as i32 {
                         continue;
                     }
 
@@ -1061,8 +1094,8 @@ pub struct CubeBinProposal {
     cube: Cube,
     transcripts: Vec<usize>,
 
-    // gene count for this rect
-    genepop: Vec<u32>,
+    // [ngenes, nlayers] gene count for this rect
+    genepop: Array2<u32>,
 
     old_cell: u32,
     new_cell: u32,
@@ -1082,11 +1115,11 @@ pub struct CubeBinProposal {
 }
 
 impl CubeBinProposal {
-    fn new(ngenes: usize) -> CubeBinProposal {
+    fn new(ngenes: usize, nlayers: usize) -> CubeBinProposal {
         return CubeBinProposal {
             cube: Cube::new(0, 0, 0),
             transcripts: Vec::new(),
-            genepop: vec![0; ngenes],
+            genepop: Array2::from_elem((ngenes, nlayers), 0),
             old_cell: 0,
             new_cell: 0,
             log_weight: 0.0,
@@ -1142,10 +1175,10 @@ impl Proposal for CubeBinProposal {
         return self.transcripts.as_slice();
     }
 
-    fn gene_count<'b, 'c>(&'b self) -> &'c [u32]
+    fn gene_count<'b, 'c>(&'b self) -> &'c Array2<u32>
     where
         'b: 'c,
     {
-        return self.genepop.as_slice();
+        return &self.genepop;
     }
 }
