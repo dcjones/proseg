@@ -9,13 +9,13 @@ use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
-use itertools::{izip, Itertools};
+use itertools::izip;
 use libm::{lgammaf, log1pf};
 use math::{
     lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_pois, LogFactorial,
     LogGammaPlus,
 };
-use ndarray::{Array1, Array2, Array3, Axis, Zip, s};
+use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -259,9 +259,9 @@ impl ModelParams {
         return self.cell_population.len();
     }
 
-    fn ngenes(&self) -> usize {
-        return self.total_gene_counts.shape()[0];
-    }
+    // fn ngenes(&self) -> usize {
+    //     return self.total_gene_counts.shape()[0];
+    // }
 
     pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
         // iterate over cells
@@ -513,31 +513,34 @@ impl UncertaintyTracker {
     pub fn max_posterior_transcript_counts(
         &self,
         params: &ModelParams,
-        transcripts: &Vec<Transcript>,
-        pr_cutoff: f32,
+        _transcripts: &Vec<Transcript>,
+        _pr_cutoff: f32,
     ) -> Array2<u32> {
-        let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0);
+        // This is much simpler and gives pretty much the same result
+        return params.foreground_counts.sum_axis(Axis(2)).reversed_axes();
 
-        // We need this to be descending on duration
-        let sorted_cell_assignment_durations: Vec<_> = self
-            .cell_assignment_duration
-            .iter()
-            .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)| (*i_b, **d_b).cmp(&(*i_a, **d_a)))
-            .collect();
+        // let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0);
 
-        let mut i_prev = usize::MAX;
-        for ((i, j), &d) in sorted_cell_assignment_durations.iter() {
-            if *i != i_prev && *j != BACKGROUND_CELL && (d as f32 / params.t as f32) > pr_cutoff {
-                let gene = transcripts[*i].gene;
-                let layer = ((transcripts[*i].z - params.z0) / params.layer_depth) as usize;
-                if params.λ[[gene as usize, *j as usize]] > params.λ_bg[[gene as usize, layer]] {
-                    counts[[gene as usize, *j as usize]] += 1;
-                }
-            }
-            i_prev = *i;
-        }
+        // // We need this to be descending on duration
+        // let sorted_cell_assignment_durations: Vec<_> = self
+        //     .cell_assignment_duration
+        //     .iter()
+        //     .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)| (*i_b, **d_b).cmp(&(*i_a, **d_a)))
+        //     .collect();
 
-        return counts;
+        // let mut i_prev = usize::MAX;
+        // for ((i, j), &d) in sorted_cell_assignment_durations.iter() {
+        //     if *i != i_prev && *j != BACKGROUND_CELL && (d as f32 / params.t as f32) > pr_cutoff {
+        //         let gene = transcripts[*i].gene;
+        //         let layer = ((transcripts[*i].z - params.z0) / params.layer_depth) as usize;
+        //         if params.λ[[gene as usize, *j as usize]] > params.λ_bg[[gene as usize, layer]] {
+        //             counts[[gene as usize, *j as usize]] += 1;
+        //         }
+        //     }
+        //     i_prev = *i;
+        // }
+
+        // return counts;
     }
 }
 
@@ -1012,8 +1015,7 @@ where
             .and(params.foreground_counts.axis_iter(Axis(1)))
             .and(params.θ.columns())
             .and(&params.r)
-            .and(params.λ_bg.outer_iter())
-            .par_for_each(|mut λs, cs, θs, r, λ_bg| {
+            .par_for_each(|mut λs, cs, θs, r| {
                 let mut rng = thread_rng();
                 // loop over cells
                 for (λ, z, cs, cell_area) in izip!(&mut λs, &params.z, cs.outer_iter(), &params.cell_volume) {
@@ -1028,12 +1030,6 @@ where
                     .max(1e-9);
 
                     assert!(λ.is_finite());
-
-                    // DEBUG:
-                    // if params.t > 0 {
-                    //     // dbg!(*λ, *c as f32 / cell_area);
-                    //     dbg!(*λ, λ_bg, *r, θ, *c, cell_area, *c as f32 / cell_area);
-                    // }
                 }
             });
     }

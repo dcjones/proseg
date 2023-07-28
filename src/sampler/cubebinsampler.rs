@@ -596,6 +596,10 @@ impl CubeBinSampler {
     }
 
     fn recompute_cell_perimeter(&mut self) {
+        // TODO: This function is super expensive. It's hard to update in parallel
+        // though, each cell consists of many cubes. So we'd either need mutexes
+        // or more likelily, organize things by cell first.
+
         self.cell_perimeter.fill(0.0_f32);
         for (&cube, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {

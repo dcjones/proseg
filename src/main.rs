@@ -38,10 +38,13 @@ struct Args {
     #[arg(short, long, default_value = "z_location")]
     z_column: Option<String>,
 
+    #[arg(long, default_value_t=100)]
+    cells_per_chunk: usize,
+
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=4)]
+    #[arg(long, default_value_t=10)]
     nlayers: usize,
 
     // #[arg(long, default_value_t=100000)]
@@ -160,19 +163,12 @@ fn main() {
     println!("Using {} threads", nthreads);
 
     // Find a reasonable grid size to use to chunk the data
-    const CHUNK_FACTOR: usize = 4;
     let area = (xmax - xmin) * (ymax - ymin);
-    let mut chunk_size = (area / ((nthreads * CHUNK_FACTOR) as f32)).sqrt();
-
-    let min_cells_per_chunk = (ncells as f64).min(100.0);
+    let chunk_size = (area / args.cells_per_chunk as f32).sqrt();
 
     let nchunks = |chunk_size: f32, xspan: f32, yspan: f32| {
         ((xspan / chunk_size).ceil() as usize) * ((yspan / chunk_size).ceil() as usize)
     };
-
-    while (ncells as f64) / (nchunks(chunk_size, xspan, yspan) as f64) < min_cells_per_chunk {
-        chunk_size *= std::f32::consts::SQRT_2;
-    }
 
     println!(
         "Using grid size {}. Chunks: {}",
