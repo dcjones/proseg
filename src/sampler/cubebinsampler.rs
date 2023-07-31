@@ -631,15 +631,21 @@ impl CubeBinSampler {
                 if cell != neighbor_cell {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
 
-                    self.mismatch_edges[quad as usize][chunk as usize]
-                        .lock()
-                        .unwrap()
-                        .insert((cubebin.cube, neighbor));
+                    let mismatch_edges = &self.mismatch_edges[quad as usize];
+                    if (chunk as usize) < mismatch_edges.len() {
+                        mismatch_edges[chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .insert((cubebin.cube, neighbor));
+                    }
 
-                    self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
-                        .lock()
-                        .unwrap()
-                        .insert((neighbor, cubebin.cube));
+                    let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
+                    if (neighbor_chunk as usize) < mismatch_edges.len() {
+                        mismatch_edges[neighbor_chunk as usize]
+                            .lock()
+                            .unwrap()
+                            .insert((neighbor, cubebin.cube));
+                    }
                 }
             }
         }
@@ -1070,23 +1076,33 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
                     let neighbor_cell = self.cubecells.get(neighbor);
                     if proposal.new_cell == neighbor_cell {
-                        self.mismatch_edges[quad as usize][chunk as usize]
-                            .lock()
-                            .unwrap()
-                            .remove((proposal.cube, neighbor));
-                        self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
-                            .lock()
+                        let mismatch_edges = &self.mismatch_edges[quad as usize];
+                        if (chunk as usize) < mismatch_edges.len() {
+                            mismatch_edges[chunk as usize].lock()
+                                .unwrap()
+                                .remove((proposal.cube, neighbor));
+                        }
+
+                        let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
+                        if (neighbor_chunk as usize) < mismatch_edges.len() {
+                            mismatch_edges[neighbor_chunk as usize].lock()
                             .unwrap()
                             .remove((neighbor, proposal.cube));
+                        }
                     } else {
-                        self.mismatch_edges[quad as usize][chunk as usize]
-                            .lock()
-                            .unwrap()
-                            .insert((proposal.cube, neighbor));
-                        self.mismatch_edges[neighbor_quad as usize][neighbor_chunk as usize]
-                            .lock()
+                        let mismatch_edges = &self.mismatch_edges[quad as usize];
+                        if (chunk as usize) < mismatch_edges.len() {
+                            mismatch_edges[chunk as usize].lock()
+                                .unwrap()
+                                .insert((proposal.cube, neighbor));
+                        }
+
+                        let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
+                        if (neighbor_chunk as usize) < mismatch_edges.len() {
+                            mismatch_edges[neighbor_chunk as usize].lock()
                             .unwrap()
                             .insert((neighbor, proposal.cube));
+                        }
                     }
                 }
             });
