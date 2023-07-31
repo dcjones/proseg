@@ -9,7 +9,7 @@ use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
-use itertools::izip;
+use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
 use math::{
     lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_pois, LogFactorial,
@@ -259,9 +259,9 @@ impl ModelParams {
         return self.cell_population.len();
     }
 
-    // fn ngenes(&self) -> usize {
-    //     return self.total_gene_counts.shape()[0];
-    // }
+    fn ngenes(&self) -> usize {
+        return self.total_gene_counts.shape()[0];
+    }
 
     pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
         // iterate over cells
@@ -510,37 +510,68 @@ impl UncertaintyTracker {
         }
     }
 
-    pub fn max_posterior_transcript_counts(
+    fn max_posterior_cell_assignments(
         &self,
         params: &ModelParams,
-        _transcripts: &Vec<Transcript>,
-        _pr_cutoff: f32,
-    ) -> Array2<u32> {
-        // This is much simpler and gives pretty much the same result
-        return params.foreground_counts.sum_axis(Axis(2)).reversed_axes();
+    ) -> Vec<(u32, f32)> {
 
-        // let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0);
+        // sort ascending on (transcript, cell)
+        let sorted_durations: Vec<(usize, u32, u32)> = self
+            .cell_assignment_duration
+            .iter()
+            .map(|((i, j), d)| (*i, *j, *d))
+            .sorted_by(|(i_a, j_a, _), (i_b, j_b, _)| (*i_a, *j_a).cmp(&(*i_b, *j_b)))
+            .collect();
 
-        // // We need this to be descending on duration
-        // let sorted_cell_assignment_durations: Vec<_> = self
-        //     .cell_assignment_duration
-        //     .iter()
-        //     .sorted_by(|((i_a, _), d_a), ((i_b, _), d_b)| (*i_b, **d_b).cmp(&(*i_a, **d_a)))
-        //     .collect();
+        let mut summed_durations: Vec<(usize, u32, u32)> = Vec::new();
+        let mut ij_prev = (usize::MAX, u32::MAX);
+        for (i, j, d) in sorted_durations.iter().cloned() {
+            if (i, j) == ij_prev {
+                summed_durations.last_mut().unwrap().2 += d;
+            } else if  i == ij_prev.0 || (i == ij_prev.0 + 1) {
+                summed_durations.push((i, j, d));
+                ij_prev = (i, j);
+            } else {
+                panic!("Missing transcript in cell assignments.");
+            }
+        }
 
-        // let mut i_prev = usize::MAX;
-        // for ((i, j), &d) in sorted_cell_assignment_durations.iter() {
-        //     if *i != i_prev && *j != BACKGROUND_CELL && (d as f32 / params.t as f32) > pr_cutoff {
-        //         let gene = transcripts[*i].gene;
-        //         let layer = ((transcripts[*i].z - params.z0) / params.layer_depth) as usize;
-        //         if params.λ[[gene as usize, *j as usize]] > params.λ_bg[[gene as usize, layer]] {
-        //             counts[[gene as usize, *j as usize]] += 1;
-        //         }
-        //     }
-        //     i_prev = *i;
-        // }
+        // sort ascending on (transcript, cell) and descending on duration
+        summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)|
+            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a)));
 
-        // return counts;
+        let mut maxpost_cell_assignments = Vec::new();
+        let mut i_prev = usize::MAX;
+        for (i, j, d) in summed_durations.iter().cloned() {
+            if i == i_prev {
+                continue;
+            } else if i == i_prev + 1 {
+                maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
+                i_prev = i;
+            } else {
+                panic!("Missing transcript in cell assignments.");
+            }
+        }
+
+        return maxpost_cell_assignments;
+    }
+
+    pub fn max_posterior_transcript_counts_assignments(
+        &self, params: &ModelParams, transcripts: &Vec<Transcript>, count_pr_cutoff: f32) -> (Array2<u32>, Vec<(u32,
+    f32)>) {
+        let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0_u32);
+        let maxpost_assignments = self.max_posterior_cell_assignments(&params);
+        for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
+            if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
+                let gene = transcripts[i].gene;
+                let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+                if params.λ[[gene as usize, *j as usize]] > params.λ_bg[[gene as usize, layer]] {
+                    counts[[gene as usize, *j as usize]] += 1;
+                }
+            }
+        }
+
+        return (counts, maxpost_assignments);
     }
 }
 

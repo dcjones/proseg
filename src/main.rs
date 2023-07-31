@@ -6,14 +6,14 @@ mod sampler;
 
 use arrow;
 use csv;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
 use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
-use sampler::transcripts::{coordinate_span, read_transcripts_csv, Transcript};
+use sampler::transcripts::{coordinate_span, read_transcripts_csv, Transcript, BACKGROUND_CELL};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 use std::fs::File;
@@ -53,7 +53,7 @@ struct Args {
     inital_bin_population: f32,
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[250, 250, 250])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 150])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[15, 15, 15])]
     schedule: Vec<usize>,
 
@@ -94,21 +94,16 @@ struct Args {
     output_cell_cubes_arrow: Option<String>,
 
     #[arg(long, default_value=None)]
-    output_transcripts: Option<String>,
+    output_transcript_metadata_csv: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_transcript_metadata_arrow: Option<String>,
 
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 }
 
 fn main() {
-    // let mut signals = Signals::new(&[SIGINT])?;
-
-    // thread::spawn(move || {
-    //     for sig in signals.forever() {
-    //         panic!();
-    //     }
-    // });
-
     let args = Args::parse();
 
     assert!(args.ncomponents > 0);
@@ -289,8 +284,11 @@ fn main() {
     prog.finish();
 
     uncertainty.finish(&params);
-    let counts =
-        uncertainty.max_posterior_transcript_counts(&params, &transcripts, args.count_pr_cutoff);
+    let (counts, cell_assignments) = uncertainty.max_posterior_transcript_counts_assignments(
+        &params, &transcripts, args.count_pr_cutoff);
+
+    let assigned_count = cell_assignments.iter().filter(|(c, _)| *c != BACKGROUND_CELL).count();
+    println!("Suppressed {} low probability assignments.", assigned_count - counts.sum() as usize);
 
     if let Some(output_cell_cubes_csv) = args.output_cell_cubes_csv {
         sampler
@@ -403,17 +401,17 @@ fn main() {
         params.write_cell_hulls(&transcripts, &counts, &output_cells);
     }
 
-    if let Some(output_transcripts) = args.output_transcripts {
-        let file = File::create(output_transcripts).unwrap();
+    if let Some(output_transcript_metadata_csv) = args.output_transcript_metadata_csv {
+        let file = File::create(output_transcript_metadata_csv).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut writer = csv::WriterBuilder::new()
             .has_headers(false)
             .from_writer(encoder);
 
         writer
-            .write_record(["x", "y", "z", "gene", "assignment"])
+            .write_record(["x", "y", "z", "gene", "assignment", "probability"])
             .unwrap();
-        for (cell, transcript) in params.cell_assignments.iter().zip(&transcripts) {
+        for ((cell, pr), transcript) in cell_assignments.iter().zip(&transcripts) {
             writer
                 .write_record([
                     transcript.x.to_string(),
@@ -421,9 +419,59 @@ fn main() {
                     transcript.z.to_string(),
                     transcript_names[transcript.gene as usize].clone(),
                     cell.to_string().to_string(),
+                    pr.to_string().to_string(),
                 ])
                 .unwrap();
         }
+    }
+
+    if let Some(output_transcript_metadata_arrow) = args.output_transcript_metadata_arrow {
+        let schema = arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("x", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("y", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("z", arrow::datatypes::DataType::Float32, false),
+            arrow::datatypes::Field::new("gene", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("assignment", arrow::datatypes::DataType::UInt32, false),
+            arrow::datatypes::Field::new("probability", arrow::datatypes::DataType::Float32, false),
+            ]);
+
+        let file = File::create(output_transcript_metadata_arrow).unwrap();
+        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+            file,
+            &schema,
+            arrow::ipc::writer::IpcWriteOptions::default()
+                .try_with_compression(Some(arrow::ipc::CompressionType::ZSTD))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let recbatch = arrow::record_batch::RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(arrow::array::Float32Array::from_iter(
+                    transcripts.iter().map(|t| t.x),
+                )),
+                Arc::new(arrow::array::Float32Array::from_iter(
+                    transcripts.iter().map(|t| t.y),
+                )),
+                Arc::new(arrow::array::Float32Array::from_iter(
+                    transcripts.iter().map(|t| t.z),
+                )),
+                Arc::new(arrow::array::StringArray::from_iter_values(
+                    transcripts.iter().map(|t| transcript_names[t.gene as usize].clone()),
+                )),
+                Arc::new(arrow::array::UInt32Array::from_iter(
+                    cell_assignments.iter()
+                        .map(|(cell, _)| *cell),
+                )),
+                Arc::new(arrow::array::Float32Array::from_iter(
+                    cell_assignments.iter()
+                        .map(|(_, pr)| *pr),
+                )),
+            ]
+        ).unwrap();
+
+        writer.write(&recbatch).unwrap();
     }
 }
 
