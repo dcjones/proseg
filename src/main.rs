@@ -136,10 +136,10 @@ fn main() {
         t.z = t.z.max(zmin).min(zmax);
     }
 
-    let eps = 1e-6;
-    let layer_depth = (zmax - zmin + eps) / (args.nlayers as f32);
+    let layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
 
     println!("Read {} transcripts", ntranscripts);
+    println!("Read {} cells", ncells);
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
@@ -159,7 +159,9 @@ fn main() {
 
     // Find a reasonable grid size to use to chunk the data
     let area = (xmax - xmin) * (ymax - ymin);
-    let chunk_size = (area / args.cells_per_chunk as f32).sqrt();
+
+    let cell_density = ncells as f32 / area;
+    let chunk_size = (args.cells_per_chunk as f32 / cell_density).sqrt();
 
     let nchunks = |chunk_size: f32, xspan: f32, yspan: f32| {
         ((xspan / chunk_size).ceil() as usize) * ((yspan / chunk_size).ceil() as usize)
