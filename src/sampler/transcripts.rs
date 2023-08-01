@@ -48,7 +48,7 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
+fn postprocess_cell_assignments(cell_assignments: &Vec<CellIndex>) -> Vec<usize> {
     let mut ncells = usize::MAX;
     for &cell_id in cell_assignments.iter() {
         if cell_id != BACKGROUND_CELL {
@@ -126,7 +126,7 @@ where
         }
     }
 
-    let cell_population = postprocess_cell_assignments(&mut cell_assignments);
+    let cell_population = postprocess_cell_assignments(&cell_assignments);
 
     return (
         transcript_names,

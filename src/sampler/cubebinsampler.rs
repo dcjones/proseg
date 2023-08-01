@@ -1,4 +1,5 @@
 use super::connectivity::ConnectivityChecker;
+use super::hull::convex_hull_area;
 use super::math::relerr;
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
@@ -240,19 +241,15 @@ impl CubeCellMap {
 }
 
 // Initial binning of the transcripts
-fn bin_transcripts(transcripts: &Vec<Transcript>, avgpop: f32) -> (CubeLayout, Vec<CubeBin>) {
-    let (xmin, xmax, ymin, ymax, mut zmin, mut zmax) = coordinate_span(&transcripts);
-    let xy_area = (xmax - xmin) * (ymax - ymin);
+fn bin_transcripts(transcripts: &Vec<Transcript>, target_area: f32) -> (CubeLayout, Vec<CubeBin>) {
+    let (_, _, _, _, mut zmin, mut zmax) = coordinate_span(&transcripts);
 
     let eps = (zmax - zmin) * 1e-6;
     zmin -= eps;
     zmax += eps;
     let height = zmax - zmin;
 
-    let density = transcripts.len() as f32 / xy_area;
-    let target_area = avgpop / density;
     let cube_size = target_area.sqrt();
-
     let layout = CubeLayout {
         origin: (0.0, 0.0, zmin),
         cube_size: (cube_size, cube_size, height),
@@ -275,6 +272,61 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, avgpop: f32) -> (CubeLayout, V
 
     return (layout, cubebins);
 }
+
+
+fn find_initial_bin_size(transcripts: &Vec<Transcript>, init_cell_assignments: &Vec<CellIndex>) -> f32 {
+    let mut nucleus_transcript_coords = HashMap::<CellIndex, Vec<(f32, f32)>>::new();
+    for (i, cell) in init_cell_assignments.iter().enumerate() {
+        if *cell != BACKGROUND_CELL {
+            let transcript = &transcripts[i];
+            let coords = nucleus_transcript_coords.entry(*cell).or_insert(Vec::new());
+            coords.push((transcript.x, transcript.y));
+        }
+    }
+
+    let mut hull = Vec::new();
+
+    let avg_nucleus_size = nucleus_transcript_coords
+        .values_mut()
+        .map(|vertices| convex_hull_area(vertices, &mut hull))
+        .sum::<f32>() / nucleus_transcript_coords.len() as f32;
+
+    const SCALE: f32 = 0.5_f32;
+    let target_area = avg_nucleus_size * SCALE;
+    return target_area;
+}
+
+
+fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) -> CubeCellMap {
+    let mut cube_assignments = HashMap::new();
+    let mut cubecells = CubeCellMap::new();
+    for cubebin in cubebins {
+        cube_assignments.clear();
+
+        // vote on rect assignment
+        for &t in cubebin.transcripts.iter() {
+            if cell_assignments[t] != BACKGROUND_CELL {
+                cube_assignments
+                    .entry(cell_assignments[t])
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+            }
+        }
+
+        let winner = cube_assignments
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(cell, _)| *cell)
+            .unwrap_or(BACKGROUND_CELL);
+
+        if winner != BACKGROUND_CELL {
+            cubecells.insert(cubebin.cube, winner);
+        }
+    }
+
+    return cubecells;
+}
+
 
 pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
@@ -315,7 +367,6 @@ impl CubeBinSampler {
         nlayers: usize,
         z0: f32,
         layer_depth: f32,
-        avgrectpop: f32,
         chunk_size: f32,
     ) -> Self {
         let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(transcripts);
@@ -323,7 +374,8 @@ impl CubeBinSampler {
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        let (layout, cubebins) = bin_transcripts(transcripts, avgrectpop);
+        let target_area = find_initial_bin_size(transcripts, &params.cell_assignments);
+        let (layout, cubebins) = bin_transcripts(transcripts, target_area);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
         let transcript_layers = transcripts.iter().map(|t| ((t.z - z0) / layer_depth) as u32).collect::<Vec<_>>();
@@ -345,41 +397,24 @@ impl CubeBinSampler {
             }
         }
 
-        // initial assignments
-        let mut cube_assignments = HashMap::new();
-        let mut cubecells = CubeCellMap::new();
+        // initial cube assignments
+        let cubecells = cube_assignments(&cubebins, &params.cell_assignments);
+
+        // homogenize the rect: assign every transcript in the rect to the winner
         for cubebin in &cubebins {
-            cube_assignments.clear();
+            let cell = cubecells.get(cubebin.cube);
 
-            // vote on rect assignment
-            for &t in cubebin.transcripts.iter() {
-                cube_assignments
-                    .entry(params.cell_assignments[t])
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-            }
-
-            let winner = cube_assignments
-                .iter()
-                .max_by_key(|(_, count)| *count)
-                .map(|(cell, _)| *cell)
-                .unwrap_or(BACKGROUND_CELL);
-
-            if winner != BACKGROUND_CELL {
-                cubecells.insert(cubebin.cube, winner);
-            }
-
-            // homogenize the rect: assign every transcript in the rect to the winner
             for &t in cubebin.transcripts.iter() {
                 if params.cell_assignments[t] != BACKGROUND_CELL {
                     params.cell_population[params.cell_assignments[t] as usize] -= 1;
                 }
-                if winner != BACKGROUND_CELL {
-                    params.cell_population[winner as usize] += 1;
+                if cell != BACKGROUND_CELL {
+                    params.cell_population[cell as usize] += 1;
                 }
-                params.cell_assignments[t] = winner;
+                params.cell_assignments[t] = cell;
             }
         }
+
         params.recompute_counts(transcripts);
 
         let nzbins = 1;

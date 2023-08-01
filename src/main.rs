@@ -47,11 +47,6 @@ struct Args {
     #[arg(long, default_value_t=10)]
     nlayers: usize,
 
-    // #[arg(long, default_value_t=100000)]
-    // niter: usize,
-    #[arg(long, default_value_t = 8.0_f32)]
-    inital_bin_population: f32,
-
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[250, 250, 250])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[15, 15, 15])]
@@ -230,7 +225,6 @@ fn main() {
         args.nlayers,
         zmin,
         layer_depth,
-        args.inital_bin_population,
         chunk_size,
     ));
 
