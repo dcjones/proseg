@@ -27,12 +27,12 @@ impl QuickhullSide for QuickhullBelow {
     }
 }
 
-pub fn compute_full_area(transcripts: &Vec<Transcript>) -> f32 {
-    let mut vertices = Vec::from_iter(transcripts.iter().map(|t| (t.x, t.y)));
-    let mut hull = Vec::new();
+// pub fn compute_full_area(transcripts: &Vec<Transcript>) -> f32 {
+//     let mut vertices = Vec::from_iter(transcripts.iter().map(|t| (t.x, t.y)));
+//     let mut hull = Vec::new();
 
-    return convex_hull_area(&mut vertices, &mut hull);
-}
+//     return convex_hull_area(&mut vertices, &mut hull);
+// }
 
 pub fn compute_cell_areas(
     ncells: usize,

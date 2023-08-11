@@ -2,6 +2,7 @@ use csv;
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::fs::File;
+use ndarray::Array2;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
@@ -171,7 +172,6 @@ where
         // let qv = row[qv_col].parse::<f32>().unwrap();
 
         let transcript_name = &row[transcript_col];
-        // let transcript_name = "FAKE";
 
         let gene = if let Some(gene) = transcript_name_map.get(transcript_name) {
             *gene
@@ -230,4 +230,34 @@ pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f3
     }
 
     return (min_x, max_x, min_y, max_y, min_z, max_z);
+}
+
+
+// Estimate what region of the slide to model by counting the number of occupied bins.
+pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32) -> f32 {
+    let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(&transcripts);
+
+    const SCALE: f32 = 2.0;
+    let binsize = SCALE * mean_nucleus_area;
+
+    let xbins = ((xmax - xmin) / binsize).ceil() as usize;
+    let ybins = ((ymax - ymin) / binsize).ceil() as usize;
+
+    dbg!(xbins, ybins, binsize, mean_nucleus_area);
+
+    let mut occupied = Array2::from_elem((xbins, ybins), false);
+
+    for transcript in transcripts {
+        let xbin = ((transcript.x - xmin) / binsize).floor() as usize;
+        let ybin = ((transcript.y - ymin) / binsize).floor() as usize;
+
+        occupied[[xbin, ybin]] = true;
+    }
+
+    dbg!(
+        occupied.iter().filter(|&&x| x).count(),
+        occupied.len(),
+    );
+
+    return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
 }

@@ -153,7 +153,7 @@ pub struct ModelParams {
     pub λ: Array2<f32>,
 
     // [ngenes, nlayers] background rate
-    λ_bg: Array2<f32>,
+    pub λ_bg: Array2<f32>,
 
     // time, which is incremented after every iteration
     t: u32,
@@ -349,8 +349,8 @@ impl ModelParams {
                 x += transcripts[t].x;
                 y += transcripts[t].y;
             }
-            x /= transcripts.len() as f32;
-            y /= transcripts.len() as f32;
+            x /= ts.len() as f32;
+            y /= ts.len() as f32;
             centroids.push((x, y));
         }
 
@@ -557,7 +557,7 @@ impl UncertaintyTracker {
     }
 
     pub fn max_posterior_transcript_counts_assignments(
-        &self, params: &ModelParams, transcripts: &Vec<Transcript>, count_pr_cutoff: f32) -> (Array2<u32>, Vec<(u32,
+        &self, params: &ModelParams, transcripts: &Vec<Transcript>, count_pr_cutoff: f32, foreground_pr_cutoff: f32) -> (Array2<u32>, Vec<(u32,
     f32)>) {
         let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0_u32);
         let maxpost_assignments = self.max_posterior_cell_assignments(&params);
@@ -565,7 +565,12 @@ impl UncertaintyTracker {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
                 let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
-                if params.λ[[gene as usize, *j as usize]] > params.λ_bg[[gene as usize, layer]] {
+
+                let λ_fg = params.λ[[gene as usize, *j as usize]];
+                let λ_bg = params.λ_bg[[gene as usize, layer]];
+                let fg_pr = λ_fg / (λ_fg + λ_bg);
+
+                if fg_pr > foreground_pr_cutoff {
                     counts[[gene as usize, *j as usize]] += 1;
                 }
             }

@@ -10,10 +10,11 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
+use ndarray::{Array1, Zip};
 use rayon::current_num_threads;
 use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
-use sampler::transcripts::{coordinate_span, read_transcripts_csv, Transcript, BACKGROUND_CELL};
+use sampler::transcripts::{coordinate_span, read_transcripts_csv, estimate_full_area, Transcript, BACKGROUND_CELL};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 use std::fs::File;
@@ -47,9 +48,8 @@ struct Args {
     #[arg(long, default_value_t=10)]
     nlayers: usize,
 
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[250, 250, 250])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[15, 15, 15])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -58,13 +58,16 @@ struct Args {
     #[arg(short, long, default_value_t = 1000)]
     local_steps_per_iter: usize,
 
-    #[arg(long, default_value_t = 0.5_f32)]
+    #[arg(long, default_value_t = 0.1)]
     count_pr_cutoff: f32,
+
+    #[arg(long, default_value_t = 0.5_f32)]
+    foreground_pr_cutoff: f32,
 
     #[arg(long, default_value_t = 6.0_f32)]
     perimeter_bound: f32,
 
-    #[arg(long, default_value_t = 1e-2_f32)]
+    #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
 
     #[arg(long, default_value = "counts.csv.gz")]
@@ -94,6 +97,9 @@ struct Args {
     #[arg(long, default_value=None)]
     output_transcript_metadata_arrow: Option<String>,
 
+    #[arg(long, default_value=None)]
+    output_gene_metadata_arrow: Option<String>,
+
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 }
@@ -114,6 +120,9 @@ fn main() {
     let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
     let ncells = init_cell_population.len();
+
+    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
+    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
 
     // Clamp transcript depth
     // This is we get some reasonable depth slices when we step up to
@@ -139,7 +148,8 @@ fn main() {
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
-    let full_volume = sampler::hull::compute_full_area(&transcripts) * zspan;
+    let full_volume = estimate_full_area(&transcripts, mean_nucleus_area) * zspan;
+
     let full_layer_volume = full_volume / (args.nlayers as f32);
     println!("Full volume: {}", full_volume);
 
@@ -168,8 +178,6 @@ fn main() {
         nchunks(chunk_size, xspan, yspan)
     );
 
-    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
-    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / (ncells as f32);
 
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
@@ -281,7 +289,7 @@ fn main() {
 
     uncertainty.finish(&params);
     let (counts, cell_assignments) = uncertainty.max_posterior_transcript_counts_assignments(
-        &params, &transcripts, args.count_pr_cutoff);
+        &params, &transcripts, args.count_pr_cutoff, args.foreground_pr_cutoff);
 
     let assigned_count = cell_assignments.iter().filter(|(c, _)| *c != BACKGROUND_CELL).count();
     println!("Suppressed {} low probability assignments.", assigned_count - counts.sum() as usize);
@@ -466,6 +474,67 @@ fn main() {
                 )),
             ]
         ).unwrap();
+
+        writer.write(&recbatch).unwrap();
+    }
+
+    if let Some(output_gene_metadata_arrow) = args.output_gene_metadata_arrow {
+        let mut schema_fields = Vec::new();
+        let mut columns: Vec<arrow::array::ArrayRef> = Vec::new();
+
+        schema_fields.push(
+            arrow::datatypes::Field::new("gene", arrow::datatypes::DataType::Utf8, false));
+        columns.push(Arc::new(
+            arrow::array::StringArray::from_iter_values(transcript_names.iter())));
+
+        // rates for each cell type
+        for i in 0..args.ncomponents {
+            schema_fields.push(
+                arrow::datatypes::Field::new(format!("λ_{}", i), arrow::datatypes::DataType::Float32, false));
+
+            let mut λ_component = Array1::<f32>::from_elem(ngenes, 0_f32);
+
+            let mut count = 0;
+            Zip::from(&params.z)
+                .and(params.λ.columns())
+                .for_each(|&z, λ| {
+                    if i == z as usize {
+                        Zip::from(&mut λ_component)
+                            .and(λ)
+                            .for_each(|a, b| *a += b);
+                        count += 1;
+                    }
+                });
+            λ_component /= count as f32;
+
+            columns.push(
+                Arc::new(arrow::array::Float32Array::from_iter(λ_component.iter().cloned())));
+        }
+
+        // rates for each background layer
+        for i in 0..args.nlayers {
+            schema_fields.push(
+                arrow::datatypes::Field::new(format!("λ_bg_{}", i), arrow::datatypes::DataType::Float32, false));
+            columns.push(Arc::new(
+                arrow::array::Float32Array::from_iter(
+                    params.λ_bg.column(i).iter().cloned())));
+        }
+
+        let schema = arrow::datatypes::Schema::new(schema_fields);
+
+        let file = File::create(output_gene_metadata_arrow).unwrap();
+        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
+            file,
+            &schema,
+            arrow::ipc::writer::IpcWriteOptions::default()
+                .try_with_compression(Some(arrow::ipc::CompressionType::ZSTD))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let recbatch = arrow::record_batch::RecordBatch::try_new(
+            Arc::new(schema),
+            columns).unwrap();
 
         writer.write(&recbatch).unwrap();
     }
