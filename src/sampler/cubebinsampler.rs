@@ -292,7 +292,6 @@ fn find_initial_bin_size(transcripts: &Vec<Transcript>, init_cell_assignments: &
         .map(|vertices| convex_hull_area(vertices, &mut hull))
         .sum::<f32>() / nucleus_transcript_coords.len() as f32;
 
-    // const SCALE: f32 = 0.25_f32;
     const SCALE: f32 = 0.5_f32;
     let target_area = avg_nucleus_size * SCALE;
     return target_area;

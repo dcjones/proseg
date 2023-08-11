@@ -49,7 +49,7 @@ struct Args {
     nlayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
