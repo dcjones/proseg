@@ -21,6 +21,7 @@ pub fn read_transcripts_csv(
     x_column: &str,
     y_column: &str,
     z_column: Option<&str>,
+    min_qv: f32
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
     let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
     // let mut rdr = csv::Reader::from_path(path).unwrap();
@@ -33,10 +34,11 @@ pub fn read_transcripts_csv(
                 x_column,
                 y_column,
                 z_column,
+                min_qv,
             );
         }
         None => {
-            return read_transcripts_csv_xy(&mut rdr, transcript_column, x_column, y_column);
+            return read_transcripts_csv_xy(&mut rdr, transcript_column, x_column, y_column, min_qv);
         }
     }
 }
@@ -78,6 +80,7 @@ fn read_transcripts_csv_xy<T>(
     transcript_column: &str,
     x_column: &str,
     y_column: &str,
+    min_qv: f32,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
 where
     T: std::io::Read,
@@ -89,6 +92,7 @@ where
     let y_col = find_column(headers, y_column);
     let cell_id_col = find_column(headers, "cell_id");
     let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
+    let qv_col = find_column(headers, "qv");
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map = HashMap::new();
@@ -97,6 +101,11 @@ where
 
     for result in rdr.records() {
         let row = result.unwrap();
+
+        let qv = row[qv_col].parse::<f32>().unwrap();
+        if qv < min_qv {
+            continue;
+        }
 
         let transcript_name = &row[transcript_col];
 
@@ -143,6 +152,7 @@ fn read_transcripts_csv_xyz<T>(
     x_column: &str,
     y_column: &str,
     z_column: &str,
+    min_qv: f32,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
 where
     T: std::io::Read,
@@ -159,7 +169,7 @@ where
     // We'll have to specialize for various platforms in the future.
     let cell_id_col = find_column(headers, "cell_id");
     let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
-    // let qv_col = find_column(headers, "qv");
+    let qv_col = find_column(headers, "qv");
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
@@ -169,7 +179,10 @@ where
     for result in rdr.records() {
         let row = result.unwrap();
 
-        // let qv = row[qv_col].parse::<f32>().unwrap();
+        let qv = row[qv_col].parse::<f32>().unwrap();
+        if qv < min_qv {
+            continue;
+        }
 
         let transcript_name = &row[transcript_col];
 

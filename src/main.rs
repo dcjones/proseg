@@ -49,7 +49,7 @@ struct Args {
     nlayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -69,6 +69,9 @@ struct Args {
 
     #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
+
+    #[arg(long, default_value_t = 0.0_f32)]
+    min_qv: f32,
 
     #[arg(long, default_value = "counts.csv.gz")]
     output_counts_csv: Option<String>,
@@ -116,6 +119,7 @@ fn main() {
             &args.x_column,
             &args.y_column,
             args.z_column.as_deref(),
+            args.min_qv,
         );
     let ngenes = transcript_names.len();
     let ntranscripts = transcripts.len();
