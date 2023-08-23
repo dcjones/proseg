@@ -74,6 +74,10 @@ pub struct ModelPriors {
     pub e_r: f32,
     pub f_r: f32,
 
+    // gamma prior for background rates
+    pub α_bg: f32,
+    pub β_bg: f32,
+
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
     pub perimeter_bound: f32,
@@ -937,23 +941,18 @@ where
                 .map(|x| *x as f32),
         );
 
-
-        // TODO: I should maybe actually sample here.
-        // Sample background rates
-        // if let Some(background_proportion) = background_proportion {
-        //     Zip::from(&mut params.λ_bg)
-        //         .and(&params.total_gene_counts)
-        //         .for_each(|λ, c| {
-        //             *λ = background_proportion * (*c as f32) / params.full_area;
-        //         });
-        // } else {
+        // TODO: Seems like background rates are typically higher when sampling!
+        // Why are we assigning fewer transcripts to background?
 
         Zip::from(&mut params.λ_bg)
             .and(&params.background_counts)
             .for_each(|λ, c| {
-                *λ = (*c as f32) / params.full_layer_volume;
+                let α = priors.α_bg + *c as f32;
+                let β = priors.β_bg + params.full_layer_volume;
+                *λ = Gamma::new(α, β.recip())
+                    .unwrap()
+                    .sample(&mut rng) as f32;
             });
-        // }
 
         // dbg!(&self.background_counts, &self.params.λ_bg);
     }

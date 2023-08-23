@@ -70,7 +70,7 @@ struct Args {
     #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
 
-    #[arg(long, default_value_t = 5.0_f32)]
+    #[arg(long, default_value_t = 4.0_f32)]
     scale: f32,
 
     #[arg(long, default_value_t=false)]
@@ -212,6 +212,9 @@ fn main() {
         β_θ: 1.0,
         e_r: 1.0,
         f_r: 1.0,
+
+        α_bg: 1.0,
+        β_bg: 1.0,
 
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
