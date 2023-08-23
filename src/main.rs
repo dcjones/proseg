@@ -82,6 +82,9 @@ struct Args {
     #[arg(long, default_value = "counts.csv.gz")]
     output_counts_csv: Option<String>,
 
+    #[arg(long, default_value = "expected-counts.csv.gz")]
+    output_expected_counts_csv: Option<String>,
+
     #[arg(long, default_value = "counts.arrow")]
     output_counts_arrow: Option<String>,
 
@@ -321,6 +324,23 @@ fn main() {
         sampler
             .borrow()
             .write_cell_cubes_arrow(&output_cell_cubes_arrow);
+    }
+
+    if let Some(output_expected_counts_csv) = args.output_expected_counts_csv {
+        let ecounts = uncertainty.expected_counts(&params, &transcripts);
+
+        let file = File::create(&output_expected_counts_csv).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut writer = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(encoder);
+
+        writer.write_record(transcript_names.iter()).unwrap();
+        for row in ecounts.t().rows() {
+            writer
+                .write_record(row.iter().map(|x| x.to_string()))
+                .unwrap();
+        }
     }
 
     if let Some(output_counts_csv) = args.output_counts_csv {

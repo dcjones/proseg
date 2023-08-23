@@ -578,6 +578,29 @@ impl UncertaintyTracker {
 
         return (counts, maxpost_assignments);
     }
+
+    pub fn expected_counts(&self, params: &ModelParams, transcripts: &Vec<Transcript>) -> Array2<f32> {
+        let mut ecounts = Array2::<f32>::zeros((params.ngenes(), params.ncells()));
+
+        for (&(i, j), &d) in self.cell_assignment_duration.iter() {
+            if j == BACKGROUND_CELL {
+                continue;
+            }
+
+            let gene = transcripts[i].gene;
+            let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+
+            let w_d = d as f32 / params.t as f32;
+
+            let λ_fg = params.λ[[gene as usize, j as usize]];
+            let λ_bg = params.λ_bg[[gene as usize, layer]];
+            let w_bg = λ_fg / (λ_fg + λ_bg);
+
+            ecounts[[gene as usize, j as usize]] += w_d * w_bg;
+        }
+
+        return ecounts;
+    }
 }
 
 pub trait Proposal {
