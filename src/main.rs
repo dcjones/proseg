@@ -70,6 +70,12 @@ struct Args {
     #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
 
+    #[arg(long, default_value_t = 5.0_f32)]
+    scale: f32,
+
+    #[arg(long, default_value_t=false)]
+    calibrate_scale: bool,
+
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
@@ -127,6 +133,12 @@ fn main() {
 
     let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
+
+    // If scale isn't specified set it to something reasonable based on mean nuclei size
+    let mut scale = args.scale;
+    if args.calibrate_scale {
+        scale = 0.5 * mean_nucleus_area.sqrt();
+    }
 
     // Clamp transcript depth
     // This is we get some reasonable depth slices when we step up to
@@ -237,6 +249,7 @@ fn main() {
         args.nlayers,
         zmin,
         layer_depth,
+        scale,
         chunk_size,
     ));
 

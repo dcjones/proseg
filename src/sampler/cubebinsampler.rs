@@ -242,7 +242,7 @@ impl CubeCellMap {
 }
 
 // Initial binning of the transcripts
-fn bin_transcripts(transcripts: &Vec<Transcript>, target_area: f32) -> (CubeLayout, Vec<CubeBin>) {
+fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Vec<CubeBin>) {
     let (_, _, _, _, mut zmin, mut zmax) = coordinate_span(&transcripts);
 
     let eps = (zmax - zmin) * 1e-6;
@@ -250,7 +250,7 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, target_area: f32) -> (CubeLayo
     zmax += eps;
     let height = zmax - zmin;
 
-    let cube_size = target_area.sqrt();
+    let cube_size = scale;
     let layout = CubeLayout {
         origin: (0.0, 0.0, zmin),
         cube_size: (cube_size, cube_size, height),
@@ -272,29 +272,6 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, target_area: f32) -> (CubeLayo
     let cubebins = cube_index.values().cloned().collect::<Vec<_>>();
 
     return (layout, cubebins);
-}
-
-
-fn find_initial_bin_size(transcripts: &Vec<Transcript>, init_cell_assignments: &Vec<CellIndex>) -> f32 {
-    let mut nucleus_transcript_coords = HashMap::<CellIndex, Vec<(f32, f32)>>::new();
-    for (i, cell) in init_cell_assignments.iter().enumerate() {
-        if *cell != BACKGROUND_CELL {
-            let transcript = &transcripts[i];
-            let coords = nucleus_transcript_coords.entry(*cell).or_insert(Vec::new());
-            coords.push((transcript.x, transcript.y));
-        }
-    }
-
-    let mut hull = Vec::new();
-
-    let avg_nucleus_size = nucleus_transcript_coords
-        .values_mut()
-        .map(|vertices| convex_hull_area(vertices, &mut hull))
-        .sum::<f32>() / nucleus_transcript_coords.len() as f32;
-
-    const SCALE: f32 = 0.5_f32;
-    let target_area = avg_nucleus_size * SCALE;
-    return target_area;
 }
 
 
@@ -368,6 +345,7 @@ impl CubeBinSampler {
         nlayers: usize,
         z0: f32,
         layer_depth: f32,
+        scale: f32,
         chunk_size: f32,
     ) -> Self {
         let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(transcripts);
@@ -375,8 +353,7 @@ impl CubeBinSampler {
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        let target_area = find_initial_bin_size(transcripts, &params.cell_assignments);
-        let (layout, cubebins) = bin_transcripts(transcripts, target_area);
+        let (layout, cubebins) = bin_transcripts(transcripts, scale);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
         let transcript_layers = transcripts.iter().map(|t| ((t.z - z0) / layer_depth) as u32).collect::<Vec<_>>();
