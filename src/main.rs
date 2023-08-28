@@ -39,12 +39,12 @@ struct Args {
     y_column: String,
 
     #[arg(short, long, default_value = "z_location")]
-    z_column: Option<String>,
+    z_column: String,
 
     #[arg(long, default_value_t=100)]
     cells_per_chunk: usize,
 
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 5)]
     ncomponents: usize,
 
     #[arg(long, default_value_t=5)]
@@ -133,7 +133,7 @@ fn main() {
             &args.transcript_column,
             &args.x_column,
             &args.y_column,
-            args.z_column.as_deref(),
+            &args.z_column,
             args.min_qv,
         );
     let ngenes = transcript_names.len();
