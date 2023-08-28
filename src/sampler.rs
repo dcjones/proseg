@@ -332,35 +332,6 @@ impl ModelParams {
         return ll;
     }
 
-    pub fn cell_centroids(&self, transcripts: &Vec<Transcript>) -> Vec<(f32, f32)> {
-        let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); self.ncells()];
-        for (i, &cell) in self.cell_assignments.iter().enumerate() {
-            if cell != BACKGROUND_CELL {
-                cell_transcripts[cell as usize].push(i);
-            }
-        }
-
-        let mut centroids = Vec::with_capacity(self.ncells());
-        for ts in cell_transcripts.iter() {
-            if ts.len() == 0 {
-                centroids.push((f32::NAN, f32::NAN));
-                continue;
-            }
-
-            let mut x = 0.0;
-            let mut y = 0.0;
-            for &t in ts {
-                x += transcripts[t].x;
-                y += transcripts[t].y;
-            }
-            x /= ts.len() as f32;
-            y /= ts.len() as f32;
-            centroids.push((x, y));
-        }
-
-        return centroids;
-    }
-
     pub fn write_cell_hulls(
         &self,
         transcripts: &Vec<Transcript>,

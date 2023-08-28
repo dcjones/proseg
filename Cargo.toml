@@ -1,6 +1,6 @@
 [package]
 name = "proseg"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 
 [profile.release]
@@ -16,6 +16,7 @@ csv = "1.2.2"
 flate2 = "1.0.26"
 indicatif = "0.17.5"
 itertools = "0.10.5"
+kiddo = "2.1.1"
 libm = "0.2.7"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 petgraph = "0.6.3"

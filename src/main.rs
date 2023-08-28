@@ -14,7 +14,9 @@ use ndarray::{Array1, Axis, Zip};
 use rayon::current_num_threads;
 use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
-use sampler::transcripts::{coordinate_span, read_transcripts_csv, estimate_full_area, Transcript, BACKGROUND_CELL};
+use sampler::transcripts::{
+    coordinate_span, read_transcripts_csv, estimate_full_area, estimate_cell_centroids,
+    filter_cellfree_transcripts, Transcript, BACKGROUND_CELL};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 use std::fs::File;
@@ -45,11 +47,12 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=1)]
+    #[arg(long, default_value_t=5)]
     nlayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -72,6 +75,9 @@ struct Args {
 
     #[arg(long, default_value_t = 4.0_f32)]
     scale: f32,
+
+    #[arg(long, default_value_t = 30_f32)]
+    max_transcript_nucleus_distance: f32,
 
     #[arg(long, default_value_t=false)]
     calibrate_scale: bool,
@@ -121,7 +127,7 @@ fn main() {
 
     assert!(args.ncomponents > 0);
 
-    let (transcript_names, mut transcripts, init_cell_assignments, init_cell_population) =
+    let (transcript_names, transcripts, init_cell_assignments, init_cell_population) =
         read_transcripts_csv(
             &args.transcript_csv,
             &args.transcript_column,
@@ -131,8 +137,12 @@ fn main() {
             args.min_qv,
         );
     let ngenes = transcript_names.len();
-    let ntranscripts = transcripts.len();
     let ncells = init_cell_population.len();
+
+    let (mut transcripts, init_cell_assignments) = filter_cellfree_transcripts(
+        &transcripts, &init_cell_assignments, ncells, args.max_transcript_nucleus_distance);
+
+    let ntranscripts = transcripts.len();
 
     let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
@@ -421,7 +431,7 @@ fn main() {
             .has_headers(false)
             .from_writer(encoder);
 
-        let cell_centroids = params.cell_centroids(&transcripts);
+        let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
         writer
             .write_record(["cell", "centroid_x", "centroid_y", "cluster", "volume", "population"])
             .unwrap();

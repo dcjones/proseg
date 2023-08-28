@@ -1,8 +1,10 @@
 use csv;
 use flate2::read::GzDecoder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use ndarray::Array2;
+use kiddo::float::kdtree::KdTree;
+use kiddo::distance::squared_euclidean;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
@@ -273,4 +275,76 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
     );
 
     return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
+}
+
+
+// Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
+pub fn estimate_cell_centroids(transcripts: &Vec<Transcript>, cell_assignments: &Vec<CellIndex>, ncells: usize) -> Vec<(f32, f32)> {
+    let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); ncells];
+    for (i, &cell) in cell_assignments.iter().enumerate() {
+        if cell != BACKGROUND_CELL {
+            cell_transcripts[cell as usize].push(i);
+        }
+        }
+
+    let mut centroids = Vec::with_capacity(ncells);
+    for ts in cell_transcripts.iter() {
+        if ts.len() == 0 {
+            centroids.push((f32::NAN, f32::NAN));
+            continue;
+        }
+
+        let mut x = 0.0;
+        let mut y = 0.0;
+        for &t in ts {
+            x += transcripts[t].x;
+            y += transcripts[t].y;
+        }
+        x /= ts.len() as f32;
+        y /= ts.len() as f32;
+        centroids.push((x, y));
+    }
+
+    return centroids;
+}
+
+
+pub fn filter_cellfree_transcripts(transcripts: &Vec<Transcript>, init_cell_assignments: &Vec<CellIndex>, ncells: usize, max_distance: f32) ->
+    (Vec<Transcript>, Vec<CellIndex>)
+{
+    let max_distance_squared = max_distance * max_distance;
+
+    let centroids = estimate_cell_centroids(transcripts, init_cell_assignments, ncells);
+    let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
+    for (i, (x, y)) in centroids.iter().enumerate() {
+        if !x.is_finite() || !y.is_finite() {
+            continue;
+        }
+        kdtree.add(&[*x, *y], i as u32);
+    }
+
+    let mut mask = vec![false; transcripts.len()];
+    for (i, t) in transcripts.iter().enumerate() {
+        let (d, _) = kdtree.nearest_one(&[t.x, t.y], &squared_euclidean);
+
+        if d <= max_distance_squared {
+            mask[i] = true;
+        }
+    }
+
+    let filtered_transcripts = transcripts.iter()
+        .zip(mask.iter())
+        .filter(|(_, &m)| m)
+        .map(|(t, _)| t)
+        .cloned()
+        .collect::<Vec<_>>();
+    let filtered_cell_assignments = init_cell_assignments.iter()
+        .zip(mask.iter())
+        .filter(|(_, &m)| m)
+        .map(|(t, _)| t)
+        .cloned()
+        .collect::<Vec<_>>();
+
+
+    return (filtered_transcripts, filtered_cell_assignments);
 }
