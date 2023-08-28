@@ -1,5 +1,4 @@
 use super::connectivity::ConnectivityChecker;
-use super::hull::convex_hull_area;
 use super::math::relerr;
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};

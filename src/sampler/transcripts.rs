@@ -1,6 +1,6 @@
 use csv;
 use flate2::read::GzDecoder;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use ndarray::Array2;
 
@@ -251,7 +251,7 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
     let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(&transcripts);
 
     const SCALE: f32 = 2.0;
-    let binsize = SCALE * mean_nucleus_area;
+    let binsize = SCALE * mean_nucleus_area.sqrt();
 
     let xbins = ((xmax - xmin) / binsize).ceil() as usize;
     let ybins = ((ymax - ymin) / binsize).ceil() as usize;

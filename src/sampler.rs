@@ -117,7 +117,7 @@ pub struct ModelParams {
     background_counts: Array2<u32>,
 
     // [ngenes, nlayers] total gene occourance counts
-    total_gene_counts: Array2<u32>,
+    pub total_gene_counts: Array2<u32>,
 
     // Not parameters, but needed for sampling global params
     logfactorial: LogFactorial,
@@ -1076,12 +1076,12 @@ where
             .par_for_each(|mut λs, cs, θs, r| {
                 let mut rng = thread_rng();
                 // loop over cells
-                for (λ, z, cs, cell_area) in izip!(&mut λs, &params.z, cs.outer_iter(), &params.cell_volume) {
+                for (λ, z, cs, cell_volume) in izip!(&mut λs, &params.z, cs.outer_iter(), &params.cell_volume) {
                     let c = cs.sum();
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
                         *r + c as f32,
-                        θ / (cell_area * θ + 1.0), // ((cell_area * θ + 1.0) / θ) as f64,
+                        θ / (cell_volume * θ + 1.0), // ((cell_area * θ + 1.0) / θ) as f64,
                     )
                     .unwrap()
                     .sample(&mut rng)

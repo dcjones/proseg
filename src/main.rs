@@ -10,7 +10,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{Array1, Zip};
+use ndarray::{Array1, Axis, Zip};
 use rayon::current_num_threads;
 use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
@@ -45,7 +45,7 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=10)]
+    #[arg(long, default_value_t=1)]
     nlayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
@@ -167,9 +167,12 @@ fn main() {
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
-    let full_volume = estimate_full_area(&transcripts, mean_nucleus_area) * zspan;
+    let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
+    println!("Estimated full area: {}", full_area);
+    let full_volume = full_area * zspan;
 
     let full_layer_volume = full_volume / (args.nlayers as f32);
+
     println!("Full volume: {}", full_volume);
 
     if let Some(nthreads) = args.nthreads {
@@ -329,9 +332,8 @@ fn main() {
             .write_cell_cubes_arrow(&output_cell_cubes_arrow);
     }
 
+    let ecounts = uncertainty.expected_counts(&params, &transcripts);
     if let Some(output_expected_counts_csv) = args.output_expected_counts_csv {
-        let ecounts = uncertainty.expected_counts(&params, &transcripts);
-
         let file = File::create(&output_expected_counts_csv).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut writer = csv::WriterBuilder::new()
@@ -526,6 +528,17 @@ fn main() {
             arrow::datatypes::Field::new("gene", arrow::datatypes::DataType::Utf8, false));
         columns.push(Arc::new(
             arrow::array::StringArray::from_iter_values(transcript_names.iter())));
+
+        schema_fields.push(
+            arrow::datatypes::Field::new("total_count", arrow::datatypes::DataType::UInt32, false));
+        columns.push(Arc::new(
+            arrow::array::UInt32Array::from_iter_values(params.total_gene_counts.sum_axis(Axis(1)).iter().cloned())));
+
+        schema_fields.push(
+            arrow::datatypes::Field::new("expected_assigned_count", arrow::datatypes::DataType::Float32, false));
+        columns.push(Arc::new(
+            arrow::array::Float32Array::from_iter_values(
+                ecounts.sum_axis(Axis(1)).iter().cloned())));
 
         // rates for each cell type
         for i in 0..args.ncomponents {
