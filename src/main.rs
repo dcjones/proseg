@@ -47,7 +47,7 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=5)]
+    #[arg(long, default_value_t=10)]
     nlayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
