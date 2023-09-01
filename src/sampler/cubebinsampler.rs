@@ -14,8 +14,25 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
+use geo::geometry::{Polygon, MultiPolygon, LineString};
+use geo::BooleanOps;
 
 use std::time::Instant;
+
+
+// taken from: https://github.com/a-b-street/abstreet
+fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32> {
+    // TODO Not sure why this happened, or if this is really valid to construct...
+    if list.is_empty() {
+        return MultiPolygon(Vec::new());
+    }
+
+    let mut result = geo::MultiPolygon(vec![list.pop().unwrap().into()]);
+    for p in list {
+        result = result.union(&p.into());
+    }
+    result
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cube {
@@ -318,8 +335,8 @@ pub struct CubeBinSampler {
     // need to track the per z-layer cell population and perimeter in order
     // to implement perimeter constraints.
     nzbins: usize,
-    cell_population: Array2<f32>,
-    cell_perimeter: Array2<f32>,
+    cell_population: Array2<f32>, // [nzbins, ncells]
+    cell_perimeter: Array2<f32>, // [nzbins, ncells]
 
     proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
@@ -429,6 +446,10 @@ impl CubeBinSampler {
         sampler.populate_mismatches();
 
         return sampler;
+    }
+
+    fn ncells(&self) -> usize {
+        return self.cell_population.shape()[1];
     }
 
     // Allocate a new RectBinSampler with the same state as this one, but
@@ -664,6 +685,53 @@ impl CubeBinSampler {
             .iter()
             .filter(|(_, &cell)| cell != BACKGROUND_CELL)
             .map(|(cube, cell)| (*cell, self.chunkquad.layout.cube_to_world_coords(*cube)));
+    }
+
+    pub fn cell_polygons(&self) -> Vec<MultiPolygon<f32>> {
+        let mut cell_polys: Vec<Vec<Polygon<f32>>> = vec![Vec::new(); self.ncells()];
+        for (cell, (x0, y0, _z0, x1, y1, _z1)) in self.cubes() {
+            cell_polys[cell as usize].push(
+                Polygon::<f32>::new(
+                    LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
+                    vec![]
+                )
+            )
+        }
+
+        let cell_polys = cell_polys
+            .into_par_iter()
+            .map(union_all_into_multipolygon)
+            .collect();
+
+        return cell_polys;
+    }
+
+    pub fn cell_layered_polygons(&self) -> Vec<(i32, Vec<MultiPolygon<f32>>)> {
+        let mut cell_polys= HashMap::new();
+
+        for (cube, &cell) in self.cubecells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let (x0, y0, _z0, x1, y1, _z1) = self.chunkquad.layout.cube_to_world_coords(*cube);
+
+            let cell_polys = cell_polys.entry(cube.k).or_insert_with(|| vec![Vec::new(); self.ncells()]);
+            cell_polys[cell as usize].push(
+                Polygon::<f32>::new(
+                    LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
+                    vec![]
+                )
+            )
+        }
+
+        let cell_polys = cell_polys
+            .into_iter()
+            .map(|(k, polys)|
+                (k, polys.into_par_iter().map(union_all_into_multipolygon).collect()))
+            .collect();
+
+        return cell_polys;
     }
 
     pub fn check_consistency(&mut self, priors: &ModelPriors, params: &mut ModelParams) {

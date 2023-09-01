@@ -8,6 +8,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::sync::Arc;
 use ndarray::{Array1, Array2, Axis, Zip};
+use std::io::Write;
 
 use super::sampler::ModelParams;
 use super::sampler::transcripts::Transcript;
@@ -345,5 +346,176 @@ pub fn write_cubes(
         let chunk = arrow2::chunk::Chunk::new(columns);
 
         write_table(&output_cubes, &output_cubes_fmt, schema, chunk);
+    }
+}
+
+
+// TODO:
+// If we want to import things into qupath, I think we need a way to scale
+// the coordinates to pixel space. It also doesn't seem like it supports
+// MultiPolygons, so we need to write each polygon in a cell to a separate Polygon entry.
+
+pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: &CubeBinSampler) {
+    if let Some(output_cell_polygons) = output_cell_polygons {
+        // Need to collect cubes and organize
+        let cell_polys = sampler.cell_polygons();
+
+        let file = File::create(output_cell_polygons).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+
+        writeln!(
+            encoder,
+            "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
+        )
+        .unwrap();
+
+        let ncells = cell_polys.len();
+        for (cell, polys) in cell_polys.into_iter().enumerate() {
+            writeln!(
+                encoder,
+                concat!(
+                    "    {{\n",
+                    "      \"type\": \"Feature\",\n",
+                    "      \"properties\": {{\n",
+                    "        \"cell\": {}\n",
+                    "      }},\n",
+                    "      \"geometry\": {{\n",
+                    "        \"type\": \"MultiPolygon\",\n",
+                    "        \"coordinates\": ["),
+                cell).unwrap();
+
+            let npolys = polys.iter().count();
+            for (i, poly) in polys.into_iter().enumerate() {
+                writeln!(
+                    encoder,
+                    concat!(
+                        "          [\n",
+                        "            [")).unwrap();
+
+                let ncoords = poly.exterior().coords().count();
+                for (j, coord) in poly.exterior().coords().enumerate() {
+                    write!(encoder, "              [{}, {}]", coord.x, coord.y).unwrap();
+                    if j < ncoords - 1 {
+                        writeln!(encoder, ",").unwrap();
+                    } else {
+                        writeln!(encoder, "").unwrap();
+                    }
+                }
+
+                write!(
+                    encoder,
+                    concat!(
+                        "            ]\n",
+                        "          ]")).unwrap();
+
+                if i < npolys - 1 {
+                    writeln!(encoder, ",").unwrap();
+                } else {
+                    writeln!(encoder, "").unwrap();
+                }
+            }
+
+            write!(
+                encoder,
+                concat!(
+                    "        ]\n",
+                    "      }}\n",
+                    "    }}")).unwrap();
+            if cell < ncells - 1 {
+                writeln!(encoder, ",").unwrap();
+            } else {
+                writeln!(encoder, "").unwrap();
+            }
+        }
+
+        writeln!(encoder, "  ]\n}}").unwrap();
+    }
+}
+
+
+pub fn write_cell_layered_multipolygons(output_cell_polygons: &Option<String>, sampler: &CubeBinSampler) {
+    if let Some(output_cell_polygons) = output_cell_polygons {
+        // Need to collect cubes and organize
+        let cell_layered_polys = sampler.cell_layered_polygons();
+
+        let file = File::create(output_cell_polygons).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+
+        writeln!(
+            encoder,
+            "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
+        )
+        .unwrap();
+
+        let mut nmultipolys = 0;
+        for (_, cell_polys) in cell_layered_polys.iter() {
+            nmultipolys += cell_polys.len();
+        }
+
+        let mut count = 0;
+        for (layer, cell_polys) in cell_layered_polys {
+            for (cell, polys) in cell_polys.into_iter().enumerate() {
+                writeln!(
+                    encoder,
+                    concat!(
+                        "    {{\n",
+                        "      \"type\": \"Feature\",\n",
+                        "      \"properties\": {{\n",
+                        "        \"cell\": {},\n",
+                        "        \"layer\": {}\n",
+                        "      }},\n",
+                        "      \"geometry\": {{\n",
+                        "        \"type\": \"MultiPolygon\",\n",
+                        "        \"coordinates\": ["),
+                    cell, layer).unwrap();
+
+                let npolys = polys.iter().count();
+                for (i, poly) in polys.into_iter().enumerate() {
+                    writeln!(
+                        encoder,
+                        concat!(
+                            "          [\n",
+                            "            [")).unwrap();
+
+                    let ncoords = poly.exterior().coords().count();
+                    for (j, coord) in poly.exterior().coords().enumerate() {
+                        write!(encoder, "              [{}, {}]", coord.x, coord.y).unwrap();
+                        if j < ncoords - 1 {
+                            writeln!(encoder, ",").unwrap();
+                        } else {
+                            writeln!(encoder, "").unwrap();
+                        }
+                    }
+
+                    write!(
+                        encoder,
+                        concat!(
+                            "            ]\n",
+                            "          ]")).unwrap();
+
+                    if i < npolys - 1 {
+                        writeln!(encoder, ",").unwrap();
+                    } else {
+                        writeln!(encoder, "").unwrap();
+                    }
+                }
+
+                write!(
+                    encoder,
+                    concat!(
+                        "        ]\n",
+                        "      }}\n",
+                        "    }}")).unwrap();
+                if count < nmultipolys - 1 {
+                    writeln!(encoder, ",").unwrap();
+                } else {
+                    writeln!(encoder, "").unwrap();
+                }
+
+                count += 1;
+            }
+        }
+
+        writeln!(encoder, "  ]\n}}").unwrap();
     }
 }

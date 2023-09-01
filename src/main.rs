@@ -47,9 +47,9 @@ struct Args {
     nlayers: usize,
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -123,6 +123,12 @@ struct Args {
 
     #[arg(long, default_value=None)]
     output_cell_cubes_fmt: Option<String>,
+
+    #[arg(long, default_value = "cell-polygons.geojson.gz")]
+    output_cell_polygons: Option<String>,
+
+    #[arg(long, default_value_t=false)]
+    output_cell_polygons_squash_layers: bool,
 }
 
 fn main() {
@@ -333,13 +339,6 @@ fn main() {
     let assigned_count = cell_assignments.iter().filter(|(c, _)| *c != BACKGROUND_CELL).count();
     println!("Suppressed {} low probability assignments.", assigned_count - counts.sum() as usize);
 
-    // // TODO: write cell cubes to parquet
-    // if let Some(output_cell_cubes_csv) = args.output_cell_cubes_csv {
-    //     sampler
-    //         .borrow()
-    //         .write_cell_cubes_csv(&output_cell_cubes_csv);
-    // }
-
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
 
@@ -349,11 +348,15 @@ fn main() {
     write_transcript_metadata(&args.output_transcript_metadata, &args.output_transcript_metadata_fmt, &transcripts, &transcript_names, &cell_assignments);
     write_gene_metadata(&args.output_gene_metadata, &args.output_gene_metadata_fmt, &params, &transcript_names, &ecounts);
     write_cubes(&args.output_cell_cubes, &args.output_cell_cubes_fmt, &sampler.borrow());
+    if args.output_cell_polygons_squash_layers {
+        write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
+    } else {
+        write_cell_layered_multipolygons(&args.output_cell_polygons, &sampler.borrow());
+    }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
         params.write_cell_hulls(&transcripts, &counts, &output_cell_hulls);
     }
-
 }
 
 fn run_hexbin_sampler(

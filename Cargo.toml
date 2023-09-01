@@ -14,6 +14,7 @@ arrow2 = { version = "0.17.4", features = ["io_csv", "io_parquet", "io_parquet_c
 clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
+geo = "0.26.0"
 indicatif = "0.17.5"
 itertools = "0.10.5"
 kiddo = "2.1.1"
