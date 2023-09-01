@@ -236,7 +236,7 @@ impl ModelParams {
         };
     }
 
-    fn ncomponents(&self) -> usize {
+    pub fn ncomponents(&self) -> usize {
         return self.π.len();
     }
 
@@ -263,8 +263,12 @@ impl ModelParams {
         return self.cell_population.len();
     }
 
-    fn ngenes(&self) -> usize {
+    pub fn ngenes(&self) -> usize {
         return self.total_gene_counts.shape()[0];
+    }
+
+    pub fn nlayers(&self) -> usize {
+        return self.total_gene_counts.shape()[1];
     }
 
     pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {

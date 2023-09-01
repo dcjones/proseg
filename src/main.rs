@@ -3,14 +3,10 @@
 use clap::Parser;
 
 mod sampler;
+mod output;
 
-use arrow;
-use csv;
-use flate2::Compression;
-use flate2::write::GzEncoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{Array1, Axis, Zip};
 use rayon::current_num_threads;
 use sampler::cubebinsampler::CubeBinSampler;
 use sampler::hull::compute_cell_areas;
@@ -19,8 +15,8 @@ use sampler::transcripts::{
     filter_cellfree_transcripts, Transcript, BACKGROUND_CELL};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
-use std::fs::File;
-use std::sync::Arc;
+
+use output::*;
 
 #[derive(Parser, Debug)]
 #[command(name="proseg")]
@@ -50,9 +46,10 @@ struct Args {
     #[arg(long, default_value_t=10)]
     nlayers: usize,
 
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -85,41 +82,47 @@ struct Args {
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
-    #[arg(long, default_value = "counts.csv.gz")]
-    output_counts_csv: Option<String>,
-
-    #[arg(long, default_value = "expected-counts.csv.gz")]
-    output_expected_counts_csv: Option<String>,
-
-    #[arg(long, default_value = "counts.arrow")]
-    output_counts_arrow: Option<String>,
-
-    #[arg(long, default_value = "cells.geojson.gz")]
-    output_cells: Option<String>,
-
-    #[arg(long, default_value = "cell_metadata.csv.gz")]
-    output_cell_metadata_csv: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_normalized_expression: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_cell_cubes_csv: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_cell_cubes_arrow: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_transcript_metadata_csv: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_transcript_metadata_arrow: Option<String>,
-
-    #[arg(long, default_value=None)]
-    output_gene_metadata_arrow: Option<String>,
-
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
+
+    #[arg(long, default_value = "counts.csv.gz")]
+    output_counts: Option<String>,
+
+    #[arg(long, default_value = None)]
+    output_counts_fmt: Option<String>,
+
+    #[arg(long, default_value = "expected-counts.csv.gz")]
+    output_expected_counts: Option<String>,
+
+    #[arg(long, default_value = None)]
+    output_expected_counts_fmt: Option<String>,
+
+    #[arg(long, default_value = "cells.geojson.gz")]
+    output_cell_hulls: Option<String>,
+
+    #[arg(long, default_value = "cell_metadata.csv.gz")]
+    output_cell_metadata: Option<String>,
+
+    #[arg(long, default_value = None)]
+    output_cell_metadata_fmt: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_transcript_metadata: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_transcript_metadata_fmt: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_gene_metadata: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_gene_metadata_fmt: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_cell_cubes: Option<String>,
+
+    #[arg(long, default_value=None)]
+    output_cell_cubes_fmt: Option<String>,
 }
 
 fn main() {
@@ -330,277 +333,27 @@ fn main() {
     let assigned_count = cell_assignments.iter().filter(|(c, _)| *c != BACKGROUND_CELL).count();
     println!("Suppressed {} low probability assignments.", assigned_count - counts.sum() as usize);
 
-    if let Some(output_cell_cubes_csv) = args.output_cell_cubes_csv {
-        sampler
-            .borrow()
-            .write_cell_cubes_csv(&output_cell_cubes_csv);
-    }
-
-    if let Some(output_cell_cubes_arrow) = args.output_cell_cubes_arrow {
-        sampler
-            .borrow()
-            .write_cell_cubes_arrow(&output_cell_cubes_arrow);
-    }
+    // // TODO: write cell cubes to parquet
+    // if let Some(output_cell_cubes_csv) = args.output_cell_cubes_csv {
+    //     sampler
+    //         .borrow()
+    //         .write_cell_cubes_csv(&output_cell_cubes_csv);
+    // }
 
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
-    if let Some(output_expected_counts_csv) = args.output_expected_counts_csv {
-        let file = File::create(&output_expected_counts_csv).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
+    let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
 
-        writer.write_record(transcript_names.iter()).unwrap();
-        for row in ecounts.t().rows() {
-            writer
-                .write_record(row.iter().map(|x| x.to_string()))
-                .unwrap();
-        }
+    write_expected_counts(&args.output_expected_counts, &args.output_expected_counts_fmt, &transcript_names, &ecounts);
+    write_counts(&args.output_counts, &args.output_counts_fmt, &transcript_names, &counts);
+    write_cell_metadata(&args.output_cell_metadata, &args.output_cell_metadata_fmt, &params, &cell_centroids);
+    write_transcript_metadata(&args.output_transcript_metadata, &args.output_transcript_metadata_fmt, &transcripts, &transcript_names, &cell_assignments);
+    write_gene_metadata(&args.output_gene_metadata, &args.output_gene_metadata_fmt, &params, &transcript_names, &ecounts);
+    write_cubes(&args.output_cell_cubes, &args.output_cell_cubes_fmt, &sampler.borrow());
+
+    if let Some(output_cell_hulls) = args.output_cell_hulls {
+        params.write_cell_hulls(&transcripts, &counts, &output_cell_hulls);
     }
 
-    if let Some(output_counts_csv) = args.output_counts_csv {
-        let file = File::create(&output_counts_csv).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
-
-        writer.write_record(transcript_names.iter()).unwrap();
-        // for row in params.counts.t().rows() {
-        for row in counts.t().rows() {
-            writer
-                .write_record(row.iter().map(|x| x.to_string()))
-                .unwrap();
-        }
-    }
-
-    if let Some(output_counts_arrow) = args.output_counts_arrow {
-        let schema = arrow::datatypes::Schema::new(
-            transcript_names
-                .iter()
-                .map(|name| {
-                    arrow::datatypes::Field::new(name, arrow::datatypes::DataType::UInt32, false)
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        // unimplemented!();
-        let file = File::create(&output_counts_arrow).unwrap();
-        // let mut writer = arrow::ipc::writer::FileWriter::try_new(file, &schema).unwrap();
-        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-            file,
-            &schema,
-            arrow::ipc::writer::IpcWriteOptions::default()
-                .try_with_compression(Some(arrow::ipc::CompressionType::ZSTD))
-                .unwrap(),
-        )
-        .unwrap();
-
-        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
-        for row in counts.rows() {
-            columns.push(Arc::new(arrow::array::UInt32Array::from_iter(
-                row.iter().cloned(),
-            )));
-        }
-
-        let recbatch =
-            arrow::record_batch::RecordBatch::try_new(Arc::new(schema), columns).unwrap();
-
-        writer.write(&recbatch).unwrap();
-    }
-
-    if let Some(output_normalized_expression) = args.output_normalized_expression {
-        let file = File::create(output_normalized_expression).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
-
-        writer.write_record(transcript_names.iter()).unwrap();
-        for row in params.λ.t().rows() {
-            writer
-                .write_record(row.iter().map(|x| x.to_string()))
-                .unwrap();
-        }
-    }
-
-    if let Some(output_cell_metadata_csv) = args.output_cell_metadata_csv {
-        let file = File::create(output_cell_metadata_csv).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
-
-        let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
-        writer
-            .write_record(["cell", "centroid_x", "centroid_y", "cluster", "volume", "population"])
-            .unwrap();
-        for cell in 0..ncells {
-            let cluster = params.z[cell];
-            let volume = params.cell_volume[cell];
-            let population = params.cell_population[cell];
-            let (centroid_x, centroid_y) = cell_centroids[cell];
-            writer
-                .write_record([
-                    cell.to_string(),
-                    centroid_x.to_string(),
-                    centroid_y.to_string(),
-                    cluster.to_string(),
-                    volume.to_string(),
-                    population.to_string(),
-                ])
-                .unwrap();
-        }
-    }
-
-    if let Some(output_cells) = args.output_cells {
-        params.write_cell_hulls(&transcripts, &counts, &output_cells);
-    }
-
-    if let Some(output_transcript_metadata_csv) = args.output_transcript_metadata_csv {
-        let file = File::create(output_transcript_metadata_csv).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
-        let mut writer = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(encoder);
-
-        writer
-            .write_record(["x", "y", "z", "gene", "assignment", "probability"])
-            .unwrap();
-        for ((cell, pr), transcript) in cell_assignments.iter().zip(&transcripts) {
-            writer
-                .write_record([
-                    transcript.x.to_string(),
-                    transcript.y.to_string(),
-                    transcript.z.to_string(),
-                    transcript_names[transcript.gene as usize].clone(),
-                    cell.to_string().to_string(),
-                    pr.to_string().to_string(),
-                ])
-                .unwrap();
-        }
-    }
-
-    if let Some(output_transcript_metadata_arrow) = args.output_transcript_metadata_arrow {
-        let schema = arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("x", arrow::datatypes::DataType::Float32, false),
-            arrow::datatypes::Field::new("y", arrow::datatypes::DataType::Float32, false),
-            arrow::datatypes::Field::new("z", arrow::datatypes::DataType::Float32, false),
-            arrow::datatypes::Field::new("gene", arrow::datatypes::DataType::Utf8, false),
-            arrow::datatypes::Field::new("assignment", arrow::datatypes::DataType::UInt32, false),
-            arrow::datatypes::Field::new("probability", arrow::datatypes::DataType::Float32, false),
-            ]);
-
-        let file = File::create(output_transcript_metadata_arrow).unwrap();
-        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-            file,
-            &schema,
-            arrow::ipc::writer::IpcWriteOptions::default()
-                .try_with_compression(Some(arrow::ipc::CompressionType::ZSTD))
-                .unwrap(),
-        )
-        .unwrap();
-
-        let recbatch = arrow::record_batch::RecordBatch::try_new(
-            Arc::new(schema),
-            vec![
-                Arc::new(arrow::array::Float32Array::from_iter(
-                    transcripts.iter().map(|t| t.x),
-                )),
-                Arc::new(arrow::array::Float32Array::from_iter(
-                    transcripts.iter().map(|t| t.y),
-                )),
-                Arc::new(arrow::array::Float32Array::from_iter(
-                    transcripts.iter().map(|t| t.z),
-                )),
-                Arc::new(arrow::array::StringArray::from_iter_values(
-                    transcripts.iter().map(|t| transcript_names[t.gene as usize].clone()),
-                )),
-                Arc::new(arrow::array::UInt32Array::from_iter(
-                    cell_assignments.iter()
-                        .map(|(cell, _)| *cell),
-                )),
-                Arc::new(arrow::array::Float32Array::from_iter(
-                    cell_assignments.iter()
-                        .map(|(_, pr)| *pr),
-                )),
-            ]
-        ).unwrap();
-
-        writer.write(&recbatch).unwrap();
-    }
-
-    if let Some(output_gene_metadata_arrow) = args.output_gene_metadata_arrow {
-        let mut schema_fields = Vec::new();
-        let mut columns: Vec<arrow::array::ArrayRef> = Vec::new();
-
-        schema_fields.push(
-            arrow::datatypes::Field::new("gene", arrow::datatypes::DataType::Utf8, false));
-        columns.push(Arc::new(
-            arrow::array::StringArray::from_iter_values(transcript_names.iter())));
-
-        schema_fields.push(
-            arrow::datatypes::Field::new("total_count", arrow::datatypes::DataType::UInt32, false));
-        columns.push(Arc::new(
-            arrow::array::UInt32Array::from_iter_values(params.total_gene_counts.sum_axis(Axis(1)).iter().cloned())));
-
-        schema_fields.push(
-            arrow::datatypes::Field::new("expected_assigned_count", arrow::datatypes::DataType::Float32, false));
-        columns.push(Arc::new(
-            arrow::array::Float32Array::from_iter_values(
-                ecounts.sum_axis(Axis(1)).iter().cloned())));
-
-        // rates for each cell type
-        for i in 0..args.ncomponents {
-            schema_fields.push(
-                arrow::datatypes::Field::new(format!("λ_{}", i), arrow::datatypes::DataType::Float32, false));
-
-            let mut λ_component = Array1::<f32>::from_elem(ngenes, 0_f32);
-
-            let mut count = 0;
-            Zip::from(&params.z)
-                .and(params.λ.columns())
-                .for_each(|&z, λ| {
-                    if i == z as usize {
-                        Zip::from(&mut λ_component)
-                            .and(λ)
-                            .for_each(|a, b| *a += b);
-                        count += 1;
-                    }
-                });
-            λ_component /= count as f32;
-
-            columns.push(
-                Arc::new(arrow::array::Float32Array::from_iter(λ_component.iter().cloned())));
-        }
-
-        // rates for each background layer
-        for i in 0..args.nlayers {
-            schema_fields.push(
-                arrow::datatypes::Field::new(format!("λ_bg_{}", i), arrow::datatypes::DataType::Float32, false));
-            columns.push(Arc::new(
-                arrow::array::Float32Array::from_iter(
-                    params.λ_bg.column(i).iter().cloned())));
-        }
-
-        let schema = arrow::datatypes::Schema::new(schema_fields);
-
-        let file = File::create(output_gene_metadata_arrow).unwrap();
-        let mut writer = arrow::ipc::writer::FileWriter::try_new_with_options(
-            file,
-            &schema,
-            arrow::ipc::writer::IpcWriteOptions::default()
-                .try_with_compression(Some(arrow::ipc::CompressionType::ZSTD))
-                .unwrap(),
-        )
-        .unwrap();
-
-        let recbatch = arrow::record_batch::RecordBatch::try_new(
-            Arc::new(schema),
-            columns).unwrap();
-
-        writer.write(&recbatch).unwrap();
-    }
 }
 
 fn run_hexbin_sampler(
@@ -651,3 +404,4 @@ fn run_hexbin_sampler(
         // }
     }
 }
+
