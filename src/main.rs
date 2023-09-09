@@ -46,8 +46,8 @@ struct Args {
     #[arg(long, default_value_t=10)]
     nlayers: usize,
 
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0])]
     schedule: Vec<usize>,
@@ -129,6 +129,12 @@ struct Args {
 
     #[arg(long, default_value_t=false)]
     output_cell_polygons_squash_layers: bool,
+
+    #[arg(long, default_value = None)]
+    monitor_cell_polygons: Option<String>,
+
+    #[arg(long, default_value_t = 10)]
+    monitor_cell_polygons_freq: usize,
 }
 
 fn main() {
@@ -281,6 +287,8 @@ fn main() {
         chunk_size,
     ));
 
+    let mut total_steps = 0;
+
     if args.schedule.len() > 1 {
         run_hexbin_sampler(
             &mut prog,
@@ -291,6 +299,9 @@ fn main() {
             args.schedule[0],
             args.local_steps_per_iter,
             None,
+            &mut total_steps,
+            &args.monitor_cell_polygons,
+            args.monitor_cell_polygons_freq,
         );
 
         for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
@@ -308,6 +319,9 @@ fn main() {
                 niter,
                 args.local_steps_per_iter,
                 None,
+                &mut total_steps,
+                &args.monitor_cell_polygons,
+                args.monitor_cell_polygons_freq,
             );
         }
         if args.check_consistency {
@@ -325,6 +339,9 @@ fn main() {
         args.schedule[args.schedule.len() - 1],
         args.local_steps_per_iter,
         Some(&mut uncertainty),
+        &mut total_steps,
+        &args.monitor_cell_polygons,
+        args.monitor_cell_polygons_freq,
     );
 
     if args.check_consistency {
@@ -368,6 +385,9 @@ fn run_hexbin_sampler(
     niter: usize,
     local_steps_per_iter: usize,
     mut uncertainty: Option<&mut UncertaintyTracker>,
+    total_steps: &mut usize,
+    monitor_cell_polygons: &Option<String>,
+    monitor_cell_polygons_freq: usize,
 ) {
     sampler.sample_global_params(priors, params);
     let mut proposal_stats = ProposalStats::new();
@@ -405,6 +425,16 @@ fn run_hexbin_sampler(
         // if i % 100 == 0 {
         //     println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
         // }
+
+        if *total_steps % monitor_cell_polygons_freq == 0 {
+            if let Some(basename) = monitor_cell_polygons {
+                let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
+                write_cell_layered_multipolygons(&Some(filename), sampler);
+            }
+        }
+
+        *total_steps += 1;
+
     }
 }
 
