@@ -124,7 +124,7 @@ struct Args {
     #[arg(long, default_value=None)]
     output_cell_cubes_fmt: Option<String>,
 
-    #[arg(long, default_value = "cell-polygons.geojson.gz")]
+    #[arg(long, default_value=None)]
     output_cell_polygons: Option<String>,
 
     #[arg(long, default_value_t=false)]

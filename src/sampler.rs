@@ -12,7 +12,7 @@ use hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
 use math::{
-    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_pois, LogFactorial,
+    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
@@ -1003,23 +1003,19 @@ where
             .and(&mut params.lgamma_r)
             .and(&mut params.loggammaplus)
             .and(params.θ.columns())
-            // .and(self.counts.rows())
-            .par_for_each(|r, lgamma_r, loggammaplus, θs| {
+            .and(params.foreground_counts.axis_iter(Axis(1)))
+            .par_for_each(|r, lgamma_r, loggammaplus, θs, counts| {
                 let mut rng = thread_rng();
 
                 // self.cell_areas.slice(0..self.ncells)
 
-                let u = Zip::from(&params.z)
-                    .and(&params.cell_volume)
-                    .fold(0, |accum, z, a| {
-                        let θ = θs[*z as usize];
-                        let λ = -*r * log1pf(-odds_to_prob(θ * *a));
+                let u = Zip::from(counts.axis_iter(Axis(0)))
+                    .fold(0, |accum, cs| {
+                        let c = cs.sum();
+                        accum + rand_crt(&mut rng, c, *r)
+                    });
 
-                        // I gueess because there is less overhead, our simple Knuth
-                        // sampler is considerably faster here.
-                        // accum + Poisson::new(λ).unwrap().sample(&mut rng) as i32
-                        accum + rand_pois(&mut rng, λ)
-                    }) as f32;
+
                 let v = Zip::from(&params.z)
                     .and(&params.cell_volume)
                     .fold(0.0, |accum, z, a| {
@@ -1027,7 +1023,7 @@ where
                         accum + log1pf(-odds_to_prob(w * *a))
                     });
 
-                *r = Gamma::new(priors.e_r + u, (priors.f_r - v).recip())
+                *r = Gamma::new(priors.e_r + u as f32, (priors.f_r - v).recip())
                     .unwrap()
                     .sample(&mut rng);
 
@@ -1038,6 +1034,7 @@ where
 
                 *r = r.min(200.0).max(1e-5);
             });
+
         // println!("  Sample r: {:?}", t0.elapsed());
     }
 
@@ -1059,8 +1056,8 @@ where
                         θ / (cell_volume * θ + 1.0), // ((cell_area * θ + 1.0) / θ) as f64,
                     )
                     .unwrap()
-                    .sample(&mut rng)
-                    .max(1e-9);
+                    .sample(&mut rng);
+                    // .max(1e-14);
 
                     assert!(λ.is_finite());
                 }
@@ -1184,5 +1181,6 @@ where
                 .recip()
                 .sqrt();
             });
+
     }
 }

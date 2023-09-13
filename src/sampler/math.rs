@@ -1,4 +1,4 @@
-use libm::{expf, lgammaf};
+use libm::lgammaf;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 
@@ -50,20 +50,9 @@ pub fn negbin_logpmf_fast(
     return result;
 }
 
-pub fn rand_pois(rng: &mut ThreadRng, λ: f32) -> u32 {
-    // using the Knuth algorithm
-    let ρ = expf(-λ);
-    let mut k = 0;
-    let mut p = 1_f32;
-    loop {
-        k += 1;
-        p *= rng.gen::<f32>();
-        if p <= ρ {
-            break;
-        }
-    }
-
-    return k - 1;
+pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
+    return (0..n).map(|t|
+        rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32).sum();
 }
 
 pub fn odds_to_prob(o: f32) -> f32 {
