@@ -123,6 +123,10 @@ impl Cube {
             Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
         ];
     }
+
+    fn inbounds(&self, nlayers: usize) -> bool {
+        return self.k >= 0 && self.k < nlayers as i32;
+    }
 }
 
 #[derive(Debug)]
@@ -343,6 +347,7 @@ pub struct CubeBinSampler {
 
     zmin: f32,
     zmax: f32,
+    nvoxel_layers: usize,
 
     cubevolume: f32,
     quad: usize,
@@ -436,6 +441,7 @@ impl CubeBinSampler {
             connectivity_checker,
             zmin,
             zmax,
+            nvoxel_layers: 1,
             cubevolume,
             quad: 0,
         };
@@ -578,6 +584,7 @@ impl CubeBinSampler {
             connectivity_checker,
             zmin: self.zmin,
             zmax: self.zmax,
+            nvoxel_layers: 2*self.nvoxel_layers,
             cubevolume,
             quad: 0,
         };
@@ -891,13 +898,13 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let num_new_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| self.cubecells.get(j) == cell_to)
+                    .filter(|&&j| j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_to)
                     .count();
 
                 let num_prev_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| self.cubecells.get(j) == cell_from)
+                    .filter(|&&j| j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_from)
                     .count();
 
                 let mut proposal_prob =
