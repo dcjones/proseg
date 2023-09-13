@@ -40,7 +40,7 @@ use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 // cells: potential cell behaviours revealed by analytical and computational
 // studies of cell surface mechanics. BMC Biophys., 8, 8.
 pub fn perimeter_bound(eta: f32, bound: f32, population: f32) -> f32 {
-    return bound * eta * (2.0 * population) / (f32::consts::PI * population).sqrt();
+    return bound * eta * (2.0 * (f32::consts::PI * population).sqrt());
 }
 
 // Compute chunk and quadrant for a single a single (x,y) point.
