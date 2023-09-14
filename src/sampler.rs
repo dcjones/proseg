@@ -72,7 +72,9 @@ pub struct ModelPriors {
 
     // gamma rate prior
     pub e_r: f32,
-    pub f_r: f32,
+
+    pub e_h: f32,
+    pub f_h: f32,
 
     // gamma prior for background rates
     pub α_bg: f32,
@@ -138,6 +140,9 @@ pub struct ModelParams {
     μ_volume: Array1<f32>, // volume dist mean param by component
     σ_volume: Array1<f32>, // volume dist std param by component
 
+    // Prior on NB dispersion parameters
+    h: f32,
+
     // [ngenes] NB r parameters.
     // [ncomponents, ngenes] NB dispersion parameters
     r: Array2<f32>,
@@ -189,6 +194,7 @@ impl ModelParams {
         let r_us = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0_f32);
         let r_vs = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
+        let h = 100.0;
 
         // compute initial counts
         let mut counts = Array3::<u32>::from_elem((ngenes, ncells, nlayers), 0);
@@ -235,6 +241,7 @@ impl ModelParams {
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
+            h,
             r,
             lgamma_r,
             r_us,
@@ -1040,7 +1047,7 @@ where
                     .and(us)
                     .and(vs)
                     .for_each(|r, u, v| {
-                        *r = Gamma::new(priors.e_r + *u, (priors.f_r - *v).recip())
+                        *r = Gamma::new(priors.e_r + *u, (params.h - *v).recip())
                             .unwrap()
                             .sample(&mut rng);
 
@@ -1064,8 +1071,12 @@ where
                     });
             });
 
-        // println!("  Sample r: {:?}", t0.elapsed());
-        // dbg!(params.r.slice(s![..10]));
+        params.h = Gamma::new(
+                priors.e_h * (1_f32 + params.r.len() as f32),
+                (priors.f_h + params.r.sum()).recip())
+            .unwrap()
+            .sample(&mut thread_rng());
+
     }
 
 
