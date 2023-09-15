@@ -46,19 +46,23 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-fn postprocess_cell_assignments(cell_assignments: &Vec<CellIndex>) -> Vec<usize> {
-    let mut ncells = usize::MAX;
+fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
+    // reassign cell ids to exclude anything that no initial transcripts assigned
+    let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for &cell_id in cell_assignments.iter() {
         if cell_id != BACKGROUND_CELL {
-            if ncells == usize::MAX || cell_id as usize >= ncells {
-                ncells = (cell_id + 1) as usize;
-            }
+            let next_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids.entry(cell_id).or_insert(next_id);
         }
     }
 
-    if ncells == usize::MAX {
-        ncells = 0;
+    for cell_id in cell_assignments.iter_mut() {
+        if *cell_id != BACKGROUND_CELL {
+            *cell_id = *used_cell_ids.get(cell_id).unwrap();
+        }
     }
+
+    let ncells = used_cell_ids.len();
 
     let mut cell_population = vec![0; ncells];
     for &cell_id in cell_assignments.iter() {

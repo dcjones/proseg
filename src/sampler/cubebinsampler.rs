@@ -1196,3 +1196,39 @@ impl Proposal for CubeBinProposal {
         return &self.genepop;
     }
 }
+
+// We need to exclude cells that can't be initalized with a non-zero number of voxels.
+pub fn filter_sparse_cells(scale: f32, transcripts: &Vec<Transcript>, cell_assignments: &mut Vec<CellIndex>, cell_population: &mut Vec<usize>) {
+    let (_, cubebins) = bin_transcripts(transcripts, scale);
+    let cubecells = cube_assignments(&cubebins, &cell_assignments);
+
+    let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
+    for (_, cell_id) in cubecells.iter() {
+        if *cell_id != BACKGROUND_CELL {
+            let next_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids.entry(*cell_id).or_insert(next_id);
+        }
+    }
+
+    for cell_id in cell_assignments.iter_mut() {
+        if *cell_id != BACKGROUND_CELL {
+            if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
+                *cell_id = *new_cell_id;
+            } else {
+                *cell_id = BACKGROUND_CELL;
+            }
+        }
+    }
+
+    cell_population.resize(used_cell_ids.len(), 0);
+    cell_population.fill(0);
+    for cell_id in cell_assignments.iter() {
+        if *cell_id != BACKGROUND_CELL {
+            cell_population[*cell_id as usize] += 1;
+        }
+    }
+
+    dbg!(cell_population.iter().min());
+    dbg!(cell_population.iter().fold(0, |acc, &x| acc + x));
+
+}

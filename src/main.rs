@@ -8,7 +8,7 @@ mod output;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::cubebinsampler::CubeBinSampler;
+use sampler::cubebinsampler::{CubeBinSampler, filter_sparse_cells};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, read_transcripts_csv, estimate_full_area, estimate_cell_centroids,
@@ -49,7 +49,6 @@ struct Args {
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[0])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -142,7 +141,7 @@ fn main() {
 
     assert!(args.ncomponents > 0);
 
-    let (transcript_names, transcripts, init_cell_assignments, init_cell_population) =
+    let (transcript_names, transcripts, mut init_cell_assignments, mut init_cell_population) =
         read_transcripts_csv(
             &args.transcript_csv,
             &args.transcript_column,
@@ -151,6 +150,18 @@ fn main() {
             &args.z_column,
             args.min_qv,
         );
+
+    // keep removing cells until we can initialize with every cell having at least one voxel
+    let mut ncells = init_cell_population.len();
+    loop {
+        let prev_ncells = ncells;
+        filter_sparse_cells(args.scale, &transcripts, &mut init_cell_assignments, &mut init_cell_population);
+        ncells = init_cell_population.len();
+        if ncells == prev_ncells {
+            break;
+        }
+    }
+
     let ngenes = transcript_names.len();
     let ncells = init_cell_population.len();
 
