@@ -1227,8 +1227,4 @@ pub fn filter_sparse_cells(scale: f32, transcripts: &Vec<Transcript>, cell_assig
             cell_population[*cell_id as usize] += 1;
         }
     }
-
-    dbg!(cell_population.iter().min());
-    dbg!(cell_population.iter().fold(0, |acc, &x| acc + x));
-
 }

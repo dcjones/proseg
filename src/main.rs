@@ -94,6 +94,12 @@ struct Args {
     output_expected_counts: Option<String>,
 
     #[arg(long, default_value = None)]
+    output_rates: Option<String>,
+
+    #[arg(long, default_value = None)]
+    output_rates_fmt: Option<String>,
+
+    #[arg(long, default_value = None)]
     output_expected_counts_fmt: Option<String>,
 
     #[arg(long, default_value = "cells.geojson.gz")]
@@ -375,6 +381,7 @@ fn main() {
 
     write_expected_counts(&args.output_expected_counts, &args.output_expected_counts_fmt, &transcript_names, &ecounts);
     write_counts(&args.output_counts, &args.output_counts_fmt, &transcript_names, &counts);
+    write_rates(&args.output_rates, &args.output_rates_fmt, &params, &transcript_names);
     write_cell_metadata(&args.output_cell_metadata, &args.output_cell_metadata_fmt, &params, &cell_centroids);
     write_transcript_metadata(&args.output_transcript_metadata, &args.output_transcript_metadata_fmt, &transcripts, &transcript_names, &cell_assignments);
     write_gene_metadata(&args.output_gene_metadata, &args.output_gene_metadata_fmt, &params, &transcript_names, &ecounts);

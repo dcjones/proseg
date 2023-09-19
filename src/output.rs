@@ -180,6 +180,33 @@ pub fn write_expected_counts(
 }
 
 
+pub fn write_rates(
+        output_rates: &Option<String>, output_rates_fmt: &Option<String>,
+        params: &ModelParams, transcript_names: &Vec<String>)
+{
+    if let Some(output_rates) = output_rates {
+        let schema = arrow2::datatypes::Schema::from(
+            transcript_names
+                .iter()
+                .map(|name| {
+                    arrow2::datatypes::Field::new(name, arrow2::datatypes::DataType::Float32, false)
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+        for row in params.λ.rows() {
+            columns.push(Arc::new(arrow2::array::Float32Array::from_values(
+                row.iter().cloned(),
+            )));
+        }
+        let chunk = arrow2::chunk::Chunk::new(columns);
+
+        write_table(&output_rates, &output_rates_fmt, schema, chunk);
+    }
+}
+
+
 pub fn write_cell_metadata(
         output_cell_metadata: &Option<String>, output_cell_metadata_fmt: &Option<String>,
         params: &ModelParams, cell_centroids: &Vec<(f32, f32)>)
