@@ -132,8 +132,8 @@ struct Args {
     #[arg(long, default_value=None)]
     output_cell_polygons: Option<String>,
 
-    #[arg(long, default_value_t=false)]
-    output_cell_polygons_squash_layers: bool,
+    #[arg(long, default_value=None)]
+    output_cell_polygon_layers: Option<String>,
 
     #[arg(long, default_value = None)]
     monitor_cell_polygons: Option<String>,
@@ -386,11 +386,8 @@ fn main() {
     write_transcript_metadata(&args.output_transcript_metadata, &args.output_transcript_metadata_fmt, &transcripts, &transcript_names, &cell_assignments);
     write_gene_metadata(&args.output_gene_metadata, &args.output_gene_metadata_fmt, &params, &transcript_names, &ecounts);
     write_cubes(&args.output_cell_cubes, &args.output_cell_cubes_fmt, &sampler.borrow());
-    if args.output_cell_polygons_squash_layers {
-        write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
-    } else {
-        write_cell_layered_multipolygons(&args.output_cell_polygons, &sampler.borrow());
-    }
+    write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
+    write_cell_layered_multipolygons(&args.output_cell_polygon_layers, &sampler.borrow());
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
         params.write_cell_hulls(&transcripts, &counts, &output_cell_hulls);
