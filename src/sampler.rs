@@ -27,6 +27,9 @@ use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
+use linfa_clustering::KMeans;
+use linfa::DatasetBase;
+use linfa::traits::{Fit, Predict};
 
 // use std::time::Instant;
 
@@ -202,11 +205,26 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let mut rng = rand::thread_rng();
-        let z = (0..ncells)
-            .map(|_| rng.gen_range(0..ncomponents) as u32)
-            .collect::<Vec<_>>()
-            .into();
+
+        let kmeans_samples = DatasetBase::from(
+            counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
+
+        let rng = rand::thread_rng();
+        let model = KMeans::params_with_rng(ncomponents, rng)
+            .tolerance(1e-1)
+            .fit(&kmeans_samples)
+            .expect("kmeans failed to converge");
+
+        let z = model.predict(&kmeans_samples).map(|&x| x as u32);
+        dbg!(z.shape());
+
+
+        // initial component assignments
+        // let mut rng = rand::thread_rng();
+        // let z = (0..ncells)
+        //     .map(|_| rng.gen_range(0..ncomponents) as u32)
+        //     .collect::<Vec<_>>()
+        //     .into();
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
 
@@ -1038,10 +1056,10 @@ where
 
                 assert!(r.is_finite());
 
+                *r = r.min(200.0).max(1e-5);
+
                 *lgamma_r = lgammaf(*r);
                 loggammaplus.reset(*r);
-
-                *r = r.min(200.0).max(1e-5);
             });
 
         params.h = Gamma::new(

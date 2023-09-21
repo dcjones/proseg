@@ -2,8 +2,6 @@
 name = "proseg"
 version = "0.0.14"
 edition = "2021"
-
-[profile.release]
 # lto = true
 # debug = true
 
@@ -19,6 +17,8 @@ indicatif = "0.17.5"
 itertools = "0.10.5"
 kiddo = "2.1.1"
 libm = "0.2.7"
+linfa = "0.6.1"
+linfa-clustering = "0.6.1"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 petgraph = "0.6.3"
 rand = "0.8.5"
