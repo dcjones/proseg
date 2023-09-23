@@ -13,6 +13,7 @@ use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, read_transcripts_csv, estimate_full_area, estimate_cell_centroids,
     filter_cellfree_transcripts, Transcript, BACKGROUND_CELL};
+use sampler::density::estimate_transcript_density;
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 
@@ -46,6 +47,7 @@ struct Args {
     #[arg(long, default_value_t=10)]
     nlayers: usize,
 
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
@@ -80,6 +82,20 @@ struct Args {
 
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
+
+    #[arg(long, default_value_t = 10.0_f32)]
+    density_binsize: f32,
+
+    #[arg(long, default_value_t = 80.0_f32)]
+    density_sigma: f32,
+
+    #[arg(long, default_value_t = 20)]
+    density_k: usize,
+
+    // TODO: Ok, but now we can engineer any outcome we want
+    // by changing this one variable...
+    #[arg(long, default_value_t = 5e-1)]
+    density_eps: f32,
 
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
@@ -209,11 +225,15 @@ fn main() {
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
+    let (transcript_density, total_transcript_density) = estimate_transcript_density(
+        &transcripts, ngenes, layer_depth, args.density_sigma, args.density_binsize, args.density_k, args.density_eps);
+
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);
     let full_volume = full_area * zspan;
 
     let full_layer_volume = full_volume / (args.nlayers as f32);
+    // let full_layer_volume = total_transcript_density;
 
     println!("Full volume: {}", full_volume);
 
@@ -253,8 +273,11 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
-        α_θ: 1.0,
-        β_θ: 1.0,
+        // α_θ: 1.0,
+        // β_θ: 1.0,
+
+        α_θ: 1e1,
+        β_θ: 1e-1,
 
         e_r: 1.0,
 
@@ -277,6 +300,8 @@ fn main() {
         zmin,
         layer_depth,
         &transcripts,
+        &transcript_density,
+        &total_transcript_density,
         &init_cell_assignments,
         &init_cell_population,
         args.ncomponents,
@@ -299,6 +324,7 @@ fn main() {
         &priors,
         &mut params,
         &transcripts,
+        transcript_density,
         ngenes,
         args.nlayers,
         zmin,
@@ -407,7 +433,7 @@ fn run_hexbin_sampler(
     monitor_cell_polygons: &Option<String>,
     monitor_cell_polygons_freq: usize,
 ) {
-    sampler.sample_global_params(priors, params);
+    sampler.sample_global_params(priors, params, transcripts);
     let mut proposal_stats = ProposalStats::new();
 
     for _ in 0..niter {
@@ -420,7 +446,7 @@ fn run_hexbin_sampler(
                 &mut uncertainty,
             );
         }
-        sampler.sample_global_params(priors, params);
+        sampler.sample_global_params(priors, params, transcripts);
 
         let nassigned = params.nassigned();
         prog.inc(1);

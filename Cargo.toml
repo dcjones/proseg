@@ -2,8 +2,10 @@
 name = "proseg"
 version = "0.0.14"
 edition = "2021"
+
+[profile.release]
+debug = true
 # lto = true
-# debug = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,6 +22,7 @@ libm = "0.2.7"
 linfa = "0.6.1"
 linfa-clustering = "0.6.1"
 ndarray = { version = "0.15.6", features = ["rayon"] }
+ndarray-conv = "0.2.0"
 petgraph = "0.6.3"
 rand = "0.8.5"
 rand_distr = "0.4.3"

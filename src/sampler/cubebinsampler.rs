@@ -6,7 +6,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
-use ndarray::Array2;
+use ndarray::{Array1, Array2, Axis};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -326,6 +326,7 @@ pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
     transcript_layers: Vec<u32>,
+    density: Array1<f32>,
     nlayers: usize,
 
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
@@ -358,6 +359,7 @@ impl CubeBinSampler {
         priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
+        density: Array1<f32>,
         ngenes: usize,
         nlayers: usize,
         z0: f32,
@@ -429,6 +431,7 @@ impl CubeBinSampler {
             },
             transcript_genes,
             transcript_layers,
+            density,
             nlayers,
             mismatch_edges,
             cubebins,
@@ -572,6 +575,7 @@ impl CubeBinSampler {
             },
             transcript_genes: self.transcript_genes.clone(),
             transcript_layers: self.transcript_layers.clone(),
+            density: self.density.clone(),
             nlayers: self.nlayers,
             mismatch_edges,
             cubebins,
@@ -1015,6 +1019,17 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
                     }
                 }
+
+                // average the density from the constitutive transcripts
+                proposal.density.fill(1e-2);
+                if let Some(transcripts) = transcripts{
+                    let genepop = proposal.genepop.sum_axis(Axis(1));
+
+                    for &t in transcripts {
+                        let g = self.transcript_genes[t] as usize;
+                        proposal.density[g] += self.density[t] / genepop[g] as f32;
+                    }
+                }
             });
 
         // Increment so we run updates on the next quad
@@ -1111,6 +1126,9 @@ pub struct CubeBinProposal {
     // [ngenes, nlayers] gene count for this rect
     genepop: Array2<u32>,
 
+    // transcript density
+    density: Array1<f32>,
+
     old_cell: u32,
     new_cell: u32,
 
@@ -1134,6 +1152,7 @@ impl CubeBinProposal {
             cube: Cube::new(0, 0, 0),
             transcripts: Vec::new(),
             genepop: Array2::from_elem((ngenes, nlayers), 0),
+            density: Array1::zeros(ngenes),
             old_cell: 0,
             new_cell: 0,
             log_weight: 0.0,
@@ -1194,6 +1213,13 @@ impl Proposal for CubeBinProposal {
         'b: 'c,
     {
         return &self.genepop;
+    }
+
+    fn density<'b, 'c>(&'b self) -> &'c Array1<f32>
+    where
+        'b: 'c,
+    {
+        return &self.density;
     }
 }
 
