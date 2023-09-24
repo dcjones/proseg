@@ -18,7 +18,7 @@ use math::{
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
-use rand_distr::{Beta, Binomial, Dirichlet, Distribution, Gamma, Normal};
+use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -61,6 +61,8 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
+    pub dispersion: Option<f32>,
+
     pub min_cell_volume: f32,
 
     // params for normal prior
@@ -209,7 +211,7 @@ impl ModelParams {
         let mut total_gene_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
-            let layer = ((transcripts[i].z - z0) / layer_depth) as usize;
+            let layer  = ((transcripts[i].z - z0) / layer_depth) as usize;
             if j != BACKGROUND_CELL {
                 counts[[gene, j as usize, layer]] += 1;
             }
@@ -217,26 +219,23 @@ impl ModelParams {
         }
 
         // initial component assignments
+        let kmeans_samples = DatasetBase::from(
+            counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
 
-        // let kmeans_samples = DatasetBase::from(
-        //     counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
+        let rng = rand::thread_rng();
+        let model = KMeans::params_with_rng(ncomponents, rng)
+            .tolerance(1e-1)
+            .fit(&kmeans_samples)
+            .expect("kmeans failed to converge");
 
-        // let rng = rand::thread_rng();
-        // let model = KMeans::params_with_rng(ncomponents, rng)
-        //     .tolerance(1e-1)
-        //     .fit(&kmeans_samples)
-        //     .expect("kmeans failed to converge");
+        let z = model.predict(&kmeans_samples).map(|&x| x as u32);
 
-        // let z = model.predict(&kmeans_samples).map(|&x| x as u32);
-        // dbg!(z.shape());
-
-
-        // initial component assignments
-        let mut rng = rand::thread_rng();
-        let z = (0..ncells)
-            .map(|_| rng.gen_range(0..ncomponents) as u32)
-            .collect::<Vec<_>>()
-            .into();
+        // // initial component assignments
+        // let mut rng = rand::thread_rng();
+        // let z = (0..ncells)
+        //     .map(|_| rng.gen_range(0..ncomponents) as u32)
+        //     .collect::<Vec<_>>()
+        //     .into();
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
         let isbackground = Array1::<bool>::from_elem(transcripts.len(), false);
@@ -1018,10 +1017,6 @@ where
                     params.foreground_counts[[cell as usize, gene, layer]] += 1;
                 }
             });
-
-        dbg!(params.background_counts.sum());
-        dbg!(params.foreground_counts.sum());
-
     }
 
     fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1068,45 +1063,57 @@ where
 
         // Sample r
         // let t0 = Instant::now();
-        Zip::from(&mut params.r)
-            .and(&mut params.lgamma_r)
-            .and(&mut params.loggammaplus)
-            .and(params.θ.columns())
-            .and(params.foreground_counts.axis_iter(Axis(1)))
-            .par_for_each(|r, lgamma_r, loggammaplus, θs, counts| {
-                let mut rng = thread_rng();
 
-                // self.cell_areas.slice(0..self.ncells)
+        if let Some(dispersion) = priors.dispersion {
+            params.r.fill(dispersion);
+            Zip::from(&params.r)
+                .and(&mut params.lgamma_r)
+                .and(&mut params.loggammaplus)
+                .par_for_each(|r, lgamma_r, loggammaplus| {
+                    *lgamma_r = lgammaf(*r);
+                    loggammaplus.reset(*r);
+                });
+        } else {
+            Zip::from(&mut params.r)
+                .and(&mut params.lgamma_r)
+                .and(&mut params.loggammaplus)
+                .and(params.θ.columns())
+                .and(params.foreground_counts.axis_iter(Axis(1)))
+                .par_for_each(|r, lgamma_r, loggammaplus, θs, counts| {
+                    let mut rng = thread_rng();
 
-                let u = Zip::from(counts.axis_iter(Axis(0)))
-                    .fold(0, |accum, cs| {
-                        let c = cs.sum();
-                        accum + rand_crt(&mut rng, c, *r)
-                    });
+                    // self.cell_areas.slice(0..self.ncells)
+
+                    let u = Zip::from(counts.axis_iter(Axis(0)))
+                        .fold(0, |accum, cs| {
+                            let c = cs.sum();
+                            accum + rand_crt(&mut rng, c, *r)
+                        });
 
 
-                let v = Zip::from(&params.z)
-                    .and(&params.cell_volume)
-                    .fold(0.0, |accum, z, a| {
-                        let w = θs[*z as usize];
-                        accum + log1pf(-odds_to_prob(w * *a))
-                    });
+                    let v = Zip::from(&params.z)
+                        .and(&params.cell_volume)
+                        .fold(0.0, |accum, z, a| {
+                            let w = θs[*z as usize];
+                            accum + log1pf(-odds_to_prob(w * *a))
+                        });
 
-                // dbg!(u, v);
+                    // dbg!(u, v);
 
-                *r = Gamma::new(
-                    priors.e_r + u as f32,
-                    (params.h - v).recip())
-                    .unwrap()
-                    .sample(&mut rng);
+                    *r = Gamma::new(
+                        priors.e_r + u as f32,
+                        (params.h - v).recip())
+                        .unwrap()
+                        .sample(&mut rng);
 
-                assert!(r.is_finite());
+                    assert!(r.is_finite());
 
-                *r = r.min(200.0).max(1e-5);
+                    *r = r.min(200.0).max(1e-5);
 
-                *lgamma_r = lgammaf(*r);
-                loggammaplus.reset(*r);
-            });
+                    *lgamma_r = lgammaf(*r);
+                    loggammaplus.reset(*r);
+                });
+        }
 
         params.h = Gamma::new(
                 priors.e_h * (1_f32 + params.r.len() as f32),

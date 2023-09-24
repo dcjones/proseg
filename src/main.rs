@@ -83,19 +83,20 @@ struct Args {
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
-    #[arg(long, default_value_t = 10.0_f32)]
+    #[arg(long, default_value_t = 50.0_f32)]
     density_binsize: f32,
 
-    #[arg(long, default_value_t = 80.0_f32)]
+    #[arg(long, default_value_t = 150.0_f32)]
     density_sigma: f32,
 
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 10)]
     density_k: usize,
 
-    // TODO: Ok, but now we can engineer any outcome we want
-    // by changing this one variable...
-    #[arg(long, default_value_t = 5e-1)]
+    #[arg(long, default_value_t = 1e-2)]
     density_eps: f32,
+
+    #[arg(long, default_value = "40.0")]
+    dispersion: Option<String>,
 
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
@@ -160,6 +161,12 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    let dispersion = if let Some(disp_arg) = args.dispersion {
+        Some(disp_arg.parse::<f32>().unwrap())
+    } else {
+        None
+    };
 
     assert!(args.ncomponents > 0);
 
@@ -266,6 +273,8 @@ fn main() {
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
+        dispersion,
+
         min_cell_volume,
 
         μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
