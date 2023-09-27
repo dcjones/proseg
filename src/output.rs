@@ -15,7 +15,7 @@ use super::sampler::transcripts::Transcript;
 use super::sampler::cubebinsampler::CubeBinSampler;
 
 
-enum OutputFormat {
+pub enum OutputFormat {
     Csv,
     CsvGz,
     Parquet,

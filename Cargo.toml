@@ -3,6 +3,14 @@ name = "proseg"
 version = "0.0.16"
 edition = "2021"
 
+[[bin]]
+name = "proseg"
+path = "src/main.rs"
+
+[[bin]]
+name = "proseg-to-baysor"
+path = "src/to_baysor.rs"
+
 [profile.release]
 debug = true
 # lto = true
@@ -17,6 +25,7 @@ flate2 = "1.0.26"
 geo = "0.26.0"
 indicatif = "0.17.5"
 itertools = "0.10.5"
+json = "0.12.4"
 kiddo = "2.1.1"
 libm = "0.2.7"
 linfa = "0.6.1"
