@@ -14,7 +14,6 @@ use std::io::{Read, Write};
 use json;
 use std::sync::Arc;
 
-
 #[derive(Parser, Debug)]
 #[command(name="proseg-to-baysor")]
 #[command(author="Daniel C. Jones")]
@@ -91,11 +90,11 @@ fn find_parquet_column(schema: &Schema, column: &str) -> usize {
 
 
 struct TranscriptMetadata {
+    transcript_id: Vec<u64>,
     cell: Vec<u32>,
     x: Vec<f32>,
     y: Vec<f32>,
     z: Vec<f32>,
-    // TODO: What else?
 }
 
 
@@ -114,6 +113,7 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
         },
         OutputFormat::Parquet => {
             let mut metadata = TranscriptMetadata {
+                transcript_id: Vec::new(),
                 cell: Vec::new(),
                 x: Vec::new(),
                 y: Vec::new(),
@@ -125,9 +125,14 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
             let file_metadata = parquet::read::read_metadata(&mut file).expect("Unable to read parquet metadata.");
             let schema = parquet::read::infer_schema(&file_metadata).expect("Unable to infer parquet schema.");
             let schema = schema.filter(|_idx, field| {
-                field.name == "assignment" || field.name == "x" || field.name == "y" || field.name == "z"
+                field.name == "transcript_id" ||
+                field.name == "assignment" ||
+                field.name == "x" ||
+                field.name == "y" ||
+                field.name == "z"
             });
 
+            let transcript_id_col = find_parquet_column(&schema, "transcript_id");
             let assignment_col = find_parquet_column(&schema, "assignment");
             let x_col = find_parquet_column(&schema, "x");
             let y_col = find_parquet_column(&schema, "y");
@@ -139,6 +144,10 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
             for chunk in chunks {
                 let chunk = chunk.expect("Unable to read parquet chunk.");
                 let columns = chunk.columns();
+
+                for transcript_id in columns[transcript_id_col].as_any().downcast_ref::<arrow2::array::UInt64Array>().unwrap().iter() {
+                    metadata.transcript_id.push(*transcript_id.unwrap());
+                }
 
                 for assignment in columns[assignment_col].as_any().downcast_ref::<arrow2::array::UInt32Array>().unwrap().iter() {
                     metadata.cell.push(*assignment.unwrap());
@@ -167,12 +176,14 @@ fn read_proseg_transcript_metadata_csv<T>(mut rdr: arrow_csv::read::Reader<T>) -
     let headers = rdr.headers().expect("Unable to read CSV headers.");
 
     let mut metadata = TranscriptMetadata{
+        transcript_id: Vec::new(),
         cell: Vec::new(),
         x: Vec::new(),
         y: Vec::new(),
         z: Vec::new(),
     };
 
+    let transcript_id_col = find_csv_column(headers, "transcript_id");
     let assignment_col = find_csv_column(headers, "assignment");
     let x_col = find_csv_column(headers, "x");
     let y_col = find_csv_column(headers, "y");
@@ -181,6 +192,7 @@ fn read_proseg_transcript_metadata_csv<T>(mut rdr: arrow_csv::read::Reader<T>) -
     for result in rdr.records() {
         let row = result.expect("Unable to read CSV record.");
 
+        metadata.transcript_id.push(row[transcript_id_col].parse::<u64>().unwrap());
         metadata.cell.push(row[assignment_col].parse::<u32>().unwrap());
         metadata.x.push(row[x_col].parse::<f32>().unwrap());
         metadata.y.push(row[y_col].parse::<f32>().unwrap());
@@ -194,9 +206,12 @@ fn read_proseg_transcript_metadata_csv<T>(mut rdr: arrow_csv::read::Reader<T>) -
 fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetadata) {
     let mut output = File::create(filename).expect("Unable to create output transcript metadata file.");
 
-    let names = ["cell", "x", "y", "z"];
+    let names = ["transcript_id", "cell", "is_noise", "x", "y", "z"];
     let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+    columns.push(Arc::new(arrow2::array::UInt64Array::from_values(metadata.transcript_id.iter().cloned())));
     columns.push(Arc::new(arrow2::array::UInt32Array::from_values(metadata.cell.iter().cloned())));
+    columns.push(Arc::new(arrow2::array::BooleanArray::from_iter(
+        metadata.cell.iter().map(|x| Some(*x == u32::MAX)))));
     columns.push(Arc::new(arrow2::array::Float32Array::from_values(metadata.x.iter().cloned())));
     columns.push(Arc::new(arrow2::array::Float32Array::from_values(metadata.y.iter().cloned())));
     columns.push(Arc::new(arrow2::array::Float32Array::from_values(metadata.z.iter().cloned())));
