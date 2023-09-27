@@ -29,6 +29,9 @@ struct Args {
     #[arg(long, default_value = "feature_name")]
     transcript_column: String,
 
+    #[arg(long, default_value = "transcript_id")]
+    transcript_id_column: Option<String>,
+
     #[arg(short, long, default_value = "x_location")]
     x_column: String,
 
@@ -174,6 +177,7 @@ fn main() {
         read_transcripts_csv(
             &args.transcript_csv,
             &args.transcript_column,
+            args.transcript_id_column,
             &args.x_column,
             &args.y_column,
             &args.z_column,

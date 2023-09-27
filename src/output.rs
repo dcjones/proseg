@@ -15,7 +15,7 @@ use super::sampler::transcripts::Transcript;
 use super::sampler::cubebinsampler::CubeBinSampler;
 
 
-pub enum OutputFormat {
+enum OutputFormat {
     Csv,
     CsvGz,
     Parquet,
@@ -243,6 +243,7 @@ pub fn write_transcript_metadata(
 {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
+            Field::new("transcript_id", DataType::UInt64, false),
             Field::new("x", DataType::Float32, false),
             Field::new("y", DataType::Float32, false),
             Field::new("z", DataType::Float32, false),
@@ -252,6 +253,7 @@ pub fn write_transcript_metadata(
         ]);
 
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
+            Arc::new(array::UInt64Array::from_values(transcripts.iter().map(|t| t.transcript_id))),
             Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.x))),
             Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.y))),
             Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.z))),

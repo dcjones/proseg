@@ -11,6 +11,7 @@ pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 
 #[derive(Copy, Clone, PartialEq)]
 pub struct Transcript {
+    pub transcript_id: u64,
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -20,6 +21,7 @@ pub struct Transcript {
 pub fn read_transcripts_csv(
     path: &str,
     transcript_column: &str,
+    id_column: Option<String>,
     x_column: &str,
     y_column: &str,
     z_column: &str,
@@ -31,6 +33,7 @@ pub fn read_transcripts_csv(
     return read_transcripts_csv_xyz(
         &mut rdr,
         transcript_column,
+        id_column,
         x_column,
         y_column,
         z_column,
@@ -77,6 +80,7 @@ fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<us
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     transcript_column: &str,
+    id_column: Option<String>,
     x_column: &str,
     y_column: &str,
     z_column: &str,
@@ -91,6 +95,7 @@ where
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
     let z_col = find_column(headers, z_column);
+    let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     // TODO:
     // Just assuming we have xeinum output at this point.
@@ -127,8 +132,14 @@ where
         let x = row[x_col].parse::<f32>().unwrap();
         let y = row[y_col].parse::<f32>().unwrap();
         let z = row[z_col].parse::<f32>().unwrap();
+        let transcript_id = if let Some(id_col) = id_col {
+            row[id_col].parse::<u64>().unwrap()
+        } else {
+            transcripts.len() as u64
+        };
 
         transcripts.push(Transcript {
+            transcript_id,
             x,
             y,
             z,
