@@ -1,7 +1,7 @@
 mod connectivity;
 pub mod cubebinsampler;
-pub mod hull;
 pub mod density;
+pub mod hull;
 mod math;
 mod sampleset;
 pub mod transcripts;
@@ -12,6 +12,9 @@ use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
+use linfa::traits::{Fit, Predict};
+use linfa::DatasetBase;
+use linfa_clustering::KMeans;
 use math::{
     lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
@@ -28,9 +31,6 @@ use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
-use linfa_clustering::KMeans;
-use linfa::DatasetBase;
-use linfa::traits::{Fit, Predict};
 
 // use std::time::Instant;
 
@@ -211,7 +211,7 @@ impl ModelParams {
         let mut total_gene_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
-            let layer  = ((transcripts[i].z - z0) / layer_depth) as usize;
+            let layer = ((transcripts[i].z - z0) / layer_depth) as usize;
             if j != BACKGROUND_CELL {
                 counts[[gene, j as usize, layer]] += 1;
             }
@@ -219,8 +219,8 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let kmeans_samples = DatasetBase::from(
-            counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
+        let kmeans_samples =
+            DatasetBase::from(counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
 
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
@@ -323,22 +323,22 @@ impl ModelParams {
                 // λ_bg: [ngenes, nlayers]
 
                 // iterate over genes
-                accum + Zip::from(λ)
-                    .and(cs.outer_iter())
-                    .and(self.λ_bg.outer_iter())
-                    .fold(0_f32, |accum, λ, cs, λ_bg| {
-                        accum + Zip::from(cs)
-                            .and(λ_bg)
-                            .fold(0_f32, |accum, &c, &λ_bg| {
-                                if c > 0 {
-                                    accum + (c as f32) * (λ + λ_bg).ln()
-                                } else {
-                                    accum
-                                }
-                            }) - λ * cell_volume
+                accum
+                    + Zip::from(λ)
+                        .and(cs.outer_iter())
+                        .and(self.λ_bg.outer_iter())
+                        .fold(0_f32, |accum, λ, cs, λ_bg| {
+                            accum
+                                + Zip::from(cs).and(λ_bg).fold(0_f32, |accum, &c, &λ_bg| {
+                                    if c > 0 {
+                                        accum + (c as f32) * (λ + λ_bg).ln()
+                                    } else {
+                                        accum
+                                    }
+                                })
+                                - λ * cell_volume
                         })
-
-                    });
+            });
 
         // nuclear reassignment terms
         ll += Zip::from(&self.cell_assignments)
@@ -529,11 +529,7 @@ impl UncertaintyTracker {
         }
     }
 
-    fn max_posterior_cell_assignments(
-        &self,
-        params: &ModelParams,
-    ) -> Vec<(u32, f32)> {
-
+    fn max_posterior_cell_assignments(&self, params: &ModelParams) -> Vec<(u32, f32)> {
         // sort ascending on (transcript, cell)
         let sorted_durations: Vec<(usize, u32, u32)> = self
             .cell_assignment_duration
@@ -547,7 +543,7 @@ impl UncertaintyTracker {
         for (i, j, d) in sorted_durations.iter().cloned() {
             if (i, j) == ij_prev {
                 summed_durations.last_mut().unwrap().2 += d;
-            } else if  i == ij_prev.0 || (i == ij_prev.0 + 1) {
+            } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
                 summed_durations.push((i, j, d));
                 ij_prev = (i, j);
             } else {
@@ -556,8 +552,9 @@ impl UncertaintyTracker {
         }
 
         // sort ascending on (transcript, cell) and descending on duration
-        summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)|
-            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a)));
+        summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
+            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
+        });
 
         let mut maxpost_cell_assignments = Vec::new();
         let mut i_prev = usize::MAX;
@@ -576,8 +573,12 @@ impl UncertaintyTracker {
     }
 
     pub fn max_posterior_transcript_counts_assignments(
-        &self, params: &ModelParams, transcripts: &Vec<Transcript>, count_pr_cutoff: f32, foreground_pr_cutoff: f32) -> (Array2<u32>, Vec<(u32,
-    f32)>) {
+        &self,
+        params: &ModelParams,
+        transcripts: &Vec<Transcript>,
+        count_pr_cutoff: f32,
+        foreground_pr_cutoff: f32,
+    ) -> (Array2<u32>, Vec<(u32, f32)>) {
         let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0_u32);
         let maxpost_assignments = self.max_posterior_cell_assignments(&params);
         for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
@@ -588,7 +589,7 @@ impl UncertaintyTracker {
 
                 let λ_fg = params.λ[[gene as usize, *j as usize]];
                 let λ_bg = params.λ_bg[[gene as usize, layer]];
-                let fg_pr = λ_fg / (λ_fg + density*λ_bg);
+                let fg_pr = λ_fg / (λ_fg + density * λ_bg);
 
                 if fg_pr > foreground_pr_cutoff {
                     counts[[gene as usize, *j as usize]] += 1;
@@ -599,14 +600,17 @@ impl UncertaintyTracker {
         return (counts, maxpost_assignments);
     }
 
-    pub fn expected_counts(&self, params: &ModelParams, transcripts: &Vec<Transcript>) -> Array2<f32> {
+    pub fn expected_counts(
+        &self,
+        params: &ModelParams,
+        transcripts: &Vec<Transcript>,
+    ) -> Array2<f32> {
         let mut ecounts = Array2::<f32>::zeros((params.ngenes(), params.ncells()));
 
         for (&(i, j), &d) in self.cell_assignment_duration.iter() {
             if j == BACKGROUND_CELL {
                 continue;
             }
-
 
             let gene = transcripts[i].gene;
             let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
@@ -616,7 +620,7 @@ impl UncertaintyTracker {
 
             let λ_fg = params.λ[[gene as usize, j as usize]];
             let λ_bg = params.λ_bg[[gene as usize, layer]];
-            let w_bg = λ_fg / (λ_fg + density*λ_bg);
+            let w_bg = λ_fg / (λ_fg + density * λ_bg);
 
             ecounts[[gene as usize, j as usize]] += w_d * w_bg;
         }
@@ -694,12 +698,10 @@ pub trait Proposal {
                 .and(self.density())
                 .and(params.λ_bg.rows())
                 .for_each(|gene_counts, &d, λ_bg| {
-                    Zip::from(gene_counts)
-                        .and(λ_bg)
-                        .for_each(|&count, &λ_bg| {
-                            δ -= count as f32 * (d*λ_bg).ln();
-                        });
-            });
+                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
+                        δ -= count as f32 * (d * λ_bg).ln();
+                    });
+                });
         } else {
             let volume_diff = self.old_cell_volume_delta();
 
@@ -715,14 +717,11 @@ pub trait Proposal {
                 .and(params.λ_bg.rows())
                 .and(params.λ.column(old_cell as usize))
                 .for_each(|gene_counts, &d, λ_bg, λ| {
-
-                    Zip::from(gene_counts)
-                        .and(λ_bg)
-                        .for_each(|&count, &λ_bg| {
-                            if count > 0 {
-                                δ -= count as f32 * (d*λ_bg + λ).ln();
-                            }
-                        })
+                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
+                        if count > 0 {
+                            δ -= count as f32 * (d * λ_bg + λ).ln();
+                        }
+                    })
                 });
 
             let z = params.z[old_cell as usize];
@@ -743,13 +742,10 @@ pub trait Proposal {
                 .and(self.density())
                 .and(params.λ_bg.rows())
                 .for_each(|gene_counts, &d, λ_bg| {
-                    Zip::from(gene_counts)
-                        .and(λ_bg)
-                        .for_each(|&count, &λ_bg| {
-                            δ += count as f32 * (d*λ_bg).ln();
-                        });
-            });
-
+                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
+                        δ += count as f32 * (d * λ_bg).ln();
+                    });
+                });
         } else {
             let volume_diff = self.new_cell_volume_delta();
 
@@ -766,14 +762,11 @@ pub trait Proposal {
                 .and(params.λ_bg.rows())
                 .and(params.λ.column(new_cell as usize))
                 .for_each(|gene_counts, &d, λ_bg, λ| {
-
-                    Zip::from(gene_counts)
-                        .and(λ_bg)
-                        .for_each(|&count, &λ_bg| {
-                            if count > 0 {
-                                δ += count as f32 * (d*λ_bg + λ).ln();
-                            }
-                        })
+                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
+                        if count > 0 {
+                            δ += count as f32 * (d * λ_bg + λ).ln();
+                        }
+                    })
                 });
 
             let z = params.z[new_cell as usize];
@@ -926,7 +919,12 @@ where
         self.update_sampler_state(params);
     }
 
-    fn sample_global_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
+    fn sample_global_params(
+        &mut self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+    ) {
         let mut rng = thread_rng();
 
         self.sample_volume_params(priors, params);
@@ -975,7 +973,12 @@ where
         self.sample_background_rates(priors, params);
     }
 
-    fn sample_background_counts(&mut self, _priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
+    fn sample_background_counts(
+        &mut self,
+        _priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+    ) {
         Zip::indexed(&mut params.isbackground)
             .and(&params.transcript_density)
             .and(transcripts)
@@ -989,7 +992,7 @@ where
                     let gene = t.gene as usize;
                     let layer = ((t.z - params.z0) / params.layer_depth) as usize;
                     let λ = params.λ[[gene, cell as usize]];
-                    let p = λ / (λ + d*params.λ_bg[[gene, layer]]);
+                    let p = λ / (λ + d * params.λ_bg[[gene, layer]]);
                     // if p < 0.5 {
                     //     dbg!(p, λ, d, params.λ_bg[[gene, layer]]);
                     // }
@@ -1084,25 +1087,22 @@ where
 
                     // self.cell_areas.slice(0..self.ncells)
 
-                    let u = Zip::from(counts.axis_iter(Axis(0)))
-                        .fold(0, |accum, cs| {
-                            let c = cs.sum();
-                            accum + rand_crt(&mut rng, c, *r)
-                        });
+                    let u = Zip::from(counts.axis_iter(Axis(0))).fold(0, |accum, cs| {
+                        let c = cs.sum();
+                        accum + rand_crt(&mut rng, c, *r)
+                    });
 
-
-                    let v = Zip::from(&params.z)
-                        .and(&params.cell_volume)
-                        .fold(0.0, |accum, z, a| {
-                            let w = θs[*z as usize];
-                            accum + log1pf(-odds_to_prob(w * *a))
-                        });
+                    let v =
+                        Zip::from(&params.z)
+                            .and(&params.cell_volume)
+                            .fold(0.0, |accum, z, a| {
+                                let w = θs[*z as usize];
+                                accum + log1pf(-odds_to_prob(w * *a))
+                            });
 
                     // dbg!(u, v);
 
-                    *r = Gamma::new(
-                        priors.e_r + u as f32,
-                        (params.h - v).recip())
+                    *r = Gamma::new(priors.e_r + u as f32, (params.h - v).recip())
                         .unwrap()
                         .sample(&mut rng);
 
@@ -1116,12 +1116,12 @@ where
         }
 
         params.h = Gamma::new(
-                priors.e_h * (1_f32 + params.r.len() as f32),
-                (priors.f_h + params.r.sum()).recip())
-            .unwrap()
-            .sample(&mut thread_rng());
+            priors.e_h * (1_f32 + params.r.len() as f32),
+            (priors.f_h + params.r.sum()).recip(),
+        )
+        .unwrap()
+        .sample(&mut thread_rng());
     }
-
 
     fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         // loop over genes
@@ -1132,7 +1132,9 @@ where
             .par_for_each(|mut λs, cs, θs, r| {
                 let mut rng = thread_rng();
                 // loop over cells
-                for (λ, z, cs, cell_volume) in izip!(&mut λs, &params.z, cs.outer_iter(), &params.cell_volume) {
+                for (λ, z, cs, cell_volume) in
+                    izip!(&mut λs, &params.z, cs.outer_iter(), &params.cell_volume)
+                {
                     let c = cs.sum();
                     let θ = θs[*z as usize];
                     *λ = Gamma::new(
@@ -1158,17 +1160,13 @@ where
             .and(params.background_counts.rows())
             .and(&params.total_transcript_density)
             .for_each(|λs, cs, total_density| {
-                Zip::from(λs)
-                    .and(cs)
-                    .for_each(|λ, c| {
-                        let α = priors.α_bg + *c as f32;
-                        // let β = priors.β_bg + params.full_layer_volume;
-                        // let β = priors.β_bg + total_density * params.full_layer_volume;
-                        let β = priors.β_bg + total_density;
-                        *λ = Gamma::new(α, β.recip())
-                            .unwrap()
-                            .sample(&mut rng) as f32;
-                    });
+                Zip::from(λs).and(cs).for_each(|λ, c| {
+                    let α = priors.α_bg + *c as f32;
+                    // let β = priors.β_bg + params.full_layer_volume;
+                    // let β = priors.β_bg + total_density * params.full_layer_volume;
+                    let β = priors.β_bg + total_density;
+                    *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+                });
             });
 
         // dbg!(&params.total_transcript_density);
@@ -1303,6 +1301,5 @@ where
                 .recip()
                 .sqrt();
             });
-
     }
 }

@@ -1,19 +1,17 @@
-
 use arrow2;
-use arrow2::datatypes::{Field, Schema, DataType};
-use arrow2::chunk::Chunk;
 use arrow2::array;
-use std::fs::File;
-use flate2::Compression;
+use arrow2::chunk::Chunk;
+use arrow2::datatypes::{DataType, Field, Schema};
 use flate2::write::GzEncoder;
-use std::sync::Arc;
+use flate2::Compression;
 use ndarray::{Array1, Array2, Axis, Zip};
+use std::fs::File;
 use std::io::Write;
+use std::sync::Arc;
 
-use super::sampler::ModelParams;
-use super::sampler::transcripts::Transcript;
 use super::sampler::cubebinsampler::CubeBinSampler;
-
+use super::sampler::transcripts::Transcript;
+use super::sampler::ModelParams;
 
 enum OutputFormat {
     Csv,
@@ -25,8 +23,8 @@ fn write_table(
     filename: &str,
     fmtstr: &Option<String>,
     schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>)
-{
+    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
+) {
     let fmt = determine_format(filename, fmtstr);
     let mut file = File::create(&filename).unwrap();
 
@@ -35,30 +33,35 @@ fn write_table(
             if write_table_csv(&mut file, schema, chunk).is_err() {
                 panic!("Error writing csv file: {}", filename);
             }
-        },
+        }
         OutputFormat::CsvGz => {
             let mut encoder = GzEncoder::new(file, Compression::default());
             if write_table_csv(&mut encoder, schema, chunk).is_err() {
                 panic!("Error writing csv.gz file: {}", filename);
             }
-        },
+        }
         OutputFormat::Parquet => {
             if write_table_parquet(&mut file, schema, chunk).is_err() {
                 panic!("Error writing parquet file: {}", filename);
             }
-        },
+        }
     }
 }
 
 fn write_table_csv<W>(
     output: &mut W,
     schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>) -> arrow2::error::Result<()>
+    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
+) -> arrow2::error::Result<()>
 where
-    W: std::io::Write
+    W: std::io::Write,
 {
     let options = arrow2::io::csv::write::SerializeOptions::default();
-    let names = schema.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    let names = schema
+        .fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
     arrow2::io::csv::write::write_header(output, &names, &options)?;
     arrow2::io::csv::write::write_chunk(output, &chunk, &options)?;
     return Ok(());
@@ -67,15 +70,17 @@ where
 fn write_table_parquet<W>(
     output: &mut W,
     schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>) -> arrow2::error::Result<()>
+    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
+) -> arrow2::error::Result<()>
 where
-    W: std::io::Write
+    W: std::io::Write,
 {
     let options = arrow2::io::parquet::write::WriteOptions {
         write_statistics: true,
         version: arrow2::io::parquet::write::Version::V2,
-        compression: arrow2::io::parquet::write::CompressionOptions::Zstd(
-            Some(arrow2::io::parquet::write::ZstdLevel::default())),
+        compression: arrow2::io::parquet::write::CompressionOptions::Zstd(Some(
+            arrow2::io::parquet::write::ZstdLevel::default(),
+        )),
         data_pagesize_limit: None,
     };
 
@@ -83,14 +88,20 @@ where
         .fields
         .iter()
         // .map(|f| arrow2::io::parquet::write::Encoding::Plain)
-        .map(|f| arrow2::io::parquet::write::transverse(
-            &f.data_type, |_| arrow2::io::parquet::write::Encoding::Plain))
+        .map(|f| {
+            arrow2::io::parquet::write::transverse(&f.data_type, |_| {
+                arrow2::io::parquet::write::Encoding::Plain
+            })
+        })
         .collect();
 
     let chunk_iter = vec![Ok(chunk)];
     let row_groups = arrow2::io::parquet::write::RowGroupIterator::try_new(
         chunk_iter.into_iter(),
-        &schema, options, encodings)?;
+        &schema,
+        options,
+        encodings,
+    )?;
 
     let mut writer = arrow2::io::parquet::write::FileWriter::try_new(output, schema, options)?;
 
@@ -128,9 +139,11 @@ fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
 }
 
 pub fn write_counts(
-        output_counts: &Option<String>, output_counts_fmt: &Option<String>,
-        transcript_names: &Vec<String>, counts: &Array2<u32>)
-{
+    output_counts: &Option<String>,
+    output_counts_fmt: &Option<String>,
+    transcript_names: &Vec<String>,
+    counts: &Array2<u32>,
+) {
     if let Some(output_counts) = output_counts {
         let schema = arrow2::datatypes::Schema::from(
             transcript_names
@@ -154,9 +167,11 @@ pub fn write_counts(
 }
 
 pub fn write_expected_counts(
-        output_expected_counts: &Option<String>, output_expected_counts_fmt: &Option<String>,
-        transcript_names: &Vec<String>, ecounts: &Array2<f32>)
-{
+    output_expected_counts: &Option<String>,
+    output_expected_counts_fmt: &Option<String>,
+    transcript_names: &Vec<String>,
+    ecounts: &Array2<f32>,
+) {
     if let Some(output_expected_counts) = output_expected_counts {
         let schema = arrow2::datatypes::Schema::from(
             transcript_names
@@ -175,15 +190,21 @@ pub fn write_expected_counts(
         }
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_expected_counts, &output_expected_counts_fmt, schema, chunk);
+        write_table(
+            &output_expected_counts,
+            &output_expected_counts_fmt,
+            schema,
+            chunk,
+        );
     }
 }
 
-
 pub fn write_rates(
-        output_rates: &Option<String>, output_rates_fmt: &Option<String>,
-        params: &ModelParams, transcript_names: &Vec<String>)
-{
+    output_rates: &Option<String>,
+    output_rates_fmt: &Option<String>,
+    params: &ModelParams,
+    transcript_names: &Vec<String>,
+) {
     if let Some(output_rates) = output_rates {
         let schema = arrow2::datatypes::Schema::from(
             transcript_names
@@ -206,11 +227,12 @@ pub fn write_rates(
     }
 }
 
-
 pub fn write_cell_metadata(
-        output_cell_metadata: &Option<String>, output_cell_metadata_fmt: &Option<String>,
-        params: &ModelParams, cell_centroids: &Vec<(f32, f32)>)
-{
+    output_cell_metadata: &Option<String>,
+    output_cell_metadata_fmt: &Option<String>,
+    params: &ModelParams,
+    cell_centroids: &Vec<(f32, f32)>,
+) {
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::from(vec![
             Field::new("cell", DataType::UInt32, false),
@@ -223,24 +245,41 @@ pub fn write_cell_metadata(
 
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
             Arc::new(array::UInt32Array::from_values(0..params.ncells() as u32)),
-            Arc::new(array::Float32Array::from_values(cell_centroids.iter().map(|(x, _)| *x))),
-            Arc::new(array::Float32Array::from_values(cell_centroids.iter().map(|(_, y)| *y))),
-            Arc::new(array::UInt16Array::from_values(params.z.iter().map(|&z| z as u16))),
-            Arc::new(array::Float32Array::from_values(params.cell_volume.iter().cloned())),
-            Arc::new(array::UInt64Array::from_values(params.cell_population.iter().map(|&p| p as u64))),
+            Arc::new(array::Float32Array::from_values(
+                cell_centroids.iter().map(|(x, _)| *x),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                cell_centroids.iter().map(|(_, y)| *y),
+            )),
+            Arc::new(array::UInt16Array::from_values(
+                params.z.iter().map(|&z| z as u16),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                params.cell_volume.iter().cloned(),
+            )),
+            Arc::new(array::UInt64Array::from_values(
+                params.cell_population.iter().map(|&p| p as u64),
+            )),
         ];
 
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_cell_metadata, &output_cell_metadata_fmt, schema, chunk);
+        write_table(
+            &output_cell_metadata,
+            &output_cell_metadata_fmt,
+            schema,
+            chunk,
+        );
     }
 }
 
-
 pub fn write_transcript_metadata(
-        output_transcript_metadata: &Option<String>, output_transcript_metadata_fmt: &Option<String>,
-        transcripts: &Vec<Transcript>, transcript_names: &Vec<String>, cell_assignments: &Vec<(u32, f32)>)
-{
+    output_transcript_metadata: &Option<String>,
+    output_transcript_metadata_fmt: &Option<String>,
+    transcripts: &Vec<Transcript>,
+    transcript_names: &Vec<String>,
+    cell_assignments: &Vec<(u32, f32)>,
+) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
             Field::new("transcript_id", DataType::UInt64, false),
@@ -253,26 +292,49 @@ pub fn write_transcript_metadata(
         ]);
 
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::UInt64Array::from_values(transcripts.iter().map(|t| t.transcript_id))),
-            Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.x))),
-            Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.y))),
-            Arc::new(array::Float32Array::from_values(transcripts.iter().map(|t| t.z))),
-            Arc::new(array::Utf8Array::<i32>::from_iter_values(transcripts.iter().map(|t| transcript_names[t.gene as usize].clone()))),
-            Arc::new(array::UInt32Array::from_values(cell_assignments.iter().map(|(cell, _)| *cell))),
-            Arc::new(array::Float32Array::from_values(cell_assignments.iter().map(|(_, pr)| *pr))),
+            Arc::new(array::UInt64Array::from_values(
+                transcripts.iter().map(|t| t.transcript_id),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcripts.iter().map(|t| t.x),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcripts.iter().map(|t| t.y),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcripts.iter().map(|t| t.z),
+            )),
+            Arc::new(array::Utf8Array::<i32>::from_iter_values(
+                transcripts
+                    .iter()
+                    .map(|t| transcript_names[t.gene as usize].clone()),
+            )),
+            Arc::new(array::UInt32Array::from_values(
+                cell_assignments.iter().map(|(cell, _)| *cell),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                cell_assignments.iter().map(|(_, pr)| *pr),
+            )),
         ];
 
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_transcript_metadata, &output_transcript_metadata_fmt, schema, chunk);
+        write_table(
+            &output_transcript_metadata,
+            &output_transcript_metadata_fmt,
+            schema,
+            chunk,
+        );
     }
 }
 
-
 pub fn write_gene_metadata(
-        output_gene_metadata: &Option<String>, output_gene_metadata_fmt: &Option<String>,
-        params: &ModelParams, transcript_names: &Vec<String>, expected_counts: &Array2<f32>)
-{
+    output_gene_metadata: &Option<String>,
+    output_gene_metadata_fmt: &Option<String>,
+    params: &ModelParams,
+    transcript_names: &Vec<String>,
+    expected_counts: &Array2<f32>,
+) {
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),
@@ -281,18 +343,24 @@ pub fn write_gene_metadata(
         ];
 
         let mut columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::Utf8Array::<i32>::from_iter_values(transcript_names.iter().cloned())),
-            Arc::new(array::UInt64Array::from_values(params.total_gene_counts.sum_axis(Axis(1)).iter().map(|x| *x as u64))),
-            Arc::new(array::Float32Array::from_values(expected_counts.sum_axis(Axis(1)).iter().cloned()))
+            Arc::new(array::Utf8Array::<i32>::from_iter_values(
+                transcript_names.iter().cloned(),
+            )),
+            Arc::new(array::UInt64Array::from_values(
+                params
+                    .total_gene_counts
+                    .sum_axis(Axis(1))
+                    .iter()
+                    .map(|x| *x as u64),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                expected_counts.sum_axis(Axis(1)).iter().cloned(),
+            )),
         ];
 
         // cell type rates
         for i in 0..params.ncomponents() {
-            schema_fields.push(Field::new(
-                &format!("λ_{}", i),
-                DataType::Float32,
-                false,
-            ));
+            schema_fields.push(Field::new(&format!("λ_{}", i), DataType::Float32, false));
 
             let mut λ_component = Array1::<f32>::from_elem(params.ngenes(), 0_f32);
             let mut count = 0;
@@ -300,37 +368,42 @@ pub fn write_gene_metadata(
                 .and(params.λ.columns())
                 .for_each(|&z, λ| {
                     if i == z as usize {
-                        Zip::from(&mut λ_component)
-                            .and(λ)
-                            .for_each(|a, b| *a += b);
+                        Zip::from(&mut λ_component).and(λ).for_each(|a, b| *a += b);
                         count += 1;
                     }
                 });
             λ_component /= count as f32;
 
-            columns.push(Arc::new(array::Float32Array::from_values(λ_component.iter().cloned())));
+            columns.push(Arc::new(array::Float32Array::from_values(
+                λ_component.iter().cloned(),
+            )));
         }
 
         // background rates
         for i in 0..params.nlayers() {
             schema_fields.push(Field::new(format!("λ_bg_{}", i), DataType::Float32, false));
-            columns.push(Arc::new(
-                array::Float32Array::from_values(params.λ_bg.column(i).iter().cloned()),
-            ));
+            columns.push(Arc::new(array::Float32Array::from_values(
+                params.λ_bg.column(i).iter().cloned(),
+            )));
         }
 
         let schema = Schema::from(schema_fields);
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_gene_metadata, &output_gene_metadata_fmt, schema, chunk);
+        write_table(
+            &output_gene_metadata,
+            &output_gene_metadata_fmt,
+            schema,
+            chunk,
+        );
     }
 }
 
-
 pub fn write_cubes(
-        output_cubes: &Option<String>, output_cubes_fmt: &Option<String>,
-        sampler: &CubeBinSampler)
-{
+    output_cubes: &Option<String>,
+    output_cubes_fmt: &Option<String>,
+    sampler: &CubeBinSampler,
+) {
     if let Some(output_cubes) = output_cubes {
         let ncubes = sampler.cubes().count();
 
@@ -378,7 +451,6 @@ pub fn write_cubes(
     }
 }
 
-
 // TODO:
 // If we want to import things into qupath, I think we need a way to scale
 // the coordinates to pixel space. It also doesn't seem like it supports
@@ -410,16 +482,15 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
                     "      }},\n",
                     "      \"geometry\": {{\n",
                     "        \"type\": \"MultiPolygon\",\n",
-                    "        \"coordinates\": ["),
-                cell).unwrap();
+                    "        \"coordinates\": ["
+                ),
+                cell
+            )
+            .unwrap();
 
             let npolys = polys.iter().count();
             for (i, poly) in polys.into_iter().enumerate() {
-                writeln!(
-                    encoder,
-                    concat!(
-                        "          [\n",
-                        "            [")).unwrap();
+                writeln!(encoder, concat!("          [\n", "            [")).unwrap();
 
                 let ncoords = poly.exterior().coords().count();
                 for (j, coord) in poly.exterior().coords().enumerate() {
@@ -431,11 +502,7 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
                     }
                 }
 
-                write!(
-                    encoder,
-                    concat!(
-                        "            ]\n",
-                        "          ]")).unwrap();
+                write!(encoder, concat!("            ]\n", "          ]")).unwrap();
 
                 if i < npolys - 1 {
                     writeln!(encoder, ",").unwrap();
@@ -444,12 +511,7 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
                 }
             }
 
-            write!(
-                encoder,
-                concat!(
-                    "        ]\n",
-                    "      }}\n",
-                    "    }}")).unwrap();
+            write!(encoder, concat!("        ]\n", "      }}\n", "    }}")).unwrap();
             if cell < ncells - 1 {
                 writeln!(encoder, ",").unwrap();
             } else {
@@ -461,8 +523,10 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
     }
 }
 
-
-pub fn write_cell_layered_multipolygons(output_cell_polygons: &Option<String>, sampler: &CubeBinSampler) {
+pub fn write_cell_layered_multipolygons(
+    output_cell_polygons: &Option<String>,
+    sampler: &CubeBinSampler,
+) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         // Need to collect cubes and organize
         let cell_layered_polys = sampler.cell_layered_polygons();
@@ -495,16 +559,15 @@ pub fn write_cell_layered_multipolygons(output_cell_polygons: &Option<String>, s
                         "      }},\n",
                         "      \"geometry\": {{\n",
                         "        \"type\": \"MultiPolygon\",\n",
-                        "        \"coordinates\": ["),
-                    cell, layer).unwrap();
+                        "        \"coordinates\": ["
+                    ),
+                    cell, layer
+                )
+                .unwrap();
 
                 let npolys = polys.iter().count();
                 for (i, poly) in polys.into_iter().enumerate() {
-                    writeln!(
-                        encoder,
-                        concat!(
-                            "          [\n",
-                            "            [")).unwrap();
+                    writeln!(encoder, concat!("          [\n", "            [")).unwrap();
 
                     let ncoords = poly.exterior().coords().count();
                     for (j, coord) in poly.exterior().coords().enumerate() {
@@ -516,11 +579,7 @@ pub fn write_cell_layered_multipolygons(output_cell_polygons: &Option<String>, s
                         }
                     }
 
-                    write!(
-                        encoder,
-                        concat!(
-                            "            ]\n",
-                            "          ]")).unwrap();
+                    write!(encoder, concat!("            ]\n", "          ]")).unwrap();
 
                     if i < npolys - 1 {
                         writeln!(encoder, ",").unwrap();
@@ -529,12 +588,7 @@ pub fn write_cell_layered_multipolygons(output_cell_polygons: &Option<String>, s
                     }
                 }
 
-                write!(
-                    encoder,
-                    concat!(
-                        "        ]\n",
-                        "      }}\n",
-                        "    }}")).unwrap();
+                write!(encoder, concat!("        ]\n", "      }}\n", "    }}")).unwrap();
                 if count < nmultipolys - 1 {
                     writeln!(encoder, ",").unwrap();
                 } else {

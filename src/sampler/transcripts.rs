@@ -1,10 +1,10 @@
 use csv;
 use flate2::read::GzDecoder;
+use kiddo::distance::squared_euclidean;
+use kiddo::float::kdtree::KdTree;
+use ndarray::Array2;
 use std::collections::HashMap;
 use std::fs::File;
-use ndarray::Array2;
-use kiddo::float::kdtree::KdTree;
-use kiddo::distance::squared_euclidean;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
@@ -25,7 +25,7 @@ pub fn read_transcripts_csv(
     x_column: &str,
     y_column: &str,
     z_column: &str,
-    min_qv: f32
+    min_qv: f32,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
     let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
     // let mut rdr = csv::Reader::from_path(path).unwrap();
@@ -197,7 +197,6 @@ pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f3
     return (min_x, max_x, min_y, max_y, min_z, max_z);
 }
 
-
 // Estimate what region of the slide to model by counting the number of occupied bins.
 pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32) -> f32 {
     let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(&transcripts);
@@ -219,23 +218,23 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
         occupied[[xbin, ybin]] = true;
     }
 
-    dbg!(
-        occupied.iter().filter(|&&x| x).count(),
-        occupied.len(),
-    );
+    dbg!(occupied.iter().filter(|&&x| x).count(), occupied.len(),);
 
     return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
 }
 
-
 // Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
-pub fn estimate_cell_centroids(transcripts: &Vec<Transcript>, cell_assignments: &Vec<CellIndex>, ncells: usize) -> Vec<(f32, f32)> {
+pub fn estimate_cell_centroids(
+    transcripts: &Vec<Transcript>,
+    cell_assignments: &Vec<CellIndex>,
+    ncells: usize,
+) -> Vec<(f32, f32)> {
     let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); ncells];
     for (i, &cell) in cell_assignments.iter().enumerate() {
         if cell != BACKGROUND_CELL {
             cell_transcripts[cell as usize].push(i);
         }
-        }
+    }
 
     let mut centroids = Vec::with_capacity(ncells);
     for ts in cell_transcripts.iter() {
@@ -258,10 +257,12 @@ pub fn estimate_cell_centroids(transcripts: &Vec<Transcript>, cell_assignments: 
     return centroids;
 }
 
-
-pub fn filter_cellfree_transcripts(transcripts: &Vec<Transcript>, init_cell_assignments: &Vec<CellIndex>, ncells: usize, max_distance: f32) ->
-    (Vec<Transcript>, Vec<CellIndex>)
-{
+pub fn filter_cellfree_transcripts(
+    transcripts: &Vec<Transcript>,
+    init_cell_assignments: &Vec<CellIndex>,
+    ncells: usize,
+    max_distance: f32,
+) -> (Vec<Transcript>, Vec<CellIndex>) {
     let max_distance_squared = max_distance * max_distance;
 
     let centroids = estimate_cell_centroids(transcripts, init_cell_assignments, ncells);
@@ -282,19 +283,20 @@ pub fn filter_cellfree_transcripts(transcripts: &Vec<Transcript>, init_cell_assi
         }
     }
 
-    let filtered_transcripts = transcripts.iter()
+    let filtered_transcripts = transcripts
+        .iter()
         .zip(mask.iter())
         .filter(|(_, &m)| m)
         .map(|(t, _)| t)
         .cloned()
         .collect::<Vec<_>>();
-    let filtered_cell_assignments = init_cell_assignments.iter()
+    let filtered_cell_assignments = init_cell_assignments
+        .iter()
         .zip(mask.iter())
         .filter(|(_, &m)| m)
         .map(|(t, _)| t)
         .cloned()
         .collect::<Vec<_>>();
-
 
     return (filtered_transcripts, filtered_cell_assignments);
 }

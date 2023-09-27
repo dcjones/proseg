@@ -51,8 +51,9 @@ pub fn negbin_logpmf_fast(
 }
 
 pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
-    return (0..n).map(|t|
-        rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32).sum();
+    return (0..n)
+        .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
+        .sum();
 }
 
 pub fn odds_to_prob(o: f32) -> f32 {

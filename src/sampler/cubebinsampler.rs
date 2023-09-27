@@ -6,6 +6,8 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
+use geo::geometry::{LineString, MultiPolygon, Polygon};
+use geo::BooleanOps;
 use ndarray::{Array1, Array2, Axis};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
@@ -14,11 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::sync::{Arc, Mutex};
 use thread_local::ThreadLocal;
-use geo::geometry::{Polygon, MultiPolygon, LineString};
-use geo::BooleanOps;
 
 use std::time::Instant;
-
 
 // taken from: https://github.com/a-b-street/abstreet
 fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32> {
@@ -290,7 +289,6 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Ve
     return (layout, cubebins);
 }
 
-
 fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) -> CubeCellMap {
     let mut cube_assignments = HashMap::new();
     let mut cubecells = CubeCellMap::new();
@@ -321,7 +319,6 @@ fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) 
     return cubecells;
 }
 
-
 pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
@@ -341,7 +338,7 @@ pub struct CubeBinSampler {
     // to implement perimeter constraints.
     nzbins: usize,
     cell_population: Array2<f32>, // [nzbins, ncells]
-    cell_perimeter: Array2<f32>, // [nzbins, ncells]
+    cell_perimeter: Array2<f32>,  // [nzbins, ncells]
 
     proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
@@ -375,7 +372,10 @@ impl CubeBinSampler {
         let (layout, cubebins) = bin_transcripts(transcripts, scale);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
-        let transcript_layers = transcripts.iter().map(|t| ((t.z - z0) / layer_depth) as u32).collect::<Vec<_>>();
+        let transcript_layers = transcripts
+            .iter()
+            .map(|t| ((t.z - z0) / layer_depth) as u32)
+            .collect::<Vec<_>>();
 
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
@@ -561,8 +561,7 @@ impl CubeBinSampler {
         }
 
         let nzbins = 2 * self.nzbins;
-        let cell_population =
-            Array2::from_elem((nzbins, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_population = Array2::from_elem((nzbins, self.cell_population.shape()[1]), 0.0_f32);
         let cell_perimeter = Array2::from_elem((nzbins, self.cell_perimeter.shape()[1]), 0.0_f32);
 
         let mut sampler = CubeBinSampler {
@@ -588,7 +587,7 @@ impl CubeBinSampler {
             connectivity_checker,
             zmin: self.zmin,
             zmax: self.zmax,
-            nvoxel_layers: 2*self.nvoxel_layers,
+            nvoxel_layers: 2 * self.nvoxel_layers,
             cubevolume,
             quad: 0,
         };
@@ -692,7 +691,8 @@ impl CubeBinSampler {
     }
 
     pub fn cubes(&self) -> impl Iterator<Item = (CellIndex, (f32, f32, f32, f32, f32, f32))> + '_ {
-        return self.cubecells
+        return self
+            .cubecells
             .iter()
             .filter(|(_, &cell)| cell != BACKGROUND_CELL)
             .map(|(cube, cell)| (*cell, self.chunkquad.layout.cube_to_world_coords(*cube)));
@@ -701,12 +701,10 @@ impl CubeBinSampler {
     pub fn cell_polygons(&self) -> Vec<MultiPolygon<f32>> {
         let mut cell_polys: Vec<Vec<Polygon<f32>>> = vec![Vec::new(); self.ncells()];
         for (cell, (x0, y0, _z0, x1, y1, _z1)) in self.cubes() {
-            cell_polys[cell as usize].push(
-                Polygon::<f32>::new(
-                    LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
-                    vec![]
-                )
-            )
+            cell_polys[cell as usize].push(Polygon::<f32>::new(
+                LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
+                vec![],
+            ))
         }
 
         let cell_polys = cell_polys
@@ -718,7 +716,7 @@ impl CubeBinSampler {
     }
 
     pub fn cell_layered_polygons(&self) -> Vec<(i32, Vec<MultiPolygon<f32>>)> {
-        let mut cell_polys= HashMap::new();
+        let mut cell_polys = HashMap::new();
 
         for (cube, &cell) in self.cubecells.iter() {
             if cell == BACKGROUND_CELL {
@@ -727,19 +725,26 @@ impl CubeBinSampler {
 
             let (x0, y0, _z0, x1, y1, _z1) = self.chunkquad.layout.cube_to_world_coords(*cube);
 
-            let cell_polys = cell_polys.entry(cube.k).or_insert_with(|| vec![Vec::new(); self.ncells()]);
-            cell_polys[cell as usize].push(
-                Polygon::<f32>::new(
-                    LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
-                    vec![]
-                )
-            )
+            let cell_polys = cell_polys
+                .entry(cube.k)
+                .or_insert_with(|| vec![Vec::new(); self.ncells()]);
+            cell_polys[cell as usize].push(Polygon::<f32>::new(
+                LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
+                vec![],
+            ))
         }
 
         let cell_polys = cell_polys
             .into_iter()
-            .map(|(k, polys)|
-                (k, polys.into_par_iter().map(union_all_into_multipolygon).collect()))
+            .map(|(k, polys)| {
+                (
+                    k,
+                    polys
+                        .into_par_iter()
+                        .map(union_all_into_multipolygon)
+                        .collect(),
+                )
+            })
             .collect();
 
         return cell_polys;
@@ -902,13 +907,17 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let num_new_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_to)
+                    .filter(|&&j| {
+                        j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_to
+                    })
                     .count();
 
                 let num_prev_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_from)
+                    .filter(|&&j| {
+                        j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_from
+                    })
                     .count();
 
                 let mut proposal_prob =
@@ -1022,7 +1031,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // average the density from the constitutive transcripts
                 proposal.density.fill(1e-2);
-                if let Some(transcripts) = transcripts{
+                if let Some(transcripts) = transcripts {
                     let genepop = proposal.genepop.sum_axis(Axis(1));
 
                     for &t in transcripts {
@@ -1087,30 +1096,34 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     if proposal.new_cell == neighbor_cell {
                         let mismatch_edges = &self.mismatch_edges[quad as usize];
                         if (chunk as usize) < mismatch_edges.len() {
-                            mismatch_edges[chunk as usize].lock()
+                            mismatch_edges[chunk as usize]
+                                .lock()
                                 .unwrap()
                                 .remove((proposal.cube, neighbor));
                         }
 
                         let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
                         if (neighbor_chunk as usize) < mismatch_edges.len() {
-                            mismatch_edges[neighbor_chunk as usize].lock()
-                            .unwrap()
-                            .remove((neighbor, proposal.cube));
+                            mismatch_edges[neighbor_chunk as usize]
+                                .lock()
+                                .unwrap()
+                                .remove((neighbor, proposal.cube));
                         }
                     } else {
                         let mismatch_edges = &self.mismatch_edges[quad as usize];
                         if (chunk as usize) < mismatch_edges.len() {
-                            mismatch_edges[chunk as usize].lock()
+                            mismatch_edges[chunk as usize]
+                                .lock()
                                 .unwrap()
                                 .insert((proposal.cube, neighbor));
                         }
 
                         let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
                         if (neighbor_chunk as usize) < mismatch_edges.len() {
-                            mismatch_edges[neighbor_chunk as usize].lock()
-                            .unwrap()
-                            .insert((neighbor, proposal.cube));
+                            mismatch_edges[neighbor_chunk as usize]
+                                .lock()
+                                .unwrap()
+                                .insert((neighbor, proposal.cube));
                         }
                     }
                 }
@@ -1224,7 +1237,12 @@ impl Proposal for CubeBinProposal {
 }
 
 // We need to exclude cells that can't be initalized with a non-zero number of voxels.
-pub fn filter_sparse_cells(scale: f32, transcripts: &Vec<Transcript>, cell_assignments: &mut Vec<CellIndex>, cell_population: &mut Vec<usize>) {
+pub fn filter_sparse_cells(
+    scale: f32,
+    transcripts: &Vec<Transcript>,
+    cell_assignments: &mut Vec<CellIndex>,
+    cell_population: &mut Vec<usize>,
+) {
     let (_, cubebins) = bin_transcripts(transcripts, scale);
     let cubecells = cube_assignments(&cubebins, &cell_assignments);
 

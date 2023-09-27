@@ -2,27 +2,30 @@
 
 use clap::Parser;
 
-mod sampler;
 mod output;
+mod sampler;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::cubebinsampler::{CubeBinSampler, filter_sparse_cells};
+use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
+use sampler::density::estimate_transcript_density;
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
-    coordinate_span, read_transcripts_csv, estimate_full_area, estimate_cell_centroids,
-    filter_cellfree_transcripts, Transcript, BACKGROUND_CELL};
-use sampler::density::estimate_transcript_density;
+    coordinate_span, estimate_cell_centroids, estimate_full_area, filter_cellfree_transcripts,
+    read_transcripts_csv, Transcript, BACKGROUND_CELL,
+};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 
 use output::*;
 
 #[derive(Parser, Debug)]
-#[command(name="proseg")]
-#[command(author="Daniel C. Jones")]
-#[command(about="High-speed cell segmentation of transcript-resolution spatial transcriptomics data.")]
+#[command(name = "proseg")]
+#[command(author = "Daniel C. Jones")]
+#[command(
+    about = "High-speed cell segmentation of transcript-resolution spatial transcriptomics data."
+)]
 struct Args {
     transcript_csv: String,
     // cell_centers_csv: String,
@@ -41,13 +44,13 @@ struct Args {
     #[arg(short, long, default_value = "z_location")]
     z_column: String,
 
-    #[arg(long, default_value_t=100)]
+    #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
     #[arg(long, default_value_t = 5)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t=10)]
+    #[arg(long, default_value_t = 10)]
     nlayers: usize,
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
@@ -80,7 +83,7 @@ struct Args {
     #[arg(long, default_value_t = 30_f32)]
     max_transcript_nucleus_distance: f32,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
 
     #[arg(long, default_value_t = 0.0_f32)]
@@ -188,7 +191,12 @@ fn main() {
     let mut ncells = init_cell_population.len();
     loop {
         let prev_ncells = ncells;
-        filter_sparse_cells(args.scale, &transcripts, &mut init_cell_assignments, &mut init_cell_population);
+        filter_sparse_cells(
+            args.scale,
+            &transcripts,
+            &mut init_cell_assignments,
+            &mut init_cell_population,
+        );
         ncells = init_cell_population.len();
         if ncells == prev_ncells {
             break;
@@ -199,12 +207,17 @@ fn main() {
     let ncells = init_cell_population.len();
 
     let (mut transcripts, init_cell_assignments) = filter_cellfree_transcripts(
-        &transcripts, &init_cell_assignments, ncells, args.max_transcript_nucleus_distance);
+        &transcripts,
+        &init_cell_assignments,
+        ncells,
+        args.max_transcript_nucleus_distance,
+    );
 
     let ntranscripts = transcripts.len();
 
     let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
-    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>() / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
+    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
+        / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
 
     // If scale isn't specified set it to something reasonable based on mean nuclei size
     let mut scale = args.scale;
@@ -237,7 +250,14 @@ fn main() {
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
     let (transcript_density, total_transcript_density) = estimate_transcript_density(
-        &transcripts, ngenes, layer_depth, args.density_sigma, args.density_binsize, args.density_k, args.density_eps);
+        &transcripts,
+        ngenes,
+        layer_depth,
+        args.density_sigma,
+        args.density_binsize,
+        args.density_k,
+        args.density_eps,
+    );
 
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);
@@ -273,7 +293,6 @@ fn main() {
         nchunks(chunk_size, xspan, yspan)
     );
 
-
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
@@ -288,7 +307,6 @@ fn main() {
 
         // α_θ: 1.0,
         // β_θ: 1.0,
-
         α_θ: 1e1,
         β_θ: 1e-1,
 
@@ -410,21 +428,67 @@ fn main() {
 
     uncertainty.finish(&params);
     let (counts, cell_assignments) = uncertainty.max_posterior_transcript_counts_assignments(
-        &params, &transcripts, args.count_pr_cutoff, args.foreground_pr_cutoff);
+        &params,
+        &transcripts,
+        args.count_pr_cutoff,
+        args.foreground_pr_cutoff,
+    );
 
-    let assigned_count = cell_assignments.iter().filter(|(c, _)| *c != BACKGROUND_CELL).count();
-    println!("Suppressed {} low probability assignments.", assigned_count - counts.sum() as usize);
+    let assigned_count = cell_assignments
+        .iter()
+        .filter(|(c, _)| *c != BACKGROUND_CELL)
+        .count();
+    println!(
+        "Suppressed {} low probability assignments.",
+        assigned_count - counts.sum() as usize
+    );
 
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
 
-    write_expected_counts(&args.output_expected_counts, &args.output_expected_counts_fmt, &transcript_names, &ecounts);
-    write_counts(&args.output_counts, &args.output_counts_fmt, &transcript_names, &counts);
-    write_rates(&args.output_rates, &args.output_rates_fmt, &params, &transcript_names);
-    write_cell_metadata(&args.output_cell_metadata, &args.output_cell_metadata_fmt, &params, &cell_centroids);
-    write_transcript_metadata(&args.output_transcript_metadata, &args.output_transcript_metadata_fmt, &transcripts, &transcript_names, &cell_assignments);
-    write_gene_metadata(&args.output_gene_metadata, &args.output_gene_metadata_fmt, &params, &transcript_names, &ecounts);
-    write_cubes(&args.output_cell_cubes, &args.output_cell_cubes_fmt, &sampler.borrow());
+    write_expected_counts(
+        &args.output_expected_counts,
+        &args.output_expected_counts_fmt,
+        &transcript_names,
+        &ecounts,
+    );
+    write_counts(
+        &args.output_counts,
+        &args.output_counts_fmt,
+        &transcript_names,
+        &counts,
+    );
+    write_rates(
+        &args.output_rates,
+        &args.output_rates_fmt,
+        &params,
+        &transcript_names,
+    );
+    write_cell_metadata(
+        &args.output_cell_metadata,
+        &args.output_cell_metadata_fmt,
+        &params,
+        &cell_centroids,
+    );
+    write_transcript_metadata(
+        &args.output_transcript_metadata,
+        &args.output_transcript_metadata_fmt,
+        &transcripts,
+        &transcript_names,
+        &cell_assignments,
+    );
+    write_gene_metadata(
+        &args.output_gene_metadata,
+        &args.output_gene_metadata_fmt,
+        &params,
+        &transcript_names,
+        &ecounts,
+    );
+    write_cubes(
+        &args.output_cell_cubes,
+        &args.output_cell_cubes_fmt,
+        &sampler.borrow(),
+    );
     write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
     write_cell_layered_multipolygons(&args.output_cell_polygon_layers, &sampler.borrow());
 
@@ -491,7 +555,5 @@ fn run_hexbin_sampler(
         }
 
         *total_steps += 1;
-
     }
 }
-
