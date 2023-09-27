@@ -44,6 +44,29 @@ struct Args {
     #[arg(short, long, default_value = "z_location")]
     z_column: String,
 
+    #[arg(short, long, default_value = "overlaps_nucleus")]
+    compartment_column: String,
+
+    #[arg(short, long, default_value = "1")]
+    compartment_nuclear: String,
+
+    #[arg(long, default_value = None)]
+    fov_column: Option<String>,
+
+    #[arg(long, default_value = "cell_id")]
+    cell_id_column: String,
+
+    #[arg(long, default_value = "UNASSIGNED")]
+    cell_id_unassigned: String,
+
+    #[arg(long, default_value = "qv")]
+    qv_column: Option<String>,
+
+    #[arg(long, default_value_t = 0.0_f32)]
+    min_qv: f32,
+
+    // TODO: resets for xenium and cosmx
+
     #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
@@ -85,9 +108,6 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
-
-    #[arg(long, default_value_t = 0.0_f32)]
-    min_qv: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
     density_binsize: f32,
@@ -166,7 +186,25 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    if let Some(transcript_id_column) = &args.transcript_id_column {
+        if transcript_id_column == "-" {
+            args.transcript_id_column = None;
+        }
+    }
+
+    if let Some(qv_column) = &args.qv_column {
+        if qv_column == "-" {
+            args.qv_column = None;
+        }
+    }
+
+    if let Some(fov_column) = &args.fov_column {
+        if fov_column == "-" {
+            args.fov_column = None;
+        }
+    }
 
     let dispersion = if let Some(disp_arg) = args.dispersion {
         Some(disp_arg.parse::<f32>().unwrap())
@@ -181,6 +219,12 @@ fn main() {
             &args.transcript_csv,
             &args.transcript_column,
             args.transcript_id_column,
+            &args.compartment_column,
+            &args.compartment_nuclear,
+            args.fov_column,
+            &args.cell_id_column,
+            &args.cell_id_unassigned,
+            args.qv_column,
             &args.x_column,
             &args.y_column,
             &args.z_column,
@@ -206,12 +250,16 @@ fn main() {
     let ngenes = transcript_names.len();
     let ncells = init_cell_population.len();
 
+    dbg!(transcripts.len());
+
     let (mut transcripts, init_cell_assignments) = filter_cellfree_transcripts(
         &transcripts,
         &init_cell_assignments,
         ncells,
         args.max_transcript_nucleus_distance,
     );
+
+    dbg!(transcripts.len());
 
     let ntranscripts = transcripts.len();
 

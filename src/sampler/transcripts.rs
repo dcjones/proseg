@@ -9,6 +9,9 @@ use std::fs::File;
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 
+// Should probably rearrange this...
+use super::super::output::{determine_format, OutputFormat};
+
 #[derive(Copy, Clone, PartialEq)]
 pub struct Transcript {
     pub transcript_id: u64,
@@ -22,23 +25,59 @@ pub fn read_transcripts_csv(
     path: &str,
     transcript_column: &str,
     id_column: Option<String>,
+    compartment_column: &str,
+    compartment_nuclear: &str,
+    fov_column: Option<String>,
+    cell_id_column: &str,
+    cell_id_unassigned: &str,
+    qv_column: Option<String>,
     x_column: &str,
     y_column: &str,
     z_column: &str,
     min_qv: f32,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
-    let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
-    // let mut rdr = csv::Reader::from_path(path).unwrap();
 
-    return read_transcripts_csv_xyz(
-        &mut rdr,
-        transcript_column,
-        id_column,
-        x_column,
-        y_column,
-        z_column,
-        min_qv,
-    );
+    let fmt = determine_format(path, &None);
+
+    match fmt {
+        OutputFormat::Csv => {
+            let mut rdr = csv::Reader::from_path(path).unwrap();
+            return read_transcripts_csv_xyz(
+                &mut rdr,
+                transcript_column,
+                id_column,
+                compartment_column,
+                compartment_nuclear,
+                fov_column,
+                cell_id_column,
+                cell_id_unassigned,
+                qv_column,
+                x_column,
+                y_column,
+                z_column,
+                min_qv,
+            );
+        },
+        OutputFormat::CsvGz => {
+            let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
+            return read_transcripts_csv_xyz(
+                &mut rdr,
+                transcript_column,
+                id_column,
+                compartment_column,
+                compartment_nuclear,
+                fov_column,
+                cell_id_column,
+                cell_id_unassigned,
+                qv_column,
+                x_column,
+                y_column,
+                z_column,
+                min_qv,
+            );
+        },
+        OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
+    };
 }
 
 fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
@@ -81,6 +120,12 @@ fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     transcript_column: &str,
     id_column: Option<String>,
+    compartment_column: &str,
+    compartment_nuclear: &str,
+    fov_column: Option<String>,
+    cell_id_column: &str,
+    cell_id_unassigned: &str,
+    qv_column: Option<String>,
     x_column: &str,
     y_column: &str,
     z_column: &str,
@@ -97,27 +142,36 @@ where
     let z_col = find_column(headers, z_column);
     let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
-    // TODO:
-    // Just assuming we have xeinum output at this point.
-    // We'll have to specialize for various platforms in the future.
-    let cell_id_col = find_column(headers, "cell_id");
-    let overlaps_nucleus_col = find_column(headers, "overlaps_nucleus");
-    let qv_col = find_column(headers, "qv");
+    let cell_id_col = find_column(headers, cell_id_column);
+    let compartment_col = find_column(headers, compartment_column);
+    let qv_col = qv_column.map(|qv_column| find_column(headers, &qv_column));
+    let fov_col = fov_column.map(|fov_column| find_column(headers, &fov_column));
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
     let mut transcript_names = Vec::new();
     let mut cell_assignments = Vec::new();
 
-    let mut cell_id_map: HashMap<String, CellIndex> = HashMap::new();
+    let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
 
     for result in rdr.records() {
         let row = result.unwrap();
 
-        let qv = row[qv_col].parse::<f32>().unwrap();
+        let qv = if let Some(qv_col) = qv_col {
+            row[qv_col].parse::<f32>().unwrap()
+        } else {
+            f32::INFINITY
+        };
+
         if qv < min_qv {
             continue;
         }
+
+        let fov = if let Some(fov_col) = fov_col {
+            row[fov_col].parse::<u32>().unwrap()
+        } else {
+            0
+        };
 
         let transcript_name = &row[transcript_col];
 
@@ -147,19 +201,20 @@ where
         });
 
         let cell_id_str = &row[cell_id_col];
-        let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
+        let compartment = &row[compartment_col];
+        // let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
 
         // Earlier version of Xenium used numeric cell ids and -1 for unassigned.
         // Newer versions use alphanumeric hash codes and "UNASSIGNED" for unasssigned.
-        if cell_id_str == "-1" || cell_id_str == "UNASSIGNED" {
+        if cell_id_str == cell_id_unassigned {
             cell_assignments.push(BACKGROUND_CELL);
         } else {
             let next_cell_id = cell_id_map.len() as CellIndex;
             let cell_id = *cell_id_map
-                .entry(cell_id_str.to_string())
+                .entry((fov, cell_id_str.to_string()))
                 .or_insert_with(|| next_cell_id);
 
-            if overlaps_nucleus > 0 {
+            if compartment == compartment_nuclear {
                 cell_assignments.push(cell_id);
             } else {
                 cell_assignments.push(BACKGROUND_CELL);

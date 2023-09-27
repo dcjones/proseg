@@ -13,7 +13,7 @@ use super::sampler::cubebinsampler::CubeBinSampler;
 use super::sampler::transcripts::Transcript;
 use super::sampler::ModelParams;
 
-enum OutputFormat {
+pub enum OutputFormat {
     Csv,
     CsvGz,
     Parquet,
@@ -114,7 +114,7 @@ where
     return Ok(());
 }
 
-fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
+pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
     if let Some(fmtstr) = fmtstr {
         if fmtstr == "csv.gz" {
             return OutputFormat::CsvGz;
