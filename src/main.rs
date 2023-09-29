@@ -28,38 +28,45 @@ use output::*;
 )]
 struct Args {
     transcript_csv: String,
-    // cell_centers_csv: String,
-    #[arg(long, default_value = "feature_name")]
-    transcript_column: String,
+    // TODO: We also want to be able to read from xenium parquet files.
 
-    #[arg(long, default_value = "transcript_id")]
+    #[arg(long, default_value_t=false)]
+    xenium: bool,
+
+    #[arg(long, default_value_t=false)]
+    cosmx: bool,
+
+    #[arg(long, default_value = None)]
+    transcript_column: Option<String>,
+
+    #[arg(long, default_value = None)]
     transcript_id_column: Option<String>,
 
-    #[arg(short, long, default_value = "x_location")]
-    x_column: String,
+    #[arg(short, long, default_value = None)]
+    x_column: Option<String>,
 
-    #[arg(short, long, default_value = "y_location")]
-    y_column: String,
+    #[arg(short, long, default_value = None)]
+    y_column: Option<String>,
 
-    #[arg(short, long, default_value = "z_location")]
-    z_column: String,
+    #[arg(short, long, default_value = None)]
+    z_column: Option<String>,
 
-    #[arg(short, long, default_value = "overlaps_nucleus")]
-    compartment_column: String,
+    #[arg(short, long, default_value = None)]
+    compartment_column: Option<String>,
 
-    #[arg(short, long, default_value = "1")]
-    compartment_nuclear: String,
+    #[arg(short, long, default_value = None)]
+    compartment_nuclear: Option<String>,
 
     #[arg(long, default_value = None)]
     fov_column: Option<String>,
 
-    #[arg(long, default_value = "cell_id")]
-    cell_id_column: String,
+    #[arg(long, default_value = None)]
+    cell_id_column: Option<String>,
 
-    #[arg(long, default_value = "UNASSIGNED")]
-    cell_id_unassigned: String,
+    #[arg(long, default_value = None)]
+    cell_id_unassigned: Option<String>,
 
-    #[arg(long, default_value = "qv")]
+    #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
     #[arg(long, default_value_t = 0.0_f32)]
@@ -121,8 +128,8 @@ struct Args {
     #[arg(long, default_value_t = 1e-2)]
     density_eps: f32,
 
-    #[arg(long, default_value = "40.0")]
-    dispersion: Option<String>,
+    #[arg(long, default_value = None)]
+    dispersion: Option<f32>,
 
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
@@ -185,49 +192,81 @@ struct Args {
     monitor_cell_polygons_freq: usize,
 }
 
+fn set_xenium_presets(args: &mut Args) {
+    args.transcript_column.get_or_insert(String::from("feature_name"));
+    args.transcript_id_column.get_or_insert(String::from("transcript_id"));
+    args.x_column.get_or_insert(String::from("x_location"));
+    args.y_column.get_or_insert(String::from("y_location"));
+    args.z_column.get_or_insert(String::from("z_location"));
+    args.compartment_column.get_or_insert(String::from("overlaps_nucleus"));
+    args.compartment_nuclear.get_or_insert(String::from("1"));
+    args.cell_id_column.get_or_insert(String::from("cell_id"));
+    args.cell_id_unassigned.get_or_insert(String::from("UNASSIGNED"));
+    args.qv_column.get_or_insert(String::from("qv"));
+
+    // Xenium coordinates are in microns.
+    args.scale = 4.0;
+
+    // TODO: This is not a good thing to be doing, but I'm finding that I need
+    // to force the dispersion up to get good results on some of the data.
+    args.dispersion.get_or_insert(40.0);
+}
+
+
+fn set_cosmx_presets(args: &mut Args) {
+    args.transcript_column.get_or_insert(String::from("target"));
+    args.x_column.get_or_insert(String::from("x_global_px"));
+    args.y_column.get_or_insert(String::from("y_global_px"));
+    args.z_column.get_or_insert(String::from("z"));
+    args.compartment_column.get_or_insert(String::from("CellComp"));
+    args.compartment_nuclear.get_or_insert(String::from("Nuclear"));
+    args.fov_column.get_or_insert(String::from("fov"));
+    args.cell_id_column.get_or_insert(String::from("cell_ID"));
+    args.cell_id_unassigned.get_or_insert(String::from("0"));
+
+    // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
+    args.scale = 20.0;
+
+    // TODO: Because the scale is different, we need to set different parameters
+    // for max_nucleaus_transcript_distance, density_sigma, density_binsize
+}
+
+
 fn main() {
     let mut args = Args::parse();
 
-    if let Some(transcript_id_column) = &args.transcript_id_column {
-        if transcript_id_column == "-" {
-            args.transcript_id_column = None;
-        }
+    if args.xenium && args.cosmx {
+        panic!("Cannot specify both --xenium and --cosmx");
     }
 
-    if let Some(qv_column) = &args.qv_column {
-        if qv_column == "-" {
-            args.qv_column = None;
-        }
+    if args.xenium {
+        set_xenium_presets(&mut args);
     }
 
-    if let Some(fov_column) = &args.fov_column {
-        if fov_column == "-" {
-            args.fov_column = None;
-        }
+    if args.cosmx {
+        set_cosmx_presets(&mut args);
     }
-
-    let dispersion = if let Some(disp_arg) = args.dispersion {
-        Some(disp_arg.parse::<f32>().unwrap())
-    } else {
-        None
-    };
 
     assert!(args.ncomponents > 0);
+
+    fn expect_arg<T>(arg: Option<T>, argname: &str) -> T {
+        return arg.expect(&format!("Missing required argument: --{}", argname));
+    }
 
     let (transcript_names, transcripts, mut init_cell_assignments, mut init_cell_population) =
         read_transcripts_csv(
             &args.transcript_csv,
-            &args.transcript_column,
+            &expect_arg(args.transcript_column, "transcript-column"),
             args.transcript_id_column,
-            &args.compartment_column,
-            &args.compartment_nuclear,
+            &expect_arg(args.compartment_column, "compartment-column"),
+            &expect_arg(args.compartment_nuclear, "compartment-nuclear"),
             args.fov_column,
-            &args.cell_id_column,
-            &args.cell_id_unassigned,
+            &expect_arg(args.cell_id_column, "cell-id-column"),
+            &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
             args.qv_column,
-            &args.x_column,
-            &args.y_column,
-            &args.z_column,
+            &expect_arg(args.x_column, "x-column"),
+            &expect_arg(args.y_column, "y-column"),
+            &expect_arg(args.z_column, "z-column"),
             args.min_qv,
         );
 
@@ -250,16 +289,12 @@ fn main() {
     let ngenes = transcript_names.len();
     let ncells = init_cell_population.len();
 
-    dbg!(transcripts.len());
-
     let (mut transcripts, init_cell_assignments) = filter_cellfree_transcripts(
         &transcripts,
         &init_cell_assignments,
         ncells,
         args.max_transcript_nucleus_distance,
     );
-
-    dbg!(transcripts.len());
 
     let ntranscripts = transcripts.len();
 
@@ -344,7 +379,7 @@ fn main() {
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
-        dispersion,
+        dispersion: args.dispersion,
 
         min_cell_volume,
 

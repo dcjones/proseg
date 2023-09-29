@@ -187,7 +187,7 @@ where
         let y = row[y_col].parse::<f32>().unwrap();
         let z = row[z_col].parse::<f32>().unwrap();
         let transcript_id = if let Some(id_col) = id_col {
-            row[id_col].parse::<u64>().unwrap()
+            row[id_col].parse::<u64>().expect(&format!("Transcript ID must be an integer: {}", &row[id_col]))
         } else {
             transcripts.len() as u64
         };
