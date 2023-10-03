@@ -159,7 +159,7 @@ pub struct ModelParams {
     h: f32,
 
     // [ngenes] NB r parameters.
-    r: Array1<f32>,
+    pub r: Array1<f32>,
 
     // Precomputing lgamma(r)
     lgamma_r: Array1<f32>,

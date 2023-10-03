@@ -340,6 +340,7 @@ pub fn write_gene_metadata(
             Field::new("gene", DataType::Utf8, false),
             Field::new("total_count", DataType::UInt64, false),
             Field::new("expected_assigned_count", DataType::Float32, false),
+            Field::new("dispersion", DataType::Float32, false),
         ];
 
         let mut columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
@@ -356,6 +357,9 @@ pub fn write_gene_metadata(
             Arc::new(array::Float32Array::from_values(
                 expected_counts.sum_axis(Axis(1)).iter().cloned(),
             )),
+            Arc::new(array::Float32Array::from_values(
+                params.r.iter().cloned(),
+            ))
         ];
 
         // cell type rates

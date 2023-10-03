@@ -327,7 +327,8 @@ fn main() {
     let layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
 
     println!("Read {} transcripts", ntranscripts);
-    println!("Read {} cells", ncells);
+    println!("     {} cells", ncells);
+    println!("     {} genes", ngenes);
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
