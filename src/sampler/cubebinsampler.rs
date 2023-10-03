@@ -7,6 +7,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
 use geo::geometry::{LineString, MultiPolygon, Polygon};
+use geo::algorithm::simplify::Simplify;
 use geo::BooleanOps;
 use ndarray::{Array1, Array2, Axis};
 use rand::{thread_rng, Rng};
@@ -710,6 +711,7 @@ impl CubeBinSampler {
         let cell_polys = cell_polys
             .into_par_iter()
             .map(union_all_into_multipolygon)
+            .map(|p| p.simplify(&1e-2))
             .collect();
 
         return cell_polys;
@@ -742,6 +744,7 @@ impl CubeBinSampler {
                     polys
                         .into_par_iter()
                         .map(union_all_into_multipolygon)
+                        .map(|p| p.simplify(&1e-2))
                         .collect(),
                 )
             })
