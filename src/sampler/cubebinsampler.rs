@@ -36,9 +36,9 @@ fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32>
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cube {
-    i: i32,
-    j: i32,
-    k: i32,
+    pub i: i32,
+    pub j: i32,
+    pub k: i32,
 }
 
 impl Cube {
@@ -129,10 +129,10 @@ impl Cube {
     }
 }
 
-#[derive(Debug)]
-struct CubeLayout {
-    origin: (f32, f32, f32),
-    cube_size: (f32, f32, f32),
+#[derive(Debug, Clone)]
+pub struct CubeLayout {
+    pub origin: (f32, f32, f32),
+    pub cube_size: (f32, f32, f32),
 }
 
 impl CubeLayout {
@@ -155,7 +155,7 @@ impl CubeLayout {
         );
     }
 
-    fn world_pos_to_cube(&self, pos: (f32, f32, f32)) -> Cube {
+    pub fn world_pos_to_cube(&self, pos: (f32, f32, f32)) -> Cube {
         return Cube::new(
             ((pos.0 - self.origin.0) / self.cube_size.0).floor() as i32,
             ((pos.1 - self.origin.1) / self.cube_size.1).floor() as i32,
@@ -218,7 +218,7 @@ impl ChunkQuadMap {
     }
 }
 
-struct CubeCellMap {
+pub struct CubeCellMap {
     index: HashMap<Cube, CellIndex>,
 }
 
@@ -252,7 +252,7 @@ impl CubeCellMap {
     //     return self.index.values().filter(|&&c| c == cell).count();
     // }
 
-    fn iter(&self) -> std::collections::hash_map::Iter<Cube, CellIndex> {
+    pub fn iter(&self) -> std::collections::hash_map::Iter<Cube, CellIndex> {
         return self.index.iter();
     }
 }

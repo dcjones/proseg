@@ -1,6 +1,6 @@
 use super::transcripts::{coordinate_span, Transcript};
+use super::conv::Conv2D;
 use ndarray::{Array1, Array2};
-use ndarray_conv::*;
 
 // Simple bivariate density estimation by approximate gaussian bluring.
 // Returns a vector giving for each transcript the local density of its gene.
@@ -41,9 +41,8 @@ pub fn estimate_transcript_density(
         }
 
         // Gaussian blur
-        let density = density
-            .conv_2d_fft(&kernel, PaddingSize::Same, PaddingMode::Zeros)
-            .expect("convolution failed");
+        let mut conv2d = Conv2D::new((nxbins, nybins), kernel.clone());
+        conv2d.compute(&mut density);
 
         for (transcript, d) in transcripts.iter().zip(&mut transcript_density) {
             if transcript.gene == gene as u32 {
