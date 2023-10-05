@@ -5,6 +5,7 @@ pub mod hull;
 mod math;
 mod sampleset;
 pub mod transcripts;
+mod diffusion;
 mod conv;
 
 use core::fmt::Debug;
@@ -93,6 +94,10 @@ pub struct ModelPriors {
 
     pub nuclear_reassignment_log_prob: f32,
     pub nuclear_reassignment_1mlog_prob: f32,
+
+    pub σ_diffusion: f32,
+    pub ε_diffusion: f32,
+    pub k_diffusion: usize,
 }
 
 // Model global parameters.

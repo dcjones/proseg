@@ -209,7 +209,7 @@ fn set_xenium_presets(args: &mut Args) {
 
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
-    args.dispersion.get_or_insert(40.0);
+    // args.dispersion.get_or_insert(40.0);
 }
 
 
@@ -407,6 +407,10 @@ fn main() {
 
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
+
+        σ_diffusion: args.density_sigma,
+        ε_diffusion: args.density_eps,
+        k_diffusion: args.density_k,
     };
 
     let mut params = ModelParams::new(
@@ -470,7 +474,8 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+            sampler.replace_with(|sampler| sampler.double_resolution(
+                &priors, &params, &transcripts));
             run_hexbin_sampler(
                 &mut prog,
                 sampler.get_mut(),
@@ -488,7 +493,8 @@ fn main() {
         if args.check_consistency {
             sampler.borrow_mut().check_consistency(&priors, &mut params);
         }
-        sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+        sampler.replace_with(|sampler| sampler.double_resolution(
+            &priors, &params, &transcripts));
     }
 
     run_hexbin_sampler(

@@ -3,6 +3,7 @@ use super::math::relerr;
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
+use super::diffusion::TranscriptDiffusionModel;
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
@@ -327,6 +328,8 @@ pub struct CubeBinSampler {
     density: Array1<f32>,
     nlayers: usize,
 
+    diffusion_model: TranscriptDiffusionModel,
+
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
     cubebins: Vec<CubeBin>,
     cubeindex: HashMap<Cube, usize>,
@@ -421,6 +424,14 @@ impl CubeBinSampler {
 
         let proposals = vec![CubeBinProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
+        let diffusion_model = TranscriptDiffusionModel::new(
+            priors.σ_diffusion,
+            priors.ε_diffusion,
+            priors.k_diffusion,
+            layout.clone(),
+            xmax,
+            ymax,
+        );
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -434,6 +445,7 @@ impl CubeBinSampler {
             transcript_layers,
             density,
             nlayers,
+            diffusion_model,
             mismatch_edges,
             cubebins,
             cubeindex,
@@ -454,6 +466,7 @@ impl CubeBinSampler {
         sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
         sampler.populate_mismatches();
+        sampler.estimate_diffusion(&params, transcripts);
 
         return sampler;
     }
@@ -464,7 +477,8 @@ impl CubeBinSampler {
 
     // Allocate a new RectBinSampler with the same state as this one, but
     // grid resolution doubled (i.e. rect size halved).
-    pub fn double_resolution(&self, transcripts: &Vec<Transcript>) -> CubeBinSampler {
+    pub fn double_resolution(&self, priors: &ModelPriors, params: &ModelParams, transcripts: &Vec<Transcript>) -> CubeBinSampler {
+        let (_xmin, xmax, _ymin, ymax, _zmin, _zmax) = coordinate_span(transcripts);
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.shape()[0];
         let cubevolume = self.cubevolume / 8.0;
@@ -472,6 +486,14 @@ impl CubeBinSampler {
 
         let proposals = vec![CubeBinProposal::new(ngenes, self.nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
+        let diffusion_model = TranscriptDiffusionModel::new(
+            priors.σ_diffusion,
+            priors.ε_diffusion,
+            priors.k_diffusion,
+            layout.clone(),
+            xmax,
+            ymax,
+        );
 
         let mut cubecells = CubeCellMap::new();
         let mut cubebins = Vec::new();
@@ -577,6 +599,7 @@ impl CubeBinSampler {
             transcript_layers: self.transcript_layers.clone(),
             density: self.density.clone(),
             nlayers: self.nlayers,
+            diffusion_model,
             mismatch_edges,
             cubebins,
             cubeindex,
@@ -608,7 +631,13 @@ impl CubeBinSampler {
         sampler.recompute_cell_perimeter();
         println!("recompute_cell_perimeter: {:?}", t0.elapsed());
 
+        sampler.estimate_diffusion(params, transcripts);
+
         return sampler;
+    }
+
+    pub fn estimate_diffusion(&mut self, params: &ModelParams, transcripts: &Vec<Transcript>) {
+        self.diffusion_model.estimate_diffusion(&params.λ, &self.cubecells, transcripts, &mut self.density);
     }
 
     fn recompute_cell_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {

@@ -55,11 +55,20 @@ impl Conv2D {
             rp, cp };
     }
 
+    pub fn shape(&self) -> (usize, usize) {
+        let (m_kernel, n_kernel) = self.kernel.dim();
+        return (self.input.shape()[0] - m_kernel + 1, self.input.shape()[1] - n_kernel + 1);
+    }
+
     pub fn compute(&mut self, data: &mut Array2<f32>) {
         let (m, n) = data.dim();
         let (m_kernel, n_kernel) = self.kernel.dim();
         let (m_pad, n_pad) = ((m_kernel - 1) / 2, (n_kernel - 1) / 2);
         let (m_padded, n_padded) = self.input.dim();
+
+        // dbg!(self.shape());
+        // dbg!((m, n, m_pad, n_pad, m_padded, n_padded));
+        assert!(m + 2*m_pad <= m_padded && n + 2*n_pad <= n_padded);
 
         self.kernel_ext.fill(0.0);
         self.kernel_ext.slice_mut(s![0..m_kernel, 0..n_kernel]).assign(&self.kernel);
