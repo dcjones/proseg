@@ -195,14 +195,14 @@ type CubeEdgeSampleSet = SampleSet<(Cube, Cube)>;
 #[derive(Clone, Debug)]
 struct CubeBin {
     cube: Cube,
-    transcripts: Vec<usize>,
+    transcripts: Arc<Mutex<Vec<usize>>>,
 }
 
 impl CubeBin {
     fn new(cube: Cube) -> Self {
         Self {
             cube,
-            transcripts: Vec::new(),
+            transcripts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -292,6 +292,8 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Ve
             .entry(cube)
             .or_insert_with(|| CubeBin::new(cube))
             .transcripts
+            .lock()
+            .unwrap()
             .push(i);
     }
 
@@ -307,7 +309,7 @@ fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) 
         cube_assignments.clear();
 
         // vote on rect assignment
-        for &t in cubebin.transcripts.iter() {
+        for &t in cubebin.transcripts.lock().unwrap().iter() {
             if cell_assignments[t] != BACKGROUND_CELL {
                 cube_assignments
                     .entry(cell_assignments[t])
@@ -412,7 +414,7 @@ impl CubeBinSampler {
         for cubebin in &cubebins {
             let cell = cubecells.get(cubebin.cube);
 
-            for &t in cubebin.transcripts.iter() {
+            for &t in cubebin.transcripts.lock().unwrap().iter() {
                 if params.cell_assignments[t] != BACKGROUND_CELL {
                     params.cell_population[params.cell_assignments[t] as usize] -= 1;
                 }
@@ -539,7 +541,7 @@ impl CubeBinSampler {
                 ];
 
                 // allocate transcripts to children
-                for &t in cubebin.transcripts.iter() {
+                for &t in cubebin.transcripts.lock().unwrap().iter() {
                     let position = clip_z_position(
                         params.transcript_positions[t],
                         self.zmin, self.zmax);
@@ -549,7 +551,7 @@ impl CubeBinSampler {
                     let mut found = false;
                     for subcubebin in subcubebins.iter_mut() {
                         if subcubebin.cube == tcube {
-                            subcubebin.transcripts.push(t);
+                            subcubebin.transcripts.lock().unwrap().push(t);
                             found = true;
                             break;
                         }
@@ -564,7 +566,7 @@ impl CubeBinSampler {
 
                 // add to index
                 for subcubebin in subcubebins {
-                    if !subcubebin.transcripts.is_empty() {
+                    if !subcubebin.transcripts.lock().unwrap().is_empty() {
                         cubebins.push(subcubebin);
                     }
                 }
@@ -893,7 +895,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let cubebin = self.cubeindex.get(i).map(|i| &self.cubebins[*i]);
 
                 let transcripts = cubebin.map(|cubebin| &cubebin.transcripts);
-                let i_pop = transcripts.map(|ts| ts.len()).unwrap_or(0);
+                let i_pop = transcripts.map(|ts| ts.lock().unwrap().len()).unwrap_or(0);
 
                 // Don't propose removing the last transcript from a cell. (This is
                 // breaks the markov chain balance, since there's no path back to the previous state.)
@@ -985,7 +987,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 proposal.cube = *i;
                 if let Some(transcripts) = transcripts {
-                    proposal.transcripts.clone_from(transcripts);
+                    proposal.transcripts.clone_from(&transcripts.lock().unwrap());
                 } else {
                     proposal.transcripts.clear();
                 }
@@ -1051,7 +1053,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 proposal.genepop.fill(0);
                 if let Some(transcripts) = transcripts {
-                    for &t in transcripts.iter() {
+                    for &t in transcripts.lock().unwrap().iter() {
                         let layer = self.transcript_layers[t] as usize;
                         proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
                     }
@@ -1062,7 +1064,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 if let Some(transcripts) = transcripts {
                     let genepop = proposal.genepop.sum_axis(Axis(1));
 
-                    for &t in transcripts {
+                    for &t in transcripts.lock().unwrap().iter() {
                         let g = self.transcript_genes[t] as usize;
                         proposal.density[g] += self.density[t] / genepop[g] as f32;
                     }
@@ -1159,6 +1161,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     }
 
     fn cell_at_position(&self, position: (f32, f32, f32)) -> u32 {
+        // TODO: Shouldn't this just look up in cubecells?
+
         let position = clip_z_position(position, self.zmin, self.zmax);
         let cubindex = self.chunkquad.layout.world_pos_to_cube(position);
         self.cubeindex
@@ -1169,23 +1173,28 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     }
 
     fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {
+        let prev_pos = clip_z_position(prev_pos, self.zmin, self.zmax);
+        let old_cube = self
+            .chunkquad.layout.world_pos_to_cube(prev_pos);
+
+        let new_pos = clip_z_position(new_pos, self.zmin, self.zmax);
+        let new_cube = self
+            .chunkquad.layout.world_pos_to_cube(new_pos);
+
+        if old_cube == new_cube {
+            return;
+        }
+
         // remove transcript from old cube
         {
-            let prev_pos = clip_z_position(prev_pos, self.zmin, self.zmax);
-            let old_cube = self
-                .chunkquad.layout.world_pos_to_cube(prev_pos);
-
             let old_cubebin = &mut self.cubebins[self.cubeindex[&old_cube]];
-            old_cubebin.transcripts.swap_remove(
-                old_cubebin.transcripts.iter().position(|t| *t == i).unwrap());
+            let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
+            let idx = transcripts.iter().position(|t| *t == i).unwrap();
+            transcripts.swap_remove(idx);
         }
 
         // insert transcript into old cube
         {
-            let new_pos = clip_z_position(new_pos, self.zmin, self.zmax);
-            let new_cube = self
-                .chunkquad.layout.world_pos_to_cube(new_pos);
-
             let ncubes = self.cubeindex.len();
             let new_cube_index = *self.cubeindex
                 .entry(new_cube)
@@ -1195,9 +1204,66 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 self.cubebins.push(CubeBin::new(new_cube));
             }
             let new_cubebin = &mut self.cubebins[new_cube_index];
-            new_cubebin.transcripts.push(i);
+            new_cubebin.transcripts.lock().unwrap().push(i);
         }
     }
+
+    // fn update_transcript_positions(
+    //     &mut self,
+    //     accept: &Vec<bool>,
+    //     positions: &Vec<(f32, f32, f32)>,
+    //     proposed_positions: &Vec<(f32, f32, f32)>)
+    // {
+    //     accept
+    //         .par_iter()
+    //         .zip(positions)
+    //         .zip(proposed_positions)
+    //         .enumerate()
+    //         .for_each(|(i, ((accept, position), proposed_position))| {
+    //             if !*accept {
+    //                 return;
+    //             }
+
+    //             let prev_pos = clip_z_position(*position, self.zmin, self.zmax);
+    //             let old_cube = self
+    //                 .chunkquad.layout.world_pos_to_cube(prev_pos);
+
+    //             let new_pos = clip_z_position(*proposed_position, self.zmin, self.zmax);
+    //             let new_cube = self
+    //                 .chunkquad.layout.world_pos_to_cube(new_pos);
+
+    //             if old_cube == new_cube {
+    //                 return;
+    //             }
+
+    //             // remove transcript from old cube
+    //             {
+    //                 let old_cubebin = &self.cubebins[self.cubeindex[&old_cube]];
+    //                 let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
+    //                 let idx = transcripts.iter().position(|t| *t == i).unwrap();
+    //                 transcripts.swap_remove(idx);
+    //             }
+
+    //             // insert transcript into old cube
+    //             {
+    //                 // TODO: Fuck, we need to mutex cubeindex. This is much more
+    //                 // complicated than I thought.
+
+    //                 let ncubes = self.cubeindex.len();
+    //                 let new_cube_index = *self.cubeindex
+    //                     .entry(new_cube)
+    //                     .or_insert(ncubes);
+
+    //                 if new_cube_index >= self.cubebins.len() {
+    //                     self.cubebins.push(CubeBin::new(new_cube));
+    //                 }
+    //                 let new_cubebin = &mut self.cubebins[new_cube_index];
+    //                 new_cubebin.transcripts.lock().unwrap().push(i);
+    //             }
+    //         });
+    // }
+
+
 }
 
 #[derive(Clone, Debug)]

@@ -99,7 +99,7 @@ pub struct ModelPriors {
 
 // Model global parameters.
 pub struct ModelParams {
-    transcript_positions: Vec<(f32, f32, f32)>,
+    pub transcript_positions: Vec<(f32, f32, f32)>,
     proposed_transcript_positions: Vec<(f32, f32, f32)>,
     accept_proposed_transcript_positions: Vec<bool>,
 
@@ -860,6 +860,7 @@ where
     fn update_sampler_state(&mut self, params: &ModelParams);
 
     fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
+    // fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
 
     fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32;
 
@@ -1377,8 +1378,9 @@ where
                 *proposed_position = (
                     current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
                     current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    // current_position.2,
+                    // TODO: sampling on the z-axis causes some problems I don't quite understand yet.
+                    // current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.2,
                 );
             });
         println!("  Generate transcript position proposals: {:?}", t0.elapsed());
@@ -1468,6 +1470,14 @@ where
         let mut accept_from_background_rate = 0;
         let mut accept_intercell_rate = 0;
         let mut accept_intracell_rate = 0;
+
+        // TODO: Accepting proposals is very expensive. Some ideas for speeding this up:
+        //
+
+        // self.update_transcript_positions(
+        //     &params.accept_proposed_transcript_positions,
+        //     &params.transcript_positions,
+        //     &params.proposed_transcript_positions);
 
         let t0 = Instant::now();
         for (i, transcript, accept, position, proposed_position) in izip!(

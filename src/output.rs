@@ -277,6 +277,7 @@ pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: &Option<String>,
     transcripts: &Vec<Transcript>,
+    transcript_positions: &Vec<(f32, f32, f32)>,
     transcript_names: &Vec<String>,
     cell_assignments: &Vec<(u32, f32)>,
 ) {
@@ -286,6 +287,9 @@ pub fn write_transcript_metadata(
             Field::new("x", DataType::Float32, false),
             Field::new("y", DataType::Float32, false),
             Field::new("z", DataType::Float32, false),
+            Field::new("observed_x", DataType::Float32, false),
+            Field::new("observed_y", DataType::Float32, false),
+            Field::new("observed_z", DataType::Float32, false),
             Field::new("gene", DataType::Utf8, false),
             Field::new("assignment", DataType::UInt32, false),
             Field::new("probability", DataType::Float32, false),
@@ -294,6 +298,15 @@ pub fn write_transcript_metadata(
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
             Arc::new(array::UInt64Array::from_values(
                 transcripts.iter().map(|t| t.transcript_id),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcript_positions.iter().map(|(x, _, _)| *x),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcript_positions.iter().map(|(_, y, _)| *y),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                transcript_positions.iter().map(|(_, _, z)| *z),
             )),
             Arc::new(array::Float32Array::from_values(
                 transcripts.iter().map(|t| t.x),
