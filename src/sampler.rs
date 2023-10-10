@@ -303,8 +303,21 @@ impl ModelParams {
         for (i, &j) in self.cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
             if j != BACKGROUND_CELL {
-                let layer = ((transcripts[i].z - self.z0) / self.layer_depth) as usize;
+                let layer = ((self.transcript_positions[i].2 - self.z0) / self.layer_depth).max(0.0) as usize;
+                let layer = layer.min(self.nlayers() - 1);
                 self.counts[[gene, j as usize, layer]] += 1;
+            }
+        }
+
+        self.check_counts(transcripts);
+    }
+
+    fn check_counts(&self, transcripts: &Vec<Transcript>) {
+        for (i, (transcript, &assignment)) in transcripts.iter().zip(&self.cell_assignments).enumerate() {
+            let layer = ((self.transcript_positions[i].2 - self.z0) / self.layer_depth).max(0.0) as usize;
+            let layer = layer.min(self.nlayers() - 1);
+            if assignment != BACKGROUND_CELL {
+                assert!(self.counts[[transcript.gene as usize, assignment as usize, layer]] > 0);
             }
         }
     }
@@ -342,8 +355,7 @@ impl ModelParams {
                 // λ_bg: [ngenes, nlayers]
 
                 // iterate over genes
-                accum
-                    + Zip::from(λ)
+                let part = Zip::from(λ)
                         .and(cs.outer_iter())
                         .and(self.λ_bg.outer_iter())
                         .fold(0_f32, |accum, λ, cs, λ_bg| {
@@ -356,7 +368,13 @@ impl ModelParams {
                                     }
                                 })
                                 - λ * cell_volume
-                        })
+                        });
+                // if part < -57983890000.0 {
+                //     dbg!(part, cell_volume, cs.sum());
+                //     dbg!(λ);
+                //     panic!();
+                // }
+                accum + part
             });
 
         // nuclear reassignment terms
@@ -603,7 +621,8 @@ impl UncertaintyTracker {
         for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
-                let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+                let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                let layer = layer.min(params.nlayers() - 1);
                 let density = params.transcript_density[i];
 
                 let λ_fg = params.λ[[gene as usize, *j as usize]];
@@ -632,7 +651,8 @@ impl UncertaintyTracker {
             }
 
             let gene = transcripts[i].gene;
-            let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+            let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+            let layer = layer.min(params.nlayers() - 1);
             let density = params.transcript_density[i];
 
             let w_d = d as f32 / params.t as f32;
@@ -893,7 +913,8 @@ where
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
-                    let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = layer.min(params.nlayers() - 1);
                     params.counts[[gene as usize, old_cell as usize, layer]] -= 1;
                 }
             }
@@ -908,7 +929,8 @@ where
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
-                    let layer = ((transcripts[i].z - params.z0) / params.layer_depth) as usize;
+                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = layer.min(params.nlayers() - 1);
                     params.counts[[gene as usize, new_cell as usize, layer]] += 1;
                 }
             }
@@ -1005,6 +1027,7 @@ where
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
     ) {
+        let nlayers = params.nlayers();
         Zip::indexed(&mut params.isbackground)
             .and(&params.transcript_density)
             .and(transcripts)
@@ -1016,7 +1039,9 @@ where
                     *bg = true;
                 } else {
                     let gene = t.gene as usize;
-                    let layer = ((t.z - params.z0) / params.layer_depth) as usize;
+                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = layer.min(nlayers - 1);
+
                     let λ = params.λ[[gene, cell as usize]];
                     let p = λ / (λ + d * params.λ_bg[[gene, layer]]);
                     // if p < 0.5 {
@@ -1036,9 +1061,11 @@ where
         Zip::from(&params.isbackground)
             .and(transcripts)
             .and(&params.cell_assignments)
-            .for_each(|&bg, t, &cell| {
+            .and(&params.transcript_positions)
+            .for_each(|&bg, t, &cell, pos| {
                 let gene = t.gene as usize;
-                let layer = ((t.z - params.z0) / params.layer_depth) as usize;
+                let layer = ((pos.2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                let layer = layer.min(nlayers - 1);
 
                 if bg {
                     params.background_counts[[gene, layer]] += 1;
@@ -1348,12 +1375,13 @@ where
         // accept/reject proposals
         let σ2 = σ.powi(2);
         params.accept_proposed_transcript_positions
-            .par_iter_mut()
-            // .iter_mut()
+            // .par_iter_mut()
+            .iter_mut()
             .zip(&params.transcript_positions)
             .zip(&params.proposed_transcript_positions)
             .zip(transcripts)
-            .for_each(|(((accept, position), proposed_position), transcript)| {
+            .enumerate()
+            .for_each(|(i, (((accept, position), proposed_position), transcript))| {
                 let sq_dist_new =
                     (proposed_position.0 - transcript.x).powi(2) +
                     (proposed_position.1 - transcript.y).powi(2) +
@@ -1365,43 +1393,77 @@ where
 
                 let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
 
+                let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;
+                let layer_prev = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
                 let cell_prev = self.cell_at_position(*position);
-                let ln_λ_prev = if cell_prev == BACKGROUND_CELL {
+                let λ_prev = if cell_prev == BACKGROUND_CELL {
                     0.0
                 } else {
                     params.λ[[gene, cell_prev as usize]]
-                };
+                } + density * params.λ_bg[[gene, layer_prev]];
 
+                let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
                 let cell_new = self.cell_at_position(*proposed_position);
-                let ln_λ_new = if cell_new == BACKGROUND_CELL {
+                let λ_new = if cell_new == BACKGROUND_CELL {
                     0.0
                 } else {
                     params.λ[[gene, cell_new as usize]]
-                };
+                } + density * params.λ_bg[[gene, layer_new]];
 
-                let ln_λ_diff = ln_λ_new - ln_λ_prev;
+                let ln_λ_diff = λ_new.ln() - λ_prev.ln();
 
                 // TODO: nuclear reassignment penalty
-
-                // dbg!(sq_dist_new, sq_dist_prev, logprob_dist_diff, ln_λ_diff);
 
                 let mut rng = thread_rng();
                 *accept = rng.gen::<f32>().ln() < logprob_dist_diff + ln_λ_diff;
             });
 
+        params.check_counts(transcripts);
+
         // updated accepted proposals
-        for (i, accept, position, proposed_position) in izip!(
+        for (i, transcript, accept, position, proposed_position) in izip!(
             0..transcripts.len(),
+            transcripts,
             &params.accept_proposed_transcript_positions,
             &mut params.transcript_positions,
             &params.proposed_transcript_positions
         ) {
             if *accept {
                 self.update_transcript_position(i, *position, *proposed_position);
+
+                let cell_prev = self.cell_at_position(*position);
+                assert!(cell_prev == params.cell_assignments[i]);
+
+                let layer_prev = ((position.2 - params.z0) / params.layer_depth) as usize;
+                let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
+
+                let cell_new = self.cell_at_position(*proposed_position);
+                let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
+                let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
+
+                let gene = transcript.gene as usize;
+
+                if cell_prev != BACKGROUND_CELL {
+                    assert!(params.counts[[gene, cell_prev as usize, layer_prev]] > 0);
+                    params.counts[[gene, cell_prev as usize, layer_prev]] -= 1;
+                    assert!(params.cell_population[cell_prev as usize] > 0);
+                    params.cell_population[cell_prev as usize] -= 1;
+                }
+                if cell_new != BACKGROUND_CELL {
+                    params.counts[[gene, cell_new as usize, layer_new]] += 1;
+                    params.cell_population[cell_new as usize] += 1;
+                }
+
+                params.cell_assignments[i] = cell_new;
+
                 *position = *proposed_position;
             }
         }
 
+        // TODO: shoudn't have to do this
+        // params.recompute_counts(transcripts);
     }
 }

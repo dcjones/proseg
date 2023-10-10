@@ -85,8 +85,8 @@ struct Args {
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -215,7 +215,7 @@ fn set_xenium_presets(args: &mut Args) {
 
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
-    // args.dispersion.get_or_insert(40.0);
+    args.dispersion.get_or_insert(40.0);
 }
 
 

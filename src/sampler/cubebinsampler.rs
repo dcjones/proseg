@@ -270,11 +270,8 @@ impl CubeCellMap {
 
 // Initial binning of the transcripts
 fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Vec<CubeBin>) {
-    let (_, _, _, _, mut zmin, mut zmax) = coordinate_span(&transcripts);
+    let (_, _, _, _, zmin, zmax) = coordinate_span(&transcripts);
 
-    let eps = (zmax - zmin) * 1e-6;
-    zmin -= eps;
-    zmax += eps;
     let height = zmax - zmin;
 
     let cube_size = scale;
@@ -428,6 +425,14 @@ impl CubeBinSampler {
 
         params.recompute_counts(transcripts);
 
+        // for (transcript, &cell) in transcripts.iter().zip(params.cell_assignments.iter()) {
+        //     // let position = clip_z_position(
+        //     //     (transcript.x, transcript.y, transcript.z), zmin, zmax);
+        //     // let loc_cell = cubecells.get(layout.world_pos_to_cube(position));
+        //     // assert!(loc_cell == cell);
+        // }
+
+
         let nzbins = 1;
         let cell_population = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
         let cell_perimeter = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
@@ -456,8 +461,8 @@ impl CubeBinSampler {
             cell_perimeter,
             proposals,
             connectivity_checker,
-            zmin: zmin,
-            zmax: zmax,
+            zmin,
+            zmax,
             nvoxel_layers: 1,
             cubevolume,
             quad: 0,
@@ -1152,11 +1157,9 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
             });
     }
 
-    fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32 {
-        let pos = (
-            pos.0, pos.1, pos.2.max(self.zmin).min(self.zmax)
-        );
-        let cubindex = self.chunkquad.layout.world_pos_to_cube(pos);
+    fn cell_at_position(&self, position: (f32, f32, f32)) -> u32 {
+        let position = clip_z_position(position, self.zmin, self.zmax);
+        let cubindex = self.chunkquad.layout.world_pos_to_cube(position);
         self.cubeindex
             .get(&cubindex)
             .map_or(BACKGROUND_CELL, |&cubebin_idx| {
