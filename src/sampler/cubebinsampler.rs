@@ -34,6 +34,17 @@ fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32>
     result
 }
 
+
+fn clip_z_position(position: (f32, f32, f32), zmin: f32, zmax: f32) -> (f32, f32, f32) {
+    let eps = (zmax - zmin) * 1e-6;
+    return (
+        position.0,
+        position.1,
+        position.2.max(zmin + eps).min(zmax - eps),
+    );
+}
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cube {
     i: i32,
@@ -276,7 +287,9 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Ve
     let mut cube_index = HashMap::new();
 
     for (i, transcript) in transcripts.iter().enumerate() {
-        let cube = layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
+        let position = clip_z_position(
+            (transcript.x, transcript.y, transcript.z), zmin, zmax);
+        let cube = layout.world_pos_to_cube(position);
 
         cube_index
             .entry(cube)
@@ -443,8 +456,8 @@ impl CubeBinSampler {
             cell_perimeter,
             proposals,
             connectivity_checker,
-            zmin,
-            zmax,
+            zmin: zmin,
+            zmax: zmax,
             nvoxel_layers: 1,
             cubevolume,
             quad: 0,
@@ -464,7 +477,7 @@ impl CubeBinSampler {
 
     // Allocate a new RectBinSampler with the same state as this one, but
     // grid resolution doubled (i.e. rect size halved).
-    pub fn double_resolution(&self, transcripts: &Vec<Transcript>) -> CubeBinSampler {
+    pub fn double_resolution(&self, params: &ModelParams) -> CubeBinSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.shape()[0];
         let cubevolume = self.cubevolume / 8.0;
@@ -522,9 +535,11 @@ impl CubeBinSampler {
 
                 // allocate transcripts to children
                 for &t in cubebin.transcripts.iter() {
-                    let transcript = &transcripts[t];
+                    let position = clip_z_position(
+                        params.transcript_positions[t],
+                        self.zmin, self.zmax);
                     let tcube =
-                        layout.world_pos_to_cube((transcript.x, transcript.y, transcript.z));
+                        layout.world_pos_to_cube(position);
 
                     for subcubebin in subcubebins.iter_mut() {
                         if subcubebin.cube == tcube {
@@ -534,11 +549,15 @@ impl CubeBinSampler {
                     }
                 }
 
+                // TODO:
+                // Why only add cubebins when they are populated? Doesn't this
+                // prevent mismatch edges from being added?
+
                 // add to index
                 for subcubebin in subcubebins {
-                    if !subcubebin.transcripts.is_empty() {
+                    // if !subcubebin.transcripts.is_empty() {
                         cubebins.push(subcubebin);
-                    }
+                    // }
                 }
             }
         }
@@ -1131,6 +1150,49 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     }
                 }
             });
+    }
+
+    fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32 {
+        let pos = (
+            pos.0, pos.1, pos.2.max(self.zmin).min(self.zmax)
+        );
+        let cubindex = self.chunkquad.layout.world_pos_to_cube(pos);
+        self.cubeindex
+            .get(&cubindex)
+            .map_or(BACKGROUND_CELL, |&cubebin_idx| {
+                self.cubecells.get(self.cubebins[cubebin_idx].cube)
+            })
+    }
+
+    fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {
+        // remove transcript from old cube
+        {
+            let prev_pos = clip_z_position(prev_pos, self.zmin, self.zmax);
+            let old_cube = self
+                .chunkquad.layout.world_pos_to_cube(prev_pos);
+
+            let old_cubebin = &mut self.cubebins[self.cubeindex[&old_cube]];
+            old_cubebin.transcripts.swap_remove(
+                old_cubebin.transcripts.iter().position(|t| *t == i).unwrap());
+        }
+
+        // insert transcript into old cube
+        {
+            let new_pos = clip_z_position(new_pos, self.zmin, self.zmax);
+            let new_cube = self
+                .chunkquad.layout.world_pos_to_cube(new_pos);
+
+            let ncubes = self.cubeindex.len();
+            let new_cube_index = *self.cubeindex
+                .entry(new_cube)
+                .or_insert(ncubes);
+
+            if new_cube_index >= self.cubebins.len() {
+                self.cubebins.push(CubeBin::new(new_cube));
+            }
+            let new_cubebin = &mut self.cubebins[new_cube_index];
+            new_cubebin.transcripts.push(i);
+        }
     }
 }
 

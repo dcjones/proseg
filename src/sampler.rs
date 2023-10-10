@@ -21,7 +21,7 @@ use math::{
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
-use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal};
+use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -92,10 +92,17 @@ pub struct ModelPriors {
 
     pub nuclear_reassignment_log_prob: f32,
     pub nuclear_reassignment_1mlog_prob: f32,
+
+    pub diffusion_sigma: f32,
+    pub diffusion_proposal_sigma: f32,
 }
 
 // Model global parameters.
 pub struct ModelParams {
+    transcript_positions: Vec<(f32, f32, f32)>,
+    proposed_transcript_positions: Vec<(f32, f32, f32)>,
+    accept_proposed_transcript_positions: Vec<bool>,
+
     init_nuclear_cell_assignment: Vec<CellIndex>,
 
     pub cell_assignments: Vec<CellIndex>,
@@ -201,6 +208,14 @@ impl ModelParams {
         ncells: usize,
         ngenes: usize,
     ) -> Self {
+        let transcript_positions = transcripts
+            .iter()
+            .map(|t| (t.x, t.y, t.z))
+            .collect::<Vec<_>>();
+
+        let proposed_transcript_positions = transcript_positions.clone();
+        let accept_proposed_transcript_positions = vec![false; transcripts.len()];
+
         let r = Array1::<f32>::from_elem(ngenes, 100.0_f32);
         let lgamma_r = Array1::<f32>::from_iter(r.iter().map(|&x| lgammaf(x)));
         let cell_volume = Array1::<f32>::zeros(ncells);
@@ -241,6 +256,9 @@ impl ModelParams {
         let isbackground = Array1::<bool>::from_elem(transcripts.len(), false);
 
         return ModelParams {
+            transcript_positions,
+            proposed_transcript_positions,
+            accept_proposed_transcript_positions,
             init_nuclear_cell_assignment: init_cell_assignments.clone(),
             cell_assignments: init_cell_assignments.clone(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
@@ -292,11 +310,12 @@ impl ModelParams {
     }
 
     pub fn nassigned(&self) -> usize {
-        return self
-            .cell_assignments
-            .iter()
-            .filter(|&c| *c != BACKGROUND_CELL)
-            .count();
+        return self.foreground_counts.iter().map(|x| *x as usize).sum();
+        // return self
+        //     .cell_assignments
+        //     .iter()
+        //     .filter(|&c| *c != BACKGROUND_CELL)
+        //     .count();
     }
 
     pub fn ncells(&self) -> usize {
@@ -796,6 +815,7 @@ pub trait Proposal {
 pub trait Sampler<P>
 where
     P: Proposal + Send,
+    Self: Sync
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
 
@@ -811,6 +831,10 @@ where
     // updates needed after applying accepted proposals. This is mainly
     // updating mismatch edges.
     fn update_sampler_state(&mut self, params: &ModelParams);
+
+    fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
+
+    fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32;
 
     fn sample_cell_regions(
         &mut self,
@@ -971,6 +995,8 @@ where
         );
 
         self.sample_background_rates(priors, params);
+
+        self.sample_transcript_positions(priors, params, transcripts);
     }
 
     fn sample_background_counts(
@@ -1301,5 +1327,81 @@ where
                 .recip()
                 .sqrt();
             });
+    }
+
+    fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
+    {
+        // make proposals
+        let σ = priors.diffusion_proposal_sigma;
+        params.proposed_transcript_positions
+            .par_iter_mut()
+            .zip(&params.transcript_positions)
+            .for_each(|(proposed_position, current_position)| {
+                let mut rng = thread_rng();
+                *proposed_position = (
+                    current_position.0 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.1 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.2 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
+                );
+            });
+
+        // accept/reject proposals
+        let σ2 = σ.powi(2);
+        params.accept_proposed_transcript_positions
+            .par_iter_mut()
+            // .iter_mut()
+            .zip(&params.transcript_positions)
+            .zip(&params.proposed_transcript_positions)
+            .zip(transcripts)
+            .for_each(|(((accept, position), proposed_position), transcript)| {
+                let sq_dist_new =
+                    (proposed_position.0 - transcript.x).powi(2) +
+                    (proposed_position.1 - transcript.y).powi(2) +
+                    (proposed_position.2 - transcript.z).powi(2);
+                let sq_dist_prev =
+                    (position.0 - transcript.x).powi(2) +
+                    (position.1 - transcript.y).powi(2) +
+                    (position.2 - transcript.z).powi(2);
+
+                let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
+
+                let gene = transcript.gene as usize;
+                let cell_prev = self.cell_at_position(*position);
+                let ln_λ_prev = if cell_prev == BACKGROUND_CELL {
+                    0.0
+                } else {
+                    params.λ[[gene, cell_prev as usize]]
+                };
+
+                let cell_new = self.cell_at_position(*proposed_position);
+                let ln_λ_new = if cell_new == BACKGROUND_CELL {
+                    0.0
+                } else {
+                    params.λ[[gene, cell_new as usize]]
+                };
+
+                let ln_λ_diff = ln_λ_new - ln_λ_prev;
+
+                // TODO: nuclear reassignment penalty
+
+                // dbg!(sq_dist_new, sq_dist_prev, logprob_dist_diff, ln_λ_diff);
+
+                let mut rng = thread_rng();
+                *accept = rng.gen::<f32>().ln() < logprob_dist_diff + ln_λ_diff;
+            });
+
+        // updated accepted proposals
+        for (i, accept, position, proposed_position) in izip!(
+            0..transcripts.len(),
+            &params.accept_proposed_transcript_positions,
+            &mut params.transcript_positions,
+            &params.proposed_transcript_positions
+        ) {
+            if *accept {
+                self.update_transcript_position(i, *position, *proposed_position);
+                *position = *proposed_position;
+            }
+        }
+
     }
 }

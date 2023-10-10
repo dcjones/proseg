@@ -84,8 +84,8 @@ struct Args {
     nlayers: usize,
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     schedule: Vec<usize>,
 
@@ -115,6 +115,12 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
+
+    #[arg(long, default_value_t = 5.0)]
+    diffusion_sigma: f32,
+
+    #[arg(long, default_value_t = 2.0)]
+    diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
     density_binsize: f32,
@@ -209,7 +215,7 @@ fn set_xenium_presets(args: &mut Args) {
 
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
-    args.dispersion.get_or_insert(40.0);
+    // args.dispersion.get_or_insert(40.0);
 }
 
 
@@ -407,6 +413,9 @@ fn main() {
 
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
+
+        diffusion_sigma: args.diffusion_sigma,
+        diffusion_proposal_sigma: args.diffusion_proposal_sigma,
     };
 
     let mut params = ModelParams::new(
@@ -470,7 +479,7 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+            sampler.replace_with(|sampler| sampler.double_resolution(&params));
             run_hexbin_sampler(
                 &mut prog,
                 sampler.get_mut(),
@@ -488,7 +497,7 @@ fn main() {
         if args.check_consistency {
             sampler.borrow_mut().check_consistency(&priors, &mut params);
         }
-        sampler.replace_with(|sampler| sampler.double_resolution(&transcripts));
+        sampler.replace_with(|sampler| sampler.double_resolution(&params));
     }
 
     run_hexbin_sampler(
