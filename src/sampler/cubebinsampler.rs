@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::f32;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use thread_local::ThreadLocal;
 
 use std::time::Instant;
@@ -340,7 +340,7 @@ pub struct CubeBinSampler {
     nlayers: usize,
 
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
-    cubeindex: Arc<Mutex<HashMap<Cube, CubeBin>>>,
+    cubeindex: Arc<RwLock<HashMap<Cube, CubeBin>>>,
 
     // assignment of rectbins to cells
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
@@ -392,12 +392,6 @@ impl CubeBinSampler {
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
 
-        // build index
-        let mut cubeindex = HashMap::new();
-        for cubebin in cubebins {
-            cubeindex.insert(cubebin.cube, cubebin);
-        }
-
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chunks in mismatch_edges.iter_mut() {
@@ -408,6 +402,12 @@ impl CubeBinSampler {
 
         // initial cube assignments
         let cubecells = cube_assignments(&cubebins, &params.cell_assignments);
+
+        // build index
+        let mut cubeindex = HashMap::new();
+        for cubebin in cubebins {
+            cubeindex.insert(cubebin.cube, cubebin);
+        }
 
         // homogenize the rect: assign every transcript in the rect to the winner
         for cubebin in cubeindex.values() {
@@ -454,7 +454,7 @@ impl CubeBinSampler {
             density,
             nlayers,
             mismatch_edges,
-            cubeindex: Arc::new(Mutex::new(cubeindex)),
+            cubeindex: Arc::new(RwLock::new(cubeindex)),
             cubecells,
             nzbins,
             cell_population,
@@ -505,7 +505,7 @@ impl CubeBinSampler {
             }
         }
 
-        for cubebin in self.cubeindex.lock().unwrap().values() {
+        for cubebin in self.cubeindex.read().unwrap().values() {
             cubeset.insert(cubebin.cube);
         }
         println!("cubeset: {:?}", t0.elapsed());
@@ -526,7 +526,7 @@ impl CubeBinSampler {
             // if this is a populated cube, need to build sub cube bins
             // if let Some(&cubebin_idx) = self.cubeindex.get(&cube) {
             //     let cubebin = &self.cubebins[cubebin_idx];
-            if let Some(cubebin) = self.cubeindex.lock().unwrap().get(&cube) {
+            if let Some(cubebin) = self.cubeindex.read().unwrap().get(&cube) {
 
                 let mut subcubebins = [
                     CubeBin::new(subcubes[0]),
@@ -607,7 +607,7 @@ impl CubeBinSampler {
             density: self.density.clone(),
             nlayers: self.nlayers,
             mismatch_edges,
-            cubeindex: Arc::new(Mutex::new(cubeindex)),
+            cubeindex: Arc::new(RwLock::new(cubeindex)),
             cubecells,
             nzbins,
             cell_population,
@@ -890,8 +890,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     cell_to = BACKGROUND_CELL;
                 }
 
-                // let cubebin = self.cubeindex.get(i).map(|i| &self.cubebins[*i]);
-                let cubebin = self.cubeindex.lock().unwrap().get(i);
+                let cubeindex = self.cubeindex.read().unwrap();
+                let cubebin = cubeindex.get(i);
 
                 let transcripts = cubebin.map(|cubebin| &cubebin.transcripts);
                 let i_pop = transcripts.map(|ts| ts.lock().unwrap().len()).unwrap_or(0);
@@ -1180,7 +1180,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
         // remove transcript from old cube
         {
-            let old_cubebin = &mut self.cubeindex.lock().unwrap()[&old_cube];
+            let mut cubeindex = self.cubeindex.write().unwrap();
+            let old_cubebin = cubeindex.get_mut(&old_cube).unwrap();
             let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
             let idx = transcripts.iter().position(|t| *t == i).unwrap();
             transcripts.swap_remove(idx);
@@ -1188,12 +1189,10 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
         // insert transcript into old cube
         {
-            let cubeindex = &mut self.cubeindex.lock().unwrap();
-            let ncubes = cubeindex.len();
-            let new_cubebin = *cubeindex
+            let cubeindex = &mut self.cubeindex.write().unwrap();
+            let new_cubebin = cubeindex
                 .entry(new_cube)
-                .or_insert_with(|CubeBin::new(new_cube)|)
-            let new_cubebin = &mut self.cubebins[new_cube_index];
+                .or_insert_with(|| CubeBin::new(new_cube));
             new_cubebin.transcripts.lock().unwrap().push(i);
         }
     }
