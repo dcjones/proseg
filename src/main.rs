@@ -103,7 +103,7 @@ struct Args {
     #[arg(long, default_value_t = 0.5_f32)]
     foreground_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 1.6_f32)]
+    #[arg(long, default_value_t = 1.3_f32)]
     perimeter_bound: f32,
 
     #[arg(long, default_value_t = 5e-2_f32)]
@@ -121,7 +121,7 @@ struct Args {
     #[arg(long, default_value_t = 5.0)]
     diffusion_sigma: f32,
 
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 2.0)]
     diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]

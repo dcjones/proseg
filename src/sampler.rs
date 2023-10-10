@@ -32,7 +32,7 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-// use std::time::Instant;
+use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -354,7 +354,8 @@ impl ModelParams {
         // iterate over cells
         let mut ll = Zip::from(self.λ.columns())
             .and(&self.cell_volume)
-            .and(self.counts.axis_iter(Axis(1)))
+            // .and(self.counts.axis_iter(Axis(1)))
+            .and(self.foreground_counts.axis_iter(Axis(0)))
             .fold(0_f32, |accum, λ, cell_volume, cs| {
                 // λs: [ngenes]
                 // cell_volume: f32
@@ -369,7 +370,8 @@ impl ModelParams {
                             accum
                                 + Zip::from(cs).and(λ_bg).fold(0_f32, |accum, &c, &λ_bg| {
                                     if c > 0 {
-                                        accum + (c as f32) * (λ + λ_bg).ln()
+                                        // accum + (c as f32) * (λ + λ_bg).ln()
+                                        accum + (c as f32) * λ.ln()
                                     } else {
                                         accum
                                     }
@@ -1365,6 +1367,7 @@ where
     fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
         // make proposals
+        let t0 = Instant::now();
         let σ_proposal = priors.diffusion_proposal_sigma;
         params.proposed_transcript_positions
             .par_iter_mut()
@@ -1378,8 +1381,10 @@ where
                     // current_position.2,
                 );
             });
+        println!("  Generate transcript position proposals: {:?}", t0.elapsed());
 
         // accept/reject proposals
+        let t0 = Instant::now();
         let σ2 = priors.diffusion_sigma.powi(2);
         params.accept_proposed_transcript_positions
             .par_iter_mut()
@@ -1443,15 +1448,19 @@ where
                 let logu = rng.gen::<f32>().ln();
                 *accept = logu < δ;
 
-                // TODO: So it seems cells gradually deflating is entirely due
-                // to moving transcripts out of the cell?
                 // *accept &= (cell_new != BACKGROUND_CELL) & (cell_prev != BACKGROUND_CELL);
+
+                // Still negative
                 // *accept &= cell_new != BACKGROUND_CELL;
+
+                // TODO: Positive ll change with this restriction. 
+                // *accept &= cell_prev != BACKGROUND_CELL;
 
                 // if *accept && cell_prev != BACKGROUND_CELL && cell_new == BACKGROUND_CELL {
                 //     dbg!(logu, δ, logprob_dist_diff, ln_λ_diff);
                 // }
             });
+        println!("  Eval transcript position proposals: {:?}", t0.elapsed());
 
         // updated accepted proposals
         let mut accept_rate = 0;
@@ -1460,6 +1469,7 @@ where
         let mut accept_intercell_rate = 0;
         let mut accept_intracell_rate = 0;
 
+        let t0 = Instant::now();
         for (i, transcript, accept, position, proposed_position) in izip!(
             0..transcripts.len(),
             transcripts,
@@ -1514,17 +1524,12 @@ where
                 *position = *proposed_position;
             }
         }
+        println!("  Update transcript positions: {:?}", t0.elapsed());
 
         dbg!(accept_rate as f32 / transcripts.len() as f32);
         dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
         dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);
         dbg!(accept_intracell_rate as f32 / transcripts.len() as f32);
         dbg!(accept_intercell_rate as f32 / transcripts.len() as f32);
-
-        params.check_counts(transcripts);
-
-
-        // TODO: shoudn't have to do this
-        // params.recompute_counts(transcripts);
     }
 }
