@@ -87,6 +87,8 @@ struct Args {
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[80, 80, 80])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -101,7 +103,7 @@ struct Args {
     #[arg(long, default_value_t = 0.5_f32)]
     foreground_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 1.3_f32)]
+    #[arg(long, default_value_t = 1.6_f32)]
     perimeter_bound: f32,
 
     #[arg(long, default_value_t = 5e-2_f32)]
@@ -110,7 +112,7 @@ struct Args {
     #[arg(long, default_value_t = 4.0_f32)]
     scale: f32,
 
-    #[arg(long, default_value_t = 30_f32)]
+    #[arg(long, default_value_t = 60_f32)]
     max_transcript_nucleus_distance: f32,
 
     #[arg(long, default_value_t = false)]
@@ -119,7 +121,7 @@ struct Args {
     #[arg(long, default_value_t = 5.0)]
     diffusion_sigma: f32,
 
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 1.0)]
     diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
@@ -215,7 +217,7 @@ fn set_xenium_presets(args: &mut Args) {
 
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
-    args.dispersion.get_or_insert(40.0);
+    // args.dispersion.get_or_insert(40.0);
 }
 
 
@@ -339,7 +341,7 @@ fn main() {
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
     let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
 
-    let (transcript_density, total_transcript_density) = estimate_transcript_density(
+    let (mut transcript_density, total_transcript_density) = estimate_transcript_density(
         &transcripts,
         ngenes,
         layer_depth,
@@ -348,6 +350,8 @@ fn main() {
         args.density_k,
         args.density_eps,
     );
+
+    transcript_density.fill(1.0);
 
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);
@@ -472,6 +476,7 @@ fn main() {
             &mut total_steps,
             &args.monitor_cell_polygons,
             args.monitor_cell_polygons_freq,
+            true,
         );
 
         for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
@@ -492,6 +497,7 @@ fn main() {
                 &mut total_steps,
                 &args.monitor_cell_polygons,
                 args.monitor_cell_polygons_freq,
+                true,
             );
         }
         if args.check_consistency {
@@ -512,6 +518,7 @@ fn main() {
         &mut total_steps,
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
+        true,
     );
 
     if args.check_consistency {
@@ -602,30 +609,35 @@ fn run_hexbin_sampler(
     total_steps: &mut usize,
     monitor_cell_polygons: &Option<String>,
     monitor_cell_polygons_freq: usize,
+    sample_cell_regions: bool,
 ) {
     sampler.sample_global_params(priors, params, transcripts);
     let mut proposal_stats = ProposalStats::new();
 
     for _ in 0..niter {
-        for _ in 0..local_steps_per_iter {
-            sampler.sample_cell_regions(
-                priors,
-                params,
-                &mut proposal_stats,
-                transcripts,
-                &mut uncertainty,
-            );
+        if sample_cell_regions {
+            for _ in 0..local_steps_per_iter {
+                sampler.sample_cell_regions(
+                    priors,
+                    params,
+                    &mut proposal_stats,
+                    transcripts,
+                    &mut uncertainty,
+                );
+            }
         }
         sampler.sample_global_params(priors, params, transcripts);
 
         let nassigned = params.nassigned();
+        let nforeground = params.nforeground();
         prog.inc(1);
         prog.set_message(format!(
-            "log-likelihood: {ll} | assigned transcripts: {n_assigned} / {n} ({perc_assigned:.2}%)",
+            "log-likelihood: {ll} | assigned: {nassigned} / {n} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
             ll = params.log_likelihood(priors),
-            n_assigned = nassigned,
+            nassigned = nassigned,
             n = transcripts.len(),
-            perc_assigned = 100.0 * (nassigned as f32) / (transcripts.len() as f32)
+            perc_assigned = 100.0 * (nassigned as f32) / (transcripts.len() as f32),
+            perc_foreground = 100.0 * (nforeground as f32) / (transcripts.len() as f32),
         ));
 
         // println!("Log likelihood: {}", params.log_likelihood());

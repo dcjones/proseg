@@ -11,7 +11,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::{lgammaf, log1pf};
+use libm::{lgammaf, log1pf, log};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
@@ -298,13 +298,18 @@ impl ModelParams {
         return self.π.len();
     }
 
+    fn zlayer(&self, z: f32) -> usize {
+        let layer = ((z - self.z0) / self.layer_depth).max(0.0) as usize;
+        let layer = layer.min(self.nlayers() - 1);
+        return layer;
+    }
+
     fn recompute_counts(&mut self, transcripts: &Vec<Transcript>) {
         self.counts.fill(0);
         for (i, &j) in self.cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
             if j != BACKGROUND_CELL {
-                let layer = ((self.transcript_positions[i].2 - self.z0) / self.layer_depth).max(0.0) as usize;
-                let layer = layer.min(self.nlayers() - 1);
+                let layer = self.zlayer(self.transcript_positions[i].2);
                 self.counts[[gene, j as usize, layer]] += 1;
             }
         }
@@ -314,21 +319,23 @@ impl ModelParams {
 
     fn check_counts(&self, transcripts: &Vec<Transcript>) {
         for (i, (transcript, &assignment)) in transcripts.iter().zip(&self.cell_assignments).enumerate() {
-            let layer = ((self.transcript_positions[i].2 - self.z0) / self.layer_depth).max(0.0) as usize;
-            let layer = layer.min(self.nlayers() - 1);
+            let layer = self.zlayer(self.transcript_positions[i].2);
             if assignment != BACKGROUND_CELL {
                 assert!(self.counts[[transcript.gene as usize, assignment as usize, layer]] > 0);
             }
         }
     }
 
-    pub fn nassigned(&self) -> usize {
+    pub fn nforeground(&self) -> usize {
         return self.foreground_counts.iter().map(|x| *x as usize).sum();
-        // return self
-        //     .cell_assignments
-        //     .iter()
-        //     .filter(|&c| *c != BACKGROUND_CELL)
-        //     .count();
+    }
+
+    pub fn nassigned(&self) -> usize {
+        return self
+            .cell_assignments
+            .iter()
+            .filter(|&c| *c != BACKGROUND_CELL)
+            .count();
     }
 
     pub fn ncells(&self) -> usize {
@@ -621,8 +628,7 @@ impl UncertaintyTracker {
         for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
-                let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
-                let layer = layer.min(params.nlayers() - 1);
+                let layer = params.zlayer(params.transcript_positions[i].2);
                 let density = params.transcript_density[i];
 
                 let λ_fg = params.λ[[gene as usize, *j as usize]];
@@ -651,8 +657,7 @@ impl UncertaintyTracker {
             }
 
             let gene = transcripts[i].gene;
-            let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
-            let layer = layer.min(params.nlayers() - 1);
+            let layer = params.zlayer(params.transcript_positions[i].2);
             let density = params.transcript_density[i];
 
             let w_d = d as f32 / params.t as f32;
@@ -1064,6 +1069,7 @@ where
             .and(&params.transcript_positions)
             .for_each(|&bg, t, &cell, pos| {
                 let gene = t.gene as usize;
+                // let layer = params.zlayer(pos.2);
                 let layer = ((pos.2 - params.z0) / params.layer_depth).max(0.0) as usize;
                 let layer = layer.min(nlayers - 1);
 
@@ -1215,9 +1221,9 @@ where
             .for_each(|λs, cs, total_density| {
                 Zip::from(λs).and(cs).for_each(|λ, c| {
                     let α = priors.α_bg + *c as f32;
-                    // let β = priors.β_bg + params.full_layer_volume;
+                    let β = priors.β_bg + params.full_layer_volume;
                     // let β = priors.β_bg + total_density * params.full_layer_volume;
-                    let β = priors.β_bg + total_density;
+                    // let β = priors.β_bg + total_density;
                     *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                 });
             });
@@ -1359,24 +1365,24 @@ where
     fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
         // make proposals
-        let σ = priors.diffusion_proposal_sigma;
+        let σ_proposal = priors.diffusion_proposal_sigma;
         params.proposed_transcript_positions
             .par_iter_mut()
             .zip(&params.transcript_positions)
             .for_each(|(proposed_position, current_position)| {
                 let mut rng = thread_rng();
                 *proposed_position = (
-                    current_position.0 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.1 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.2 + σ * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    // current_position.2,
                 );
             });
 
         // accept/reject proposals
-        let σ2 = σ.powi(2);
+        let σ2 = priors.diffusion_sigma.powi(2);
         params.accept_proposed_transcript_positions
-            // .par_iter_mut()
-            .iter_mut()
+            .par_iter_mut()
             .zip(&params.transcript_positions)
             .zip(&params.proposed_transcript_positions)
             .zip(transcripts)
@@ -1392,9 +1398,11 @@ where
                     (position.2 - transcript.z).powi(2);
 
                 let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
+                let mut δ = logprob_dist_diff;
 
                 let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;
+
                 let layer_prev = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
                 let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
                 let cell_prev = self.cell_at_position(*position);
@@ -1414,16 +1422,44 @@ where
                 } + density * params.λ_bg[[gene, layer_new]];
 
                 let ln_λ_diff = λ_new.ln() - λ_prev.ln();
+                δ += ln_λ_diff;
 
-                // TODO: nuclear reassignment penalty
+                let cell_nuc = params.init_nuclear_cell_assignment[i];
+                if cell_nuc != BACKGROUND_CELL {
+                    if cell_nuc == cell_prev {
+                        δ -= priors.nuclear_reassignment_1mlog_prob;
+                    } else {
+                        δ -= priors.nuclear_reassignment_log_prob;
+                    }
+
+                    if cell_nuc == cell_new {
+                        δ += priors.nuclear_reassignment_1mlog_prob;
+                    } else {
+                        δ += priors.nuclear_reassignment_log_prob;
+                    }
+                }
 
                 let mut rng = thread_rng();
-                *accept = rng.gen::<f32>().ln() < logprob_dist_diff + ln_λ_diff;
+                let logu = rng.gen::<f32>().ln();
+                *accept = logu < δ;
+
+                // TODO: So it seems cells gradually deflating is entirely due
+                // to moving transcripts out of the cell?
+                // *accept &= (cell_new != BACKGROUND_CELL) & (cell_prev != BACKGROUND_CELL);
+                // *accept &= cell_new != BACKGROUND_CELL;
+
+                // if *accept && cell_prev != BACKGROUND_CELL && cell_new == BACKGROUND_CELL {
+                //     dbg!(logu, δ, logprob_dist_diff, ln_λ_diff);
+                // }
             });
 
-        params.check_counts(transcripts);
-
         // updated accepted proposals
+        let mut accept_rate = 0;
+        let mut accept_to_background_rate = 0;
+        let mut accept_from_background_rate = 0;
+        let mut accept_intercell_rate = 0;
+        let mut accept_intracell_rate = 0;
+
         for (i, transcript, accept, position, proposed_position) in izip!(
             0..transcripts.len(),
             transcripts,
@@ -1432,6 +1468,8 @@ where
             &params.proposed_transcript_positions
         ) {
             if *accept {
+                accept_rate += 1;
+
                 self.update_transcript_position(i, *position, *proposed_position);
 
                 let cell_prev = self.cell_at_position(*position);
@@ -1443,6 +1481,20 @@ where
                 let cell_new = self.cell_at_position(*proposed_position);
                 let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
                 let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
+
+                if cell_new == BACKGROUND_CELL {
+                    accept_to_background_rate += 1;
+                }
+
+                if cell_prev == BACKGROUND_CELL {
+                    accept_from_background_rate += 1;
+                }
+
+                if cell_new == cell_prev {
+                    accept_intracell_rate += 1;
+                } else {
+                    accept_intercell_rate += 1;
+                }
 
                 let gene = transcript.gene as usize;
 
@@ -1462,6 +1514,15 @@ where
                 *position = *proposed_position;
             }
         }
+
+        dbg!(accept_rate as f32 / transcripts.len() as f32);
+        dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
+        dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);
+        dbg!(accept_intracell_rate as f32 / transcripts.len() as f32);
+        dbg!(accept_intercell_rate as f32 / transcripts.len() as f32);
+
+        params.check_counts(transcripts);
+
 
         // TODO: shoudn't have to do this
         // params.recompute_counts(transcripts);

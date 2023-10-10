@@ -546,12 +546,16 @@ impl CubeBinSampler {
                     let tcube =
                         layout.world_pos_to_cube(position);
 
+                    let mut found = false;
                     for subcubebin in subcubebins.iter_mut() {
                         if subcubebin.cube == tcube {
                             subcubebin.transcripts.push(t);
+                            found = true;
                             break;
                         }
                     }
+
+                    assert!(found, "Unable to allocate transcript to sub-voxel");
                 }
 
                 // TODO:
@@ -560,9 +564,9 @@ impl CubeBinSampler {
 
                 // add to index
                 for subcubebin in subcubebins {
-                    // if !subcubebin.transcripts.is_empty() {
+                    if !subcubebin.transcripts.is_empty() {
                         cubebins.push(subcubebin);
-                    // }
+                    }
                 }
             }
         }
@@ -680,12 +684,9 @@ impl CubeBinSampler {
     }
 
     fn populate_mismatches(&mut self) {
-        // compute initial mismatch edges
-        for cubebin in &self.cubebins {
-            let cell = self.cubecells.get(cubebin.cube);
-            let (chunk, quad) = self.chunkquad.get(cubebin.cube);
-
-            for neighbor in cubebin.cube.von_neumann_neighborhood() {
+        for (&cube, &cell) in self.cubecells.iter() {
+            let (chunk, quad) = self.chunkquad.get(cube);
+            for neighbor in cube.von_neumann_neighborhood() {
                 // don't consider neighbors that are out of bounds on the z-axis
                 if neighbor.k < 0 || neighbor.k >= self.nzbins as i32 {
                     continue;
@@ -700,7 +701,7 @@ impl CubeBinSampler {
                         mismatch_edges[chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((cubebin.cube, neighbor));
+                            .insert((cube, neighbor));
                     }
 
                     let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
@@ -708,7 +709,7 @@ impl CubeBinSampler {
                         mismatch_edges[neighbor_chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((neighbor, cubebin.cube));
+                            .insert((neighbor, cube));
                     }
                 }
             }
