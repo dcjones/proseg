@@ -860,7 +860,7 @@ where
     fn update_sampler_state(&mut self, params: &ModelParams);
 
     fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
-    // fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
+    fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
 
     fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32;
 
@@ -1474,10 +1474,12 @@ where
         // TODO: Accepting proposals is very expensive. Some ideas for speeding this up:
         //
 
+        // let t0 = Instant::now();
         // self.update_transcript_positions(
         //     &params.accept_proposed_transcript_positions,
         //     &params.transcript_positions,
         //     &params.proposed_transcript_positions);
+        // println!("  Update transcript positions 1: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         for (i, transcript, accept, position, proposed_position) in izip!(
@@ -1487,54 +1489,57 @@ where
             &mut params.transcript_positions,
             &params.proposed_transcript_positions
         ) {
-            if *accept {
-                accept_rate += 1;
-
-                self.update_transcript_position(i, *position, *proposed_position);
-
-                let cell_prev = self.cell_at_position(*position);
-                assert!(cell_prev == params.cell_assignments[i]);
-
-                let layer_prev = ((position.2 - params.z0) / params.layer_depth) as usize;
-                let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
-
-                let cell_new = self.cell_at_position(*proposed_position);
-                let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
-                let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
-
-                if cell_new == BACKGROUND_CELL {
-                    accept_to_background_rate += 1;
-                }
-
-                if cell_prev == BACKGROUND_CELL {
-                    accept_from_background_rate += 1;
-                }
-
-                if cell_new == cell_prev {
-                    accept_intracell_rate += 1;
-                } else {
-                    accept_intercell_rate += 1;
-                }
-
-                let gene = transcript.gene as usize;
-
-                if cell_prev != BACKGROUND_CELL {
-                    assert!(params.counts[[gene, cell_prev as usize, layer_prev]] > 0);
-                    params.counts[[gene, cell_prev as usize, layer_prev]] -= 1;
-                    assert!(params.cell_population[cell_prev as usize] > 0);
-                    params.cell_population[cell_prev as usize] -= 1;
-                }
-                if cell_new != BACKGROUND_CELL {
-                    params.counts[[gene, cell_new as usize, layer_new]] += 1;
-                    params.cell_population[cell_new as usize] += 1;
-                }
-
-                params.cell_assignments[i] = cell_new;
-
-                *position = *proposed_position;
+            if !*accept {
+                continue
             }
+
+            accept_rate += 1;
+
+            // TODO: About two thirds of the time spent here
+            self.update_transcript_position(i, *position, *proposed_position);
+
+            let cell_prev = self.cell_at_position(*position);
+            assert!(cell_prev == params.cell_assignments[i]);
+
+            let layer_prev = ((position.2 - params.z0) / params.layer_depth) as usize;
+            let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
+
+            let cell_new = self.cell_at_position(*proposed_position);
+            let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
+            let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
+
+            if cell_new == BACKGROUND_CELL {
+                accept_to_background_rate += 1;
+            }
+
+            if cell_prev == BACKGROUND_CELL {
+                accept_from_background_rate += 1;
+            }
+
+            if cell_new == cell_prev {
+                accept_intracell_rate += 1;
+            } else {
+                accept_intercell_rate += 1;
+            }
+
+            let gene = transcript.gene as usize;
+
+            if cell_prev != BACKGROUND_CELL {
+                assert!(params.counts[[gene, cell_prev as usize, layer_prev]] > 0);
+                params.counts[[gene, cell_prev as usize, layer_prev]] -= 1;
+                assert!(params.cell_population[cell_prev as usize] > 0);
+                params.cell_population[cell_prev as usize] -= 1;
+            }
+            if cell_new != BACKGROUND_CELL {
+                params.counts[[gene, cell_new as usize, layer_new]] += 1;
+                params.cell_population[cell_new as usize] += 1;
+            }
+
+            params.cell_assignments[i] = cell_new;
+
+            *position = *proposed_position;
         }
-        println!("  Update transcript positions: {:?}", t0.elapsed());
+        println!("  Update transcript positions 2: {:?}", t0.elapsed());
 
         dbg!(accept_rate as f32 / transcripts.len() as f32);
         dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);

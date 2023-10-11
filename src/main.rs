@@ -84,9 +84,12 @@ struct Args {
     nlayers: usize,
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
+
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
+
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[10])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[80, 80, 80])]

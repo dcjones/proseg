@@ -1180,8 +1180,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
         // remove transcript from old cube
         {
-            let mut cubeindex = self.cubeindex.write().unwrap();
-            let old_cubebin = cubeindex.get_mut(&old_cube).unwrap();
+            let cubeindex = self.cubeindex.read().unwrap();
+            let old_cubebin = cubeindex.get(&old_cube).unwrap();
             let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
             let idx = transcripts.iter().position(|t| *t == i).unwrap();
             transcripts.swap_remove(idx);
@@ -1197,60 +1197,76 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
         }
     }
 
-    // fn update_transcript_positions(
-    //     &mut self,
-    //     accept: &Vec<bool>,
-    //     positions: &Vec<(f32, f32, f32)>,
-    //     proposed_positions: &Vec<(f32, f32, f32)>)
-    // {
-    //     accept
-    //         .par_iter()
-    //         .zip(positions)
-    //         .zip(proposed_positions)
-    //         .enumerate()
-    //         .for_each(|(i, ((accept, position), proposed_position))| {
-    //             if !*accept {
-    //                 return;
-    //             }
+    // TODO: This can't really be effectively parallelized because there's too
+    // much contention on `cubeindex`.
+    //
+    // I don't know what can be done about this. Moving transcripts around creates
+    // a bunch of new cubes. There's not much we can do about that. Any way to
+    // speed this up seems like it would require an entirely different design.
+    //
+    // 1. Just keep track of which transcripts are in which chunk. There would
+    //    still be a lot of contention because we need to need to move transcripts
+    //    in and out of chunks.
+    //
+    // 2. Don't keep track of anything. Each proposal will just loop through the
+    //    transcript positions selecting transcripts. I'm afraid this would slow
+    //    things down a lot.
+    //
+    // 3. Index positions somehow (maybe a kd_tree) before generating proposals.
+    //    This seems like the most promising approach. Just have to figure
+    //    out the indexing scheme.
 
-    //             let prev_pos = clip_z_position(*position, self.zmin, self.zmax);
-    //             let old_cube = self
-    //                 .chunkquad.layout.world_pos_to_cube(prev_pos);
+    fn update_transcript_positions(
+        &mut self,
+        accept: &Vec<bool>,
+        positions: &Vec<(f32, f32, f32)>,
+        proposed_positions: &Vec<(f32, f32, f32)>)
+    {
+        accept
+            .par_iter()
+            .zip(positions)
+            .zip(proposed_positions)
+            .enumerate()
+            .for_each(|(i, ((accept, position), proposed_position))| {
+                if !*accept {
+                    return;
+                }
 
-    //             let new_pos = clip_z_position(*proposed_position, self.zmin, self.zmax);
-    //             let new_cube = self
-    //                 .chunkquad.layout.world_pos_to_cube(new_pos);
+                let prev_pos = clip_z_position(*position, self.zmin, self.zmax);
+                let old_cube = self
+                    .chunkquad.layout.world_pos_to_cube(prev_pos);
 
-    //             if old_cube == new_cube {
-    //                 return;
-    //             }
+                let new_pos = clip_z_position(*proposed_position, self.zmin, self.zmax);
+                let new_cube = self
+                    .chunkquad.layout.world_pos_to_cube(new_pos);
 
-    //             // remove transcript from old cube
-    //             {
-    //                 let old_cubebin = &self.cubebins[self.cubeindex[&old_cube]];
-    //                 let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
-    //                 let idx = transcripts.iter().position(|t| *t == i).unwrap();
-    //                 transcripts.swap_remove(idx);
-    //             }
+                if old_cube == new_cube {
+                    return;
+                }
 
-    //             // insert transcript into old cube
-    //             {
-    //                 // TODO: Fuck, we need to mutex cubeindex. This is much more
-    //                 // complicated than I thought.
+                // remove transcript from old cube
+                {
+                    let cubeindex = self.cubeindex.read().unwrap();
+                    let old_cubebin = cubeindex.get(&old_cube).unwrap();
+                    let transcripts = &mut old_cubebin.transcripts.lock().unwrap();
+                    let idx = transcripts.iter().position(|t| *t == i).unwrap();
+                    transcripts.swap_remove(idx);
+                }
 
-    //                 let ncubes = self.cubeindex.len();
-    //                 let new_cube_index = *self.cubeindex
-    //                     .entry(new_cube)
-    //                     .or_insert(ncubes);
-
-    //                 if new_cube_index >= self.cubebins.len() {
-    //                     self.cubebins.push(CubeBin::new(new_cube));
-    //                 }
-    //                 let new_cubebin = &mut self.cubebins[new_cube_index];
-    //                 new_cubebin.transcripts.lock().unwrap().push(i);
-    //             }
-    //         });
-    // }
+                // insert transcript into old cube
+                {
+                    // if let Some(new_cubebin) = self.cubeindex.read().unwrap().get(&old_cube) {
+                    //     new_cubebin.transcripts.lock().unwrap().push(i);
+                    // } else {
+                        let cubeindex = &mut self.cubeindex.write().unwrap();
+                        let new_cubebin = cubeindex
+                            .entry(new_cube)
+                            .or_insert_with(|| CubeBin::new(new_cube));
+                        new_cubebin.transcripts.lock().unwrap().push(i);
+                    // }
+                }
+            });
+    }
 
 
 }
