@@ -69,6 +69,9 @@ struct Args {
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
+    #[arg(long, default_value_t)]
+    ignore_z_coord: bool,
+
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
@@ -85,8 +88,8 @@ struct Args {
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
 
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
@@ -237,7 +240,7 @@ fn set_cosmx_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
     // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
-    args.scale = 20.0;
+    args.scale = 36.0;
 
     // TODO: Because the scale is different, we need to set different parameters
     // for max_nucleaus_transcript_distance, density_sigma, density_binsize
@@ -280,6 +283,7 @@ fn main() {
             &expect_arg(args.y_column, "y-column"),
             &expect_arg(args.z_column, "z-column"),
             args.min_qv,
+            args.ignore_z_coord,
         );
 
     // keep removing cells until we can initialize with every cell having at least one voxel
@@ -336,14 +340,20 @@ fn main() {
         t.z = t.z.max(zmin).min(zmax);
     }
 
-    let layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
+    let mut layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
+    if layer_depth == 0.0 {
+        layer_depth = 1.0;
+    }
 
     println!("Read {} transcripts", ntranscripts);
     println!("     {} cells", ncells);
     println!("     {} genes", ngenes);
 
     let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
-    let (xspan, yspan, zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
+    let (xspan, yspan, mut zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
+    if zspan == 0.0 {
+        zspan = 1.0;
+    }
 
     let (mut transcript_density, total_transcript_density) = estimate_transcript_density(
         &transcripts,

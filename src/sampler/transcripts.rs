@@ -35,6 +35,7 @@ pub fn read_transcripts_csv(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
+    ignore_z_column: bool,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
 
     let fmt = determine_format(path, &None);
@@ -56,6 +57,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
+                ignore_z_column,
             );
         },
         OutputFormat::CsvGz => {
@@ -74,6 +76,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
+                ignore_z_column,
             );
         },
         OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
@@ -130,6 +133,7 @@ fn read_transcripts_csv_xyz<T>(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
+    ignore_z_column: bool,
 ) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
 where
     T: std::io::Read,
@@ -196,7 +200,7 @@ where
             transcript_id,
             x,
             y,
-            z,
+            z: if ignore_z_column { 0.0 } else { z },
             gene: gene as u32,
         });
 

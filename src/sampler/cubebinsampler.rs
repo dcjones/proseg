@@ -272,7 +272,10 @@ impl CubeCellMap {
 fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Vec<CubeBin>) {
     let (_, _, _, _, zmin, zmax) = coordinate_span(&transcripts);
 
-    let height = zmax - zmin;
+    let mut height = zmax - zmin;
+    if height == 0.0 {
+        height = 1.0;
+    }
 
     let cube_size = scale;
     let layout = CubeLayout {

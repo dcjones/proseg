@@ -1121,10 +1121,17 @@ where
                             .sample(&mut rng),
                     );
 
-                    *θ = θ.max(1e-6);
+                    *θ = θ.max(1e-6).min(1e6);
                 }
             });
         // println!("  Sample θ: {:?}", t0.elapsed());
+
+        dbg!(
+            params.θ.iter().min_by(|a, b| a.partial_cmp(b).unwrap()),
+            params.θ.iter().max_by(|a, b| a.partial_cmp(b).unwrap()),
+        );
+
+        dbg!(params.h);
 
         // Sample r
         // let t0 = Instant::now();
@@ -1365,29 +1372,45 @@ where
             });
     }
 
-    fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
+
+    fn propose_eval_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
+        // TODO: make these arguments
+        // probability of proposing repositioning
+        let p_repo_proposal = 0.5_f32;
+        let p_repo_prior = 0.1_f32;
+
         // make proposals
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         let σ_proposal = priors.diffusion_proposal_sigma;
         params.proposed_transcript_positions
             .par_iter_mut()
             .zip(&params.transcript_positions)
             .for_each(|(proposed_position, current_position)| {
                 let mut rng = thread_rng();
-                *proposed_position = (
-                    current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    // TODO: sampling on the z-axis causes some problems I don't quite understand yet.
-                    // current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.2,
-                );
+                if rng.gen::<f32>() < p_repo_proposal {
+                    *proposed_position = (
+                        current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        // TODO: sampling on the z-axis causes some problems I don't quite understand yet.
+                        // current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        current_position.2,
+                    );
+                } else {
+                    *proposed_position = *current_position;
+                }
             });
-        println!("  Generate transcript position proposals: {:?}", t0.elapsed());
+        // println!("  Generate transcript position proposals: {:?}", t0.elapsed());
+
+        let σ2 = priors.diffusion_sigma.powi(2);
+        // fn dist_log_pdf(sq_dist: f32, σ2: f32) -> f32 {
+        //     let σ2_b = (0.5_f32).powi(2);
+        //     let τ = 0.25_f32;
+        //     return (τ * (-0.5 * (sq_dist / σ2)).exp() / σ2.sqrt() + (1.0 - τ) * (-0.5 * (sq_dist / σ2_b)).exp() / σ2_b.sqrt()).ln()
+        // }
 
         // accept/reject proposals
-        let t0 = Instant::now();
-        let σ2 = priors.diffusion_sigma.powi(2);
+        // let t0 = Instant::now();
         params.accept_proposed_transcript_positions
             .par_iter_mut()
             .zip(&params.transcript_positions)
@@ -1404,8 +1427,22 @@ where
                     (position.1 - transcript.y).powi(2) +
                     (position.2 - transcript.z).powi(2);
 
-                let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
-                let mut δ = logprob_dist_diff;
+                let mut δ = 0.0;
+                if sq_dist_prev == 0.0 {
+                    δ -= (1.0 - p_repo_prior).ln();
+                } else {
+                    δ -= p_repo_prior.ln();
+                    δ -= -0.5 * (sq_dist_prev / σ2);
+                }
+                if sq_dist_new == 0.0 {
+                    δ += (1.0 - p_repo_prior).ln();
+                } else {
+                    δ += p_repo_prior.ln();
+                    δ += -0.5 * (sq_dist_new / σ2);
+                }
+                // let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
+                // let logprob_dist_diff = dist_log_pdf(sq_dist_new, σ2) - dist_log_pdf(sq_dist_prev, σ2);
+                // let mut δ = logprob_dist_diff;
 
                 let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;
@@ -1455,14 +1492,22 @@ where
                 // Still negative
                 // *accept &= cell_new != BACKGROUND_CELL;
 
-                // TODO: Positive ll change with this restriction. 
+                // TODO: Positive ll change with this restriction.
                 // *accept &= cell_prev != BACKGROUND_CELL;
 
                 // if *accept && cell_prev != BACKGROUND_CELL && cell_new == BACKGROUND_CELL {
                 //     dbg!(logu, δ, logprob_dist_diff, ln_λ_diff);
                 // }
             });
-        println!("  Eval transcript position proposals: {:?}", t0.elapsed());
+        // println!("  Eval transcript position proposals: {:?}", t0.elapsed());
+    }
+
+    fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
+    {
+        // TODO: applying accepted changes in the expensive part. What if we do more mixing like so?
+        for _ in 0..10 {
+            self.propose_eval_transcript_positions(priors, params, transcripts);
+        }
 
         // updated accepted proposals
         let mut accept_rate = 0;
