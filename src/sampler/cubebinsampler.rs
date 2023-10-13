@@ -344,6 +344,8 @@ pub struct CubeBinSampler {
 
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
     cubeindex: Arc<RwLock<HashMap<Cube, CubeBin>>>,
+    transcript_x_ord: Vec<usize>,
+
 
     // assignment of rectbins to cells
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
@@ -436,6 +438,7 @@ impl CubeBinSampler {
         //     // assert!(loc_cell == cell);
         // }
 
+        let transcript_x_ord: Vec<usize> = (0..transcripts.len()).collect();
 
         let nzbins = 1;
         let cell_population = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
@@ -458,6 +461,7 @@ impl CubeBinSampler {
             nlayers,
             mismatch_edges,
             cubeindex: Arc::new(RwLock::new(cubeindex)),
+            transcript_x_ord,
             cubecells,
             nzbins,
             cell_population,
@@ -611,6 +615,7 @@ impl CubeBinSampler {
             nlayers: self.nlayers,
             mismatch_edges,
             cubeindex: Arc::new(RwLock::new(cubeindex)),
+            transcript_x_ord,
             cubecells,
             nzbins,
             cell_population,
@@ -857,6 +862,21 @@ impl CubeBinSampler {
 impl Sampler<CubeBinProposal> for CubeBinSampler {
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams) {
         const UNASSIGNED_PROPOSAL_PROB: f64 = 0.05;
+
+        let t0 = Instant::now();
+        self.transcript_x_ord.par_sort_unstable_by(
+            |&i, &j| params.transcript_positions[i].0.partial_cmp(&params.transcript_positions[j].0).unwrap() );
+        println!("sort on x coord: {:?}", t0.elapsed());
+
+
+        // TODO: Let's try some more to rid ourselves of the whole `cubeindex`
+        // contrivence.
+        //
+        // Current plan: let's sort on one coordinate so we can at least narrow
+        // down a cube's transcripts with binary search by a pretty huge factor.
+        // Then we can 
+        //
+        // I think rayon has a parallel sort.
 
         self.proposals
             .par_iter_mut()

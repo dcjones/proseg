@@ -240,7 +240,7 @@ fn set_cosmx_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
     // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
-    args.scale = 36.0;
+    args.scale = 20.0;
 
     // TODO: Because the scale is different, we need to set different parameters
     // for max_nucleaus_transcript_distance, density_sigma, density_binsize
