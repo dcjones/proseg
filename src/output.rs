@@ -348,12 +348,13 @@ pub fn write_gene_metadata(
     transcript_names: &Vec<String>,
     expected_counts: &Array2<f32>,
 ) {
+    // TODO: write per-component dispersion
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),
             Field::new("total_count", DataType::UInt64, false),
             Field::new("expected_assigned_count", DataType::Float32, false),
-            Field::new("dispersion", DataType::Float32, false),
+            // Field::new("dispersion", DataType::Float32, false),
         ];
 
         let mut columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
@@ -370,10 +371,18 @@ pub fn write_gene_metadata(
             Arc::new(array::Float32Array::from_values(
                 expected_counts.sum_axis(Axis(1)).iter().cloned(),
             )),
-            Arc::new(array::Float32Array::from_values(
-                params.r.iter().cloned(),
-            ))
+            // Arc::new(array::Float32Array::from_values(
+            //     params.r.iter().cloned(),
+            // ))
         ];
+
+        // cell type dispersions
+        for i in 0..params.ncomponents() {
+            schema_fields.push(Field::new(&format!("dispersion_{}", i), DataType::Float32, false));
+            columns.push(Arc::new(array::Float32Array::from_values(
+                params.r.row(i).iter().cloned()
+            )));
+        }
 
         // cell type rates
         for i in 0..params.ncomponents() {

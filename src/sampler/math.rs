@@ -89,6 +89,7 @@ impl LogFactorial {
 }
 
 // Partially memoized lgamma(r + k), memoized over k.
+#[derive(Clone)]
 pub struct LogGammaPlus {
     r: f32,
     values: Vec<f32>,
