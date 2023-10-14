@@ -15,11 +15,9 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::f32;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+use std::cmp::{Ord, Ordering, PartialOrd};
 use thread_local::ThreadLocal;
-
-use kiddo::distance::squared_euclidean;
-use kiddo::float::kdtree::KdTree;
 
 use std::time::Instant;
 
@@ -144,6 +142,18 @@ impl Cube {
 
     fn inbounds(&self, nlayers: usize) -> bool {
         return self.k >= 0 && self.k < nlayers as i32;
+    }
+}
+
+impl PartialOrd for Cube {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Cube {
+    fn cmp(&self, other: &Self) -> Ordering {
+        return self.k.cmp(&other.k).then(self.j.cmp(&other.j)).then(self.i.cmp(&other.i));
     }
 }
 
@@ -345,7 +355,8 @@ fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) 
 pub struct CubeBinSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
-    transcript_x_pos: Vec<usize>,
+    transcript_cubes: Vec<Cube>,
+    transcript_cube_ord: Vec<usize>,
     transcript_layers: Vec<u32>,
     density: Array1<f32>,
     nlayers: usize,
@@ -452,7 +463,9 @@ impl CubeBinSampler {
 
         let proposals = vec![CubeBinProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
-        let transcript_x_pos = (0..transcripts.len()).collect::<Vec<_>>();
+        // let transcript_x_pos = (0..transcripts.len()).collect::<Vec<_>>();
+        let transcript_cubes = vec![Cube::default(); transcripts.len()];
+        let transcript_cube_ord = (0..transcripts.len()).collect::<Vec<_>>();
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -463,7 +476,8 @@ impl CubeBinSampler {
                 nxchunks,
             },
             transcript_genes,
-            transcript_x_pos,
+            transcript_cubes,
+            transcript_cube_ord,
             transcript_layers,
             density,
             nlayers,
@@ -556,7 +570,8 @@ impl CubeBinSampler {
                 nxchunks: self.chunkquad.nxchunks,
             },
             transcript_genes: self.transcript_genes.clone(),
-            transcript_x_pos: self.transcript_x_pos.clone(),
+            transcript_cubes: self.transcript_cubes.clone(),
+            transcript_cube_ord: self.transcript_cube_ord.clone(),
             transcript_layers: self.transcript_layers.clone(),
             density: self.density.clone(),
             nlayers: self.nlayers,
@@ -846,12 +861,12 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let from_unassigned = cell_from == BACKGROUND_CELL;
                 let to_unassigned = cell_to == BACKGROUND_CELL;
 
-                let (x0, y0, z0, x1, y1, z1) = self.chunkquad.layout.cube_to_world_coords(*i);
 
                 // don't let the cell grow in the z-dimension past the extents
                 // of the data. Not strictly necessary to restrict it this way,
                 // but lessens the tendency to produce weird shaped cells.
                 if from_unassigned && !to_unassigned {
+                    let (_, _, z0, _, _, z1) = self.chunkquad.layout.cube_to_world_coords(*i);
                     if z1 < self.zmin || z0 > self.zmax {
                         proposal.ignore = true;
                         return;
@@ -892,22 +907,33 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 }
 
                 // find transcripts within the voxel
-                let transcript_range_start = self.transcript_x_ord
-                    .partition_point(|&t| params.transcript_positions[t].0 < x0);
+                let transcript_range_start = self.transcript_cube_ord
+                    .partition_point(|&t| self.transcript_cubes[t] < *i);
 
                 proposal.transcripts.clear();
-                for &t in self.transcript_x_ord[transcript_range_start..].iter() {
-                    let pos = params.transcript_positions[t];
-                    let pos = clip_z_position(pos, self.zmin, self.zmax);
-
-                    if pos.0 >= x1 {
+                for &t in self.transcript_cube_ord[transcript_range_start..].iter() {
+                    if self.transcript_cubes[t] != *i {
                         break;
                     }
-
-                    if y0 <= pos.1 && pos.1 < y1 && z0 <= pos.2 && pos.2 < z1 {
-                        proposal.transcripts.push(t);
-                    }
+                    proposal.transcripts.push(t);
                 }
+
+                // let transcript_range_start = self.transcript_x_ord
+                //     .partition_point(|&t| params.transcript_positions[t].0 < x0);
+
+                // proposal.transcripts.clear();
+                // for &t in self.transcript_x_ord[transcript_range_start..].iter() {
+                //     let pos = params.transcript_positions[t];
+                //     let pos = clip_z_position(pos, self.zmin, self.zmax);
+
+                //     if pos.0 >= x1 {
+                //         break;
+                //     }
+
+                //     if y0 <= pos.1 && pos.1 < y1 && z0 <= pos.2 && pos.2 < z1 {
+                //         proposal.transcripts.push(t);
+                //     }
+                // }
 
                 let i_pop = proposal.transcripts.len();
 
@@ -1167,8 +1193,16 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     }
 
     fn update_transcript_positions(&mut self, positions: &Vec<(f32, f32, f32)>) {
-        self.transcript_x_ord
-            .par_sort_unstable_by(|&i, &j| positions[i].0.partial_cmp(&positions[j].0).unwrap());
+        self.transcript_cubes
+            .par_iter_mut()
+            .zip(positions)
+            .for_each(|(cube, position)| {
+                let position = clip_z_position(*position, self.zmin, self.zmax);
+                *cube = self.chunkquad.layout.world_pos_to_cube(position);
+            });
+
+        self.transcript_cube_ord
+            .par_sort_unstable_by_key(|&t| self.transcript_cubes[t]);
     }
 
     // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {

@@ -501,8 +501,6 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            // panic!();
-
             sampler.replace_with(|sampler| sampler.double_resolution(&params));
             run_hexbin_sampler(
                 &mut prog,
