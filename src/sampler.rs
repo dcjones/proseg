@@ -95,6 +95,10 @@ pub struct ModelPriors {
 
     pub diffusion_sigma: f32,
     pub diffusion_proposal_sigma: f32,
+
+    // bounds on z coordinate
+    pub zmin: f32,
+    pub zmax: f32,
 }
 
 // Model global parameters.
@@ -867,8 +871,9 @@ where
     // updating mismatch edges.
     fn update_sampler_state(&mut self, params: &ModelParams);
 
-    fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
-    fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
+    // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
+    // fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
+    fn update_transcript_positions(&mut self, positions: &Vec<(f32, f32, f32)>);
 
     fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32;
 
@@ -1459,6 +1464,7 @@ where
                         // TODO: sampling on the z-axis causes some problems I don't quite understand yet.
                         // current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
                         current_position.2,
+                        // (current_position.2 + 0.25 * (priors.zmax - priors.zmin) * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
                     );
                 } else {
                     *proposed_position = *current_position;
@@ -1569,16 +1575,18 @@ where
     fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
         // TODO: applying accepted changes in the expensive part. What if we do more mixing like so?
+        let t0 = Instant::now();
         for _ in 0..10 {
             self.propose_eval_transcript_positions(priors, params, transcripts);
         }
+        println!("  Sample transcript positions: {:?}", t0.elapsed());
 
-        // updated accepted proposals
-        let mut accept_rate = 0;
-        let mut accept_to_background_rate = 0;
-        let mut accept_from_background_rate = 0;
-        let mut accept_intercell_rate = 0;
-        let mut accept_intracell_rate = 0;
+        // // updated accepted proposals
+        // let mut accept_rate = 0;
+        // let mut accept_to_background_rate = 0;
+        // let mut accept_from_background_rate = 0;
+        // let mut accept_intercell_rate = 0;
+        // let mut accept_intracell_rate = 0;
 
         // TODO: Accepting proposals is very expensive. Some ideas for speeding this up:
         //
@@ -1602,10 +1610,10 @@ where
                 continue
             }
 
-            accept_rate += 1;
+            // accept_rate += 1;
 
-            // TODO: About two thirds of the time spent here
-            self.update_transcript_position(i, *position, *proposed_position);
+            // // TODO: About two thirds of the time spent here
+            // self.update_transcript_position(i, *position, *proposed_position);
 
             let cell_prev = self.cell_at_position(*position);
             assert!(cell_prev == params.cell_assignments[i]);
@@ -1617,19 +1625,19 @@ where
             let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
             let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
 
-            if cell_new == BACKGROUND_CELL {
-                accept_to_background_rate += 1;
-            }
+            // if cell_new == BACKGROUND_CELL {
+            //     accept_to_background_rate += 1;
+            // }
 
-            if cell_prev == BACKGROUND_CELL {
-                accept_from_background_rate += 1;
-            }
+            // if cell_prev == BACKGROUND_CELL {
+            //     accept_from_background_rate += 1;
+            // }
 
-            if cell_new == cell_prev {
-                accept_intracell_rate += 1;
-            } else {
-                accept_intercell_rate += 1;
-            }
+            // if cell_new == cell_prev {
+            //     accept_intracell_rate += 1;
+            // } else {
+            //     accept_intercell_rate += 1;
+            // }
 
             let gene = transcript.gene as usize;
 
@@ -1648,12 +1656,16 @@ where
 
             *position = *proposed_position;
         }
+        println!("  Update transcript positions 1: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        self.update_transcript_positions(&params.transcript_positions);
         println!("  Update transcript positions 2: {:?}", t0.elapsed());
 
-        dbg!(accept_rate as f32 / transcripts.len() as f32);
-        dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
-        dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);
-        dbg!(accept_intracell_rate as f32 / transcripts.len() as f32);
-        dbg!(accept_intercell_rate as f32 / transcripts.len() as f32);
+        // dbg!(accept_rate as f32 / transcripts.len() as f32);
+        // dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
+        // dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);
+        // dbg!(accept_intracell_rate as f32 / transcripts.len() as f32);
+        // dbg!(accept_intercell_rate as f32 / transcripts.len() as f32);
     }
 }

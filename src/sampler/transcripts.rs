@@ -226,6 +226,13 @@ where
         }
     }
 
+    // Sort on x for better memory locality (This doesn't actually seem to make any difference)
+    // let mut ord = (0..transcripts.len())
+    //     .collect::<Vec<_>>();
+    // ord.sort_unstable_by(|&i, &j| transcripts[i].x.partial_cmp(&transcripts[j].x).unwrap());
+    // let transcripts = ord.iter().map(|&i| transcripts[i]).collect::<Vec<_>>();
+    // let mut cell_assignments = ord.iter().map(|&i| cell_assignments[i]).collect::<Vec<_>>();
+
     let cell_population = postprocess_cell_assignments(&mut cell_assignments);
 
     return (

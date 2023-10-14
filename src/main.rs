@@ -434,6 +434,9 @@ fn main() {
 
         diffusion_sigma: args.diffusion_sigma,
         diffusion_proposal_sigma: args.diffusion_proposal_sigma,
+
+        zmin,
+        zmax,
     };
 
     let mut params = ModelParams::new(
@@ -497,6 +500,8 @@ fn main() {
             if args.check_consistency {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
+
+            // panic!();
 
             sampler.replace_with(|sampler| sampler.double_resolution(&params));
             run_hexbin_sampler(
@@ -631,6 +636,7 @@ fn run_hexbin_sampler(
 
     for _ in 0..niter {
         if sample_cell_regions {
+            let t0 = std::time::Instant::now();
             for _ in 0..local_steps_per_iter {
                 sampler.sample_cell_regions(
                     priors,
@@ -640,8 +646,11 @@ fn run_hexbin_sampler(
                     &mut uncertainty,
                 );
             }
+            println!("Sample cell regions: {:?}", t0.elapsed());
         }
+        let t0 = std::time::Instant::now();
         sampler.sample_global_params(priors, params, transcripts);
+        println!("Sample parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();
         let nforeground = params.nforeground();
