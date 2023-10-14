@@ -861,7 +861,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let from_unassigned = cell_from == BACKGROUND_CELL;
                 let to_unassigned = cell_to == BACKGROUND_CELL;
 
-
                 // don't let the cell grow in the z-dimension past the extents
                 // of the data. Not strictly necessary to restrict it this way,
                 // but lessens the tendency to produce weird shaped cells.
