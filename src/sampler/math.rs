@@ -1,3 +1,4 @@
+// use libm::{lgammaf, erff};
 use libm::lgammaf;
 use rand::rngs::ThreadRng;
 use rand::Rng;
@@ -16,12 +17,19 @@ pub fn lfact(k: u32) -> f32 {
 //     return negbin_logpmf_fast(r, lgamma_r, lgamma_rpk, p, k, k_ln_factorial);
 // }
 
-const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
+
+// const SQRT2: f32 = 1.4142135623730951_f32;
+
+// pub fn normal_cdf(μ: f32, σ: f32, x: f32) -> f32 {
+//     return 0.5 * (1.0 + erff((x - μ) / (SQRT2 * σ)));
+// }
 
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
     return -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0;
 }
+
+const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
 
 // Negative binomial log probability function with capacity for precomputing some values.
 pub fn negbin_logpmf_fast(

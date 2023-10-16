@@ -1041,7 +1041,6 @@ where
         );
 
         self.sample_background_rates(priors, params);
-
         self.sample_transcript_positions(priors, params, transcripts);
     }
 
@@ -1451,6 +1450,7 @@ where
         // probability of proposing repositioning
         let p_repo_proposal = 0.5_f32;
         let p_repo_prior = 0.1_f32;
+        let σ_z_proposal = 0.25_f32 * (priors.zmax - priors.zmin);
 
         // make proposals
         // let t0 = Instant::now();
@@ -1464,10 +1464,7 @@ where
                     *proposed_position = (
                         current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
                         current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        // TODO: sampling on the z-axis causes some problems I don't quite understand yet.
-                        // current_position.2 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        current_position.2,
-                        // (current_position.2 + 0.25 * (priors.zmax - priors.zmin) * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                        (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
                     );
                 } else {
                     *proposed_position = *current_position;
@@ -1491,6 +1488,16 @@ where
             .zip(transcripts)
             .enumerate()
             .for_each(|(i, (((accept, position), proposed_position), transcript))| {
+                let mut proposal_logweight = 0.0_f32;
+
+                // Reject out of bounds proposals, to avoid detailed balance
+                // issues.
+                if proposed_position.2 == priors.zmin {
+                    proposal_logweight = f32::NEG_INFINITY;
+                } else if proposed_position.2 == priors.zmax {
+                    proposal_logweight = f32::NEG_INFINITY;
+                }
+
                 let sq_dist_new =
                     (proposed_position.0 - transcript.x).powi(2) +
                     (proposed_position.1 - transcript.y).powi(2) +
@@ -1558,7 +1565,7 @@ where
 
                 let mut rng = thread_rng();
                 let logu = rng.gen::<f32>().ln();
-                *accept = logu < δ;
+                *accept = logu < δ + proposal_logweight;
 
                 // *accept &= (cell_new != BACKGROUND_CELL) & (cell_prev != BACKGROUND_CELL);
 
@@ -1618,11 +1625,11 @@ where
                     let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
                     let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
 
+                    // assert!(self.cell_at_position(*position) == *cell_prev);
+
                     *update = (*cell_prev, cell_new, layer_prev as u32, layer_new as u32);
                     *position = *proposed_position;
                     *cell_prev = cell_new;
-                } else {
-                    *update = (*cell_prev, *cell_prev, 0, 0);
                 }
             });
 
@@ -1630,9 +1637,10 @@ where
         params.transcript_position_updates
             .iter()
             .zip(transcripts)
-            .for_each(|(update, transcript)| {
+            .zip(&params.accept_proposed_transcript_positions)
+            .for_each(|((update, transcript), &accept)| {
                 let (cell_prev, cell_new, layer_prev, layer_new) = *update;
-                if cell_prev != cell_new {
+                if accept {
                     let gene = transcript.gene as usize;
                     if cell_prev != BACKGROUND_CELL {
                         assert!(params.counts[[gene, cell_prev as usize, layer_prev as usize]] > 0);
