@@ -1136,17 +1136,17 @@ where
                             .sample(&mut rng),
                     );
 
-                    *θ = θ.max(1e-6).min(1e6);
+                    // *θ = θ.max(1e-6).min(1e6);
                 }
             });
         // println!("  Sample θ: {:?}", t0.elapsed());
 
-        dbg!(
-            params.θ.iter().min_by(|a, b| a.partial_cmp(b).unwrap()),
-            params.θ.iter().max_by(|a, b| a.partial_cmp(b).unwrap()),
-        );
+        // dbg!(
+        //     params.θ.iter().min_by(|a, b| a.partial_cmp(b).unwrap()),
+        //     params.θ.iter().max_by(|a, b| a.partial_cmp(b).unwrap()),
+        // );
 
-        dbg!(params.h);
+        // dbg!(params.h);
 
         // Sample r
         // let t0 = Instant::now();
@@ -1183,7 +1183,7 @@ where
                     Zip::from(&params.z)
                         .and(cs.axis_iter(Axis(0)))
                         .and(&params.cell_volume)
-                        .for_each(|&z, c, &v| {
+                        .for_each(|&z, c, &vol| {
                             let z = z as usize;
                             let c = c.sum();
                             let r = rs[z];
@@ -1192,8 +1192,12 @@ where
                             let uv_z = uv[z];
                             uv[z] = (
                                 uv_z.0 + rand_crt(&mut rng, c, r),
-                                uv_z.1 + log1pf(-odds_to_prob(θ * v))
+                                uv_z.1 + log1pf(-odds_to_prob(θ * vol))
                             );
+
+                            // if uv[z].1.is_infinite() {
+                            //     dbg!(uv[z], θ, vol, c, r);
+                            // }
                         });
 
                     // iterate over components sampling r
@@ -1207,13 +1211,20 @@ where
                             loggammaplus,
                             uv |
                         {
-                            *r = Gamma::new(priors.e_r + uv.0 as f32, (params.h - uv.1).recip())
-                                .unwrap()
-                                .sample(&mut rng);
+                            let dist = Gamma::new(priors.e_r + uv.0 as f32, (params.h - uv.1).recip());
+                            if dist.is_err() {
+                                dbg!(uv.0, uv.1, params.h);
+                            }
+                            let dist = dist.unwrap();
+                            *r = dist.sample(&mut rng);
+
+                            // *r = Gamma::new(priors.e_r + uv.0 as f32, (params.h - uv.1).recip())
+                            //     .unwrap()
+                            //     .sample(&mut rng);
 
                             assert!(r.is_finite());
 
-                            *r = r.min(200.0).max(1e-5);
+                            // *r = r.min(200.0).max(1e-5);
 
                             *lgamma_r = lgammaf(*r);
                             loggammaplus.reset(*r);
@@ -1249,6 +1260,7 @@ where
                 });
         }
 
+        // params.h = 2.0;
         params.h = Gamma::new(
             priors.e_h * (1_f32 + params.r.len() as f32),
             (priors.f_h + params.r.sum()).recip(),
@@ -1450,7 +1462,9 @@ where
         // probability of proposing repositioning
         let p_repo_proposal = 0.5_f32;
         let p_repo_prior = 0.1_f32;
-        let σ_z_proposal = 0.25_f32 * (priors.zmax - priors.zmin);
+        let σ_z_proposal = 0.1 * (priors.zmax - priors.zmin);
+        let σ_z = 0.05_f32 * (priors.zmax - priors.zmin);
+        let σ_z2 = σ_z.powi(2);
 
         // make proposals
         // let t0 = Instant::now();
@@ -1464,6 +1478,7 @@ where
                     *proposed_position = (
                         current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
                         current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        // current_position.2,
                         (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
                     );
                 } else {
@@ -1500,12 +1515,12 @@ where
 
                 let sq_dist_new =
                     (proposed_position.0 - transcript.x).powi(2) +
-                    (proposed_position.1 - transcript.y).powi(2) +
-                    (proposed_position.2 - transcript.z).powi(2);
+                    (proposed_position.1 - transcript.y).powi(2);
                 let sq_dist_prev =
                     (position.0 - transcript.x).powi(2) +
-                    (position.1 - transcript.y).powi(2) +
-                    (position.2 - transcript.z).powi(2);
+                    (position.1 - transcript.y).powi(2);
+                let z_sq_dist_new = (proposed_position.2 - transcript.z).powi(2);
+                let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
                 let mut δ = 0.0;
                 if sq_dist_prev == 0.0 {
@@ -1513,13 +1528,16 @@ where
                 } else {
                     δ -= p_repo_prior.ln();
                     δ -= -0.5 * (sq_dist_prev / σ2);
+                    δ -= -0.5 * (z_sq_dist_prev / σ_z2);
                 }
                 if sq_dist_new == 0.0 {
                     δ += (1.0 - p_repo_prior).ln();
                 } else {
                     δ += p_repo_prior.ln();
                     δ += -0.5 * (sq_dist_new / σ2);
+                    δ += -0.5 * (z_sq_dist_new / σ_z2);
                 }
+
                 // let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
                 // let logprob_dist_diff = dist_log_pdf(sq_dist_new, σ2) - dist_log_pdf(sq_dist_prev, σ2);
                 // let mut δ = logprob_dist_diff;
@@ -1584,32 +1602,9 @@ where
 
     fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
-        // TODO: applying accepted changes in the expensive part. What if we do more mixing like so?
-        let t0 = Instant::now();
-        for _ in 0..10 {
-            self.propose_eval_transcript_positions(priors, params, transcripts);
-        }
-        println!("  Sample transcript positions: {:?}", t0.elapsed());
-
-        // // updated accepted proposals
-        // let mut accept_rate = 0;
-        // let mut accept_to_background_rate = 0;
-        // let mut accept_from_background_rate = 0;
-        // let mut accept_intercell_rate = 0;
-        // let mut accept_intracell_rate = 0;
-
-        // TODO: Accepting proposals is very expensive. Some ideas for speeding this up:
-        //
-
-        // let t0 = Instant::now();
-        // self.update_transcript_positions(
-        //     &params.accept_proposed_transcript_positions,
-        //     &params.transcript_positions,
-        //     &params.proposed_transcript_positions);
-        // println!("  Update transcript positions 1: {:?}", t0.elapsed());
+        self.propose_eval_transcript_positions(priors, params, transcripts);
 
         // Update position and compute cell and layer changes for updates
-        let t0 = Instant::now();
         params.transcript_position_updates
             .par_iter_mut()
             .zip(&mut params.transcript_positions)
@@ -1655,12 +1650,7 @@ where
                 }
             });
 
-        println!("  Update transcript positions 1: {:?}", t0.elapsed());
-
-        let t0 = Instant::now();
         self.update_transcript_positions(&params.transcript_positions);
-        println!("  Update transcript positions 2: {:?}", t0.elapsed());
-
         // dbg!(accept_rate as f32 / transcripts.len() as f32);
         // dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
         // dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);

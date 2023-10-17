@@ -88,6 +88,7 @@ struct Args {
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
 
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[500, 500])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
 
@@ -110,7 +111,7 @@ struct Args {
     #[arg(long, default_value_t = 0.5_f32)]
     foreground_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 1.3_f32)]
+    #[arg(long, default_value_t = 1.5_f32)]
     perimeter_bound: f32,
 
     #[arg(long, default_value_t = 5e-2_f32)]
@@ -413,10 +414,8 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
-        // α_θ: 1.0,
-        // β_θ: 1.0,
-        α_θ: 1e1,
-        β_θ: 1e-1,
+        α_θ: 1.0,
+        β_θ: 1.0,
 
         e_r: 1.0,
 
@@ -634,7 +633,7 @@ fn run_hexbin_sampler(
 
     for _ in 0..niter {
         if sample_cell_regions {
-            let t0 = std::time::Instant::now();
+            // let t0 = std::time::Instant::now();
             for _ in 0..local_steps_per_iter {
                 sampler.sample_cell_regions(
                     priors,
@@ -644,11 +643,11 @@ fn run_hexbin_sampler(
                     &mut uncertainty,
                 );
             }
-            println!("Sample cell regions: {:?}", t0.elapsed());
+            // println!("Sample cell regions: {:?}", t0.elapsed());
         }
-        let t0 = std::time::Instant::now();
+        // let t0 = std::time::Instant::now();
         sampler.sample_global_params(priors, params, transcripts);
-        println!("Sample parameters: {:?}", t0.elapsed());
+        // println!("Sample parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();
         let nforeground = params.nforeground();
