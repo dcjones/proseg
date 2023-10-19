@@ -1468,11 +1468,15 @@ where
             .zip(&params.transcript_positions)
             .for_each(|(proposed_position, current_position)| {
                 let mut rng = thread_rng();
-                *proposed_position = (
-                    current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
-                );
+                if rng.gen::<f32>() < 0.5 {
+                    *proposed_position = (
+                        current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                        (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                    );
+                } else {
+                    *proposed_position = *current_position;
+                }
             });
         // println!("  Generate transcript position proposals: {:?}", t0.elapsed());
 
@@ -1494,10 +1498,14 @@ where
 
                 // Reject out of bounds proposals, to avoid detailed balance
                 // issues.
-                if proposed_position.2 == priors.zmin {
-                    proposal_logweight = f32::NEG_INFINITY;
-                } else if proposed_position.2 == priors.zmax {
-                    proposal_logweight = f32::NEG_INFINITY;
+                if proposed_position.2 == priors.zmin || proposed_position.2 == priors.zmax {
+                    *accept = false;
+                    return;
+                }
+
+                if proposed_position == position {
+                    *accept = false;
+                    return;
                 }
 
                 let sq_dist_new =
