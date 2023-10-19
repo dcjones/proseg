@@ -16,12 +16,20 @@ pub fn studentt_logpdf_part(σ2: f32, df: f32, x2: f32) -> f32 {
     return -((df + 1.0) / 2.0) * ((x2 / σ2) / df).ln_1p();
 }
 
+const SQRT_TWO_PI: f32 = 2.5066282746310002_f32;
+
+pub fn normal_pdf(σ: f32, x2: f32) -> f32 {
+    return (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI).sqrt();
+}
+
 
 // pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
 //     let k_ln_factorial = lgammaf(k as f32 + 1.0);
 //     let lgamma_rpk = lgammaf(r + k as f32);
 //     return negbin_logpmf_fast(r, lgamma_r, lgamma_rpk, p, k, k_ln_factorial);
 // }
+
+
 
 
 // const SQRT2: f32 = 1.4142135623730951_f32;

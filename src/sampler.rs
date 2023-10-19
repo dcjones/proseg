@@ -16,6 +16,7 @@ use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
+    normal_pdf,
     studentt_logpdf_part, lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
 };
@@ -1035,9 +1036,9 @@ where
         );
 
         self.sample_background_rates(priors, params);
-        if params.t > 0 {
+        // if params.t > 0 {
             self.sample_transcript_positions(priors, params, transcripts);
-        }
+        // }
     }
 
     fn sample_background_counts(
@@ -1478,7 +1479,7 @@ where
         let σ2 = priors.diffusion_sigma.powi(2);
 
         // TODO: make this an argument
-        let df = 2.0;
+        let df = 0.1;
 
         // accept/reject proposals
         // let t0 = Instant::now();
@@ -1509,8 +1510,12 @@ where
                 let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
                 let mut δ = 0.0;
-                δ -= studentt_logpdf_part(σ2, df, sq_dist_prev);
-                δ += studentt_logpdf_part(σ2, df, sq_dist_new);
+                // δ -= studentt_logpdf_part(σ2, df, sq_dist_prev);
+                // δ += studentt_logpdf_part(σ2, df, sq_dist_new);
+
+                let ρ = 0.75;
+                δ -= (ρ * normal_pdf(8.0, sq_dist_prev) + (1.0 - ρ) * normal_pdf(80.0, sq_dist_prev)).ln();
+                δ += (ρ * normal_pdf(8.0, sq_dist_new) + (1.0 - ρ) * normal_pdf(80.0, sq_dist_new)).ln();
 
                 δ -= -0.5 * (z_sq_dist_prev / σ_z2);
                 δ += -0.5 * (z_sq_dist_new / σ_z2);
