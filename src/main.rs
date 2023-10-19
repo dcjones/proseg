@@ -80,7 +80,7 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
     #[arg(long, default_value_t = 10)]
@@ -89,7 +89,7 @@ struct Args {
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[500, 500])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 500])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[20, 20, 20])]
@@ -126,10 +126,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
 
-    #[arg(long, default_value_t = 50.0)]
+    #[arg(long, default_value_t = 20.0)]
     diffusion_sigma: f32,
 
-    #[arg(long, default_value_t = 20.0)]
+    #[arg(long, default_value_t = 10.0)]
     diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
