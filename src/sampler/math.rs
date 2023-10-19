@@ -11,6 +11,12 @@ pub fn lfact(k: u32) -> f32 {
     return lgammaf(k as f32 + 1.0);
 }
 
+// Partial Student-T log-pdf (just the terms that don't cancel out when doing MH sampling)
+pub fn studentt_logpdf_part(σ2: f32, df: f32, x2: f32) -> f32 {
+    return -((df + 1.0) / 2.0) * ((x2 / σ2) / df).ln_1p();
+}
+
+
 // pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
 //     let k_ln_factorial = lgammaf(k as f32 + 1.0);
 //     let lgamma_rpk = lgammaf(r + k as f32);

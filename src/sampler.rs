@@ -11,12 +11,12 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::{lgammaf, log1pf, log};
+use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
-    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
+    studentt_logpdf_part, lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
@@ -32,7 +32,7 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-use std::time::Instant;
+// use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -127,9 +127,6 @@ pub struct ModelParams {
     // [ntranscripts]
     transcript_density: Array1<f32>,
 
-    // [ngenes]
-    total_transcript_density: Array1<f32>,
-
     z0: f32,
     layer_depth: f32,
 
@@ -210,7 +207,6 @@ impl ModelParams {
         layer_depth: f32,
         transcripts: &Vec<Transcript>,
         transcript_density: &Array1<f32>,
-        total_transcript_density: &Array1<f32>,
         init_cell_assignments: &Vec<u32>,
         init_cell_population: &Vec<usize>,
         ncomponents: usize,
@@ -281,7 +277,6 @@ impl ModelParams {
             component_volume,
             full_layer_volume,
             transcript_density: transcript_density.clone(),
-            total_transcript_density: total_transcript_density.clone(),
             z0,
             layer_depth,
             isbackground,
@@ -380,10 +375,9 @@ impl ModelParams {
                 // iterate over genes
                 let part = Zip::from(λ)
                         .and(cs.outer_iter())
-                        .and(self.λ_bg.outer_iter())
-                        .fold(0_f32, |accum, λ, cs, λ_bg| {
+                        .fold(0_f32, |accum, λ, cs| {
                             accum
-                                + Zip::from(cs).and(λ_bg).fold(0_f32, |accum, &c, &λ_bg| {
+                                + Zip::from(cs).fold(0_f32, |accum, &c| {
                                     if c > 0 {
                                         // accum + (c as f32) * (λ + λ_bg).ln()
                                         accum + (c as f32) * λ.ln()
@@ -1041,7 +1035,9 @@ where
         );
 
         self.sample_background_rates(priors, params);
-        self.sample_transcript_positions(priors, params, transcripts);
+        if params.t > 0 {
+            self.sample_transcript_positions(priors, params, transcripts);
+        }
     }
 
     fn sample_background_counts(
@@ -1307,8 +1303,7 @@ where
 
         Zip::from(params.λ_bg.rows_mut())
             .and(params.background_counts.rows())
-            .and(&params.total_transcript_density)
-            .for_each(|λs, cs, total_density| {
+            .for_each(|λs, cs| {
                 Zip::from(λs).and(cs).for_each(|λ, c| {
                     let α = priors.α_bg + *c as f32;
                     let β = priors.β_bg + params.full_layer_volume;
@@ -1460,8 +1455,6 @@ where
     {
         // TODO: make these arguments
         // probability of proposing repositioning
-        let p_repo_proposal = 0.5_f32;
-        let p_repo_prior = 0.1_f32;
         let σ_z_proposal = 0.1 * (priors.zmax - priors.zmin);
         let σ_z = 0.05_f32 * (priors.zmax - priors.zmin);
         let σ_z2 = σ_z.powi(2);
@@ -1474,25 +1467,18 @@ where
             .zip(&params.transcript_positions)
             .for_each(|(proposed_position, current_position)| {
                 let mut rng = thread_rng();
-                if rng.gen::<f32>() < p_repo_proposal {
-                    *proposed_position = (
-                        current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        // current_position.2,
-                        (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
-                    );
-                } else {
-                    *proposed_position = *current_position;
-                }
+                *proposed_position = (
+                    current_position.0 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.1 + σ_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                );
             });
         // println!("  Generate transcript position proposals: {:?}", t0.elapsed());
 
         let σ2 = priors.diffusion_sigma.powi(2);
-        // fn dist_log_pdf(sq_dist: f32, σ2: f32) -> f32 {
-        //     let σ2_b = (0.5_f32).powi(2);
-        //     let τ = 0.25_f32;
-        //     return (τ * (-0.5 * (sq_dist / σ2)).exp() / σ2.sqrt() + (1.0 - τ) * (-0.5 * (sq_dist / σ2_b)).exp() / σ2_b.sqrt()).ln()
-        // }
+
+        // TODO: make this an argument
+        let df = 2.0;
 
         // accept/reject proposals
         // let t0 = Instant::now();
@@ -1523,24 +1509,11 @@ where
                 let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
                 let mut δ = 0.0;
-                if sq_dist_prev == 0.0 {
-                    δ -= (1.0 - p_repo_prior).ln();
-                } else {
-                    δ -= p_repo_prior.ln();
-                    δ -= -0.5 * (sq_dist_prev / σ2);
-                    δ -= -0.5 * (z_sq_dist_prev / σ_z2);
-                }
-                if sq_dist_new == 0.0 {
-                    δ += (1.0 - p_repo_prior).ln();
-                } else {
-                    δ += p_repo_prior.ln();
-                    δ += -0.5 * (sq_dist_new / σ2);
-                    δ += -0.5 * (z_sq_dist_new / σ_z2);
-                }
+                δ -= studentt_logpdf_part(σ2, df, sq_dist_prev);
+                δ += studentt_logpdf_part(σ2, df, sq_dist_new);
 
-                // let logprob_dist_diff = -0.5 * (sq_dist_new / σ2) - -0.5 * (sq_dist_prev / σ2);
-                // let logprob_dist_diff = dist_log_pdf(sq_dist_new, σ2) - dist_log_pdf(sq_dist_prev, σ2);
-                // let mut δ = logprob_dist_diff;
+                δ -= -0.5 * (z_sq_dist_prev / σ_z2);
+                δ += -0.5 * (z_sq_dist_new / σ_z2);
 
                 let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;

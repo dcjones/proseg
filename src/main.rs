@@ -111,7 +111,7 @@ struct Args {
     #[arg(long, default_value_t = 0.5_f32)]
     foreground_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 1.5_f32)]
+    #[arg(long, default_value_t = 1.3_f32)]
     perimeter_bound: f32,
 
     #[arg(long, default_value_t = 5e-2_f32)]
@@ -356,7 +356,7 @@ fn main() {
         zspan = 1.0;
     }
 
-    let (mut transcript_density, total_transcript_density) = estimate_transcript_density(
+    let (mut transcript_density, _total_transcript_density) = estimate_transcript_density(
         &transcripts,
         ngenes,
         layer_depth,
@@ -445,7 +445,6 @@ fn main() {
         layer_depth,
         &transcripts,
         &transcript_density,
-        &total_transcript_density,
         &init_cell_assignments,
         &init_cell_population,
         args.ncomponents,
