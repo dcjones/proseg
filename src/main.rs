@@ -75,8 +75,6 @@ struct Args {
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
-    // TODO: resets for xenium and cosmx
-
     #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
@@ -86,18 +84,7 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     nlayers: usize,
 
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
-
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[500, 500])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 500])]
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
-
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[10])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40])]
-    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[80, 80, 80])]
     schedule: Vec<usize>,
 
     #[arg(short = 't', long, default_value=None)]
@@ -118,6 +105,9 @@ struct Args {
     #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
 
+    // TODO: We need a microns-per-pixel argument. We have a bunch of priors
+    // that are basically assuming microns.
+
     #[arg(long, default_value_t = 4.0_f32)]
     scale: f32,
 
@@ -127,11 +117,17 @@ struct Args {
     #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
 
-    #[arg(long, default_value_t = 10.0)]
-    diffusion_sigma: f32,
+    #[arg(long, default_value_t = 0.25)]
+    diffusion_probability: f32,
 
     #[arg(long, default_value_t = 80.0)]
     diffusion_proposal_sigma: f32,
+
+    #[arg(long, default_value_t = 8.0)]
+    diffusion_sigma_near: f32,
+
+    #[arg(long, default_value_t = 80.0)]
+    diffusion_sigma_far: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
     density_binsize: f32,
@@ -144,6 +140,9 @@ struct Args {
 
     #[arg(long, default_value_t = 1e-2)]
     density_eps: f32,
+
+    #[arg(long, default_value_t = false)]
+    variable_burnin_dispersion: bool,
 
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
@@ -409,6 +408,7 @@ fn main() {
 
     let priors = ModelPriors {
         dispersion: args.dispersion,
+        burnin_dispersion: if args.variable_burnin_dispersion { None } else { Some(10.0) },
 
         min_cell_volume,
 
@@ -434,8 +434,13 @@ fn main() {
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
 
-        // ρ_diffusion: 0.75,
         σ_diffusion_proposal: args.diffusion_proposal_sigma,
+        p_diffusion: args.diffusion_probability,
+        σ_diffusion_near: args.diffusion_sigma_near,
+        σ_diffusion_far: args.diffusion_sigma_far,
+
+        σ_z_diffusion_proposal: 0.1 * zspan,
+        σ_z_diffusion: 0.1 * zspan,
 
         zmin,
         zmax,

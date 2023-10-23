@@ -17,7 +17,7 @@ use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
     normal_pdf,
-    studentt_logpdf_part, lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
+    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
@@ -63,6 +63,7 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
     pub dispersion: Option<f32>,
+    pub burnin_dispersion: Option<f32>,
 
     pub min_cell_volume: f32,
 
@@ -95,10 +96,13 @@ pub struct ModelPriors {
     pub nuclear_reassignment_1mlog_prob: f32,
 
     // mixture between diffusion prior components
-    // pub ρ_diffusion: f32,
+    pub p_diffusion: f32,
     pub σ_diffusion_proposal: f32,
-    // pub σ_diffusion_near: f32,
-    // pub σ_diffusion_far: f32,
+    pub σ_diffusion_near: f32,
+    pub σ_diffusion_far: f32,
+
+    pub σ_z_diffusion_proposal: f32,
+    pub σ_z_diffusion: f32,
 
     // bounds on z coordinate
     pub zmin: f32,
@@ -190,11 +194,6 @@ pub struct ModelParams {
 
     // // log(1 - ods_to_prob(θ))
     // log1mp: Array2<f32>,
-
-    ρ_diffusion: f32,
-    σ_diffusion_near: f32,
-    σ_diffusion_far: f32,
-    diffusion_tick: u32,
 
     // [ngenes, ncells] Poisson rates
     pub λ: Array2<f32>,
@@ -307,10 +306,6 @@ impl ModelParams {
             uv,
             lgamma_r,
             θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
-            ρ_diffusion: 0.75,
-            σ_diffusion_near: 8.0,
-            σ_diffusion_far: 80.0,
-            diffusion_tick: 0,
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
             t: 0,
@@ -1165,17 +1160,11 @@ where
         // Sample r
         // let t0 = Instant::now();
 
-        // if let Some(dispersion) = priors.dispersion {
-        //     params.r.fill(dispersion);
-        //     Zip::from(&params.r)
-        //         .and(&mut params.lgamma_r)
-        //         .and(&mut params.loggammaplus)
-        //         .par_for_each(|r, lgamma_r, loggammaplus| {
-        //             *lgamma_r = lgammaf(*r);
-        //             loggammaplus.reset(*r);
-        //         });
-        if params.t == 0 {
-            params.r.fill(10.0);
+        // TODO: Need some argument to determine dispersion sampling
+        // behavior.
+
+        fn set_constant_dispersion(params: &mut ModelParams, dispersion: f32) {
+            params.r.fill(dispersion);
             Zip::from(&params.r)
                 .and(&mut params.lgamma_r)
                 .and(&mut params.loggammaplus)
@@ -1183,6 +1172,13 @@ where
                     *lgamma_r = lgammaf(*r);
                     loggammaplus.reset(*r);
                 });
+        }
+
+        if let Some(dispersion) = priors.dispersion {
+            set_constant_dispersion(params, dispersion);
+        } else if params.t == 0 && priors.burnin_dispersion.is_some() {
+            let dispersion = priors.burnin_dispersion.unwrap();
+            set_constant_dispersion(params, dispersion);
         } else {
             // for each gene
             params.uv.fill((0_u32, 0_f32));
@@ -1484,16 +1480,6 @@ where
 
     fn propose_eval_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
     {
-        // TODO: make these arguments
-        // probability of proposing repositioning
-        let σ_z_proposal = 0.1 * (priors.zmax - priors.zmin);
-        let σ_z = 0.05_f32 * (priors.zmax - priors.zmin);
-        let σ_z2 = σ_z.powi(2);
-
-        // params.diffusion_tick += 1;
-        // let proposal_rate = (-100.0 / (params.diffusion_tick as f32)).exp();
-        // dbg!(proposal_rate);
-
         // make proposals
         // let t0 = Instant::now();
         params.proposed_transcript_positions
@@ -1501,16 +1487,11 @@ where
             .zip(&params.transcript_positions)
             .for_each(|(proposed_position, current_position)| {
                 let mut rng = thread_rng();
-                // if rng.gen::<f32>() < proposal_rate {
-                    *proposed_position = (
-                        current_position.0 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        current_position.1 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                        (current_position.2 + σ_z_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
-                        // current_position.2,
-                    );
-                // } else {
-                //     *proposed_position = *current_position;
-                // }
+                *proposed_position = (
+                    current_position.0 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    current_position.1 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    (current_position.2 + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                );
             });
         // println!("  Generate transcript position proposals: {:?}", t0.elapsed());
 
@@ -1523,8 +1504,6 @@ where
             .zip(transcripts)
             .enumerate()
             .for_each(|(i, (((accept, position), proposed_position), transcript))| {
-                let mut proposal_logweight = 0.0_f32;
-
                 // Reject out of bounds proposals, to avoid detailed balance
                 // issues.
                 if proposed_position.2 == priors.zmin || proposed_position.2 == priors.zmax {
@@ -1532,6 +1511,7 @@ where
                     return;
                 }
 
+                // Reject nops
                 if proposed_position == position {
                     *accept = false;
                     return;
@@ -1547,31 +1527,14 @@ where
                 let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
                 let mut δ = 0.0;
-                // δ -= studentt_logpdf_part((32.0_f32).powi(2), 10.0, sq_dist_prev);
-                // δ += studentt_logpdf_part((32.0_f32).powi(2), 10.0, sq_dist_new);
 
-                // δ -= normal_pdf(64.0_f32, sq_dist_prev);
-                // δ += normal_pdf(64.0_f32, sq_dist_new);
+                δ -= ((1.0 - priors.p_diffusion) * normal_pdf(priors.σ_diffusion_near, sq_dist_prev) +
+                    priors.p_diffusion * normal_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();
+                δ += ((1.0 - priors.p_diffusion) * normal_pdf(priors.σ_diffusion_near, sq_dist_new) +
+                    priors.p_diffusion * normal_pdf(priors.σ_diffusion_far, sq_dist_new)).ln();
 
-                // if sq_dist_prev == 0.0 {
-                //     δ -= (0.9_f32).ln();
-                // } else {
-                //     δ -= (1.0 - 0.9_f32).ln();
-                // }
-
-                // if sq_dist_new == 0.0 {
-                //     δ += (0.9_f32).ln();
-                // } else {
-                //     δ += (1.0 - 0.9_f32).ln();
-                // }
-
-                δ -= (params.ρ_diffusion * normal_pdf(params.σ_diffusion_near, sq_dist_prev) +
-                    (1.0 - params.ρ_diffusion) * normal_pdf(params.σ_diffusion_far, sq_dist_prev)).ln();
-                δ += (params.ρ_diffusion * normal_pdf(params.σ_diffusion_near, sq_dist_new) +
-                    (1.0 - params.ρ_diffusion) * normal_pdf(params.σ_diffusion_far, sq_dist_new)).ln();
-
-                δ -= -0.5 * (z_sq_dist_prev / σ_z2);
-                δ += -0.5 * (z_sq_dist_new / σ_z2);
+                δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
+                δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));
 
                 let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;
@@ -1594,21 +1557,6 @@ where
                     params.λ[[gene, cell_new as usize]]
                 } + density * params.λ_bg[[gene, layer_new]];
 
-
-                // TODO: What if I dissalow moves within the same cell
-                // if cell_new == cell_prev {
-                //     *accept = false;
-                //     return;
-                // }
-
-                // TODO: what if we disaalow moves from or to unoccpied regions.
-                // Obviously this is fucking dumb. My motivation is to allow
-                // transcript repo from the start, but also prevent the situation
-                // if cell_new == BACKGROUND_CELL {
-                //     *accept = false;
-                //     return;
-                // }
-
                 let ln_λ_diff = λ_new.ln() - λ_prev.ln();
                 δ += ln_λ_diff;
 
@@ -1629,28 +1577,7 @@ where
 
                 let mut rng = thread_rng();
                 let logu = rng.gen::<f32>().ln();
-                *accept = logu < δ + proposal_logweight;
-
-                // dbg!(
-                //     *accept,
-                //     δ,
-                //     cell_prev,
-                //     cell_new,
-                //     sq_dist_prev,
-                //     sq_dist_new,
-                // );
-
-                // *accept &= (cell_new != BACKGROUND_CELL) & (cell_prev != BACKGROUND_CELL);
-
-                // Still negative
-                // *accept &= cell_new != BACKGROUND_CELL;
-
-                // TODO: Positive ll change with this restriction.
-                // *accept &= cell_prev != BACKGROUND_CELL;
-
-                // if *accept && cell_prev != BACKGROUND_CELL && cell_new == BACKGROUND_CELL {
-                //     dbg!(logu, δ, logprob_dist_diff, ln_λ_diff);
-                // }
+                *accept = logu < δ;
             });
         // println!("  Eval transcript position proposals: {:?}", t0.elapsed());
     }
@@ -1706,71 +1633,5 @@ where
             });
 
         self.update_transcript_positions(&params.accept_proposed_transcript_positions, &params.transcript_positions);
-        // dbg!(accept_rate as f32 / transcripts.len() as f32);
-        // dbg!(accept_to_background_rate as f32 / transcripts.len() as f32);
-        // dbg!(accept_from_background_rate as f32 / transcripts.len() as f32);
-        // dbg!(accept_intracell_rate as f32 / transcripts.len() as f32);
-        // dbg!(accept_intercell_rate as f32 / transcripts.len() as f32);
-
-        // self.sample_diffusion_params(priors, params, transcripts);
-    }
-
-    fn sample_diffusion_params(&self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
-        let mut sample_var_far: f32 = 0.0;
-        let mut n_far = 0;
-        let mut sample_var_near: f32 = 0.0;
-        let mut n_near = 0;
-        let mut rng = thread_rng();
-        params.transcript_positions
-            .iter()
-            .zip(transcripts)
-            .for_each(|(position, transcript)| {
-                let sq_dist =
-                    (position.0 - transcript.x).powi(2) +
-                    (position.1 - transcript.y).powi(2);
-
-                let p_near = params.ρ_diffusion * normal_pdf(params.σ_diffusion_near, sq_dist);
-                let p_far = (1.0 - params.ρ_diffusion) * normal_pdf(params.σ_diffusion_far, sq_dist);
-                let isfar = rng.gen::<f32>() < p_far / (p_far + p_near);
-
-                if isfar {
-                    sample_var_far += sq_dist;
-                    n_far += 1;
-                } else {
-                    sample_var_near += sq_dist;
-                    n_near += 1;
-                }
-            });
-
-        params.σ_diffusion_far = Gamma::new(
-                1.0 + (n_far as f32) / 2.0,
-                (1.0 + sample_var_far / 2.0).recip(),
-            )
-            .unwrap()
-            .sample(&mut rng)
-            .recip()
-            .sqrt()
-            .max(params.σ_diffusion_near * 2.0);
-
-        // params.σ_diffusion_near = Gamma::new(
-        //         1.0 + (n_near as f32) / 2.0,
-        //         (1.0 + sample_var_near / 2.0).recip(),
-        //     )
-        //     .unwrap()
-        //     .sample(&mut rng)
-        //     .recip()
-        //     .sqrt();
-
-        // params.ρ_diffusion = Beta::new(
-        //         1.0 + (n_near as f32),
-        //         1.0 + (n_far as f32),
-        //     )
-        //     .unwrap()
-        //     .sample(&mut rng);
-
-        dbg!(n_far as f32 / transcripts.len() as f32);
-        dbg!(params.σ_diffusion_far, (sample_var_far / (n_far as f32)).sqrt());
-        dbg!(params.σ_diffusion_near, (sample_var_near / (n_near as f32)).sqrt());
-        dbg!(params.ρ_diffusion);
     }
 }
