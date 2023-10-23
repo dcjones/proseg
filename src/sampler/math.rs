@@ -19,7 +19,7 @@ pub fn studentt_logpdf_part(σ2: f32, df: f32, x2: f32) -> f32 {
 const SQRT_TWO_PI: f32 = 2.5066282746310002_f32;
 
 pub fn normal_pdf(σ: f32, x2: f32) -> f32 {
-    return (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI).sqrt();
+    return (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI);
 }
 
 

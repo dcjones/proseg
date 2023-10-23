@@ -89,7 +89,8 @@ struct Args {
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150])]
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[500, 500])]
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 500])]
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 500])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[300, 300, 500])]
 
     // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[40, 40, 40])]
@@ -108,7 +109,7 @@ struct Args {
     #[arg(long, default_value_t = 0.1)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 0.5_f32)]
+    #[arg(long, default_value_t = 0.9_f32)]
     foreground_pr_cutoff: f32,
 
     #[arg(long, default_value_t = 1.3_f32)]
@@ -129,7 +130,7 @@ struct Args {
     #[arg(long, default_value_t = 10.0)]
     diffusion_sigma: f32,
 
-    #[arg(long, default_value_t = 20.0)]
+    #[arg(long, default_value_t = 80.0)]
     diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 50.0_f32)]
@@ -226,6 +227,8 @@ fn set_xenium_presets(args: &mut Args) {
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
     // args.dispersion.get_or_insert(40.0);
+    // args.dispersion.get_or_insert(20.0);
+    // args.dispersion.get_or_insert(10.0);
 }
 
 
@@ -431,8 +434,8 @@ fn main() {
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
 
-        diffusion_sigma: args.diffusion_sigma,
-        diffusion_proposal_sigma: args.diffusion_proposal_sigma,
+        // ρ_diffusion: 0.75,
+        σ_diffusion_proposal: args.diffusion_proposal_sigma,
 
         zmin,
         zmax,

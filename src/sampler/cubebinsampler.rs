@@ -500,7 +500,7 @@ impl CubeBinSampler {
         sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
         sampler.populate_mismatches();
-        sampler.update_transcript_positions(&params.transcript_positions);
+        sampler.update_transcript_positions(&vec![true; transcripts.len()], &params.transcript_positions);
 
         return sampler;
     }
@@ -605,7 +605,9 @@ impl CubeBinSampler {
         sampler.recompute_cell_perimeter();
         println!("recompute_cell_perimeter: {:?}", t0.elapsed());
 
-        sampler.update_transcript_positions(&params.transcript_positions);
+        sampler.update_transcript_positions(
+            &vec![true; params.transcript_positions.len()],
+            &params.transcript_positions);
 
         return sampler;
     }
@@ -1191,13 +1193,16 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
         return self.cubecells.get(cubindex);
     }
 
-    fn update_transcript_positions(&mut self, positions: &Vec<(f32, f32, f32)>) {
+    fn update_transcript_positions(&mut self, updated: &Vec<bool>, positions: &Vec<(f32, f32, f32)>) {
         self.transcript_cubes
             .par_iter_mut()
             .zip(positions)
-            .for_each(|(cube, position)| {
-                let position = clip_z_position(*position, self.zmin, self.zmax);
-                *cube = self.chunkquad.layout.world_pos_to_cube(position);
+            .zip(updated)
+            .for_each(|((cube, position), &updated)| {
+                if updated {
+                    let position = clip_z_position(*position, self.zmin, self.zmax);
+                    *cube = self.chunkquad.layout.world_pos_to_cube(position);
+                }
             });
 
         self.transcript_cube_ord
