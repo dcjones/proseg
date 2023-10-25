@@ -679,7 +679,7 @@ impl UncertaintyTracker {
             let layer = params.zlayer(params.transcript_positions[i].2);
             let density = params.transcript_density[i];
 
-            let w_d = d as f32 / params.t as f32;
+            let w_d = d as f32 / (params.t - 1) as f32;
 
             let λ_fg = params.λ[[gene as usize, j as usize]];
             let λ_bg = params.λ_bg[[gene as usize, layer]];
