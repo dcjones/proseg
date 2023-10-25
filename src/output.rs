@@ -348,7 +348,6 @@ pub fn write_gene_metadata(
     transcript_names: &Vec<String>,
     expected_counts: &Array2<f32>,
 ) {
-    // TODO: write per-component dispersion
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),

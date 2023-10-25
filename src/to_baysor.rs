@@ -380,6 +380,7 @@ fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String
 
         // let mut coordinates = JsonValue::new_array();
         let coordinates = polygons[largest_poygon].clone();
+        assert!(!coordinates.is_null());
 
         let mut geometry = JsonValue::new_object();
         geometry.insert("type", "Polygon").unwrap();

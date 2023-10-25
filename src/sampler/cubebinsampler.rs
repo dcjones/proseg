@@ -621,6 +621,7 @@ impl CubeBinSampler {
             }
             params.cell_volume[cell as usize] += self.cubevolume;
         }
+
         for cell_volume in params.cell_volume.iter_mut() {
             *cell_volume = cell_volume.max(priors.min_cell_volume);
         }
@@ -919,30 +920,11 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     proposal.transcripts.push(t);
                 }
 
-                // let transcript_range_start = self.transcript_x_ord
-                //     .partition_point(|&t| params.transcript_positions[t].0 < x0);
-
-                // proposal.transcripts.clear();
-                // for &t in self.transcript_x_ord[transcript_range_start..].iter() {
-                //     let pos = params.transcript_positions[t];
-                //     let pos = clip_z_position(pos, self.zmin, self.zmax);
-
-                //     if pos.0 >= x1 {
-                //         break;
-                //     }
-
-                //     if y0 <= pos.1 && pos.1 < y1 && z0 <= pos.2 && pos.2 < z1 {
-                //         proposal.transcripts.push(t);
-                //     }
-                // }
-
-                let i_pop = proposal.transcripts.len();
-
-                // Don't propose removing the last transcript from a cell. (This is
+                // Don't propose removing the last voxel from a cell. (This is
                 // breaks the markov chain balance, since there's no path back to the previous state.)
                 //
                 // We could allow this if we introduce a spontaneous nucleation move.
-                if !from_unassigned && params.cell_population[cell_from as usize] == i_pop {
+                if !from_unassigned && params.cell_volume[cell_from as usize] - self.cubevolume < priors.min_cell_volume {
                     proposal.ignore = true;
                     return;
                 }
