@@ -96,6 +96,7 @@ pub struct ModelPriors {
     pub nuclear_reassignment_1mlog_prob: f32,
 
     // mixture between diffusion prior components
+    pub use_diffusion_model: bool,
     pub p_diffusion: f32,
     pub σ_diffusion_proposal: f32,
     pub σ_diffusion_near: f32,
@@ -1048,7 +1049,7 @@ where
         }
 
         self.sample_background_rates(priors, params);
-        if params.t > 0 {
+        if params.t > 0 && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts);
         }
     }

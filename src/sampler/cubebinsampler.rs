@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::sync::{Arc, Mutex};
-use std::cmp::{Ord, Ordering, PartialOrd};
+use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use thread_local::ThreadLocal;
 
 use std::time::Instant;
@@ -317,7 +317,8 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Ve
             .push(i);
     }
 
-    let cubebins = cube_index.values().cloned().collect::<Vec<_>>();
+    let mut cubebins = cube_index.values().cloned().collect::<Vec<_>>();
+    cubebins.sort_unstable_by_key(|cubebin| cubebin.cube);
 
     return (layout, cubebins);
 }
@@ -338,9 +339,11 @@ fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &Vec<CellIndex>) 
             }
         }
 
+        // Need to break ties deterministically here, otherwise
+        // weird bugs emerge.
         let winner = cube_assignments
             .iter()
-            .max_by_key(|(_, count)| *count)
+            .max_by_key(|(cell, count)| (*count, *cell))
             .map(|(cell, _)| *cell)
             .unwrap_or(BACKGROUND_CELL);
 
@@ -623,6 +626,7 @@ impl CubeBinSampler {
         }
 
         for cell_volume in params.cell_volume.iter_mut() {
+            assert!(*cell_volume > 0.0);
             *cell_volume = cell_volume.max(priors.min_cell_volume);
         }
     }
@@ -1402,6 +1406,7 @@ impl Proposal for CubeBinProposal {
     }
 }
 
+
 // We need to exclude cells that can't be initalized with a non-zero number of voxels.
 pub fn filter_sparse_cells(
     scale: f32,
@@ -1420,12 +1425,14 @@ pub fn filter_sparse_cells(
         }
     }
 
-    for cell_id in cell_assignments.iter_mut() {
-        if *cell_id != BACKGROUND_CELL {
-            if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
-                *cell_id = *new_cell_id;
-            } else {
-                *cell_id = BACKGROUND_CELL;
+    if used_cell_ids.len() != cell_population.len() {
+        for cell_id in cell_assignments.iter_mut() {
+            if *cell_id != BACKGROUND_CELL {
+                if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
+                    *cell_id = *new_cell_id;
+                } else {
+                    *cell_id = BACKGROUND_CELL;
+                }
             }
         }
     }

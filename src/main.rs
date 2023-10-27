@@ -117,6 +117,9 @@ struct Args {
     #[arg(long, default_value_t = false)]
     calibrate_scale: bool,
 
+    #[arg(long, default_value_t = false)]
+    no_diffusion: bool,
+
     #[arg(long, default_value_t = 0.25)]
     diffusion_probability: f32,
 
@@ -271,7 +274,7 @@ fn main() {
         return arg.expect(&format!("Missing required argument: --{}", argname));
     }
 
-    let (transcript_names, transcripts, mut init_cell_assignments, mut init_cell_population) =
+    let (transcript_names, mut transcripts, mut init_cell_assignments, mut init_cell_population) =
         read_transcripts_csv(
             &args.transcript_csv,
             &expect_arg(args.transcript_column, "transcript-column"),
@@ -293,6 +296,16 @@ fn main() {
     let mut ncells = init_cell_population.len();
     loop {
         let prev_ncells = ncells;
+
+        let (filtered_transcripts, filtered_init_cell_assignments) = filter_cellfree_transcripts(
+            &transcripts,
+            &init_cell_assignments,
+            ncells,
+            args.max_transcript_nucleus_distance,
+        );
+        transcripts.clone_from(&filtered_transcripts);
+        init_cell_assignments.clone_from(&filtered_init_cell_assignments);
+
         filter_sparse_cells(
             args.scale,
             &transcripts,
@@ -307,14 +320,6 @@ fn main() {
 
     let ngenes = transcript_names.len();
     let ncells = init_cell_population.len();
-
-    let (mut transcripts, init_cell_assignments) = filter_cellfree_transcripts(
-        &transcripts,
-        &init_cell_assignments,
-        ncells,
-        args.max_transcript_nucleus_distance,
-    );
-
     let ntranscripts = transcripts.len();
 
     let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
@@ -434,6 +439,7 @@ fn main() {
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
 
+        use_diffusion_model: !args.no_diffusion,
         σ_diffusion_proposal: args.diffusion_proposal_sigma,
         p_diffusion: args.diffusion_probability,
         σ_diffusion_near: args.diffusion_sigma_near,
