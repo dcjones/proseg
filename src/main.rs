@@ -99,7 +99,7 @@ struct Args {
     #[arg(long, default_value_t = 0.1)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 0.25_f32)]
+    #[arg(long, default_value_t = 0.9)]
     foreground_pr_cutoff: f32,
 
     #[arg(long, default_value_t = 1.4_f32)]
@@ -126,7 +126,7 @@ struct Args {
     #[arg(long, default_value_t = 0.25)]
     diffusion_probability: f32,
 
-    #[arg(long, default_value_t = 80.0)]
+    #[arg(long, default_value_t = 20.0)]
     diffusion_proposal_sigma: f32,
 
     #[arg(long, default_value_t = 8.0)]
@@ -156,7 +156,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 
-    #[arg(long, default_value = "counts.csv.gz")]
+    #[arg(long, default_value = None)]
     output_counts: Option<String>,
 
     #[arg(long, default_value = None)]
@@ -174,16 +174,16 @@ struct Args {
     #[arg(long, default_value = None)]
     output_expected_counts_fmt: Option<String>,
 
-    #[arg(long, default_value = "cells.geojson.gz")]
+    #[arg(long, default_value = None)]
     output_cell_hulls: Option<String>,
 
-    #[arg(long, default_value = "cell_metadata.csv.gz")]
+    #[arg(long, default_value = "cell-metadata.csv.gz")]
     output_cell_metadata: Option<String>,
 
     #[arg(long, default_value = None)]
     output_cell_metadata_fmt: Option<String>,
 
-    #[arg(long, default_value=None)]
+    #[arg(long, default_value = "transcript-metadata.csv.gz")]
     output_transcript_metadata: Option<String>,
 
     #[arg(long, default_value=None)]
@@ -201,7 +201,7 @@ struct Args {
     #[arg(long, default_value=None)]
     output_cell_cubes_fmt: Option<String>,
 
-    #[arg(long, default_value=None)]
+    #[arg(long, default_value="cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
 
     #[arg(long, default_value=None)]
