@@ -84,8 +84,11 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     nlayers: usize,
 
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 250])]
+    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
     schedule: Vec<usize>,
+
+    #[arg(long, default_value_t=100)]
+    recorded_samples: usize,
 
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
@@ -96,7 +99,7 @@ struct Args {
     #[arg(long, default_value_t = 0.1)]
     count_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 0.9_f32)]
+    #[arg(long, default_value_t = 0.25_f32)]
     foreground_pr_cutoff: f32,
 
     #[arg(long, default_value_t = 1.4_f32)]
@@ -266,6 +269,10 @@ fn main() {
 
     if args.cosmx {
         set_cosmx_presets(&mut args);
+    }
+
+    if args.recorded_samples > *args.schedule.last().unwrap() {
+        panic!("recorded-samples must be <= the last entry in the schedule");
     }
 
     assert!(args.ncomponents > 0);
@@ -541,7 +548,22 @@ fn main() {
         &priors,
         &mut params,
         &transcripts,
-        args.schedule[args.schedule.len() - 1],
+        *args.schedule.last().unwrap() - args.recorded_samples,
+        args.local_steps_per_iter,
+        None,
+        &mut total_steps,
+        &args.monitor_cell_polygons,
+        args.monitor_cell_polygons_freq,
+        true,
+    );
+
+    run_hexbin_sampler(
+        &mut prog,
+        sampler.get_mut(),
+        &priors,
+        &mut params,
+        &transcripts,
+        args.recorded_samples,
         args.local_steps_per_iter,
         Some(&mut uncertainty),
         &mut total_steps,
@@ -641,7 +663,7 @@ fn run_hexbin_sampler(
     monitor_cell_polygons_freq: usize,
     sample_cell_regions: bool,
 ) {
-    sampler.sample_global_params(priors, params, transcripts);
+    sampler.sample_global_params(priors, params, transcripts, &mut uncertainty);
     let mut proposal_stats = ProposalStats::new();
 
     for _ in 0..niter {
@@ -659,7 +681,7 @@ fn run_hexbin_sampler(
             // println!("Sample cell regions: {:?}", t0.elapsed());
         }
         // let t0 = std::time::Instant::now();
-        sampler.sample_global_params(priors, params, transcripts);
+        sampler.sample_global_params(priors, params, transcripts, &mut uncertainty);
         // println!("Sample parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();

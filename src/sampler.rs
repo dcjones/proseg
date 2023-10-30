@@ -578,6 +578,14 @@ impl UncertaintyTracker {
             .or_insert(duration);
     }
 
+    fn update_assignment(&mut self, params: &ModelParams, i: usize, cell: CellIndex) {
+        let duration = params.t - params.cell_assignment_time[i];
+        self.cell_assignment_duration
+            .entry((i, cell))
+            .and_modify(|d| *d += duration)
+            .or_insert(duration);
+    }
+
     pub fn finish(&mut self, params: &ModelParams) {
         for ((i, &j), &t) in params
             .cell_assignments
@@ -997,6 +1005,7 @@ where
         priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
+        uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
         let mut rng = thread_rng();
 
@@ -1050,7 +1059,7 @@ where
 
         self.sample_background_rates(priors, params);
         if params.t > 0 && priors.use_diffusion_model {
-            self.sample_transcript_positions(priors, params, transcripts);
+            self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
     }
 
@@ -1583,7 +1592,11 @@ where
         // println!("  Eval transcript position proposals: {:?}", t0.elapsed());
     }
 
-    fn sample_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
+    fn sample_transcript_positions(
+        &mut self, priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+        uncertainty: &mut Option<&mut UncertaintyTracker>)
     {
         self.propose_eval_transcript_positions(priors, params, transcripts);
 
@@ -1592,7 +1605,7 @@ where
             .par_iter_mut()
             .zip(&mut params.transcript_positions)
             .zip(&params.proposed_transcript_positions)
-            .zip(&mut params.cell_assignments)
+            .zip(&params.cell_assignments)
             .zip(&params.accept_proposed_transcript_positions)
             .for_each(|((((update, position), proposed_position), cell_prev), &accept)| {
                 if accept {
@@ -1607,7 +1620,6 @@ where
 
                     *update = (*cell_prev, cell_new, layer_prev as u32, layer_new as u32);
                     *position = *proposed_position;
-                    *cell_prev = cell_new;
                 }
             });
 
@@ -1616,7 +1628,10 @@ where
             .iter()
             .zip(transcripts)
             .zip(&params.accept_proposed_transcript_positions)
-            .for_each(|((update, transcript), &accept)| {
+            .zip(&mut params.cell_assignments)
+            .zip(&mut params.cell_assignment_time)
+            .enumerate()
+            .for_each(|(i, ((((update, transcript), &accept), cell_assignment), cell_assignment_time))| {
                 let (cell_prev, cell_new, layer_prev, layer_new) = *update;
                 if accept {
                     let gene = transcript.gene as usize;
@@ -1629,6 +1644,21 @@ where
                     if cell_new != BACKGROUND_CELL {
                         params.counts[[gene, cell_new as usize, layer_new as usize]] += 1;
                         params.cell_population[cell_new as usize] += 1;
+                    }
+
+                    if cell_prev != cell_new {
+                        // annoying borrowing bullshit
+                        // uncertainty.update_assignment(params, i, cell_new);
+                        if let Some(uncertainty) = uncertainty.as_mut() {
+                            let duration = params.t - *cell_assignment_time;
+                            uncertainty.cell_assignment_duration
+                                .entry((i, cell_prev))
+                                .and_modify(|d| *d += duration)
+                                .or_insert(duration);
+                        }
+
+                        *cell_assignment = cell_new;
+                        *cell_assignment_time = params.t;
                     }
                 }
             });
