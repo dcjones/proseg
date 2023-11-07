@@ -155,8 +155,11 @@ where
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
     let mut transcript_names = Vec::new();
     let mut cell_assignments = Vec::new();
+    let mut fovs = Vec::new();
 
+    let mut fov_map: HashMap<String, u32> = HashMap::new();
     let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
+
 
     for result in rdr.records() {
         let row = result.unwrap();
@@ -172,7 +175,14 @@ where
         }
 
         let fov = if let Some(fov_col) = fov_col {
-            row[fov_col].parse::<u32>().unwrap()
+            match fov_map.get(&row[fov_col]) {
+                Some(fov) => *fov,
+                None => {
+                    let next_fov = fov_map.len();
+                    fov_map.insert(row[fov_col].to_string(), next_fov as u32);
+                    next_fov as u32
+                }
+            }
         } else {
             0
         };
@@ -204,6 +214,8 @@ where
             gene: gene as u32,
         });
 
+        fovs.push(fov);
+
         let cell_id_str = &row[cell_id_col];
         let compartment = &row[compartment_col];
         // let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
@@ -226,6 +238,10 @@ where
         }
     }
 
+    // per-fov zscore normalization of z coordinate.
+    // TODO: make this an option
+    // normalize_z_coord(&mut transcripts, fovs);
+
     // Sort on x for better memory locality (This doesn't actually seem to make any difference)
     // let mut ord = (0..transcripts.len())
     //     .collect::<Vec<_>>();
@@ -242,6 +258,39 @@ where
         cell_population,
     );
 }
+
+
+// pub fn normalize_z_coord(transcripts: &mut Vec<Transcript>, fovs: Vec<u32>) {
+//     let nfovs = (*fovs.iter().max().unwrap() + 1) as usize;
+//     let mut z_mean = vec![0.0; nfovs];
+//     let mut fov_pop = vec![0; nfovs];
+//     for (transcript, fov) in transcripts.iter().zip(fovs.iter()) {
+//         z_mean[*fov as usize] += transcript.z;
+//         fov_pop[*fov as usize] += 1;
+//     }
+
+//     for (fov, &pop) in fov_pop.iter().enumerate() {
+//         if pop > 0 {
+//             z_mean[fov] /= pop as f32;
+//         }
+//     }
+
+//     let mut z_std = vec![0.0; nfovs];
+//     for (transcript, fov) in transcripts.iter().zip(fovs.iter()) {
+//         z_std[*fov as usize] += (transcript.z - z_mean[*fov as usize]).powi(2);
+//     }
+
+//     for (fov, &pop) in fov_pop.iter().enumerate() {
+//         if pop > 0 {
+//             z_std[fov] = (z_std[fov] / pop as f32).sqrt();
+//         }
+//     }
+
+//     for (transcript, fov) in transcripts.iter_mut().zip(fovs.iter()) {
+//         transcript.z = (transcript.z - z_mean[*fov as usize]) / z_std[*fov as usize];
+//     }
+// }
+
 
 pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
