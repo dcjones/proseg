@@ -108,6 +108,9 @@ struct Args {
     #[arg(long, default_value_t = 5e-2_f32)]
     nuclear_reassignment_prob: f32,
 
+    #[arg(long, default_value_t = 5e-1_f32)]
+    prior_seg_reassignment_prob: f32,
+
     // TODO: We need a microns-per-pixel argument. We have a bunch of priors
     // that are basically assuming microns.
 
@@ -281,7 +284,11 @@ fn main() {
         return arg.expect(&format!("Missing required argument: --{}", argname));
     }
 
-    let (transcript_names, mut transcripts, mut init_cell_assignments, mut init_cell_population) =
+    let (transcript_names,
+         mut transcripts,
+         mut nucleus_assignments,
+         mut cell_assignments,
+         mut nucleus_population) =
         read_transcripts_csv(
             &args.transcript_csv,
             &expect_arg(args.transcript_column, "transcript-column"),
@@ -300,36 +307,39 @@ fn main() {
         );
 
     // keep removing cells until we can initialize with every cell having at least one voxel
-    let mut ncells = init_cell_population.len();
+    let mut ncells = nucleus_population.len();
     loop {
         let prev_ncells = ncells;
 
-        let (filtered_transcripts, filtered_init_cell_assignments) = filter_cellfree_transcripts(
+        let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
             &transcripts,
-            &init_cell_assignments,
+            &nucleus_assignments,
+            &cell_assignments,
             ncells,
             args.max_transcript_nucleus_distance,
         );
         transcripts.clone_from(&filtered_transcripts);
-        init_cell_assignments.clone_from(&filtered_init_cell_assignments);
+        nucleus_assignments.clone_from(&filtered_nucleus_assignments);
+        cell_assignments.clone_from(&filtered_cell_assignments);
 
         filter_sparse_cells(
             args.scale,
             &transcripts,
-            &mut init_cell_assignments,
-            &mut init_cell_population,
+            &mut nucleus_assignments,
+            &mut cell_assignments,
+            &mut nucleus_population,
         );
-        ncells = init_cell_population.len();
+        ncells = nucleus_population.len();
         if ncells == prev_ncells {
             break;
         }
     }
 
     let ngenes = transcript_names.len();
-    let ncells = init_cell_population.len();
+    let ncells = nucleus_population.len();
     let ntranscripts = transcripts.len();
 
-    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &init_cell_assignments);
+    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &nucleus_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
         / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
 
@@ -446,6 +456,9 @@ fn main() {
         nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
         nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
 
+        prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
+        prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
+
         use_diffusion_model: !args.no_diffusion,
         σ_diffusion_proposal: args.diffusion_proposal_sigma,
         p_diffusion: args.diffusion_probability,
@@ -466,8 +479,9 @@ fn main() {
         layer_depth,
         &transcripts,
         &transcript_density,
-        &init_cell_assignments,
-        &init_cell_population,
+        &nucleus_assignments,
+        &nucleus_population,
+        &cell_assignments,
         args.ncomponents,
         args.nlayers,
         ncells,

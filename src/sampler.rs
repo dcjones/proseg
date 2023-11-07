@@ -95,6 +95,9 @@ pub struct ModelPriors {
     pub nuclear_reassignment_log_prob: f32,
     pub nuclear_reassignment_1mlog_prob: f32,
 
+    pub prior_seg_reassignment_log_prob: f32,
+    pub prior_seg_reassignment_1mlog_prob: f32,
+
     // mixture between diffusion prior components
     pub use_diffusion_model: bool,
     pub p_diffusion: f32,
@@ -118,6 +121,7 @@ pub struct ModelParams {
     transcript_position_updates: Vec<(u32, u32, u32, u32)>,
 
     init_nuclear_cell_assignment: Vec<CellIndex>,
+    prior_seg_cell_assignment: Vec<CellIndex>,
 
     pub cell_assignments: Vec<CellIndex>,
     pub cell_assignment_time: Vec<u32>,
@@ -218,6 +222,7 @@ impl ModelParams {
         transcript_density: &Array1<f32>,
         init_cell_assignments: &Vec<u32>,
         init_cell_population: &Vec<usize>,
+        prior_seg_cell_assignment: &Vec<u32>,
         ncomponents: usize,
         nlayers: usize,
         ncells: usize,
@@ -279,6 +284,7 @@ impl ModelParams {
             accept_proposed_transcript_positions,
             transcript_position_updates,
             init_nuclear_cell_assignment: init_cell_assignments.clone(),
+            prior_seg_cell_assignment: prior_seg_cell_assignment.clone(),
             cell_assignments: init_cell_assignments.clone(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
@@ -418,6 +424,17 @@ impl ModelParams {
                     accum
                 }
             });
+
+        // prior seg reassignment terms
+        ll += Zip::from(&self.cell_assignments)
+            .and(&self.prior_seg_cell_assignment)
+            .fold(0_f32, |accum, &cell, &nuc_cell| {
+                    if cell == nuc_cell {
+                        accum + priors.prior_seg_reassignment_1mlog_prob
+                    } else {
+                        accum + priors.prior_seg_reassignment_log_prob
+                    }
+                });
 
         // cell volume terms
         ll += Zip::from(&self.cell_volume)
@@ -762,6 +779,21 @@ pub trait Proposal {
                 } else {
                     δ += priors.nuclear_reassignment_log_prob;
                 }
+            }
+        }
+
+        for &t in self.transcripts() {
+            let cell = params.prior_seg_cell_assignment[t];
+            if cell == old_cell {
+                δ -= priors.prior_seg_reassignment_1mlog_prob;
+            } else {
+                δ -= priors.prior_seg_reassignment_log_prob;
+            }
+
+            if cell == new_cell {
+                δ += priors.prior_seg_reassignment_1mlog_prob;
+            } else {
+                δ += priors.prior_seg_reassignment_log_prob;
             }
         }
 
@@ -1583,6 +1615,19 @@ where
                     } else {
                         δ += priors.nuclear_reassignment_log_prob;
                     }
+                }
+
+                let cell_prior = params.prior_seg_cell_assignment[i];
+                if cell_prior == cell_prev {
+                    δ -= priors.prior_seg_reassignment_1mlog_prob;
+                } else {
+                    δ -= priors.prior_seg_reassignment_log_prob;
+                }
+
+                if cell_prior == cell_new {
+                    δ += priors.prior_seg_reassignment_1mlog_prob;
+                } else {
+                    δ += priors.prior_seg_reassignment_log_prob;
                 }
 
                 let mut rng = thread_rng();

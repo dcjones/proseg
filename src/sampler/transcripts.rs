@@ -36,7 +36,7 @@ pub fn read_transcripts_csv(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
-) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>) {
+) -> (Vec<String>, Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>, Vec<usize>) {
 
     let fmt = determine_format(path, &None);
 
@@ -91,13 +91,25 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
+fn postprocess_cell_assignments(nucleus_assignments: &mut Vec<CellIndex>, cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
     // reassign cell ids to exclude anything that no initial transcripts assigned
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
+    for &cell_id in nucleus_assignments.iter() {
+        if cell_id != BACKGROUND_CELL {
+            let next_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids.entry(cell_id).or_insert(next_id);
+        }
+    }
     for &cell_id in cell_assignments.iter() {
         if cell_id != BACKGROUND_CELL {
             let next_id = used_cell_ids.len() as CellIndex;
             used_cell_ids.entry(cell_id).or_insert(next_id);
+        }
+    }
+
+    for cell_id in nucleus_assignments.iter_mut() {
+        if *cell_id != BACKGROUND_CELL {
+            *cell_id = *used_cell_ids.get(cell_id).unwrap();
         }
     }
 
@@ -109,14 +121,14 @@ fn postprocess_cell_assignments(cell_assignments: &mut Vec<CellIndex>) -> Vec<us
 
     let ncells = used_cell_ids.len();
 
-    let mut cell_population = vec![0; ncells];
-    for &cell_id in cell_assignments.iter() {
+    let mut nucleus_population = vec![0; ncells];
+    for &cell_id in nucleus_assignments.iter() {
         if cell_id != BACKGROUND_CELL {
-            cell_population[cell_id as usize] += 1;
+            nucleus_population[cell_id as usize] += 1;
         }
     }
 
-    return cell_population;
+    return nucleus_population;
 }
 
 fn read_transcripts_csv_xyz<T>(
@@ -134,7 +146,7 @@ fn read_transcripts_csv_xyz<T>(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
-) -> (Vec<String>, Vec<Transcript>, Vec<u32>, Vec<usize>)
+) -> (Vec<String>, Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>, Vec<usize>)
 where
     T: std::io::Read,
 {
@@ -154,6 +166,7 @@ where
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
     let mut transcript_names = Vec::new();
+    let mut nucleus_assignments = Vec::new();
     let mut cell_assignments = Vec::new();
     let mut fovs = Vec::new();
 
@@ -223,6 +236,7 @@ where
         // Earlier version of Xenium used numeric cell ids and -1 for unassigned.
         // Newer versions use alphanumeric hash codes and "UNASSIGNED" for unasssigned.
         if cell_id_str == cell_id_unassigned {
+            nucleus_assignments.push(BACKGROUND_CELL);
             cell_assignments.push(BACKGROUND_CELL);
         } else {
             let next_cell_id = cell_id_map.len() as CellIndex;
@@ -231,10 +245,11 @@ where
                 .or_insert_with(|| next_cell_id);
 
             if compartment == compartment_nuclear {
-                cell_assignments.push(cell_id);
+                nucleus_assignments.push(cell_id);
             } else {
-                cell_assignments.push(BACKGROUND_CELL);
+                nucleus_assignments.push(BACKGROUND_CELL);
             }
+            cell_assignments.push(cell_id);
         }
     }
 
@@ -249,13 +264,16 @@ where
     // let transcripts = ord.iter().map(|&i| transcripts[i]).collect::<Vec<_>>();
     // let mut cell_assignments = ord.iter().map(|&i| cell_assignments[i]).collect::<Vec<_>>();
 
-    let cell_population = postprocess_cell_assignments(&mut cell_assignments);
+    let nucleus_population = postprocess_cell_assignments(
+        &mut nucleus_assignments,
+        &mut cell_assignments);
 
     return (
         transcript_names,
         transcripts,
+        nucleus_assignments,
         cell_assignments,
-        cell_population,
+        nucleus_population,
     );
 }
 
@@ -374,13 +392,14 @@ pub fn estimate_cell_centroids(
 
 pub fn filter_cellfree_transcripts(
     transcripts: &Vec<Transcript>,
-    init_cell_assignments: &Vec<CellIndex>,
+    nucleus_assignments: &Vec<CellIndex>,
+    cell_assignments: &Vec<CellIndex>,
     ncells: usize,
     max_distance: f32,
-) -> (Vec<Transcript>, Vec<CellIndex>) {
+) -> (Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>) {
     let max_distance_squared = max_distance * max_distance;
 
-    let centroids = estimate_cell_centroids(transcripts, init_cell_assignments, ncells);
+    let centroids = estimate_cell_centroids(transcripts, nucleus_assignments, ncells);
     let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
     for (i, (x, y)) in centroids.iter().enumerate() {
         if !x.is_finite() || !y.is_finite() {
@@ -405,7 +424,14 @@ pub fn filter_cellfree_transcripts(
         .map(|(t, _)| t)
         .cloned()
         .collect::<Vec<_>>();
-    let filtered_cell_assignments = init_cell_assignments
+    let filtered_nucleus_assignments = nucleus_assignments
+        .iter()
+        .zip(mask.iter())
+        .filter(|(_, &m)| m)
+        .map(|(t, _)| t)
+        .cloned()
+        .collect::<Vec<_>>();
+    let filtered_cell_assignments = cell_assignments
         .iter()
         .zip(mask.iter())
         .filter(|(_, &m)| m)
@@ -413,5 +439,5 @@ pub fn filter_cellfree_transcripts(
         .cloned()
         .collect::<Vec<_>>();
 
-    return (filtered_transcripts, filtered_cell_assignments);
+    return (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments);
 }

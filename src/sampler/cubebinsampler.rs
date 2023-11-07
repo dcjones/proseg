@@ -1411,11 +1411,12 @@ impl Proposal for CubeBinProposal {
 pub fn filter_sparse_cells(
     scale: f32,
     transcripts: &Vec<Transcript>,
+    nucleus_assignments: &mut Vec<CellIndex>,
     cell_assignments: &mut Vec<CellIndex>,
-    cell_population: &mut Vec<usize>,
+    nucleus_population: &mut Vec<usize>,
 ) {
     let (_, cubebins) = bin_transcripts(transcripts, scale);
-    let cubecells = cube_assignments(&cubebins, &cell_assignments);
+    let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
 
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for (_, cell_id) in cubecells.iter() {
@@ -1425,7 +1426,16 @@ pub fn filter_sparse_cells(
         }
     }
 
-    if used_cell_ids.len() != cell_population.len() {
+    if used_cell_ids.len() != nucleus_population.len() {
+        for cell_id in nucleus_assignments.iter_mut() {
+            if *cell_id != BACKGROUND_CELL {
+                if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
+                    *cell_id = *new_cell_id;
+                } else {
+                    *cell_id = BACKGROUND_CELL;
+                }
+            }
+        }
         for cell_id in cell_assignments.iter_mut() {
             if *cell_id != BACKGROUND_CELL {
                 if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
@@ -1437,11 +1447,11 @@ pub fn filter_sparse_cells(
         }
     }
 
-    cell_population.resize(used_cell_ids.len(), 0);
-    cell_population.fill(0);
-    for cell_id in cell_assignments.iter() {
+    nucleus_population.resize(used_cell_ids.len(), 0);
+    nucleus_population.fill(0);
+    for cell_id in nucleus_assignments.iter() {
         if *cell_id != BACKGROUND_CELL {
-            cell_population[*cell_id as usize] += 1;
+            nucleus_population[*cell_id as usize] += 1;
         }
     }
 }
