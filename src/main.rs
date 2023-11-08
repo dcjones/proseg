@@ -84,6 +84,9 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     nlayers: usize,
 
+    #[arg(long, default_value_t = 8)]
+    voxellayers: usize,
+
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
     schedule: Vec<usize>,
 
@@ -204,7 +207,8 @@ struct Args {
     #[arg(long, default_value=None)]
     output_cell_cubes_fmt: Option<String>,
 
-    #[arg(long, default_value="cell-polygons.geojson.gz")]
+    // #[arg(long, default_value="cell-polygons.geojson.gz")]
+    #[arg(long, default_value=None)]
     output_cell_polygons: Option<String>,
 
     #[arg(long, default_value=None)]
@@ -306,6 +310,22 @@ fn main() {
             args.ignore_z_coord,
         );
 
+    // Clamp transcript depth
+    // This is we get some reasonable depth slices when we step up to
+    // 3d sampling.
+    let zs: Vec<f32> = transcripts
+        .iter()
+        .map(|t| t.z)
+        .sorted_by(|a, b| a.partial_cmp(b).unwrap())
+        .collect();
+
+    let (q0, q1) = (0.01, 0.99);
+    let zmin = zs[(q0 * (zs.len() as f32)) as usize];
+    let zmax = zs[(q1 * (zs.len() as f32)) as usize];
+    for t in &mut transcripts {
+        t.z = t.z.max(zmin).min(zmax);
+    }
+
     // keep removing cells until we can initialize with every cell having at least one voxel
     let mut ncells = nucleus_population.len();
     loop {
@@ -324,6 +344,7 @@ fn main() {
 
         filter_sparse_cells(
             args.scale,
+            args.voxellayers,
             &transcripts,
             &mut nucleus_assignments,
             &mut cell_assignments,
@@ -347,22 +368,6 @@ fn main() {
     let mut scale = args.scale;
     if args.calibrate_scale {
         scale = 0.5 * mean_nucleus_area.sqrt();
-    }
-
-    // Clamp transcript depth
-    // This is we get some reasonable depth slices when we step up to
-    // 3d sampling.
-    let zs: Vec<f32> = transcripts
-        .iter()
-        .map(|t| t.z)
-        .sorted_by(|a, b| a.partial_cmp(b).unwrap())
-        .collect();
-
-    let (q0, q1) = (0.01, 0.99);
-    let zmin = zs[(q0 * (zs.len() as f32)) as usize];
-    let zmax = zs[(q1 * (zs.len() as f32)) as usize];
-    for t in &mut transcripts {
-        t.z = t.z.max(zmin).min(zmax);
     }
 
     let mut layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
@@ -504,6 +509,7 @@ fn main() {
         &transcripts,
         transcript_density,
         ngenes,
+        args.voxellayers,
         args.nlayers,
         zmin,
         layer_depth,
@@ -611,30 +617,35 @@ fn main() {
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
 
+    dbg!("A");
     write_expected_counts(
         &args.output_expected_counts,
         &args.output_expected_counts_fmt,
         &transcript_names,
         &ecounts,
     );
+    dbg!("B");
     write_counts(
         &args.output_counts,
         &args.output_counts_fmt,
         &transcript_names,
         &counts,
     );
+    dbg!("C");
     write_rates(
         &args.output_rates,
         &args.output_rates_fmt,
         &params,
         &transcript_names,
     );
+    dbg!("D");
     write_cell_metadata(
         &args.output_cell_metadata,
         &args.output_cell_metadata_fmt,
         &params,
         &cell_centroids,
     );
+    dbg!("E");
     write_transcript_metadata(
         &args.output_transcript_metadata,
         &args.output_transcript_metadata_fmt,
@@ -643,6 +654,7 @@ fn main() {
         &transcript_names,
         &cell_assignments,
     );
+    dbg!("F");
     write_gene_metadata(
         &args.output_gene_metadata,
         &args.output_gene_metadata_fmt,
@@ -650,12 +662,15 @@ fn main() {
         &transcript_names,
         &ecounts,
     );
+    dbg!("G");
     write_cubes(
         &args.output_cell_cubes,
         &args.output_cell_cubes_fmt,
         &sampler.borrow(),
     );
+    dbg!("H");
     write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
+    dbg!("I");
     write_cell_layered_multipolygons(&args.output_cell_polygon_layers, &sampler.borrow());
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {

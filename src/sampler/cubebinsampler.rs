@@ -127,16 +127,25 @@ impl Cube {
         .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
 
-    fn double_resolution_children(&self) -> [Cube; 8] {
+    // fn double_resolution_children(&self) -> [Cube; 8] {
+    //     return [
+    //         Cube::new(2 * self.i, 2 * self.j, 2 * self.k),
+    //         Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
+    //         Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
+    //         Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
+    //         Cube::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
+    //         Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
+    //         Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
+    //         Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
+    //     ];
+    // }
+
+    fn double_resolution_children(&self) -> [Cube; 4] {
         return [
-            Cube::new(2 * self.i, 2 * self.j, 2 * self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
-            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
-            Cube::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
-            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
-            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
-            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
+            Cube::new(2 * self.i, 2 * self.j, self.k),
+            Cube::new(2 * self.i + 1, 2 * self.j, self.k),
+            Cube::new(2 * self.i, 2 * self.j + 1, self.k),
+            Cube::new(2 * self.i + 1, 2 * self.j + 1, self.k),
         ];
     }
 
@@ -170,7 +179,8 @@ impl CubeLayout {
             cube_size: (
                 self.cube_size.0 / 2.0,
                 self.cube_size.1 / 2.0,
-                self.cube_size.2 / 2.0,
+                // self.cube_size.2 / 2.0,
+                self.cube_size.2,
             ),
         };
     }
@@ -286,7 +296,7 @@ impl CubeCellMap {
 }
 
 // Initial binning of the transcripts
-fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Vec<CubeBin>) {
+fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32, zlayers: usize) -> (CubeLayout, Vec<CubeBin>) {
     let (_, _, _, _, zmin, zmax) = coordinate_span(&transcripts);
 
     let mut height = zmax - zmin;
@@ -294,10 +304,12 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32) -> (CubeLayout, Ve
         height = 1.0;
     }
 
+    let voxel_height = height / zlayers as f32;
+
     let cube_size = scale;
     let layout = CubeLayout {
         origin: (0.0, 0.0, zmin),
-        cube_size: (cube_size, cube_size, height),
+        cube_size: (cube_size, cube_size, voxel_height),
     };
 
     // Bin transcripts into CubeBins
@@ -395,6 +407,7 @@ impl CubeBinSampler {
         transcripts: &Vec<Transcript>,
         density: Array1<f32>,
         ngenes: usize,
+        voxellayers: usize,
         nlayers: usize,
         z0: f32,
         layer_depth: f32,
@@ -406,7 +419,8 @@ impl CubeBinSampler {
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        let (layout, cubebins) = bin_transcripts(transcripts, scale);
+        dbg!(transcripts.len(), scale, voxellayers);
+        let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
         let transcript_layers = transcripts
@@ -417,6 +431,9 @@ impl CubeBinSampler {
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
 
+        dbg!(&layout);
+        dbg!(cubevolume);
+
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chunks in mismatch_edges.iter_mut() {
@@ -426,7 +443,18 @@ impl CubeBinSampler {
         }
 
         // initial cube assignments
+        dbg!(params.cell_assignments.len());
         let cubecells = cube_assignments(&cubebins, &params.cell_assignments);
+
+        // TODO: debugging
+        let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
+        for (_, cell_id) in cubecells.iter() {
+            if *cell_id != BACKGROUND_CELL {
+                let next_id = used_cell_ids.len() as CellIndex;
+                used_cell_ids.entry(*cell_id).or_insert(next_id);
+            }
+        }
+        dbg!(used_cell_ids.len());
 
         // build index
         let mut cubeindex = HashMap::new();
@@ -460,7 +488,7 @@ impl CubeBinSampler {
 
         let transcript_x_ord: Vec<usize> = (0..transcripts.len()).collect();
 
-        let nzbins = 1;
+        let nzbins = voxellayers;
         let cell_population = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
         let cell_perimeter = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
 
@@ -517,7 +545,7 @@ impl CubeBinSampler {
     pub fn double_resolution(&self, params: &ModelParams) -> CubeBinSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.shape()[0];
-        let cubevolume = self.cubevolume / 8.0;
+        let cubevolume = self.cubevolume / 4.0;
         let layout = self.chunkquad.layout.double_resolution();
 
         let proposals = vec![CubeBinProposal::new(ngenes, self.nlayers); nchunks];
@@ -1410,12 +1438,16 @@ impl Proposal for CubeBinProposal {
 // We need to exclude cells that can't be initalized with a non-zero number of voxels.
 pub fn filter_sparse_cells(
     scale: f32,
+    voxellayers: usize,
     transcripts: &Vec<Transcript>,
     nucleus_assignments: &mut Vec<CellIndex>,
     cell_assignments: &mut Vec<CellIndex>,
     nucleus_population: &mut Vec<usize>,
 ) {
-    let (_, cubebins) = bin_transcripts(transcripts, scale);
+    let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
+
+    dbg!(&layout);
+    dbg!(nucleus_assignments.len());
     let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
 
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
@@ -1446,6 +1478,8 @@ pub fn filter_sparse_cells(
             }
         }
     }
+
+    dbg!(used_cell_ids.len(), nucleus_population.len());
 
     nucleus_population.resize(used_cell_ids.len(), 0);
     nucleus_population.fill(0);
