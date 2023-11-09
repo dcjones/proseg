@@ -617,35 +617,30 @@ fn main() {
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
 
-    dbg!("A");
     write_expected_counts(
         &args.output_expected_counts,
         &args.output_expected_counts_fmt,
         &transcript_names,
         &ecounts,
     );
-    dbg!("B");
     write_counts(
         &args.output_counts,
         &args.output_counts_fmt,
         &transcript_names,
         &counts,
     );
-    dbg!("C");
     write_rates(
         &args.output_rates,
         &args.output_rates_fmt,
         &params,
         &transcript_names,
     );
-    dbg!("D");
     write_cell_metadata(
         &args.output_cell_metadata,
         &args.output_cell_metadata_fmt,
         &params,
         &cell_centroids,
     );
-    dbg!("E");
     write_transcript_metadata(
         &args.output_transcript_metadata,
         &args.output_transcript_metadata_fmt,
@@ -654,7 +649,6 @@ fn main() {
         &transcript_names,
         &cell_assignments,
     );
-    dbg!("F");
     write_gene_metadata(
         &args.output_gene_metadata,
         &args.output_gene_metadata_fmt,
@@ -662,15 +656,12 @@ fn main() {
         &transcript_names,
         &ecounts,
     );
-    dbg!("G");
     write_cubes(
         &args.output_cell_cubes,
         &args.output_cell_cubes_fmt,
         &sampler.borrow(),
     );
-    dbg!("H");
     write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
-    dbg!("I");
     write_cell_layered_multipolygons(&args.output_cell_polygon_layers, &sampler.borrow());
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
@@ -696,6 +687,8 @@ fn run_hexbin_sampler(
     let mut proposal_stats = ProposalStats::new();
 
     for _ in 0..niter {
+        // sampler.check_perimeter_bounds(priors);
+
         if sample_cell_regions {
             // let t0 = std::time::Instant::now();
             for _ in 0..local_steps_per_iter {

@@ -9,7 +9,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::algorithm::simplify::Simplify;
 use geo::BooleanOps;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -385,16 +385,15 @@ pub struct CubeBinSampler {
 
     // need to track the per z-layer cell population and perimeter in order
     // to implement perimeter constraints.
-    nzbins: usize,
-    cell_population: Array2<f32>, // [nzbins, ncells]
-    cell_perimeter: Array2<f32>,  // [nzbins, ncells]
+    voxellayers: usize,
+    cell_population: Array2<f32>, // [voxellayers, ncells]
+    cell_perimeter: Array2<f32>,  // [voxellayers, ncells]
 
     proposals: Vec<CubeBinProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
 
     zmin: f32,
     zmax: f32,
-    nvoxel_layers: usize,
 
     cubevolume: f32,
     quad: usize,
@@ -419,7 +418,6 @@ impl CubeBinSampler {
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        dbg!(transcripts.len(), scale, voxellayers);
         let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
@@ -431,9 +429,6 @@ impl CubeBinSampler {
         assert!(layout.cube_size.0 == layout.cube_size.1);
         let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
 
-        dbg!(&layout);
-        dbg!(cubevolume);
-
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chunks in mismatch_edges.iter_mut() {
@@ -443,7 +438,6 @@ impl CubeBinSampler {
         }
 
         // initial cube assignments
-        dbg!(params.cell_assignments.len());
         let cubecells = cube_assignments(&cubebins, &params.cell_assignments);
 
         // TODO: debugging
@@ -454,7 +448,6 @@ impl CubeBinSampler {
                 used_cell_ids.entry(*cell_id).or_insert(next_id);
             }
         }
-        dbg!(used_cell_ids.len());
 
         // build index
         let mut cubeindex = HashMap::new();
@@ -488,9 +481,8 @@ impl CubeBinSampler {
 
         let transcript_x_ord: Vec<usize> = (0..transcripts.len()).collect();
 
-        let nzbins = voxellayers;
-        let cell_population = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((nzbins, params.ncells()), 0.0_f32);
+        let cell_population = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
 
         let proposals = vec![CubeBinProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -515,14 +507,13 @@ impl CubeBinSampler {
             mismatch_edges,
             transcript_x_ord,
             cubecells,
-            nzbins,
+            voxellayers,
             cell_population,
             cell_perimeter,
             proposals,
             connectivity_checker,
             zmin,
             zmax,
-            nvoxel_layers: 1,
             cubevolume,
             quad: 0,
         };
@@ -588,9 +579,8 @@ impl CubeBinSampler {
             }
         }
 
-        let nzbins = 2 * self.nzbins;
-        let cell_population = Array2::from_elem((nzbins, self.cell_population.shape()[1]), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((nzbins, self.cell_perimeter.shape()[1]), 0.0_f32);
+        let cell_population = Array2::from_elem((self.voxellayers, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((self.voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -609,14 +599,13 @@ impl CubeBinSampler {
             mismatch_edges,
             transcript_x_ord: self.transcript_x_ord.clone(),
             cubecells,
-            nzbins,
+            voxellayers: self.voxellayers,
             cell_population,
             cell_perimeter,
             proposals,
             connectivity_checker,
             zmin: self.zmin,
             zmax: self.zmax,
-            nvoxel_layers: 2 * self.nvoxel_layers,
             cubevolume,
             quad: 0,
         };
@@ -694,7 +683,7 @@ impl CubeBinSampler {
             let (chunk, quad) = self.chunkquad.get(cube);
             for neighbor in cube.von_neumann_neighborhood() {
                 // don't consider neighbors that are out of bounds on the z-axis
-                if neighbor.k < 0 || neighbor.k >= self.nzbins as i32 {
+                if neighbor.k < 0 || neighbor.k >= self.voxellayers as i32 {
                     continue;
                 }
 
@@ -782,6 +771,19 @@ impl CubeBinSampler {
             .collect();
 
         return cell_polys;
+    }
+
+    pub fn check_perimeter_bounds(&self, priors: &ModelPriors) {
+        let mut count = 0;
+        Zip::from(&self.cell_perimeter)
+            .and(&self.cell_population)
+            .for_each(|&perimiter, &pop| {
+                let bound = perimeter_bound(priors.perimeter_eta, priors.perimeter_bound, pop);
+                if perimiter > bound {
+                    count += 1;
+                }
+            });
+        println!("perimeter bound violations: {}", count);
     }
 
     pub fn check_consistency(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -968,7 +970,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .von_neumann_neighborhood()
                     .iter()
                     .filter(|&&j| {
-                        j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_to
+                        j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_to
                     })
                     .count();
 
@@ -976,7 +978,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .von_neumann_neighborhood()
                     .iter()
                     .filter(|&&j| {
-                        j.inbounds(self.nvoxel_layers) && self.cubecells.get(j) == cell_from
+                        j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_from
                     })
                     .count();
 
@@ -1058,24 +1060,41 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // reject in advance if the perimeter for this layer surpases
                 // the limit.
-                if cell_from != BACKGROUND_CELL && proposal.old_cell_perimeter_delta > 0.0 {
+                if cell_from != BACKGROUND_CELL {
+                    let prev_bound = perimeter_bound(
+                        priors.perimeter_eta,
+                        priors.perimeter_bound,
+                        self.cell_population[[i.k as usize, cell_from as usize]]);
+                    let prev_bound_ratio = self.cell_perimeter[[i.k as usize, cell_from as usize]] / prev_bound;
+
                     let old_cell_perimeter = self.cell_perimeter
                         [[i.k as usize, cell_from as usize]]
                         + proposal.old_cell_perimeter_delta;
                     let pop = self.cell_population[[i.k as usize, cell_from as usize]] - 1.0;
                     let bound = perimeter_bound(priors.perimeter_eta, priors.perimeter_bound, pop);
-                    if old_cell_perimeter > bound {
+                    let bound_ratio = old_cell_perimeter / bound;
+
+                    // if we violate the perimiter bound, and make things worse, reject
+                    if old_cell_perimeter > bound && bound_ratio > prev_bound_ratio {
                         proposal.ignore = true;
                         return;
                     }
                 }
 
-                if cell_to != BACKGROUND_CELL && proposal.new_cell_perimeter_delta > 0.0 {
+                if cell_to != BACKGROUND_CELL {
+                    let prev_bound = perimeter_bound(
+                        priors.perimeter_eta,
+                        priors.perimeter_bound,
+                        self.cell_population[[i.k as usize, cell_to as usize]]);
+                    let prev_bound_ratio = self.cell_perimeter[[i.k as usize, cell_to as usize]] / prev_bound;
+
                     let new_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_to as usize]]
                         + proposal.new_cell_perimeter_delta;
                     let pop = self.cell_population[[i.k as usize, cell_to as usize]] + 1.0;
                     let bound = perimeter_bound(priors.perimeter_eta, priors.perimeter_bound, pop);
-                    if new_cell_perimeter > bound {
+                    let bound_ratio = new_cell_perimeter / bound;
+
+                    if new_cell_perimeter > bound && bound_ratio > prev_bound_ratio {
                         proposal.ignore = true;
                         return;
                     }
@@ -1158,7 +1177,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // update mismatch edges
                 for neighbor in proposal.cube.von_neumann_neighborhood() {
-                    if neighbor.k < 0 || neighbor.k >= self.nzbins as i32 {
+                    if neighbor.k < 0 || neighbor.k >= self.voxellayers as i32 {
                         continue;
                     }
 
@@ -1445,9 +1464,6 @@ pub fn filter_sparse_cells(
     nucleus_population: &mut Vec<usize>,
 ) {
     let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
-
-    dbg!(&layout);
-    dbg!(nucleus_assignments.len());
     let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
 
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
@@ -1478,8 +1494,6 @@ pub fn filter_sparse_cells(
             }
         }
     }
-
-    dbg!(used_cell_ids.len(), nucleus_population.len());
 
     nucleus_population.resize(used_cell_ids.len(), 0);
     nucleus_population.fill(0);
