@@ -5,6 +5,7 @@ pub mod hull;
 mod math;
 mod sampleset;
 pub mod transcripts;
+mod polyagamma;
 
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
