@@ -20,6 +20,8 @@ use std::cell::RefCell;
 
 use output::*;
 
+use sampler::polyagamma::PolyaGamma;
+
 #[derive(Parser, Debug)]
 #[command(name = "proseg")]
 #[command(author = "Daniel C. Jones")]
@@ -51,10 +53,10 @@ struct Args {
     #[arg(short, long, default_value = None)]
     z_column: Option<String>,
 
-    #[arg(short, long, default_value = None)]
+    #[arg(long, default_value = None)]
     compartment_column: Option<String>,
 
-    #[arg(short, long, default_value = None)]
+    #[arg(long, default_value = None)]
     compartment_nuclear: Option<String>,
 
     #[arg(long, default_value = None)]
@@ -264,6 +266,19 @@ fn set_cosmx_presets(args: &mut Args) {
 
 
 fn main() {
+    // // TODO: Just testing PG sampling
+    // {
+    //     let mut rng = rand::thread_rng();
+    //     let pg = PolyaGamma::new(200.0, 20.0);
+    //     let mut rs = Vec::new();
+    //     for _ in 0..1000 {
+    //         rs.push(pg.sample(&mut rng));
+    //     }
+    //     dbg!(rs);
+    //     dbg!(pg.mean());
+    //     dbg!(pg.var());
+    // }
+
     let mut args = Args::parse();
 
     if args.xenium && args.cosmx {

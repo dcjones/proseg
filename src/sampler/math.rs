@@ -3,6 +3,14 @@ use libm::lgammaf;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 
+pub fn logit(p: f32) -> f32 {
+    return p.ln() - (1.0 - p).ln();
+}
+
+pub fn logistic(x: f32) -> f32 {
+    return 1.0 / (1.0 + (-x).exp());
+}
+
 pub fn relerr(a: f32, b: f32) -> f32 {
     return ((a - b) / a).abs();
 }

@@ -306,7 +306,7 @@ where Exp1: Distribution<T>
             x = b + rng.sample::<T, Exp1>(Exp1) / c0;
             let threshold = amin1 * x.ln() - x * one_minus_c0 - log_m;
 
-            if (-T::from(rng.gen::<f32>()).unwrap()).ln() <= threshold {
+            if (-T::from(rng.gen::<f32>()).unwrap()).ln_1p() <= threshold {
                 break;
             }
         }
@@ -319,7 +319,7 @@ where Exp1: Distribution<T>
         let mut x = T::zero();
         loop {
             x = 1.0 + rng.sample::<T, Exp1>(Exp1) / tb;
-            if (-T::from(rng.gen::<f32>()).unwrap()).ln() <= amin1 * x.ln() {
+            if (-T::from(rng.gen::<f32>()).unwrap()).ln_1p() <= amin1 * x.ln() {
                 break;
             }
         }

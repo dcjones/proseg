@@ -12,7 +12,7 @@ mod saddlepoint;
 use saddlepoint::sample_polyagamma_saddlepoint;
 
 
-struct PolyaGamma<T: Float> {
+pub struct PolyaGamma<T: Float> {
     h: T,
     z: T,
 }
@@ -30,7 +30,7 @@ where
     Standard: Distribution<T>,
     Exp1: Distribution<T>,
 {
-    fn new(h: T, z: T) -> Self {
+    pub fn new(h: T, z: T) -> Self {
         if h.is_sign_negative() {
             panic!("b must be non-negative")
         }
@@ -41,7 +41,7 @@ where
     }
 
     #[replace_float_literals(T::from(literal).unwrap())]
-    fn mean(&self) -> T {
+    pub fn mean(&self) -> T {
         if self.z == T::zero() {
             return self.h / 4.0;
         } else {
@@ -50,7 +50,7 @@ where
     }
 
     #[replace_float_literals(T::from(literal).unwrap())]
-    fn var(&self) -> T {
+    pub fn var(&self) -> T {
         if self.z == T::zero() {
             return self.h / 24.0;
         } else if self.z.sinh().is_infinite() {
@@ -94,3 +94,14 @@ where
 }
 
 
+#[test]
+fn try_pg_sampler() {
+
+    let mut rng = rand::thread_rng();
+    let pg = PolyaGamma::new(2.0, 2.0);
+    let mut rs = Vec::new();
+    for _ in 0..1000 {
+        rs.push(pg.sample(&mut rng));
+    }
+    dbg!(rs);
+}

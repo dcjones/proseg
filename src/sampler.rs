@@ -5,7 +5,7 @@ pub mod hull;
 mod math;
 mod sampleset;
 pub mod transcripts;
-mod polyagamma;
+pub mod polyagamma;
 
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
@@ -17,7 +17,7 @@ use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
-    normal_pdf,
+    logistic, normal_pdf,
     lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
     LogGammaPlus,
 };
@@ -34,7 +34,9 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-// use std::time::Instant;
+use crate::sampler::polyagamma::PolyaGamma;
+
+use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -183,6 +185,16 @@ pub struct ModelParams {
     // Prior on NB dispersion parameters
     h: f32,
 
+    // [ncells, ngenes] Polya-gamma samples, used for sampling NB rates
+    ω: Array2<f32>,
+
+    // [ncomponents, ngenes] NB logit(p) parameters
+    φ: Array2<f32>,
+
+    // [ncomponents, ngenes] Parameters for sampling φ
+    μ_φ: Array2<f32>,
+    σ_φ: Array2<f32>,
+
     // [ncomponents, ngenes] NB r parameters.
     pub r: Array2<f32>,
 
@@ -268,6 +280,10 @@ impl ModelParams {
         let uv = Array2::<(u32, f32)>::from_elem((ncomponents, ngenes), (0_u32, 0_f32));
         let lgamma_r = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let loggammaplus = Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
+        let ω = Array2::<f32>::from_elem((ncells, ngenes), 0.0);
+        let φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.1);
+        let μ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
+        let σ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
 
         // // initial component assignments
         // let mut rng = rand::thread_rng();
@@ -310,6 +326,10 @@ impl ModelParams {
             μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             h,
+            ω,
+            φ,
+            μ_φ,
+            σ_φ,
             r,
             uv,
             lgamma_r,
@@ -1173,6 +1193,69 @@ where
                     compc[*component as usize] += c;
                 }
             });
+
+        // Sample ω
+        let t0 = Instant::now();
+        Zip::from(params.ω.rows_mut()) // for every cell
+            .and(params.foreground_counts.axis_iter(Axis(0)))
+            .and(&params.cell_volume)
+            .and(&params.z)
+            .par_for_each(|ωs, cs, v, &z| {
+                let logv = v.ln();
+                let mut rng = thread_rng();
+                Zip::from(cs.axis_iter(Axis(0))) // for every gene
+                    .and(ωs)
+                    .and(params.φ.row(z as usize))
+                    .and(params.r.row(z as usize))
+                    .for_each(|c, ω, φ, &r| {
+                        *ω = PolyaGamma::new(c.sum() as f32 + r, logv + φ).sample(&mut rng);
+                    });
+                });
+        println!("  Sample ω: {:?}", t0.elapsed());
+
+        // Compute parameters to sample φ
+        let t0 = Instant::now();
+        params.μ_φ.fill(0.0);
+        params.σ_φ.fill(0.0);
+        Zip::from(params.ω.rows()) // for every cell
+            .and(params.foreground_counts.axis_iter(Axis(0))) // for each cell
+            .and(&params.cell_volume)
+            .and(&params.z)
+            .for_each(|ωs, cs, v, &z| {
+                let logv = v.ln();
+                Zip::from(params.μ_φ.row_mut(z as usize)) // for every gene
+                    .and(params.σ_φ.row_mut(z as usize))
+                    .and(params.r.row(z as usize))
+                    .and(ωs)
+                    .and(cs.axis_iter(Axis(0)))
+                    .for_each(|μ, σ, &r, &ω, c| {
+                        *σ += ω;
+                        *μ += (c.sum() as f32 - r) / 2.0 - ω * logv;
+                    });
+            });
+
+        Zip::from(&mut params.σ_φ)
+            .for_each(|σ| *σ = (1.0 + *σ).recip());
+
+        Zip::from(&mut params.μ_φ)
+            .and(&params.σ_φ)
+            .for_each(|μ, σ| *μ *= σ);
+        println!("  Compute φ parameters: {:?}", t0.elapsed());
+
+        // Sample φ
+        let t0 = Instant::now();
+        Zip::from(&mut params.φ)
+            .and(&params.μ_φ)
+            .and(&params.σ_φ)
+            .for_each(|φ, μ, σ| {
+                let mut rng = thread_rng();
+                *φ = Normal::new(*μ, *σ).unwrap().sample(&mut rng);
+            });
+        println!("  Sample φ: {:?}", t0.elapsed());
+
+        //     });
+        // Zip::from(&mut params.ω)
+        //     .and(&params.foreground_counts)
 
         // Sample θ
         // let t0 = Instant::now();
