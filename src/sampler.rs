@@ -25,7 +25,7 @@ use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
-use std::cell::RefCell;
+use std::cell::{RefCell, self};
 use std::collections::HashMap;
 use std::f32;
 use std::fs::File;
@@ -204,8 +204,8 @@ pub struct ModelParams {
     // Precomputing lgamma(r)
     lgamma_r: Array2<f32>,
 
-    // [ncomponents, ngenes] NB p parameters.
-    θ: Array2<f32>,
+    // // [ncomponents, ngenes] NB p parameters.
+    // θ: Array2<f32>,
 
     // // log(ods_to_prob(θ))
     // logp: Array2<f32>,
@@ -281,7 +281,7 @@ impl ModelParams {
         let lgamma_r = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let loggammaplus = Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
         let ω = Array2::<f32>::from_elem((ncells, ngenes), 0.0);
-        let φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.1);
+        let φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let μ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let σ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
 
@@ -333,7 +333,7 @@ impl ModelParams {
             r,
             uv,
             lgamma_r,
-            θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
+            // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
             t: 0,
@@ -1209,6 +1209,7 @@ where
                     .and(params.r.row(z as usize))
                     .for_each(|c, ω, φ, &r| {
                         *ω = PolyaGamma::new(c.sum() as f32 + r, logv + φ).sample(&mut rng);
+                        let dist = PolyaGamma::new(c.sum() as f32 + r, logv + φ);
                     });
                 });
         println!("  Sample ω: {:?}", t0.elapsed());
@@ -1247,9 +1248,9 @@ where
         Zip::from(&mut params.φ)
             .and(&params.μ_φ)
             .and(&params.σ_φ)
-            .for_each(|φ, μ, σ| {
+            .for_each(|φ, &μ, &σ| {
                 let mut rng = thread_rng();
-                *φ = Normal::new(*μ, *σ).unwrap().sample(&mut rng);
+                *φ = Normal::new(μ, σ).unwrap().sample(&mut rng);
             });
         println!("  Sample φ: {:?}", t0.elapsed());
 
@@ -1259,21 +1260,21 @@ where
 
         // Sample θ
         // let t0 = Instant::now();
-        Zip::from(params.θ.columns_mut())
-            .and(params.r.columns())
-            .and(params.component_counts.rows())
-            .par_for_each(|θs, rs, cs| {
-                let mut rng = thread_rng();
-                for (θ, &c, &r, &a) in izip!(θs, cs, rs, &params.component_volume) {
-                    *θ = prob_to_odds(
-                        Beta::new(priors.α_θ + c as f32, priors.β_θ + a * r)
-                            .unwrap()
-                            .sample(&mut rng),
-                    );
+        // Zip::from(params.θ.columns_mut())
+        //     .and(params.r.columns())
+        //     .and(params.component_counts.rows())
+        //     .par_for_each(|θs, rs, cs| {
+        //         let mut rng = thread_rng();
+        //         for (θ, &c, &r, &a) in izip!(θs, cs, rs, &params.component_volume) {
+        //             *θ = prob_to_odds(
+        //                 Beta::new(priors.α_θ + c as f32, priors.β_θ + a * r)
+        //                     .unwrap()
+        //                     .sample(&mut rng),
+        //             );
 
-                    // *θ = θ.max(1e-6).min(1e6);
-                }
-            });
+        //             // *θ = θ.max(1e-6).min(1e6);
+        //         }
+        //     });
         // println!("  Sample θ: {:?}", t0.elapsed());
 
         // dbg!(
@@ -1311,14 +1312,14 @@ where
             Zip::from(params.r.columns_mut())
                 .and(params.lgamma_r.columns_mut())
                 .and(params.loggammaplus.columns_mut())
-                .and(params.θ.columns())
+                .and(params.φ.columns())
                 .and(params.foreground_counts.axis_iter(Axis(1)))
                 .and(params.uv.columns_mut())
                 .par_for_each(|
                     rs,
                     lgamma_rs,
                     loggammaplus,
-                    θs,
+                    φs,
                     cs,
                     mut uv|
                 {
@@ -1332,12 +1333,14 @@ where
                             let z = z as usize;
                             let c = c.sum();
                             let r = rs[z];
-                            let θ = θs[z];
+                            let φ = φs[z];
+                            let ψ = φ + vol.ln();
 
                             let uv_z = uv[z];
                             uv[z] = (
                                 uv_z.0 + rand_crt(&mut rng, c, r),
-                                uv_z.1 + log1pf(-odds_to_prob(θ * vol))
+                                // uv_z.1 + log1pf(-odds_to_prob(θ * vol))
+                                uv_z.1 + log1pf(-logistic(ψ))
                             );
 
                             // if uv[z].1.is_infinite() {
@@ -1422,9 +1425,9 @@ where
         // loop over genes
         Zip::from(params.λ.rows_mut())
             .and(params.foreground_counts.axis_iter(Axis(1)))
-            .and(params.θ.columns())
+            .and(params.φ.columns())
             .and(params.r.columns())
-            .par_for_each(|mut λs, cs, θs, rs| {
+            .par_for_each(|mut λs, cs, φs, rs| {
                 let mut rng = thread_rng();
                 // loop over cells
                 for (λ, &z, cs, cell_volume) in
@@ -1433,15 +1436,32 @@ where
                     let z = z as usize;
 
                     let c = cs.sum();
-                    let θ = θs[z];
+                    let φ = φs[z];
+                    // dbg!(φ, φ.exp(), (-φ).exp());
+                    // let ψ = φ + cell_volume.ln();
                     let r = rs[z];
+
+                    let α = r + c as f32;
+                    // let β = (-φ).exp() / cell_volume + 1.0;
+                    let β0 = (-φ).exp();
+                    let β = β0 + cell_volume;
+
+
                     *λ = Gamma::new(
-                        r + c as f32,
-                        θ / (cell_volume * θ + 1.0), // ((cell_area * θ + 1.0) / θ) as f64,
+                        α,
+                        β.recip()
                     )
                     .unwrap()
                     .sample(&mut rng);
                     // .max(1e-14);
+
+                    // if c > 10 {
+                    // // TODO: How far off is than from just count divided by volume?
+                    //     dbg!(
+                    //         *λ,
+                    //         r,
+                    //         c as f32 / *cell_volume, *cell_volume);
+                    // }
 
                     assert!(λ.is_finite());
                 }
@@ -1495,10 +1515,10 @@ where
                     .borrow_mut();
 
                 // loop over components
-                for (zp, π, θs, rs, lgamma_r, loggammaplus, &μ_volume, &σ_volume) in izip!(
+                for (zp, π, φs, rs, lgamma_r, loggammaplus, &μ_volume, &σ_volume) in izip!(
                     z_probs.iter_mut(),
                     &params.π,
-                    params.θ.rows(),
+                    params.φ.rows(),
                     params.r.rows(),
                     params.lgamma_r.rows(),
                     params.loggammaplus.rows(),
@@ -1509,17 +1529,18 @@ where
                     *zp = (*π as f64)
                         * (Zip::from(cs.axis_iter(Axis(0)))
                             .and(rs)
-                            .and(θs)
+                            .and(φs)
                             .and(lgamma_r)
                             .and(loggammaplus)
-                            .fold(0_f32, |accum, cs, &r, θ, &lgamma_r, lgammaplus| {
+                            .fold(0_f32, |accum, cs, &r, φ, &lgamma_r, lgammaplus| {
+                                let ψ = φ + μ_volume.ln();
                                 let c = cs.sum(); // sum counts across layers
                                 accum
                                     + negbin_logpmf_fast(
                                         r,
                                         lgamma_r,
                                         lgammaplus.eval(c),
-                                        odds_to_prob(*θ * cell_volume),
+                                        logistic(ψ),
                                         c,
                                         params.logfactorial.eval(c),
                                     )
