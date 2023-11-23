@@ -1533,7 +1533,7 @@ where
                             .and(lgamma_r)
                             .and(loggammaplus)
                             .fold(0_f32, |accum, cs, &r, φ, &lgamma_r, lgammaplus| {
-                                let ψ = φ + μ_volume.ln();
+                                let ψ = φ + cell_volume.ln();
                                 let c = cs.sum(); // sum counts across layers
                                 accum
                                     + negbin_logpmf_fast(
