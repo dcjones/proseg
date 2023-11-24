@@ -1195,6 +1195,19 @@ where
             });
 
         // Sample ω
+
+        let rmin = params.r.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        let rmax = params.r.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        dbg!(rmin, rmax);
+
+        let φmin = params.φ.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        let φmax = params.φ.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        dbg!(φmin, φmax);
+
+        let vmin = params.cell_volume.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        dbg!(vmin, vmax);
+
         let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0)))
@@ -1209,7 +1222,6 @@ where
                     .and(params.r.row(z as usize))
                     .for_each(|c, ω, φ, &r| {
                         *ω = PolyaGamma::new(c.sum() as f32 + r, logv + φ).sample(&mut rng);
-                        let dist = PolyaGamma::new(c.sum() as f32 + r, logv + φ);
                     });
                 });
         println!("  Sample ω: {:?}", t0.elapsed());
@@ -1376,7 +1388,7 @@ where
 
                             assert!(r.is_finite());
 
-                            // *r = r.min(200.0).max(1e-5);
+                            *r = r.min(200.0).max(1e-5);
 
                             *lgamma_r = lgammaf(*r);
                             loggammaplus.reset(*r);
