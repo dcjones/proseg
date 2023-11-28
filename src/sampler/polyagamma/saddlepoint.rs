@@ -19,11 +19,15 @@ where
 
     let p = (h * (0.5 / pr.xc + pr.left_tangent_intercept - sqrt_rho) +
         invgauss_logcdf(pr.xc, sqrt_rho_inv, h)).exp() + pr.sqrt_alpha;
+    assert!(p.is_finite());
 
     let hrho = -h * pr.right_tangent_slope;
 
-    let q = upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef *
-        (h * (pr.right_tangent_intercept - hrho.ln())).exp();
+    // let q = upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef *
+    //     (h * (pr.right_tangent_intercept - hrho.ln())).exp();
+    let q = ((upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef).ln() +
+        (h * (pr.right_tangent_intercept - hrho.ln()))).exp();
+    assert!(q.is_finite());
 
     let proposal_probability = p / (p + q);
 
@@ -138,9 +142,11 @@ impl<T: Float> Parameters<T> {
         // t = 0 at x = m, since K'(0) = m when t(x) = 0
         let left_tangent_slope = -0.5 * (xl_inv * xl_inv);
         let left_tangent_intercept = cumulant(ul, log_cosh_z) - 0.5 * xc_inv + xl_inv;
+        assert!(left_tangent_intercept.is_finite());
         let logxc = log275 + logxl;
         let right_tangent_slope = -tr - 1. / xr;
         let right_tangent_intercept = cumulant(ur, log_cosh_z) + 1.0 - log3 - logxl + logxc;
+        assert!(right_tangent_intercept.is_finite());
 
         let alpha_r = rv.fprime * (xc_inv * xc_inv);  // K''(t(xc)) / xc^2
         let alpha_l = xc_inv * alpha_r;  // K''(t(xc)) / xc^3

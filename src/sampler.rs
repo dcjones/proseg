@@ -924,6 +924,12 @@ where
     Self: Sync
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
+    fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // get to a reasonably high probability assignment
+        for _ in 0..20 {
+            self.sample_component_nb_params(priors, params);
+        }
+    }
 
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams);
     fn proposals<'a, 'b>(&'a self) -> &'b [P]
@@ -1595,6 +1601,8 @@ where
                 params.μ_volume[z as usize] += volume.ln();
                 params.component_population[z as usize] += 1;
             });
+
+        dbg!(&params.component_population);
 
         // sample μ parameters
         Zip::from(&mut params.μ_volume)

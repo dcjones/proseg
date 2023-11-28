@@ -8,6 +8,7 @@ mod sampler;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
+use rand::Rng;
 use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
 use sampler::density::estimate_transcript_density;
 use sampler::hull::compute_cell_areas;
@@ -269,14 +270,18 @@ fn main() {
     // // TODO: Just testing PG sampling
     // {
     //     let mut rng = rand::thread_rng();
-    //     let pg = PolyaGamma::new(200.0, 20.0);
-    //     let mut rs = Vec::new();
-    //     for _ in 0..1000 {
+    //     // let pg = PolyaGamma::new(1e-6, -80.0);
+    //     let mut rs = Vec::<f32>::new();
+    //     for _ in 0..100000 {
+    //         let pg = PolyaGamma::new(
+    //             rng.gen_range(1e-5..1000.0),
+    //             rng.gen_range(-50.0..50.0));
     //         rs.push(pg.sample(&mut rng));
     //     }
-    //     dbg!(rs);
-    //     dbg!(pg.mean());
-    //     dbg!(pg.var());
+    //     // dbg!(rs.iter().sum());
+    //     // dbg!(pg.mean());
+    //     // dbg!(pg.var());
+    //     panic!();
     // }
 
     let mut args = Args::parse();
@@ -531,6 +536,7 @@ fn main() {
         scale,
         chunk_size,
     ));
+    sampler.borrow_mut().initialize(&priors, &mut params);
 
     let mut total_steps = 0;
 
