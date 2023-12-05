@@ -39,6 +39,9 @@ struct Args {
     #[arg(long, default_value_t=false)]
     cosmx: bool,
 
+    #[arg(long, default_value_t=false)]
+    cosmx_micron: bool,
+
     #[arg(long, default_value = None)]
     transcript_column: Option<String>,
 
@@ -266,6 +269,21 @@ fn set_cosmx_presets(args: &mut Args) {
 }
 
 
+fn set_cosmx_micron_presets(args: &mut Args) {
+    args.transcript_column.get_or_insert(String::from("target"));
+    args.x_column.get_or_insert(String::from("x"));
+    args.y_column.get_or_insert(String::from("y"));
+    args.z_column.get_or_insert(String::from("z"));
+    args.compartment_column.get_or_insert(String::from("CellComp"));
+    args.compartment_nuclear.get_or_insert(String::from("Nuclear"));
+    args.fov_column.get_or_insert(String::from("fov"));
+    args.cell_id_column.get_or_insert(String::from("cell_ID"));
+    args.cell_id_unassigned.get_or_insert(String::from("0"));
+
+    args.scale = 4.0;
+}
+
+
 fn main() {
     // // TODO: Just testing PG sampling
     // {
@@ -286,8 +304,17 @@ fn main() {
 
     let mut args = Args::parse();
 
-    if args.xenium && args.cosmx {
-        panic!("Cannot specify both --xenium and --cosmx");
+    if let Some(nthreads) = args.nthreads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(nthreads)
+            .build_global()
+            .unwrap();
+    }
+    let nthreads = current_num_threads();
+    println!("Using {} threads", nthreads);
+
+    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) > 1 {
+        panic!("At most one of --xenium, --cosmx, and --cosmx-micron can be set");
     }
 
     if args.xenium {
@@ -296,6 +323,10 @@ fn main() {
 
     if args.cosmx {
         set_cosmx_presets(&mut args);
+    }
+
+    if args.cosmx_micron {
+        set_cosmx_micron_presets(&mut args);
     }
 
     if args.recorded_samples > *args.schedule.last().unwrap() {
@@ -346,21 +377,21 @@ fn main() {
         t.z = t.z.max(zmin).min(zmax);
     }
 
-    // keep removing cells until we can initialize with every cell having at least one voxel
     let mut ncells = nucleus_population.len();
+    let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
+        &transcripts,
+        &nucleus_assignments,
+        &cell_assignments,
+        ncells,
+        args.max_transcript_nucleus_distance,
+    );
+    transcripts.clone_from(&filtered_transcripts);
+    nucleus_assignments.clone_from(&filtered_nucleus_assignments);
+    cell_assignments.clone_from(&filtered_cell_assignments);
+
+    // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
         let prev_ncells = ncells;
-
-        let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
-            &transcripts,
-            &nucleus_assignments,
-            &cell_assignments,
-            ncells,
-            args.max_transcript_nucleus_distance,
-        );
-        transcripts.clone_from(&filtered_transcripts);
-        nucleus_assignments.clone_from(&filtered_nucleus_assignments);
-        cell_assignments.clone_from(&filtered_cell_assignments);
 
         filter_sparse_cells(
             args.scale,
@@ -426,14 +457,6 @@ fn main() {
 
     println!("Full volume: {}", full_volume);
 
-    if let Some(nthreads) = args.nthreads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(nthreads)
-            .build_global()
-            .unwrap();
-    }
-    let nthreads = current_num_threads();
-    println!("Using {} threads", nthreads);
 
     // Find a reasonable grid size to use to chunk the data
     let area = (xmax - xmin) * (ymax - ymin);
