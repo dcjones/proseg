@@ -18,6 +18,7 @@ use std::f32;
 use std::sync::{Arc, Mutex};
 use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use thread_local::ThreadLocal;
+use itertools::Itertools;
 
 use std::time::Instant;
 
@@ -312,25 +313,31 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32, zlayers: usize) ->
         cube_size: (cube_size, cube_size, voxel_height),
     };
 
-    // Bin transcripts into CubeBins
-    let mut cube_index = HashMap::new();
+    let mut cube_transcripts = transcripts
+        .par_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let position = clip_z_position((t.x, t.y, t.z), zmin, zmax);
+            let cube = layout.world_pos_to_cube(position);
+            return (cube, i);
+        })
+        .collect::<Vec<_>>();
 
-    for (i, transcript) in transcripts.iter().enumerate() {
-        let position = clip_z_position(
-            (transcript.x, transcript.y, transcript.z), zmin, zmax);
-        let cube = layout.world_pos_to_cube(position);
+    cube_transcripts.par_sort_unstable_by_key(|(cube, _)| *cube);
 
-        cube_index
-            .entry(cube)
-            .or_insert_with(|| CubeBin::new(cube))
-            .transcripts
-            .lock()
-            .unwrap()
-            .push(i);
-    }
-
-    let mut cubebins = cube_index.values().cloned().collect::<Vec<_>>();
-    cubebins.sort_unstable_by_key(|cubebin| cubebin.cube);
+    let mut cubebins = Vec::new();
+    cube_transcripts
+        .iter()
+        .group_by(|(cube, _)| *cube)
+        .into_iter()
+        .for_each(|(cube, group)| {
+            let transcripts = group.map(|(_, transcript)| *transcript).collect::<Vec<_>>();
+            cubebins.push(
+                CubeBin {
+                    cube,
+                    transcripts: Arc::new(Mutex::new(transcripts))
+                });
+        });
 
     return (layout, cubebins);
 }
@@ -458,7 +465,6 @@ impl CubeBinSampler {
         // homogenize the rect: assign every transcript in the rect to the winner
         for cubebin in cubeindex.values() {
             let cell = cubecells.get(cubebin.cube);
-
             for &t in cubebin.transcripts.lock().unwrap().iter() {
                 if params.cell_assignments[t] != BACKGROUND_CELL {
                     params.cell_population[params.cell_assignments[t] as usize] -= 1;
@@ -1463,9 +1469,15 @@ pub fn filter_sparse_cells(
     cell_assignments: &mut Vec<CellIndex>,
     nucleus_population: &mut Vec<usize>,
 ) {
+    let t0 = Instant::now();
     let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
-    let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
+    println!("bin_transcripts: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
+    let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
+    println!("cube_assignments: {:?}", t0.elapsed());
+
+    let t0 = Instant::now();
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for (_, cell_id) in cubecells.iter() {
         if *cell_id != BACKGROUND_CELL {
@@ -1494,6 +1506,7 @@ pub fn filter_sparse_cells(
             }
         }
     }
+    println!("index assignments {:?}", t0.elapsed());
 
     nucleus_population.resize(used_cell_ids.len(), 0);
     nucleus_population.fill(0);
