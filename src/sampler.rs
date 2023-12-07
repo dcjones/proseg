@@ -1039,23 +1039,6 @@ where
             }
         }
 
-        for proposal in self
-            .proposals()
-            .iter()
-            .filter(|p| !p.accepted() && !p.ignored())
-        {
-            let old_cell = proposal.old_cell();
-            let new_cell = proposal.new_cell();
-
-            if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                stats.background_to_cell_reject += 1;
-            } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
-                stats.cell_to_background_reject += 1;
-            } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                stats.cell_to_cell_reject += 1;
-            }
-        }
-
         self.update_sampler_state(params);
     }
 
