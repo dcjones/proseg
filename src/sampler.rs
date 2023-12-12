@@ -87,6 +87,9 @@ pub struct ModelPriors {
     pub e_h: f32,
     pub f_h: f32,
 
+    // normal precision parameter for β
+    pub γ: f32,
+
     // gamma prior for background rates
     pub α_bg: f32,
     pub β_bg: f32,
@@ -1237,7 +1240,7 @@ where
             });
 
         Zip::from(&mut params.σ_φ)
-            .for_each(|σ| *σ = (1.0 + *σ).recip());
+            .for_each(|σ| *σ = (priors.γ + *σ).recip());
 
         Zip::from(&mut params.μ_φ)
             .and(&params.σ_φ)
