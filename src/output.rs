@@ -227,6 +227,47 @@ pub fn write_rates(
     }
 }
 
+pub fn write_component_params(
+    output_component_params: &Option<String>,
+    output_component_params_fmt: &Option<String>,
+    params: &ModelParams,
+    transcript_names: &Vec<String>
+) {
+    if let Some(output_component_params) = output_component_params {
+        // What does this look like: rows for each gene, columns for α1, β1, α2, β2, etc.
+        let α = &params.r;
+        let φ = &params.φ;
+        let β = φ.map(|φ| (-φ).exp());
+
+        let ncomponents = params.ncomponents();
+
+        let mut fields = Vec::new();
+        fields.push(Field::new("gene", DataType::Utf8, false));
+        for i in 0..ncomponents {
+            fields.push(Field::new(&format!("α_{}", i), DataType::Float32, false));
+            fields.push(Field::new(&format!("β_{}", i), DataType::Float32, false));
+        }
+        let schema = Schema::from(fields);
+
+        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+        columns.push(Arc::new(array::Utf8Array::<i32>::from_iter_values(
+            transcript_names.iter().cloned(),
+        )));
+        Zip::from(α.rows()).and(β.rows()).for_each(|α, β| {
+            columns.push(Arc::new(array::Float32Array::from_values(α.iter().cloned())));
+            columns.push(Arc::new(array::Float32Array::from_values(β.iter().cloned())));
+        });
+
+        let chunk = arrow2::chunk::Chunk::new(columns);
+        write_table(
+            &output_component_params,
+            &output_component_params_fmt,
+            schema,
+            chunk,
+        );
+    }
+}
+
 pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: &Option<String>,

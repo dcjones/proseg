@@ -184,6 +184,12 @@ struct Args {
     output_rates_fmt: Option<String>,
 
     #[arg(long, default_value = None)]
+    output_component_params: Option<String>,
+
+    #[arg(long, default_value = None)]
+    output_component_params_fmt: Option<String>,
+
+    #[arg(long, default_value = None)]
     output_expected_counts_fmt: Option<String>,
 
     #[arg(long, default_value = None)]
@@ -678,6 +684,12 @@ fn main() {
     write_rates(
         &args.output_rates,
         &args.output_rates_fmt,
+        &params,
+        &transcript_names,
+    );
+    write_component_params(
+        &args.output_component_params,
+        &args.output_component_params_fmt,
         &params,
         &transcript_names,
     );

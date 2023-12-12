@@ -192,7 +192,7 @@ pub struct ModelParams {
     ω: Array2<f32>,
 
     // [ncomponents, ngenes] NB logit(p) parameters
-    φ: Array2<f32>,
+    pub φ: Array2<f32>,
 
     // [ncomponents, ngenes] Parameters for sampling φ
     μ_φ: Array2<f32>,
