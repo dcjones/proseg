@@ -42,6 +42,9 @@ struct Args {
     #[arg(long, default_value_t=false)]
     cosmx_micron: bool,
 
+    #[arg(long, default_value_t=false)]
+    merfish: bool,
+
     #[arg(long, default_value = None)]
     transcript_column: Option<String>,
 
@@ -289,6 +292,16 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.scale = 4.0;
 }
 
+fn set_merfish_presets(args: &mut Args) {
+    args.transcript_column.get_or_insert(String::from("gene"));
+    args.x_column.get_or_insert(String::from("x"));
+    args.y_column.get_or_insert(String::from("y"));
+    args.z_column.get_or_insert(String::from("z"));
+    args.cell_id_column.get_or_insert(String::from("cell"));
+    args.cell_id_unassigned.get_or_insert(String::from("NA"));
+    args.scale = 4.0;
+}
+
 
 fn main() {
     // // TODO: Just testing PG sampling
@@ -319,8 +332,8 @@ fn main() {
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
 
-    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) > 1 {
-        panic!("At most one of --xenium, --cosmx, and --cosmx-micron can be set");
+    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8) > 1 {
+        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish can be set");
     }
 
     if args.xenium {
@@ -333,6 +346,10 @@ fn main() {
 
     if args.cosmx_micron {
         set_cosmx_micron_presets(&mut args);
+    }
+
+    if args.merfish {
+        set_merfish_presets(&mut args);
     }
 
     if args.recorded_samples > *args.schedule.last().unwrap() {
@@ -354,8 +371,8 @@ fn main() {
             &args.transcript_csv,
             &expect_arg(args.transcript_column, "transcript-column"),
             args.transcript_id_column,
-            &expect_arg(args.compartment_column, "compartment-column"),
-            &expect_arg(args.compartment_nuclear, "compartment-nuclear"),
+            args.compartment_column,
+            args.compartment_nuclear,
             args.fov_column,
             &expect_arg(args.cell_id_column, "cell-id-column"),
             &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),

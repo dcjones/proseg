@@ -19,14 +19,15 @@ pub struct Transcript {
     pub y: f32,
     pub z: f32,
     pub gene: u32,
+    pub fov: u32,
 }
 
 pub fn read_transcripts_csv(
     path: &str,
     transcript_column: &str,
     id_column: Option<String>,
-    compartment_column: &str,
-    compartment_nuclear: &str,
+    compartment_column: Option<String>,
+    compartment_nuclear: Option<String>,
     fov_column: Option<String>,
     cell_id_column: &str,
     cell_id_unassigned: &str,
@@ -135,8 +136,8 @@ fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     transcript_column: &str,
     id_column: Option<String>,
-    compartment_column: &str,
-    compartment_nuclear: &str,
+    compartment_column: Option<String>,
+    compartment_nuclear: Option<String>,
     fov_column: Option<String>,
     cell_id_column: &str,
     cell_id_unassigned: &str,
@@ -159,7 +160,15 @@ where
     let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     let cell_id_col = find_column(headers, cell_id_column);
-    let compartment_col = find_column(headers, compartment_column);
+    let compartment_col = compartment_column.map(|compartment_column| find_column(headers, &compartment_column));
+    let has_compartment = compartment_col.is_some();
+
+    let compartment_nuclear = if has_compartment {
+        compartment_nuclear.unwrap()
+    } else {
+        String::new()
+    };
+
     let qv_col = qv_column.map(|qv_column| find_column(headers, &qv_column));
     let fov_col = fov_column.map(|fov_column| find_column(headers, &fov_column));
 
@@ -225,12 +234,12 @@ where
             y,
             z: if ignore_z_column { 0.0 } else { z },
             gene: gene as u32,
+            fov,
         });
 
         fovs.push(fov);
 
         let cell_id_str = &row[cell_id_col];
-        let compartment = &row[compartment_col];
         // let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
 
         // Earlier version of Xenium used numeric cell ids and -1 for unassigned.
@@ -244,7 +253,14 @@ where
                 .entry((fov, cell_id_str.to_string()))
                 .or_insert_with(|| next_cell_id);
 
-            if compartment == compartment_nuclear {
+            let is_nuclear = if let Some(compartment_col) = compartment_col {
+                row[compartment_col] == compartment_nuclear
+            } else {
+                // If we have no compartment information, use anything assigned to the cell.
+                true
+            };
+
+            if is_nuclear {
                 nucleus_assignments.push(cell_id);
             } else {
                 nucleus_assignments.push(BACKGROUND_CELL);
@@ -355,6 +371,19 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
 
     return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
 }
+
+// pub fn estimate_cell_fovs(
+//     transcripts: &Vec<Transcript>,
+//     cell_assignments: &Vec<CellIndex>,
+//     ncells: usize) -> Vec<u32>
+// {
+//     // TODO: Plan is for each cell to vote, and assign it to the fov that the
+//     // majority of its transcripts belong to.
+
+
+
+
+// }
 
 // Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
 pub fn estimate_cell_centroids(

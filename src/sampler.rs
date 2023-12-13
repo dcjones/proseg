@@ -1188,17 +1188,17 @@ where
 
         // Sample ω
 
-        let rmin = params.r.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
-        let rmax = params.r.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
-        dbg!(rmin, rmax);
+        // let rmin = params.r.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        // let rmax = params.r.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        // dbg!(rmin, rmax);
 
-        let φmin = params.φ.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
-        let φmax = params.φ.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
-        dbg!(φmin, φmax);
+        // let φmin = params.φ.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        // let φmax = params.φ.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        // dbg!(φmin, φmax);
 
-        let vmin = params.cell_volume.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
-        let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
-        dbg!(vmin, vmax);
+        // let vmin = params.cell_volume.iter().min_by(|a, b| a.partial_cmp(b).unwrap());
+        // let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
+        // dbg!(vmin, vmax);
 
         let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
