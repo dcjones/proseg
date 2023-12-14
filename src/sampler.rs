@@ -156,10 +156,10 @@ pub struct ModelParams {
     pub counts: Array3<u32>,
 
     // [ncells, ngenes, nlayers] foreground transcripts counts
-    foreground_counts: Array3<u32>,
+    foreground_counts: Array3<u16>,
 
     // [ngenes, nlayers] background transcripts counts
-    background_counts: Array2<u32>,
+    background_counts: Array2<u16>,
 
     // [ngenes, nlayers] total gene occourance counts
     pub total_gene_counts: Array2<u32>,
@@ -171,9 +171,6 @@ pub struct ModelParams {
     loggammaplus: Array2<LogGammaPlus>,
 
     pub z: Array1<u32>, // assignment of cells to components
-
-    // [ngenes, ncomponents] number of transcripts of each gene assigned to each component
-    component_counts: Array2<u32>,
 
     component_population: Array1<u32>, // number of cells assigned to each component
 
@@ -316,13 +313,12 @@ impl ModelParams {
             layer_depth,
             isbackground,
             counts,
-            foreground_counts: Array3::<u32>::from_elem((ncells, ngenes, nlayers), 0),
-            background_counts: Array2::<u32>::from_elem((ngenes, nlayers), 0),
+            foreground_counts: Array3::<u16>::from_elem((ncells, ngenes, nlayers), 0),
+            background_counts: Array2::<u16>::from_elem((ngenes, nlayers), 0),
             total_gene_counts,
             logfactorial: LogFactorial::new(),
             loggammaplus,
             z,
-            component_counts: Array2::<u32>::from_elem((ngenes, ncomponents), 0),
             component_population: Array1::<u32>::from_elem(ncomponents, 0),
             z_probs: ThreadLocal::new(),
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
@@ -1143,8 +1139,8 @@ where
                 }
             });
 
-        params.background_counts.fill(0_u32);
-        params.foreground_counts.fill(0_u32);
+        params.background_counts.fill(0_u16);
+        params.foreground_counts.fill(0_u16);
         Zip::from(&params.isbackground)
             .and(transcripts)
             .and(&params.cell_assignments)
@@ -1173,17 +1169,6 @@ where
             .zip(&params.z)
             .for_each(|(volume, z_i)| {
                 params.component_volume[*z_i as usize] += *volume;
-            });
-
-        // compute per component transcript counts
-        params.component_counts.fill(0);
-        Zip::from(params.component_counts.rows_mut())
-            .and(params.foreground_counts.axis_iter(Axis(1)))
-            .par_for_each(|mut compc, cellc| {
-                for (cs, component) in cellc.outer_iter().zip(&params.z) {
-                    let c = cs.sum();
-                    compc[*component as usize] += c;
-                }
             });
 
         // Sample ω
@@ -1342,7 +1327,7 @@ where
 
                             let uv_z = uv[z];
                             uv[z] = (
-                                uv_z.0 + rand_crt(&mut rng, c, r),
+                                uv_z.0 + rand_crt(&mut rng, c as u32, r),
                                 // uv_z.1 + log1pf(-odds_to_prob(θ * vol))
                                 uv_z.1 + log1pf(-logistic(ψ))
                             );
@@ -1538,7 +1523,7 @@ where
                             .and(loggammaplus)
                             .fold(0_f32, |accum, cs, &r, φ, &lgamma_r, lgammaplus| {
                                 let ψ = φ + cell_volume.ln();
-                                let c = cs.sum(); // sum counts across layers
+                                let c = cs.iter().map(|&x| x as u32).sum(); // sum counts across layers
                                 accum
                                     + negbin_logpmf_fast(
                                         r,
