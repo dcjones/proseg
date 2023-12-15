@@ -19,7 +19,7 @@ pub enum OutputFormat {
     Parquet,
 }
 
-fn write_table(
+pub fn write_table(
     filename: &str,
     fmtstr: &Option<String>,
     schema: Schema,
