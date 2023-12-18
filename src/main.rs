@@ -538,8 +538,8 @@ fn main() {
         σ_diffusion_near: args.diffusion_sigma_near,
         σ_diffusion_far: args.diffusion_sigma_far,
 
-        σ_z_diffusion_proposal: 0.1 * zspan,
-        σ_z_diffusion: 0.1 * zspan,
+        σ_z_diffusion_proposal: 0.2 * zspan,
+        σ_z_diffusion: 0.2 * zspan,
 
         zmin,
         zmax,
@@ -602,6 +602,7 @@ fn main() {
             &args.monitor_cell_polygons,
             args.monitor_cell_polygons_freq,
             true,
+            true,
         );
 
         for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
@@ -622,6 +623,7 @@ fn main() {
                 &mut total_steps,
                 &args.monitor_cell_polygons,
                 args.monitor_cell_polygons_freq,
+                true,
                 true,
             );
         }
@@ -644,6 +646,7 @@ fn main() {
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
         true,
+        false,
     );
 
     run_hexbin_sampler(
@@ -659,6 +662,7 @@ fn main() {
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
         true,
+        false,
     );
 
     if args.check_consistency {
@@ -757,8 +761,9 @@ fn run_hexbin_sampler(
     monitor_cell_polygons: &Option<String>,
     monitor_cell_polygons_freq: usize,
     sample_cell_regions: bool,
+    burnin: bool,
 ) {
-    sampler.sample_global_params(priors, params, transcripts, &mut uncertainty);
+    sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
     let mut proposal_stats = ProposalStats::new();
 
     for _ in 0..niter {
@@ -778,7 +783,7 @@ fn run_hexbin_sampler(
             // println!("Sample cell regions: {:?}", t0.elapsed());
         }
         // let t0 = std::time::Instant::now();
-        sampler.sample_global_params(priors, params, transcripts, &mut uncertainty);
+        sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
         // println!("Sample parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();

@@ -926,7 +926,7 @@ where
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // get to a reasonably high probability assignment
         for _ in 0..20 {
-            self.sample_component_nb_params(priors, params);
+            self.sample_component_nb_params(priors, params, true);
         }
     }
 
@@ -1047,6 +1047,7 @@ where
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
+        burnin: bool,
     ) {
         let mut rng = thread_rng();
 
@@ -1058,7 +1059,7 @@ where
         // println!("  Sample background counts: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
-        self.sample_component_nb_params(priors, params);
+        self.sample_component_nb_params(priors, params, burnin);
         // println!("  Sample nb params: {:?}", t0.elapsed());
 
         // Sample λ
@@ -1099,7 +1100,7 @@ where
         }
 
         self.sample_background_rates(priors, params);
-        if params.t > 0 && priors.use_diffusion_model {
+        if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
     }
@@ -1159,7 +1160,7 @@ where
             });
     }
 
-    fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
         // total component area
         // let mut component_cell_area = vec![0_f32; params.ncomponents()];
         params.component_volume.fill(0.0);
@@ -1292,7 +1293,7 @@ where
 
         if let Some(dispersion) = priors.dispersion {
             set_constant_dispersion(params, dispersion);
-        } else if params.t == 0 && priors.burnin_dispersion.is_some() {
+        } else if burnin && priors.burnin_dispersion.is_some() {
             let dispersion = priors.burnin_dispersion.unwrap();
             set_constant_dispersion(params, dispersion);
         } else {
@@ -1665,6 +1666,8 @@ where
                 let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
                 let mut δ = 0.0;
+
+                // TODO: account for the possibility that sigma is 0
 
                 δ -= ((1.0 - priors.p_diffusion) * normal_pdf(priors.σ_diffusion_near, sq_dist_prev) +
                     priors.p_diffusion * normal_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();

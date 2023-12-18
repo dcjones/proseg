@@ -167,7 +167,7 @@ fn main() {
     let (transcript_names,
          transcripts,
          nucleus_assignments,
-         _cell_assignments,
+         cell_assignments,
          nucleus_population) =
         read_transcripts_csv(
             &args.transcript_csv,
@@ -198,6 +198,7 @@ fn main() {
         &args.output_fmt,
         &transcripts,
         &transcript_names,
+        &cell_assignments,
         &distances);
 }
 
@@ -228,6 +229,7 @@ pub fn write_transcript_centroid_distances(
     output_fmt: &Option<String>,
     transcripts: &Vec<Transcript>,
     transcript_names: &Vec<String>,
+    cell_assignments: &Vec<CellIndex>,
     distances: &Vec<f32>,
 ) {
     let schema = Schema::from(vec![
@@ -236,6 +238,7 @@ pub fn write_transcript_centroid_distances(
         Field::new("observed_y", DataType::Float32, false),
         Field::new("observed_z", DataType::Float32, false),
         Field::new("gene", DataType::Utf8, false),
+        Field::new("assignment", DataType::UInt32, false),
         Field::new("centroid_distance", DataType::UInt32, false),
     ]);
 
@@ -256,6 +259,9 @@ pub fn write_transcript_centroid_distances(
             transcripts
                 .iter()
                 .map(|t| transcript_names[t.gene as usize].clone()),
+        )),
+        Arc::new(array::UInt32Array::from_values(
+            cell_assignments.iter().cloned()
         )),
         Arc::new(array::Float32Array::from_values(
             distances.iter().cloned()
