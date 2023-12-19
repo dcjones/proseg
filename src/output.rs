@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::sampler::cubebinsampler::CubeBinSampler;
 use super::sampler::transcripts::Transcript;
-use super::sampler::ModelParams;
+use super::sampler::{ModelParams, TranscriptState};
 
 pub enum OutputFormat {
     Csv,
@@ -321,8 +321,7 @@ pub fn write_transcript_metadata(
     transcript_positions: &Vec<(f32, f32, f32)>,
     transcript_names: &Vec<String>,
     cell_assignments: &Vec<(u32, f32)>,
-    isbackground: &Array1<bool>,
-    isconfusion: &Array1<bool>,
+    transcript_state: &Array1<TranscriptState>,
 ) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
@@ -373,8 +372,8 @@ pub fn write_transcript_metadata(
             Arc::new(array::Float32Array::from_values(
                 cell_assignments.iter().map(|(_, pr)| *pr),
             )),
-            Arc::new(array::UInt8Array::from_values(isbackground.iter().map(|&b| b as u8))),
-            Arc::new(array::UInt8Array::from_values(isconfusion.iter().map(|&b| b as u8))),
+            Arc::new(array::UInt8Array::from_values(transcript_state.iter().map(|&s| (s == TranscriptState::Background) as u8))),
+            Arc::new(array::UInt8Array::from_values(transcript_state.iter().map(|&s| (s == TranscriptState::Confusion) as u8))),
         ];
 
         let chunk = arrow2::chunk::Chunk::new(columns);

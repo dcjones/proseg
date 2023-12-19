@@ -727,8 +727,7 @@ fn main() {
         &params.transcript_positions,
         &transcript_names,
         &cell_assignments,
-        &params.isbackground,
-        &params.isconfusion,
+        &params.transcript_state,
     );
     write_gene_metadata(
         &args.output_gene_metadata,

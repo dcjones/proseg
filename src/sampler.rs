@@ -62,6 +62,13 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
     return (chunk, quad);
 }
 
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum TranscriptState {
+    Background,
+    Foreground,
+    Confusion,
+}
+
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
@@ -153,14 +160,11 @@ pub struct ModelParams {
     z0: f32,
     layer_depth: f32,
 
-    // current assignment of transcripts to background
-    pub isbackground: Array1<bool>,
-
-    // current assignment of transcripts to confusion
-    pub isconfusion: Array1<bool>,
+    // [ntranscripts] current assignment of transcripts to background
+    pub transcript_state: Array1<TranscriptState>,
 
     // [ngenes, ncells, nlayers] transcripts counts
-    pub counts: Array3<u32>,
+    pub counts: Array3<u16>,
 
     // [ncells, ngenes, nlayers] foreground transcripts counts
     foreground_counts: Array3<u16>,
@@ -269,7 +273,7 @@ impl ModelParams {
         let h = 10.0;
 
         // compute initial counts
-        let mut counts = Array3::<u32>::from_elem((ngenes, ncells, nlayers), 0);
+        let mut counts = Array3::<u16>::from_elem((ngenes, ncells, nlayers), 0);
         let mut total_gene_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
@@ -307,8 +311,7 @@ impl ModelParams {
         //     .into();
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
-        let isbackground = Array1::<bool>::from_elem(transcripts.len(), false);
-        let isconfusion = Array1::<bool>::from_elem(transcripts.len(), false);
+        let transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
         return ModelParams {
             transcript_positions,
@@ -326,8 +329,7 @@ impl ModelParams {
             transcript_density: transcript_density.clone(),
             z0,
             layer_depth,
-            isbackground,
-            isconfusion,
+            transcript_state,
             counts,
             foreground_counts: Array3::<u16>::from_elem((ncells, ngenes, nlayers), 0),
             confusion_counts: Array1::<u32>::from_elem(ngenes, 0),
@@ -627,14 +629,26 @@ impl UncertaintyTracker {
     // is about to change.
     fn update(&mut self, params: &ModelParams, i: usize) {
         let duration = params.t - params.cell_assignment_time[i];
+        let assignment = if params.transcript_state[i] != TranscriptState::Foreground {
+            BACKGROUND_CELL
+        } else {
+            params.cell_assignments[i]
+        };
         self.cell_assignment_duration
-            .entry((i, params.cell_assignments[i]))
+            .entry((i, assignment))
             .and_modify(|d| *d += duration)
             .or_insert(duration);
     }
 
     fn update_assignment(&mut self, params: &ModelParams, i: usize, cell: CellIndex) {
         let duration = params.t - params.cell_assignment_time[i];
+        self.cell_assignment_duration
+            .entry((i, cell))
+            .and_modify(|d| *d += duration)
+            .or_insert(duration);
+    }
+
+    fn update_assignment_duration(&mut self, i: usize, cell: CellIndex, duration: u32) {
         self.cell_assignment_duration
             .entry((i, cell))
             .and_modify(|d| *d += duration)
@@ -1010,7 +1024,9 @@ where
             let mut count = 0;
             for &i in proposal.transcripts() {
                 if let Some(uncertainty) = uncertainty.as_mut() {
-                    uncertainty.update(params, i);
+                    if params.transcript_state[i] == TranscriptState::Foreground {
+                        uncertainty.update(params, i);
+                    }
                 }
                 params.cell_assignments[i] = new_cell;
                 params.cell_assignment_time[i] = params.t;
@@ -1077,7 +1093,7 @@ where
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
-        self.sample_background_assignments(priors, params, transcripts);
+        self.sample_transcript_state(priors, params, transcripts, uncertainty);
         // println!("  Sample background counts: {:?}", t0.elapsed());
 
         self.compute_counts(priors, params, transcripts);
@@ -1131,24 +1147,24 @@ where
         }
     }
 
-    fn sample_background_assignments(
+    fn sample_transcript_state(
         &mut self,
         _priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
-    ) {
+        uncertainty: &mut Option<&mut UncertaintyTracker>)
+    {
         let nlayers = params.nlayers();
-        Zip::from(&mut params.isbackground)
-            .and(&mut params.isconfusion)
+        Zip::indexed(&mut params.transcript_state)
             .and(&params.cell_assignments)
             .and(&params.transcript_positions)
             .and(&params.transcript_density)
             .and(transcripts)
-            .par_for_each(|bg, confusion, &cell, position, &d, t| {
+            .for_each(|i, state, &cell, position, &d, t| {
                 let mut rng = thread_rng();
 
                 if cell == BACKGROUND_CELL {
-                    *bg = true;
+                    *state = TranscriptState::Background;
                 } else {
                     let gene = t.gene as usize;
                     let layer = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
@@ -1160,15 +1176,29 @@ where
                     let λ = λ_cell + λ_bg + λ_c;
 
                     let u = rng.gen::<f32>();
-                    if u < λ_cell / λ {
-                        *bg = false;
-                        *confusion = false;
+                    let prev_state = *state;
+                    *state = if u < λ_cell / λ {
+                        TranscriptState::Foreground
                     } else if u < (λ_cell + λ_bg) / λ {
-                        *bg = true;
-                        *confusion = false;
+                        TranscriptState::Background
                     } else {
-                        *bg = false;
-                        *confusion = true;
+                        TranscriptState::Confusion
+                    };
+
+                    let is_foreground = *state == TranscriptState::Foreground;
+                    let was_foreground = prev_state == TranscriptState::Foreground;
+
+                    if is_foreground != was_foreground {
+                        if let Some(uncertainty) = uncertainty.as_mut() {
+                            let prev_assignment = if !was_foreground {
+                                BACKGROUND_CELL
+                            } else {
+                                params.cell_assignments[i]
+                            };
+                            let duration = params.t - params.cell_assignment_time[i];
+                            uncertainty.update_assignment_duration(i, prev_assignment, duration);
+                            params.cell_assignment_time[i] = params.t;
+                        }
                     }
                 }
             });
@@ -1208,23 +1238,26 @@ where
         params.confusion_counts.fill(0_u32);
         params.background_counts.fill(0_u32);
         params.foreground_counts.fill(0_u16);
-        Zip::from(&params.isbackground)
-            .and(&params.isconfusion)
+        Zip::from(&params.transcript_state)
             .and(transcripts)
             .and(&params.cell_assignments)
             .and(&params.transcript_positions)
-            .for_each(|&bg, &confusion, t, &cell, pos| {
+            .for_each(|&state, t, &cell, pos| {
                 let gene = t.gene as usize;
                 // let layer = params.zlayer(pos.2);
                 let layer = ((pos.2 - params.z0) / params.layer_depth).max(0.0) as usize;
                 let layer = layer.min(nlayers - 1);
 
-                if bg {
-                    params.background_counts[[gene, layer]] += 1;
-                } else if confusion {
-                    params.confusion_counts[gene] += 1;
-                } else {
-                    params.foreground_counts[[cell as usize, gene, layer]] += 1;
+                match state {
+                    TranscriptState::Background => {
+                        params.background_counts[[gene, layer]] += 1;
+                    },
+                    TranscriptState::Confusion => {
+                        params.confusion_counts[gene] += 1;
+                    },
+                    TranscriptState::Foreground => {
+                        params.foreground_counts[[cell as usize, gene, layer]] += 1;
+                    },
                 }
             });
 
@@ -1260,7 +1293,7 @@ where
 
         // TODO: Is altering this equivalent to placing a prior μ?
         // TODO: Why does reducing this make everything go to background rather than confusion?
-        let V_SCALE = 1e-1;
+        let V_SCALE = 1.0;
 
         let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
@@ -1571,7 +1604,6 @@ where
 
     fn sample_confusion_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let total_cell_volume = params.cell_volume.sum();
-        dbg!(total_cell_volume);
         let mut rng = thread_rng();
         Zip::from(&mut params.λ_c)
             .and(&params.confusion_counts)
@@ -1580,7 +1612,6 @@ where
                 let β = priors.β_bg + total_cell_volume;
                 *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
             });
-        dbg!(total_cell_volume);
     }
 
     fn sample_component_assignments(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
@@ -1885,12 +1916,12 @@ where
                     if cell_prev != cell_new {
                         // annoying borrowing bullshit
                         // uncertainty.update_assignment(params, i, cell_new);
+
                         if let Some(uncertainty) = uncertainty.as_mut() {
-                            let duration = params.t - *cell_assignment_time;
-                            uncertainty.cell_assignment_duration
-                                .entry((i, cell_prev))
-                                .and_modify(|d| *d += duration)
-                                .or_insert(duration);
+                            if params.transcript_state[i] == TranscriptState::Foreground {
+                                let duration = params.t - *cell_assignment_time;
+                                uncertainty.update_assignment_duration(i, cell_prev, duration);
+                            }
                         }
 
                         *cell_assignment = cell_new;
