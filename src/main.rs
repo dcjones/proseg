@@ -469,6 +469,7 @@ fn main() {
         args.density_eps,
     );
 
+    // TODO: remove this whole density system
     transcript_density.fill(1.0);
 
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
@@ -522,6 +523,9 @@ fn main() {
 
         α_bg: 1.0,
         β_bg: 1.0,
+
+        α_c: 1.0,
+        β_c: 1.0,
 
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
@@ -682,10 +686,6 @@ fn main() {
         .iter()
         .filter(|(c, _)| *c != BACKGROUND_CELL)
         .count();
-    println!(
-        "Suppressed {} low probability assignments.",
-        assigned_count - counts.sum() as usize
-    );
 
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);
@@ -727,6 +727,8 @@ fn main() {
         &params.transcript_positions,
         &transcript_names,
         &cell_assignments,
+        &params.isbackground,
+        &params.isconfusion,
     );
     write_gene_metadata(
         &args.output_gene_metadata,

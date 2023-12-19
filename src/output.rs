@@ -321,6 +321,8 @@ pub fn write_transcript_metadata(
     transcript_positions: &Vec<(f32, f32, f32)>,
     transcript_names: &Vec<String>,
     cell_assignments: &Vec<(u32, f32)>,
+    isbackground: &Array1<bool>,
+    isconfusion: &Array1<bool>,
 ) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
@@ -334,6 +336,8 @@ pub fn write_transcript_metadata(
             Field::new("gene", DataType::Utf8, false),
             Field::new("assignment", DataType::UInt32, false),
             Field::new("probability", DataType::Float32, false),
+            Field::new("background", DataType::UInt8, false),
+            Field::new("confusion", DataType::UInt8, false),
         ]);
 
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
@@ -369,6 +373,8 @@ pub fn write_transcript_metadata(
             Arc::new(array::Float32Array::from_values(
                 cell_assignments.iter().map(|(_, pr)| *pr),
             )),
+            Arc::new(array::UInt8Array::from_values(isbackground.iter().map(|&b| b as u8))),
+            Arc::new(array::UInt8Array::from_values(isconfusion.iter().map(|&b| b as u8))),
         ];
 
         let chunk = arrow2::chunk::Chunk::new(columns);

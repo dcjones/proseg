@@ -94,6 +94,10 @@ pub struct ModelPriors {
     pub α_bg: f32,
     pub β_bg: f32,
 
+    // gamma prior for confusion rates
+    pub α_c: f32,
+    pub β_c: f32,
+
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
     pub perimeter_bound: f32,
@@ -150,7 +154,10 @@ pub struct ModelParams {
     layer_depth: f32,
 
     // current assignment of transcripts to background
-    isbackground: Array1<bool>,
+    pub isbackground: Array1<bool>,
+
+    // current assignment of transcripts to confusion
+    pub isconfusion: Array1<bool>,
 
     // [ngenes, ncells, nlayers] transcripts counts
     pub counts: Array3<u32>,
@@ -158,8 +165,11 @@ pub struct ModelParams {
     // [ncells, ngenes, nlayers] foreground transcripts counts
     foreground_counts: Array3<u16>,
 
+    // [ngenes] background transcripts counts
+    confusion_counts: Array1<u32>,
+
     // [ngenes, nlayers] background transcripts counts
-    background_counts: Array2<u16>,
+    background_counts: Array2<u32>,
 
     // [ngenes, nlayers] total gene occourance counts
     pub total_gene_counts: Array2<u32>,
@@ -216,8 +226,12 @@ pub struct ModelParams {
     // [ngenes, ncells] Poisson rates
     pub λ: Array2<f32>,
 
-    // [ngenes, nlayers] background rate
+    // [ngenes, nlayers] background rate: rate at which halucinate transcripts
+    // across the entire layer
     pub λ_bg: Array2<f32>,
+
+    // [ngenes] confusion: rate at which we halucinate transcripts within cells
+    pub λ_c: Array1<f32>,
 
     // time, which is incremented after every iteration
     t: u32,
@@ -294,6 +308,7 @@ impl ModelParams {
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
         let isbackground = Array1::<bool>::from_elem(transcripts.len(), false);
+        let isconfusion = Array1::<bool>::from_elem(transcripts.len(), false);
 
         return ModelParams {
             transcript_positions,
@@ -312,9 +327,11 @@ impl ModelParams {
             z0,
             layer_depth,
             isbackground,
+            isconfusion,
             counts,
             foreground_counts: Array3::<u16>::from_elem((ncells, ngenes, nlayers), 0),
-            background_counts: Array2::<u16>::from_elem((ngenes, nlayers), 0),
+            confusion_counts: Array1::<u32>::from_elem(ngenes, 0),
+            background_counts: Array2::<u32>::from_elem((ngenes, nlayers), 0),
             total_gene_counts,
             logfactorial: LogFactorial::new(),
             loggammaplus,
@@ -335,6 +352,7 @@ impl ModelParams {
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
+            λ_c: Array1::<f32>::from_elem(ngenes, 1e-4),
             t: 0,
         };
     }
@@ -639,46 +657,48 @@ impl UncertaintyTracker {
     }
 
     fn max_posterior_cell_assignments(&self, params: &ModelParams) -> Vec<(u32, f32)> {
-        // sort ascending on (transcript, cell)
-        let sorted_durations: Vec<(usize, u32, u32)> = self
-            .cell_assignment_duration
-            .iter()
-            .map(|((i, j), d)| (*i, *j, *d))
-            .sorted_by(|(i_a, j_a, _), (i_b, j_b, _)| (*i_a, *j_a).cmp(&(*i_b, *j_b)))
-            .collect();
+        return params.cell_assignments.iter().map(|&j| (j, 1.0)).collect();
 
-        let mut summed_durations: Vec<(usize, u32, u32)> = Vec::new();
-        let mut ij_prev = (usize::MAX, u32::MAX);
-        for (i, j, d) in sorted_durations.iter().cloned() {
-            if (i, j) == ij_prev {
-                summed_durations.last_mut().unwrap().2 += d;
-            } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
-                summed_durations.push((i, j, d));
-                ij_prev = (i, j);
-            } else {
-                panic!("Missing transcript in cell assignments.");
-            }
-        }
+        // // sort ascending on (transcript, cell)
+        // let sorted_durations: Vec<(usize, u32, u32)> = self
+        //     .cell_assignment_duration
+        //     .iter()
+        //     .map(|((i, j), d)| (*i, *j, *d))
+        //     .sorted_by(|(i_a, j_a, _), (i_b, j_b, _)| (*i_a, *j_a).cmp(&(*i_b, *j_b)))
+        //     .collect();
 
-        // sort ascending on (transcript, cell) and descending on duration
-        summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
-            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
-        });
+        // let mut summed_durations: Vec<(usize, u32, u32)> = Vec::new();
+        // let mut ij_prev = (usize::MAX, u32::MAX);
+        // for (i, j, d) in sorted_durations.iter().cloned() {
+        //     if (i, j) == ij_prev {
+        //         summed_durations.last_mut().unwrap().2 += d;
+        //     } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
+        //         summed_durations.push((i, j, d));
+        //         ij_prev = (i, j);
+        //     } else {
+        //         panic!("Missing transcript in cell assignments.");
+        //     }
+        // }
 
-        let mut maxpost_cell_assignments = Vec::new();
-        let mut i_prev = usize::MAX;
-        for (i, j, d) in summed_durations.iter().cloned() {
-            if i == i_prev {
-                continue;
-            } else if i == i_prev + 1 {
-                maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
-                i_prev = i;
-            } else {
-                panic!("Missing transcript in cell assignments.");
-            }
-        }
+        // // sort ascending on (transcript, cell) and descending on duration
+        // summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
+        //     (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
+        // });
 
-        return maxpost_cell_assignments;
+        // let mut maxpost_cell_assignments = Vec::new();
+        // let mut i_prev = usize::MAX;
+        // for (i, j, d) in summed_durations.iter().cloned() {
+        //     if i == i_prev {
+        //         continue;
+        //     } else if i == i_prev + 1 {
+        //         maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
+        //         i_prev = i;
+        //     } else {
+        //         panic!("Missing transcript in cell assignments.");
+        //     }
+        // }
+
+        // return maxpost_cell_assignments;
     }
 
     pub fn max_posterior_transcript_counts_assignments(
@@ -839,11 +859,12 @@ pub trait Proposal {
             Zip::from(self.gene_count().rows())
                 .and(self.density())
                 .and(params.λ_bg.rows())
+                .and(&params.λ_c)
                 .and(params.λ.column(old_cell as usize))
-                .for_each(|gene_counts, &d, λ_bg, λ| {
+                .for_each(|gene_counts, &d, λ_bg, &λ_c, λ| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
                         if count > 0 {
-                            δ -= count as f32 * (d * λ_bg + λ).ln();
+                            δ -= count as f32 * (d * λ_bg + λ_c + λ).ln();
                         }
                     })
                 });
@@ -884,11 +905,12 @@ pub trait Proposal {
             Zip::from(self.gene_count().rows())
                 .and(self.density())
                 .and(params.λ_bg.rows())
+                .and(&params.λ_c)
                 .and(params.λ.column(new_cell as usize))
-                .for_each(|gene_counts, &d, λ_bg, λ| {
+                .for_each(|gene_counts, &d, λ_bg, &λ_c, λ| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
                         if count > 0 {
-                            δ += count as f32 * (d * λ_bg + λ).ln();
+                            δ += count as f32 * (d * λ_bg + λ_c + λ).ln();
                         }
                     })
                 });
@@ -1055,8 +1077,10 @@ where
 
         // Sample background/foreground counts
         // let t0 = Instant::now();
-        self.sample_background_counts(priors, params, transcripts);
+        self.sample_background_assignments(priors, params, transcripts);
         // println!("  Sample background counts: {:?}", t0.elapsed());
+
+        self.compute_counts(priors, params, transcripts);
 
         // let t0 = Instant::now();
         self.sample_component_nb_params(priors, params, burnin);
@@ -1100,53 +1124,96 @@ where
         }
 
         self.sample_background_rates(priors, params);
-        if !burnin && priors.use_diffusion_model {
+        self.sample_confusion_rates(priors, params);
+        // if !burnin && priors.use_diffusion_model {
+        if priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
     }
 
-    fn sample_background_counts(
+    fn sample_background_assignments(
         &mut self,
         _priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
     ) {
         let nlayers = params.nlayers();
-        Zip::indexed(&mut params.isbackground)
+        Zip::from(&mut params.isbackground)
+            .and(&mut params.isconfusion)
+            .and(&params.cell_assignments)
+            .and(&params.transcript_positions)
             .and(&params.transcript_density)
             .and(transcripts)
-            .par_for_each(|i, bg, &d, t| {
+            .par_for_each(|bg, confusion, &cell, position, &d, t| {
                 let mut rng = thread_rng();
-                let cell = params.cell_assignments[i];
 
                 if cell == BACKGROUND_CELL {
                     *bg = true;
                 } else {
                     let gene = t.gene as usize;
-                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
                     let layer = layer.min(nlayers - 1);
 
-                    let λ = params.λ[[gene, cell as usize]];
-                    let p = λ / (λ + d * params.λ_bg[[gene, layer]]);
-                    // if p < 0.5 {
-                    //     dbg!(p, λ, d, params.λ_bg[[gene, layer]]);
-                    // }
+                    let λ_cell = params.λ[[gene, cell as usize]];
+                    let λ_bg = d * params.λ_bg[[gene, layer]];
+                    let λ_c = params.λ_c[gene];
+                    let λ = λ_cell + λ_bg + λ_c;
 
-                    // if λ != 0.1 && p > 0.99 {
-                    //     dbg!(λ, d, params.λ_bg[[gene, layer]]);
-                    // }
-
-                    *bg = rng.gen::<f32>() > p;
+                    let u = rng.gen::<f32>();
+                    if u < λ_cell / λ {
+                        *bg = false;
+                        *confusion = false;
+                    } else if u < (λ_cell + λ_bg) / λ {
+                        *bg = true;
+                        *confusion = false;
+                    } else {
+                        *bg = false;
+                        *confusion = true;
+                    }
                 }
             });
+    }
 
-        params.background_counts.fill(0_u16);
+    // fn sample_confusion_assignments(
+    //     &self,
+    //     _priors: &ModelPriors,
+    //     params: &mut ModelParams,
+    //     transcripts: &Vec<Transcript>)
+    // {
+    //     Zip::from(&mut params.isconfusion)
+    //         .and(&params.isbackground)
+    //         .and(&params.cell_assignments)
+    //         .and(transcripts)
+    //         .par_for_each(|confusion, &bg, &cell, t| {
+    //             let mut rng = thread_rng();
+
+    //             if bg {
+    //                 *confusion = false;
+    //             } else {
+    //                 assert!(cell != BACKGROUND_CELL);
+
+    //                 let gene = t.gene as usize;
+    //                 // confusion probability from cell and confusion rate
+    //                 let λ_cell = params.λ[[gene, cell as usize]];
+    //                 let λ_c = params.λ_c[gene];
+
+    //                 let p = λ_c / (λ_c + λ_cell);
+    //                 *confusion = rng.gen::<f32>() < p;
+    //             }
+    //     });
+    // }
+
+    fn compute_counts(&self, _priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
+        let nlayers = params.nlayers();
+        params.confusion_counts.fill(0_u32);
+        params.background_counts.fill(0_u32);
         params.foreground_counts.fill(0_u16);
         Zip::from(&params.isbackground)
+            .and(&params.isconfusion)
             .and(transcripts)
             .and(&params.cell_assignments)
             .and(&params.transcript_positions)
-            .for_each(|&bg, t, &cell, pos| {
+            .for_each(|&bg, &confusion, t, &cell, pos| {
                 let gene = t.gene as usize;
                 // let layer = params.zlayer(pos.2);
                 let layer = ((pos.2 - params.z0) / params.layer_depth).max(0.0) as usize;
@@ -1154,10 +1221,15 @@ where
 
                 if bg {
                     params.background_counts[[gene, layer]] += 1;
+                } else if confusion {
+                    params.confusion_counts[gene] += 1;
                 } else {
                     params.foreground_counts[[cell as usize, gene, layer]] += 1;
                 }
             });
+
+        dbg!(params.background_counts.sum());
+        dbg!(params.confusion_counts.sum());
     }
 
     fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
@@ -1186,13 +1258,18 @@ where
         // let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
         // dbg!(vmin, vmax);
 
+        // TODO: Is altering this equivalent to placing a prior μ?
+        // TODO: Why does reducing this make everything go to background rather than confusion?
+        let V_SCALE = 1e-1;
+
         let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0)))
             .and(&params.cell_volume)
             .and(&params.z)
             .par_for_each(|ωs, cs, v, &z| {
-                let logv = v.ln();
+                // let logv = v.ln();
+                let logv = (V_SCALE * v).ln();
                 let mut rng = thread_rng();
                 Zip::from(cs.axis_iter(Axis(0))) // for every gene
                     .and(ωs)
@@ -1213,7 +1290,8 @@ where
             .and(&params.cell_volume)
             .and(&params.z)
             .for_each(|ωs, cs, v, &z| {
-                let logv = v.ln();
+                // let logv = v.ln();
+                let logv = (V_SCALE * v).ln();
                 Zip::from(params.μ_φ.row_mut(z as usize)) // for every gene
                     .and(params.σ_φ.row_mut(z as usize))
                     .and(params.r.row(z as usize))
@@ -1491,6 +1569,20 @@ where
         //     });
     }
 
+    fn sample_confusion_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        let total_cell_volume = params.cell_volume.sum();
+        dbg!(total_cell_volume);
+        let mut rng = thread_rng();
+        Zip::from(&mut params.λ_c)
+            .and(&params.confusion_counts)
+            .for_each(|λ, c| {
+                let α = priors.α_bg + *c as f32;
+                let β = priors.β_bg + total_cell_volume;
+                *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+            });
+        dbg!(total_cell_volume);
+    }
+
     fn sample_component_assignments(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         let ncomponents = params.ncomponents();
 
@@ -1686,7 +1778,7 @@ where
                 let λ_prev = if cell_prev == BACKGROUND_CELL {
                     0.0
                 } else {
-                    params.λ[[gene, cell_prev as usize]]
+                    params.λ[[gene, cell_prev as usize]] + params.λ_c[gene]
                 } + density * params.λ_bg[[gene, layer_prev]];
 
                 let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
@@ -1695,7 +1787,7 @@ where
                 let λ_new = if cell_new == BACKGROUND_CELL {
                     0.0
                 } else {
-                    params.λ[[gene, cell_new as usize]]
+                    params.λ[[gene, cell_new as usize]] + params.λ_c[gene]
                 } + density * params.λ_bg[[gene, layer_new]];
 
                 let ln_λ_diff = λ_new.ln() - λ_prev.ln();
