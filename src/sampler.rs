@@ -671,48 +671,46 @@ impl UncertaintyTracker {
     }
 
     fn max_posterior_cell_assignments(&self, params: &ModelParams) -> Vec<(u32, f32)> {
-        return params.cell_assignments.iter().map(|&j| (j, 1.0)).collect();
+        // sort ascending on (transcript, cell)
+        let sorted_durations: Vec<(usize, u32, u32)> = self
+            .cell_assignment_duration
+            .iter()
+            .map(|((i, j), d)| (*i, *j, *d))
+            .sorted_by(|(i_a, j_a, _), (i_b, j_b, _)| (*i_a, *j_a).cmp(&(*i_b, *j_b)))
+            .collect();
 
-        // // sort ascending on (transcript, cell)
-        // let sorted_durations: Vec<(usize, u32, u32)> = self
-        //     .cell_assignment_duration
-        //     .iter()
-        //     .map(|((i, j), d)| (*i, *j, *d))
-        //     .sorted_by(|(i_a, j_a, _), (i_b, j_b, _)| (*i_a, *j_a).cmp(&(*i_b, *j_b)))
-        //     .collect();
+        let mut summed_durations: Vec<(usize, u32, u32)> = Vec::new();
+        let mut ij_prev = (usize::MAX, u32::MAX);
+        for (i, j, d) in sorted_durations.iter().cloned() {
+            if (i, j) == ij_prev {
+                summed_durations.last_mut().unwrap().2 += d;
+            } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
+                summed_durations.push((i, j, d));
+                ij_prev = (i, j);
+            } else {
+                panic!("Missing transcript in cell assignments.");
+            }
+        }
 
-        // let mut summed_durations: Vec<(usize, u32, u32)> = Vec::new();
-        // let mut ij_prev = (usize::MAX, u32::MAX);
-        // for (i, j, d) in sorted_durations.iter().cloned() {
-        //     if (i, j) == ij_prev {
-        //         summed_durations.last_mut().unwrap().2 += d;
-        //     } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
-        //         summed_durations.push((i, j, d));
-        //         ij_prev = (i, j);
-        //     } else {
-        //         panic!("Missing transcript in cell assignments.");
-        //     }
-        // }
+        // sort ascending on (transcript, cell) and descending on duration
+        summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
+            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
+        });
 
-        // // sort ascending on (transcript, cell) and descending on duration
-        // summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
-        //     (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
-        // });
+        let mut maxpost_cell_assignments = Vec::new();
+        let mut i_prev = usize::MAX;
+        for (i, j, d) in summed_durations.iter().cloned() {
+            if i == i_prev {
+                continue;
+            } else if i == i_prev + 1 {
+                maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
+                i_prev = i;
+            } else {
+                panic!("Missing transcript in cell assignments.");
+            }
+        }
 
-        // let mut maxpost_cell_assignments = Vec::new();
-        // let mut i_prev = usize::MAX;
-        // for (i, j, d) in summed_durations.iter().cloned() {
-        //     if i == i_prev {
-        //         continue;
-        //     } else if i == i_prev + 1 {
-        //         maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
-        //         i_prev = i;
-        //     } else {
-        //         panic!("Missing transcript in cell assignments.");
-        //     }
-        // }
-
-        // return maxpost_cell_assignments;
+        return maxpost_cell_assignments;
     }
 
     pub fn max_posterior_transcript_counts_assignments(
@@ -1141,8 +1139,7 @@ where
 
         self.sample_background_rates(priors, params);
         self.sample_confusion_rates(priors, params);
-        // if !burnin && priors.use_diffusion_model {
-        if priors.use_diffusion_model {
+        if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
     }
