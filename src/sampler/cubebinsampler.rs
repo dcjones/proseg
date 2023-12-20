@@ -779,6 +779,27 @@ impl CubeBinSampler {
         return cell_polys;
     }
 
+    pub fn mismatch_edge_stats(&self) -> (usize, usize) {
+        let mut num_cell_cell_edges = 0;
+        let mut num_cell_bg_edges = 0;
+        for mismatch_edges_quad in self.mismatch_edges.iter() {
+            for mismatch_edges_chunk in mismatch_edges_quad.iter() {
+                for (from, to) in mismatch_edges_chunk.lock().unwrap().iter() {
+                    let cell_from = self.cubecells.get(*from);
+                    let cell_to = self.cubecells.get(*to);
+                    assert!(cell_from != cell_to);
+                    if cell_from == BACKGROUND_CELL || cell_to == BACKGROUND_CELL {
+                        num_cell_bg_edges += 1;
+                    } else {
+                        num_cell_cell_edges += 1;
+                    }
+                }
+            }
+        }
+
+        return (num_cell_cell_edges, num_cell_bg_edges);
+    }
+
     pub fn check_perimeter_bounds(&self, priors: &ModelPriors) {
         let mut count = 0;
         Zip::from(&self.cell_perimeter)
@@ -888,6 +909,11 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
             // .iter_mut()
             .zip(&self.mismatch_edges[self.quad])
             .for_each(|(proposal, mismatch_edges)| {
+                proposal.old_cell = BACKGROUND_CELL;
+                proposal.new_cell = BACKGROUND_CELL;
+                proposal.ignore = false;
+                proposal.accept = false;
+
                 let mismatch_edges = mismatch_edges.lock().unwrap();
                 if mismatch_edges.is_empty() {
                     proposal.ignore = true;

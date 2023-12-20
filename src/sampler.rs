@@ -581,11 +581,13 @@ impl ModelParams {
 pub struct ProposalStats {
     cell_to_cell_accept: usize,
     cell_to_cell_reject: usize,
+    cell_to_cell_ignore: usize,
     background_to_cell_accept: usize,
     background_to_cell_reject: usize,
     background_to_cell_ignore: usize,
     cell_to_background_accept: usize,
     cell_to_background_reject: usize,
+    cell_to_background_ignore: usize,
 }
 
 impl ProposalStats {
@@ -593,22 +595,26 @@ impl ProposalStats {
         ProposalStats {
             cell_to_cell_accept: 0,
             cell_to_cell_reject: 0,
+            cell_to_cell_ignore: 0,
             background_to_cell_accept: 0,
             background_to_cell_reject: 0,
             background_to_cell_ignore: 0,
             cell_to_background_accept: 0,
             cell_to_background_reject: 0,
+            cell_to_background_ignore: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.cell_to_cell_accept = 0;
         self.cell_to_cell_reject = 0;
+        self.cell_to_cell_ignore = 0;
         self.background_to_cell_accept = 0;
         self.background_to_cell_reject = 0;
         self.background_to_cell_ignore = 0;
         self.cell_to_background_accept = 0;
         self.cell_to_background_reject = 0;
+        self.cell_to_background_ignore = 0;
     }
 }
 
@@ -1010,6 +1016,37 @@ where
         params: &mut ModelParams,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
+        // Keep track of stats
+        for proposal in self.proposals().iter() {
+            let old_cell = proposal.old_cell();
+            let new_cell = proposal.new_cell();
+            if proposal.accepted() {
+                if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.background_to_cell_accept += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
+                    stats.cell_to_background_accept += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.cell_to_cell_accept += 1;
+                }
+            } else if proposal.ignored() {
+                if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.background_to_cell_ignore += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
+                    stats.cell_to_background_ignore += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.cell_to_cell_ignore += 1;
+                }
+            } else {
+                if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.background_to_cell_reject += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
+                    stats.cell_to_background_reject += 1;
+                } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                    stats.cell_to_cell_reject += 1;
+                }
+            }
+        }
+
         // Update cell assignments
         for proposal in self
             .proposals()
@@ -1064,14 +1101,6 @@ where
                 }
             }
 
-            // Keep track of stats
-            if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                stats.background_to_cell_accept += 1;
-            } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
-                stats.cell_to_background_accept += 1;
-            } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                stats.cell_to_cell_accept += 1;
-            }
         }
 
         self.update_sampler_state(params);

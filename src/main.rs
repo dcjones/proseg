@@ -805,6 +805,7 @@ fn run_hexbin_sampler(
         // println!("Empty cells: {}", empty_cell_count);
 
         // dbg!(&proposal_stats);
+        // dbg!(sampler.mismatch_edge_stats());
         proposal_stats.reset();
 
         // if i % 100 == 0 {
