@@ -1050,7 +1050,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     .count();
 
                 let mut proposal_prob =
-                    num_new_state_neighbors as f64 / num_mismatching_edges as f64;
+                    (1.0 - UNASSIGNED_PROPOSAL_PROB) * (num_new_state_neighbors as f64 / num_mismatching_edges as f64);
 
                 // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
                 if to_unassigned {
@@ -1059,10 +1059,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .iter()
                         .filter(|&&j| self.cubecells.get(j) != cell_from)
                         .count();
-
-                    proposal_prob = UNASSIGNED_PROPOSAL_PROB
-                        * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64)
-                        + (1.0 - UNASSIGNED_PROPOSAL_PROB) * proposal_prob;
+                    proposal_prob += UNASSIGNED_PROPOSAL_PROB * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64);
                 }
 
                 let new_num_mismatching_edges = num_mismatching_edges
@@ -1070,7 +1067,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     - 2*num_new_state_neighbors; // edges that are newly matching
 
                 let mut reverse_proposal_prob =
-                    num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64;
+                    (1.0 - UNASSIGNED_PROPOSAL_PROB) * (num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64);
 
                 // If this is a proposal from unassigned, account for multiple ways of reversing it
                 if from_unassigned {
@@ -1079,9 +1076,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .iter()
                         .filter(|&&j| self.cubecells.get(j) != cell_to)
                         .count();
-                    reverse_proposal_prob = UNASSIGNED_PROPOSAL_PROB
-                        * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64)
-                        + (1.0 - UNASSIGNED_PROPOSAL_PROB) * reverse_proposal_prob;
+                    reverse_proposal_prob += UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64);
                 }
 
                 proposal.cube = *i;
