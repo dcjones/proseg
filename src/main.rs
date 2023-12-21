@@ -5,6 +5,7 @@ use clap::Parser;
 mod output;
 mod sampler;
 
+use std::collections::HashSet;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
@@ -92,6 +93,9 @@ struct Args {
 
     #[arg(long, default_value_t = 10)]
     nlayers: usize,
+
+    #[arg(long, default_value_t=false)]
+    detect_layers: bool,
 
     #[arg(long, default_value_t = 8)]
     voxellayers: usize,
@@ -264,8 +268,8 @@ fn set_xenium_presets(args: &mut Args) {
 
 fn set_cosmx_presets(args: &mut Args) {
     args.transcript_column.get_or_insert(String::from("target"));
-    args.x_column.get_or_insert(String::from("x_global_px"));
-    args.y_column.get_or_insert(String::from("y_global_px"));
+    args.x_column.get_or_insert(String::from("x"));
+    args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
     args.compartment_column.get_or_insert(String::from("CellComp"));
     args.compartment_nuclear.get_or_insert(String::from("Nuclear"));
@@ -274,7 +278,7 @@ fn set_cosmx_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
     // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
-    args.scale = 20.0;
+    args.scale = 4.0;
 
     // TODO: Because the scale is different, we need to set different parameters
     // for max_nucleaus_transcript_distance, density_sigma, density_binsize
@@ -445,6 +449,25 @@ fn main() {
     let mut scale = args.scale;
     if args.calibrate_scale {
         scale = 0.5 * mean_nucleus_area.sqrt();
+    }
+
+    if args.detect_layers {
+        const MAX_ZLAYERS: usize = 30;
+        let mut undetectable = false;
+        let mut zlayers = HashSet::new();
+        for t in &transcripts {
+            if t.z.round() == t.z {
+                zlayers.insert(t.z as i32);
+            } else {
+                undetectable = true;
+                break;
+            }
+        }
+
+        if !undetectable && zlayers.len() <= MAX_ZLAYERS {
+            args.nlayers = zlayers.len();
+            println!("Detected {} z-layers", args.nlayers);
+        }
     }
 
     let mut layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
