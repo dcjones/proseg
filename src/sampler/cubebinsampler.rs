@@ -128,18 +128,18 @@ impl Cube {
         .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk));
     }
 
-    // fn double_resolution_children(&self) -> [Cube; 8] {
-    //     return [
-    //         Cube::new(2 * self.i, 2 * self.j, 2 * self.k),
-    //         Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
-    //         Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
-    //         Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
-    //         Cube::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
-    //         Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
-    //         Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
-    //         Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
-    //     ];
-    // }
+    fn double_resolution_and_layers_children(&self) -> [Cube; 8] {
+        return [
+            Cube::new(2 * self.i, 2 * self.j, 2 * self.k),
+            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
+            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
+            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
+            Cube::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
+            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
+            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
+            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
+        ];
+    }
 
     fn double_resolution_children(&self) -> [Cube; 4] {
         return [
@@ -180,8 +180,18 @@ impl CubeLayout {
             cube_size: (
                 self.cube_size.0 / 2.0,
                 self.cube_size.1 / 2.0,
-                // self.cube_size.2 / 2.0,
                 self.cube_size.2,
+            ),
+        };
+    }
+
+    fn double_resolution_and_layers(&self) -> CubeLayout {
+        return CubeLayout {
+            origin: (self.origin.0, self.origin.1, self.origin.2),
+            cube_size: (
+                self.cube_size.0 / 2.0,
+                self.cube_size.1 / 2.0,
+                self.cube_size.2 / 2.0,
             ),
         };
     }
@@ -539,11 +549,20 @@ impl CubeBinSampler {
 
     // Allocate a new RectBinSampler with the same state as this one, but
     // grid resolution doubled (i.e. rect size halved).
-    pub fn double_resolution(&self, params: &ModelParams) -> CubeBinSampler {
+    pub fn double_resolution(&self, params: &ModelParams, double_z_layers: bool) -> CubeBinSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.shape()[0];
-        let cubevolume = self.cubevolume / 4.0;
-        let layout = self.chunkquad.layout.double_resolution();
+        let cubevolume = if double_z_layers {
+            self.cubevolume / 8.0
+        } else {
+            self.cubevolume / 4.0
+        };
+
+        let layout = if double_z_layers {
+            self.chunkquad.layout.double_resolution_and_layers()
+        } else {
+            self.chunkquad.layout.double_resolution()
+        };
 
         let proposals = vec![CubeBinProposal::new(ngenes, self.nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -564,14 +583,24 @@ impl CubeBinSampler {
 
         // 15.3s
         let t0 = Instant::now();
-        for cube in cubeset {
-            let cell = self.cubecells.get(cube);
-            let subcubes = cube.double_resolution_children();
-
-            if cell != BACKGROUND_CELL {
-                // set cell states
-                for subcube in &subcubes {
-                    cubecells.insert(subcube.clone(), cell);
+        if double_z_layers {
+            for cube in cubeset {
+                let cell = self.cubecells.get(cube);
+                if cell != BACKGROUND_CELL {
+                    let subcubes = cube.double_resolution_and_layers_children();
+                    for subcube in &subcubes {
+                        cubecells.insert(subcube.clone(), cell);
+                    }
+                }
+            }
+        } else {
+            for cube in cubeset {
+                let cell = self.cubecells.get(cube);
+                if cell != BACKGROUND_CELL {
+                    let subcubes = cube.double_resolution_children();
+                    for subcube in &subcubes {
+                        cubecells.insert(subcube.clone(), cell);
+                    }
                 }
             }
         }
@@ -585,8 +614,14 @@ impl CubeBinSampler {
             }
         }
 
-        let cell_population = Array2::from_elem((self.voxellayers, self.cell_population.shape()[1]), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((self.voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
+        let voxellayers = if double_z_layers {
+            self.voxellayers * 2
+        } else {
+            self.voxellayers
+        };
+
+        let cell_population = Array2::from_elem((voxellayers, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_perimeter = Array2::from_elem((voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -605,7 +640,7 @@ impl CubeBinSampler {
             mismatch_edges,
             transcript_x_ord: self.transcript_x_ord.clone(),
             cubecells,
-            voxellayers: self.voxellayers,
+            voxellayers,
             cell_population,
             cell_perimeter,
             proposals,

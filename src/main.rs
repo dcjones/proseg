@@ -78,7 +78,7 @@ struct Args {
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
-    #[arg(long, default_value_t)]
+    #[arg(long, default_value_t=false)]
     ignore_z_coord: bool,
 
     #[arg(long, default_value_t = 0.0_f32)]
@@ -98,6 +98,9 @@ struct Args {
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
     schedule: Vec<usize>,
+
+    #[arg(long, default_value_t=false)]
+    double_z_layers: bool,
 
     #[arg(long, default_value_t=100)]
     recorded_samples: usize,
@@ -614,7 +617,7 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            sampler.replace_with(|sampler| sampler.double_resolution(&params));
+            sampler.replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
             run_hexbin_sampler(
                 &mut prog,
                 sampler.get_mut(),
@@ -634,7 +637,7 @@ fn main() {
         if args.check_consistency {
             sampler.borrow_mut().check_consistency(&priors, &mut params);
         }
-        sampler.replace_with(|sampler| sampler.double_resolution(&params));
+        sampler.replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
     }
 
     run_hexbin_sampler(
