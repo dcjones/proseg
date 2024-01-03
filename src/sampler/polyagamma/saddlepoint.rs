@@ -48,6 +48,7 @@ where
                 break;
             }
         } else {
+            // TODO: getting stuck here with h = 0.0
             pr.x = random_left_bounded_gamma(rng, h, hrho, pr.xc);
         }
     }

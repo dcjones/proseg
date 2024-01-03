@@ -12,6 +12,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
+use json::from;
 use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
@@ -22,6 +23,7 @@ use math::{
     LogGammaPlus,
 };
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use petgraph::data::Element;
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
@@ -734,13 +736,18 @@ impl UncertaintyTracker {
                 let layer = params.zlayer(params.transcript_positions[i].2);
                 let density = params.transcript_density[i];
 
-                let λ_fg = params.λ[[gene as usize, *j as usize]];
-                let λ_bg = params.λ_bg[[gene as usize, layer]];
-                let fg_pr = λ_fg / (λ_fg + density * λ_bg);
+                // TODO: This doesn't really make sense, because we are tracking
+                // the proportion of time a transcript is assigned to background
+                // or confusion.
 
-                if fg_pr > foreground_pr_cutoff {
+                // let λ_cell = params.λ[[gene as usize, *j as usize]];
+                // let λ_bg = params.λ_bg[[gene as usize, layer]];
+                // let λ_c = params.λ_c[gene as usize];
+                // let fg_pr = λ_cell / (λ_cell + density * λ_bg + λ_c);
+
+                // if fg_pr > foreground_pr_cutoff {
                     counts[[gene as usize, *j as usize]] += 1;
-                }
+                // }
             }
         }
 
@@ -765,11 +772,15 @@ impl UncertaintyTracker {
 
             let w_d = d as f32 / (params.t - 1) as f32;
 
-            let λ_fg = params.λ[[gene as usize, j as usize]];
-            let λ_bg = params.λ_bg[[gene as usize, layer]];
-            let w_bg = λ_fg / (λ_fg + density * λ_bg);
+            // TODO: not accounting for λ_c here!!!
 
-            ecounts[[gene as usize, j as usize]] += w_d * w_bg;
+            // let λ_fg = params.λ[[gene as usize, j as usize]];
+            // let λ_bg = params.λ_bg[[gene as usize, layer]];
+            // let w_bg = λ_fg / (λ_fg + density * λ_bg);
+
+            // ecounts[[gene as usize, j as usize]] += w_d * w_bg;
+
+            ecounts[[gene as usize, j as usize]] += w_d;
         }
 
         return ecounts;
@@ -808,7 +819,7 @@ pub trait Proposal {
     where
         'b: 'c;
 
-    fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams) {
+    fn evaluate(&mut self, priors: &ModelPriors, params: &ModelParams, hillclimb: bool) {
         if self.ignored() {
             self.reject();
             return;
@@ -949,8 +960,16 @@ pub trait Proposal {
         let mut rng = thread_rng();
         let logu = rng.gen::<f32>().ln();
 
-        if logu < δ + self.log_weight() {
+        if (hillclimb && δ > 0.0) || (!hillclimb && logu < δ + self.log_weight()) {
             self.accept();
+            // TODO: debugging
+            // if from_background && !to_background {
+            //     dbg!(
+            //         self.log_weight(),
+            //         δ,
+            //         self.gene_count().sum(),
+            //     );
+            // }
         } else {
             self.reject();
         }
@@ -995,6 +1014,7 @@ where
         params: &mut ModelParams,
         stats: &mut ProposalStats,
         transcripts: &Vec<Transcript>,
+        hillclimb: bool,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
         // don't count time unless we are tracking uncertainty
@@ -1004,7 +1024,7 @@ where
         self.repopulate_proposals(priors, params);
         self.proposals_mut()
             .par_iter_mut()
-            .for_each(|p| p.evaluate(priors, params));
+            .for_each(|p| p.evaluate(priors, params, hillclimb));
         self.apply_accepted_proposals(stats, transcripts, priors, params, uncertainty);
     }
 
@@ -1464,15 +1484,18 @@ where
                             let ψ = φ + vol.ln();
 
                             let uv_z = uv[z];
+
+                            if (uv[z].1 + log1pf(-logistic(ψ))).is_infinite() {
+                                dbg!(uv[z], ψ, φ, vol);
+                            }
+
                             uv[z] = (
                                 uv_z.0 + rand_crt(&mut rng, c as u32, r),
                                 // uv_z.1 + log1pf(-odds_to_prob(θ * vol))
                                 uv_z.1 + log1pf(-logistic(ψ))
                             );
 
-                            // if uv[z].1.is_infinite() {
-                            //     dbg!(uv[z], θ, vol, c, r);
-                            // }
+                            assert!(uv[z].1.is_finite());
                         });
 
                     // iterate over components sampling r
@@ -1503,7 +1526,10 @@ where
 
                             assert!(r.is_finite());
 
+                            // TODO: Without this, things get kind of fucky.
                             *r = r.min(200.0).max(1e-5);
+                            // *r = r.min(50.0);
+                            // *r = r.max(1e-5);
 
                             *lgamma_r = lgammaf(*r);
                             loggammaplus.reset(*r);
@@ -1546,6 +1572,7 @@ where
         )
         .unwrap()
         .sample(&mut thread_rng());
+        dbg!(params.h);
     }
 
     fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {

@@ -305,8 +305,9 @@ fn set_merfish_presets(args: &mut Args) {
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
     args.cell_id_column.get_or_insert(String::from("cell"));
-    args.cell_id_unassigned.get_or_insert(String::from("NA"));
-    args.scale = 4.0;
+    // args.cell_id_unassigned.get_or_insert(String::from("NA"));
+    args.cell_id_unassigned.get_or_insert(String::from("0"));
+    args.scale = 2.0;
 }
 
 
@@ -406,6 +407,14 @@ fn main() {
     for t in &mut transcripts {
         t.z = t.z.max(zmin).min(zmax);
     }
+
+    // // TODO: debugging
+    // for t in &mut transcripts {
+    //     let rng = &mut rand::thread_rng();
+    //     // if rng.gen::<f64>() < 0.95 {
+    //         t.z = 0.0;
+    //     // }
+    // }
 
     let mut ncells = nucleus_population.len();
     let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
@@ -633,6 +642,7 @@ fn main() {
             args.monitor_cell_polygons_freq,
             true,
             true,
+            false,
         );
 
         for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
@@ -655,6 +665,7 @@ fn main() {
                 args.monitor_cell_polygons_freq,
                 true,
                 true,
+                false,
             );
         }
         if args.check_consistency {
@@ -677,6 +688,7 @@ fn main() {
         args.monitor_cell_polygons_freq,
         true,
         false,
+        false,
     );
 
     run_hexbin_sampler(
@@ -692,6 +704,7 @@ fn main() {
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
         true,
+        false,
         false,
     );
 
@@ -789,6 +802,7 @@ fn run_hexbin_sampler(
     monitor_cell_polygons_freq: usize,
     sample_cell_regions: bool,
     burnin: bool,
+    hillclimb: bool,
 ) {
     sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
     let mut proposal_stats = ProposalStats::new();
@@ -804,6 +818,7 @@ fn run_hexbin_sampler(
                     params,
                     &mut proposal_stats,
                     transcripts,
+                    hillclimb,
                     &mut uncertainty,
                 );
             }
@@ -830,7 +845,7 @@ fn run_hexbin_sampler(
         // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
         // println!("Empty cells: {}", empty_cell_count);
 
-        // dbg!(&proposal_stats);
+        dbg!(&proposal_stats);
         // dbg!(sampler.mismatch_edge_stats());
         proposal_stats.reset();
 

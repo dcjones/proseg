@@ -302,6 +302,10 @@ where Exp1: Distribution<T>
         let log_m = amin1 * ((amin1 / one_minus_c0).ln() - 1.0);
 
         let mut x = T::zero();
+        // TODO: seems we sometimes get stuck here
+        // b = 0
+        // t = 0
+        // c0 = 0
         loop {
             x = b + rng.sample::<T, Exp1>(Exp1) / c0;
             let threshold = amin1 * x.ln() - x * one_minus_c0 - log_m;

@@ -9,6 +9,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::algorithm::simplify::Simplify;
 use geo::BooleanOps;
+use json::from;
 use ndarray::{Array1, Array2, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
@@ -923,7 +924,7 @@ impl CubeBinSampler {
 
 impl Sampler<CubeBinProposal> for CubeBinSampler {
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams) {
-        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.05;
+        const UNASSIGNED_PROPOSAL_PROB: f64 = 0.01;
 
         // let t0 = Instant::now();
         // self.transcript_x_ord.par_sort_unstable_by(
@@ -1078,6 +1079,18 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .count();
                     reverse_proposal_prob += UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64);
                 }
+
+                // if proposal_prob > 0.5 || reverse_proposal_prob > 0.5 {
+                // if from_unassigned {
+                //     dbg!(
+                //         from_unassigned,
+                //         to_unassigned,
+                //         proposal_prob,
+                //         reverse_proposal_prob,
+                //         num_mismatching_edges,
+                //         new_num_mismatching_edges,
+                //     );
+                // }
 
                 proposal.cube = *i;
                 // if let Some(transcripts) = transcripts {
