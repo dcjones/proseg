@@ -17,8 +17,8 @@ pub fn estimate_transcript_density(
 
     let (x0, x1, y0, y1, _z0, _z1) = coordinate_span(transcripts);
 
-    let nxbins = ((x1 - x0) / binsize).ceil() as usize;
-    let nybins = ((y1 - y0) / binsize).ceil() as usize;
+    let nxbins = (((x1 - x0)) / binsize).ceil() as usize + 1;
+    let nybins = (((y1 - y0)) / binsize).ceil() as usize + 1;
 
     // local density for each transcript
     let mut transcript_density = Array1::zeros(transcripts.len());
