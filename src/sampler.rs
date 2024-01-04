@@ -1337,18 +1337,13 @@ where
         // let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
         // dbg!(vmin, vmax);
 
-        // TODO: Is altering this equivalent to placing a prior μ?
-        // TODO: Why does reducing this make everything go to background rather than confusion?
-        let V_SCALE = 1.0;
-
         let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0)))
             .and(&params.cell_volume)
             .and(&params.z)
             .par_for_each(|ωs, cs, v, &z| {
-                // let logv = v.ln();
-                let logv = (V_SCALE * v).ln();
+                let logv = v.ln();
                 let mut rng = thread_rng();
                 Zip::from(cs.axis_iter(Axis(0))) // for every gene
                     .and(ωs)
@@ -1369,8 +1364,7 @@ where
             .and(&params.cell_volume)
             .and(&params.z)
             .for_each(|ωs, cs, v, &z| {
-                // let logv = v.ln();
-                let logv = (V_SCALE * v).ln();
+                let logv = v.ln();
                 Zip::from(params.μ_φ.row_mut(z as usize)) // for every gene
                     .and(params.σ_φ.row_mut(z as usize))
                     .and(params.r.row(z as usize))
@@ -1397,7 +1391,7 @@ where
             .and(&params.σ_φ)
             .for_each(|φ, &μ, &σ| {
                 let mut rng = thread_rng();
-                *φ = Normal::new(μ, σ).unwrap().sample(&mut rng);
+                *φ = Normal::new(μ, σ.sqrt()).unwrap().sample(&mut rng);
             });
         println!("  Sample φ: {:?}", t0.elapsed());
 
@@ -1482,17 +1476,17 @@ where
                             let r = rs[z];
                             let φ = φs[z];
                             let ψ = φ + vol.ln();
+                            let δv = -ψ - log1pf((-ψ).exp());
 
                             let uv_z = uv[z];
 
-                            if (uv[z].1 + log1pf(-logistic(ψ))).is_infinite() {
+                            if (uv[z].1 + δv).is_infinite() {
                                 dbg!(uv[z], ψ, φ, vol);
                             }
 
                             uv[z] = (
                                 uv_z.0 + rand_crt(&mut rng, c as u32, r),
-                                // uv_z.1 + log1pf(-odds_to_prob(θ * vol))
-                                uv_z.1 + log1pf(-logistic(ψ))
+                                uv_z.1 + δv
                             );
 
                             assert!(uv[z].1.is_finite());

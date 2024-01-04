@@ -307,7 +307,7 @@ fn set_merfish_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell"));
     // args.cell_id_unassigned.get_or_insert(String::from("NA"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.scale = 2.0;
+    args.scale = 4.0;
 }
 
 
@@ -554,7 +554,7 @@ fn main() {
         e_h: 1.0,
         f_h: 1.0,
 
-        γ: 1.0,
+        γ: 1e-1,
 
         α_bg: 1.0,
         β_bg: 1.0,
@@ -845,7 +845,7 @@ fn run_hexbin_sampler(
         // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
         // println!("Empty cells: {}", empty_cell_count);
 
-        dbg!(&proposal_stats);
+        // dbg!(&proposal_stats);
         // dbg!(sampler.mismatch_edge_stats());
         proposal_stats.reset();
 
