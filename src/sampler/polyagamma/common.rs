@@ -67,19 +67,19 @@ pub fn upper_incomplete_gamma<T: Float>(p: T, x: T, normalized: bool) -> T {
         confluent_p_smaller(p, x)
     };
 
-    let PGM_MAX_EXP_T =  T::from(PGM_MAX_EXP).unwrap();
+    let pgm_max_exp_t =  T::from(PGM_MAX_EXP).unwrap();
 
     if normalized {
         let out = f * (-x + p * x.ln() - pgm_lgamma(p)).exp();
         return if x_smaller { 1.0 - out } else { out };
     } else if x_smaller {
         let lgam = pgm_lgamma(p);
-        let exp_lgam = if lgam >= PGM_MAX_EXP_T {
-            PGM_MAX_EXP_T.exp()
+        let exp_lgam = if lgam >= pgm_max_exp_t {
+            pgm_max_exp_t.exp()
         } else {
             lgam.exp()
         };
-        let arg = (-x + p * x.ln() - lgam).min(PGM_MAX_EXP_T).max(-PGM_MAX_EXP_T);
+        let arg = (-x + p * x.ln() - lgam).min(pgm_max_exp_t).max(-pgm_max_exp_t);
 
         return (1.0 - f * arg.exp()) * exp_lgam;
     } else {
@@ -117,13 +117,13 @@ const PGM_MAX_EXP: f64 = 88.7228;
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn confluent_x_smaller<T: Float>(p: T, x: T) -> T {
-    let FLT_MIN_T = T::from(FLT_MIN).unwrap();
+    let flt_min_t = T::from(FLT_MIN).unwrap();
     let mut a = 1.0;
     let mut b = p;
     let r = -(p - 1.0) * x;
     let s = 0.5 * x;
     let mut f = a / b;
-    let mut c = a / FLT_MIN_T;
+    let mut c = a / flt_min_t;
     let mut d = 1.0 / b;
 
     for n in 2..100 {
@@ -135,10 +135,10 @@ fn confluent_x_smaller<T: Float>(p: T, x: T) -> T {
 
         b += 1.0;
         c = b + a / c;
-        c = c.max(FLT_MIN_T);
+        c = c.max(flt_min_t);
 
         d = a * d + b;
-        d = d.max(FLT_MIN_T);
+        d = d.max(flt_min_t);
 
         d = d.recip();
         let delta = c * d;
@@ -178,11 +178,11 @@ fn confluent_x_smaller<T: Float>(p: T, x: T) -> T {
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn confluent_p_smaller<T: Float>(p: T, x: T) -> T {
-    let FLT_MIN_T = T::from(FLT_MIN).unwrap();
+    let flt_min_t = T::from(FLT_MIN).unwrap();
     let mut a = 1.0;
     let mut b = x - p + 1.0;
     let mut f = a / b;
-    let mut c = a / FLT_MIN_T;
+    let mut c = a / flt_min_t;
     let mut d = 1.0 / b;
 
     let mut n = 1.0;
@@ -191,10 +191,10 @@ fn confluent_p_smaller<T: Float>(p: T, x: T) -> T {
         b += 2.0;
 
         c = b + a / c;
-        c = c.max(FLT_MIN_T);
+        c = c.max(flt_min_t);
 
         d = a * d + b;
-        d = d.max(FLT_MIN_T);
+        d = d.max(flt_min_t);
 
         d = 1.0 / d;
         let delta = c * d;
@@ -301,7 +301,7 @@ where Exp1: Distribution<T>
         let one_minus_c0 = 1.0 - c0;
         let log_m = amin1 * ((amin1 / one_minus_c0).ln() - 1.0);
 
-        let mut x = T::zero();
+        let mut x: T;
         // TODO: seems we sometimes get stuck here
         // b = 0
         // t = 0
@@ -320,7 +320,7 @@ where Exp1: Distribution<T>
     } else {
         let amin1 = a - 1.0;
         let tb = t * b;
-        let mut x = T::zero();
+        let mut x;
         loop {
             x = 1.0 + rng.sample::<T, Exp1>(Exp1) / tb;
             if (-T::from(rng.gen::<f32>()).unwrap()).ln_1p() <= amin1 * x.ln() {

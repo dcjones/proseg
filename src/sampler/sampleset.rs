@@ -74,7 +74,7 @@ where
     //     return self.set.contains_key(value);
     // }
 
-    pub fn iter(&self) -> std::slice::Iter<T> {
-        return self.vec.iter();
-    }
+    // pub fn iter(&self) -> std::slice::Iter<T> {
+    //     return self.vec.iter();
+    // }
 }

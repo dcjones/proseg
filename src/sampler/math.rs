@@ -3,9 +3,9 @@ use libm::lgammaf;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 
-pub fn logit(p: f32) -> f32 {
-    return p.ln() - (1.0 - p).ln();
-}
+// pub fn logit(p: f32) -> f32 {
+//     return p.ln() - (1.0 - p).ln();
+// }
 
 pub fn logistic(x: f32) -> f32 {
     return 1.0 / (1.0 + (-x).exp());
@@ -84,14 +84,6 @@ pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
     return (0..n)
         .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
         .sum();
-}
-
-pub fn odds_to_prob(o: f32) -> f32 {
-    return o / (1.0 + o);
-}
-
-pub fn prob_to_odds(p: f32) -> f32 {
-    return p / (1.0 - p);
 }
 
 // log-factorial with precomputed values for small numbers

@@ -9,20 +9,17 @@ use std::collections::HashSet;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use rand::Rng;
 use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
 use sampler::density::estimate_transcript_density;
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, estimate_cell_centroids, estimate_full_area, filter_cellfree_transcripts,
-    read_transcripts_csv, Transcript, BACKGROUND_CELL,
+    read_transcripts_csv, Transcript,
 };
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 
 use output::*;
-
-use sampler::polyagamma::PolyaGamma;
 
 #[derive(Parser, Debug)]
 #[command(name = "proseg")]
@@ -720,11 +717,6 @@ fn main() {
         args.count_pr_cutoff,
         args.foreground_pr_cutoff,
     );
-
-    let assigned_count = cell_assignments
-        .iter()
-        .filter(|(c, _)| *c != BACKGROUND_CELL)
-        .count();
 
     let ecounts = uncertainty.expected_counts(&params, &transcripts);
     let cell_centroids = estimate_cell_centroids(&transcripts, &params.cell_assignments, ncells);

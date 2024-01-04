@@ -9,8 +9,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::algorithm::simplify::Simplify;
 use geo::BooleanOps;
-use json::from;
-use ndarray::{Array1, Array2, Axis, Zip};
+use ndarray::{Array1, Array2, Axis};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -235,15 +234,6 @@ type CubeEdgeSampleSet = SampleSet<(Cube, Cube)>;
 struct CubeBin {
     cube: Cube,
     transcripts: Arc<Mutex<Vec<usize>>>,
-}
-
-impl CubeBin {
-    fn new(cube: Cube) -> Self {
-        Self {
-            cube,
-            transcripts: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
 }
 
 struct ChunkQuadMap {
@@ -815,39 +805,39 @@ impl CubeBinSampler {
         return cell_polys;
     }
 
-    pub fn mismatch_edge_stats(&self) -> (usize, usize) {
-        let mut num_cell_cell_edges = 0;
-        let mut num_cell_bg_edges = 0;
-        for mismatch_edges_quad in self.mismatch_edges.iter() {
-            for mismatch_edges_chunk in mismatch_edges_quad.iter() {
-                for (from, to) in mismatch_edges_chunk.lock().unwrap().iter() {
-                    let cell_from = self.cubecells.get(*from);
-                    let cell_to = self.cubecells.get(*to);
-                    assert!(cell_from != cell_to);
-                    if cell_from == BACKGROUND_CELL || cell_to == BACKGROUND_CELL {
-                        num_cell_bg_edges += 1;
-                    } else {
-                        num_cell_cell_edges += 1;
-                    }
-                }
-            }
-        }
+    // pub fn mismatch_edge_stats(&self) -> (usize, usize) {
+    //     let mut num_cell_cell_edges = 0;
+    //     let mut num_cell_bg_edges = 0;
+    //     for mismatch_edges_quad in self.mismatch_edges.iter() {
+    //         for mismatch_edges_chunk in mismatch_edges_quad.iter() {
+    //             for (from, to) in mismatch_edges_chunk.lock().unwrap().iter() {
+    //                 let cell_from = self.cubecells.get(*from);
+    //                 let cell_to = self.cubecells.get(*to);
+    //                 assert!(cell_from != cell_to);
+    //                 if cell_from == BACKGROUND_CELL || cell_to == BACKGROUND_CELL {
+    //                     num_cell_bg_edges += 1;
+    //                 } else {
+    //                     num_cell_cell_edges += 1;
+    //                 }
+    //             }
+    //         }
+    //     }
 
-        return (num_cell_cell_edges, num_cell_bg_edges);
-    }
+    //     return (num_cell_cell_edges, num_cell_bg_edges);
+    // }
 
-    pub fn check_perimeter_bounds(&self, priors: &ModelPriors) {
-        let mut count = 0;
-        Zip::from(&self.cell_perimeter)
-            .and(&self.cell_population)
-            .for_each(|&perimiter, &pop| {
-                let bound = perimeter_bound(priors.perimeter_eta, priors.perimeter_bound, pop);
-                if perimiter > bound {
-                    count += 1;
-                }
-            });
-        println!("perimeter bound violations: {}", count);
-    }
+    // pub fn check_perimeter_bounds(&self, priors: &ModelPriors) {
+    //     let mut count = 0;
+    //     Zip::from(&self.cell_perimeter)
+    //         .and(&self.cell_population)
+    //         .for_each(|&perimiter, &pop| {
+    //             let bound = perimeter_bound(priors.perimeter_eta, priors.perimeter_bound, pop);
+    //             if perimiter > bound {
+    //                 count += 1;
+    //             }
+    //         });
+    //     println!("perimeter bound violations: {}", count);
+    // }
 
     pub fn check_consistency(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         self.check_cell_volume(priors, params);
@@ -1539,7 +1529,7 @@ pub fn filter_sparse_cells(
     nucleus_population: &mut Vec<usize>,
 ) {
     let t0 = Instant::now();
-    let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
+    let (_layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
     println!("bin_transcripts: {:?}", t0.elapsed());
 
     let t0 = Instant::now();

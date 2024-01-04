@@ -1,7 +1,5 @@
-use num_traits::{cast::FromPrimitive, cast::NumCast, float};
-use numeric_literals::{replace_numeric_literals, replace_float_literals};
+use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::uniform::{SampleUniform, Uniform};
 use rand_distr::{Distribution, StandardNormal, Standard, Exp1};
 use super::float::Float;
 use super::common::{upper_incomplete_gamma, random_left_bounded_gamma};
@@ -36,20 +34,25 @@ where
     loop {
         let u = T::from(rng.gen::<f32>()).unwrap();
         if u < proposal_probability {
-            let y = rng.sample::<T, StandardNormal>(StandardNormal);
-            let w = sqrt_rho_inv + 0.5 * mu2 * y * y / h;
-            pr.x = w - (w * w - mu2).abs().sqrt();
+            loop {
+                let y = rng.sample::<T, StandardNormal>(StandardNormal);
+                let w = sqrt_rho_inv + 0.5 * mu2 * y * y / h;
+                pr.x = w - (w * w - mu2).abs().sqrt();
 
-            if rng.sample::<T, Standard>(Standard) * (1.0 + pr.x * sqrt_rho) > 1.0 {
-                pr.x = mu2 / pr.x;
-            }
+                if rng.sample::<T, Standard>(Standard) * (1.0 + pr.x * sqrt_rho) > 1.0 {
+                    pr.x = mu2 / pr.x;
+                }
 
-            if pr.x < pr.xc {
-                break;
+                if pr.x < pr.xc {
+                    break;
+                }
             }
         } else {
-            // TODO: getting stuck here with h = 0.0
             pr.x = random_left_bounded_gamma(rng, h, hrho, pr.xc);
+        }
+
+        if T::from(rng.gen::<f32>()).unwrap() * bounding_kernel(&pr) <= saddle_point(&pr) {
+            break;
         }
     }
 
@@ -81,7 +84,7 @@ struct Parameters<T: Float> {
     logxc: T,
     xc: T,
     h: T,
-    z: T,
+    // z: T,
     x: T,
 }
 
@@ -111,10 +114,10 @@ impl<T: Float> Parameters<T> {
         let log275 = 1.0116009116784799;
         let log3 = 1.0986122886681098;
 
-        let mut logxl = 0.0;
-        let mut xl = 0.0;
-        let mut half_z2;
-        let mut log_cosh_z;
+        let xl;
+        let logxl ;
+        let half_z2;
+        let log_cosh_z;
 
         if z > 0. {
             xl = tanh_x(z);
@@ -172,7 +175,7 @@ impl<T: Float> Parameters<T> {
             logxc,
             xc,
             h,
-            z,
+            // z,
             x: 0.0,
         };
     }
@@ -304,7 +307,7 @@ fn newton_raphson<T: Float>(arg: T, mut x0: T) -> (T, FuncReturnValue<T>) {
 
     let mut n = 0;
     let mut x = x0;
-    let mut value = FuncReturnValue{ f: T::zero(), fprime: T::zero() };
+    let mut value;
     loop {
         x0 = x;
         value = cumulant_prime(x0);
@@ -341,7 +344,7 @@ fn saddle_point<T: Float>(pr: &Parameters<T>) -> T {
  * Proposition 17 of Windle et al (2014).
  */
 #[replace_float_literals(T::from(literal).unwrap())]
-fn bounding_kernel<T: Float>(pr: Parameters<T>) -> T {
+fn bounding_kernel<T: Float>(pr: &Parameters<T>) -> T {
     if pr.x > pr.xc {
         let point = pr.right_tangent_slope * pr.x + pr.right_tangent_intercept;
         return (pr.h * (pr.logxc + point) + (pr.h - 1.0) * pr.x.ln()).exp() * pr.right_kernel_coef;

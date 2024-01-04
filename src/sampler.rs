@@ -12,22 +12,21 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use json::from;
 use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
     logistic, normal_pdf,
-    lognormal_logpdf, negbin_logpmf_fast, odds_to_prob, prob_to_odds, rand_crt, LogFactorial,
+    lognormal_logpdf, negbin_logpmf_fast, rand_crt, LogFactorial,
     LogGammaPlus,
 };
+use polyagamma::PolyaGamma;
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
-use petgraph::data::Element;
 use rand::{thread_rng, Rng};
-use rand_distr::{Beta, Dirichlet, Distribution, Gamma, Normal, StandardNormal};
+use rand_distr::{Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
-use std::cell::{RefCell, self};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f32;
 use std::fs::File;
@@ -36,7 +35,6 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-use crate::sampler::polyagamma::PolyaGamma;
 
 use std::time::Instant;
 
@@ -648,14 +646,6 @@ impl UncertaintyTracker {
             .or_insert(duration);
     }
 
-    fn update_assignment(&mut self, params: &ModelParams, i: usize, cell: CellIndex) {
-        let duration = params.t - params.cell_assignment_time[i];
-        self.cell_assignment_duration
-            .entry((i, cell))
-            .and_modify(|d| *d += duration)
-            .or_insert(duration);
-    }
-
     fn update_assignment_duration(&mut self, i: usize, cell: CellIndex, duration: u32) {
         self.cell_assignment_duration
             .entry((i, cell))
@@ -726,15 +716,15 @@ impl UncertaintyTracker {
         params: &ModelParams,
         transcripts: &Vec<Transcript>,
         count_pr_cutoff: f32,
-        foreground_pr_cutoff: f32,
+        _foreground_pr_cutoff: f32,
     ) -> (Array2<u32>, Vec<(u32, f32)>) {
         let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0_u32);
         let maxpost_assignments = self.max_posterior_cell_assignments(&params);
         for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
-                let layer = params.zlayer(params.transcript_positions[i].2);
-                let density = params.transcript_density[i];
+                // let layer = params.zlayer(params.transcript_positions[i].2);
+                // let density = params.transcript_density[i];
 
                 // TODO: This doesn't really make sense, because we are tracking
                 // the proportion of time a transcript is assigned to background
@@ -767,8 +757,8 @@ impl UncertaintyTracker {
             }
 
             let gene = transcripts[i].gene;
-            let layer = params.zlayer(params.transcript_positions[i].2);
-            let density = params.transcript_density[i];
+            // let layer = params.zlayer(params.transcript_positions[i].2);
+            // let density = params.transcript_density[i];
 
             let w_d = d as f32 / (params.t - 1) as f32;
 
