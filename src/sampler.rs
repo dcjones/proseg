@@ -692,17 +692,23 @@ impl UncertaintyTracker {
 
         // sort ascending on (transcript, cell) and descending on duration
         summed_durations.sort_by(|(i_a, j_a, d_a), (i_b, j_b, d_b)| {
-            (*i_a, *j_a, *d_b).cmp(&(*i_b, *j_b, *d_a))
+            (*i_a, *d_b, *j_a).cmp(&(*i_b, *d_a, *j_b))
         });
 
         let mut maxpost_cell_assignments = Vec::new();
         let mut i_prev = usize::MAX;
+        let mut j_prev = CellIndex::MAX;
+        let mut d_prev = u32::MAX;
         for (i, j, d) in summed_durations.iter().cloned() {
             if i == i_prev {
+                assert!(j != j_prev);
+                assert!(d <= d_prev);
                 continue;
             } else if i == i_prev + 1 {
                 maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
                 i_prev = i;
+                j_prev = j;
+                d_prev = d;
             } else {
                 panic!("Missing transcript in cell assignments.");
             }
@@ -1894,6 +1900,10 @@ where
                 *accept = logu < δ;
             });
         // println!("  Eval transcript position proposals: {:?}", t0.elapsed());
+
+        // let naccepted = params.accept_proposed_transcript_positions.iter().map(|&x| x as u32).sum::<u32>();
+        // let prop_accepted = naccepted as f32 / params.accept_proposed_transcript_positions.len() as f32;
+        // println!("  Accepted {}% of transcript repo proposals", 100.0 * prop_accepted);
     }
 
     fn sample_transcript_positions(
