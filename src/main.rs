@@ -772,8 +772,12 @@ fn main() {
         &args.output_cell_cubes_fmt,
         &sampler.borrow(),
     );
-    write_cell_multipolygons(&args.output_cell_polygons, &sampler.borrow());
-    write_cell_layered_multipolygons(&args.output_cell_polygon_layers, &sampler.borrow());
+
+    if args.output_cell_polygon_layers.is_some() || args.output_cell_polygons.is_some() {
+        let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
+        write_cell_multipolygons(&args.output_cell_polygons, cell_flattened_polygons);
+        write_cell_layered_multipolygons(&args.output_cell_polygon_layers, cell_polygons);
+    }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
         params.write_cell_hulls(&transcripts, &counts, &output_cell_hulls);
@@ -848,7 +852,8 @@ fn run_hexbin_sampler(
         if *total_steps % monitor_cell_polygons_freq == 0 {
             if let Some(basename) = monitor_cell_polygons {
                 let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
-                write_cell_layered_multipolygons(&Some(filename), sampler);
+                let (cell_polygons, cell_flattened_polygons) = sampler.cell_polygons();
+                write_cell_layered_multipolygons(&Some(filename), cell_polygons);
             }
         }
 

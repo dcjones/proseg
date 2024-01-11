@@ -4,6 +4,7 @@ pub mod density;
 pub mod hull;
 mod math;
 mod sampleset;
+mod polygons;
 pub mod transcripts;
 pub mod polyagamma;
 

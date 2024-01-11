@@ -4,6 +4,7 @@ use arrow2::chunk::Chunk;
 use arrow2::datatypes::{DataType, Field, Schema};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use geo::MultiPolygon;
 use ndarray::{Array1, Array2, Axis, Zip};
 use std::fs::File;
 use std::io::Write;
@@ -527,10 +528,8 @@ pub fn write_cubes(
 // the coordinates to pixel space. It also doesn't seem like it supports
 // MultiPolygons, so we need to write each polygon in a cell to a separate Polygon entry.
 
-pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: &CubeBinSampler) {
+pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, polygons: Vec<MultiPolygon<f32>>) {
     if let Some(output_cell_polygons) = output_cell_polygons {
-        // Need to collect cubes and organize
-        let cell_polys = sampler.cell_polygons();
 
         let file = File::create(output_cell_polygons).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
@@ -541,8 +540,8 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
         )
         .unwrap();
 
-        let ncells = cell_polys.len();
-        for (cell, polys) in cell_polys.into_iter().enumerate() {
+        let ncells = polygons.len();
+        for (cell, polys) in polygons.into_iter().enumerate() {
             writeln!(
                 encoder,
                 concat!(
@@ -596,12 +595,9 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, sampler: 
 
 pub fn write_cell_layered_multipolygons(
     output_cell_polygons: &Option<String>,
-    sampler: &CubeBinSampler,
+    polygons: Vec<Vec<(i32, MultiPolygon<f32>)>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
-        // Need to collect cubes and organize
-        let cell_layered_polys = sampler.cell_layered_polygons();
-
         let file = File::create(output_cell_polygons).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
 
@@ -612,13 +608,13 @@ pub fn write_cell_layered_multipolygons(
         .unwrap();
 
         let mut nmultipolys = 0;
-        for (_, cell_polys) in cell_layered_polys.iter() {
+        for cell_polys in polygons.iter() {
             nmultipolys += cell_polys.len();
         }
 
         let mut count = 0;
-        for (layer, cell_polys) in cell_layered_polys {
-            for (cell, polys) in cell_polys.into_iter().enumerate() {
+        for (cell, cell_polys) in polygons.iter().enumerate() {
+            for (layer, polys) in cell_polys.into_iter() {
                 writeln!(
                     encoder,
                     concat!(
