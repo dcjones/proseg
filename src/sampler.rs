@@ -683,7 +683,7 @@ impl UncertaintyTracker {
         for (i, j, d) in sorted_durations.iter().cloned() {
             if (i, j) == ij_prev {
                 summed_durations.last_mut().unwrap().2 += d;
-            } else if i == ij_prev.0 || (i == ij_prev.0 + 1) {
+            } else if ij_prev.0 == usize::MAX || i == ij_prev.0 || (i > 0 && i - 1 == ij_prev.0) {
                 summed_durations.push((i, j, d));
                 ij_prev = (i, j);
             } else {
@@ -705,7 +705,7 @@ impl UncertaintyTracker {
                 assert!(j != j_prev);
                 assert!(d <= d_prev);
                 continue;
-            } else if i == i_prev + 1 {
+            } else if i_prev == usize::MAX || (i > 0 && i - 1 == i_prev) {
                 maxpost_cell_assignments.push((j, d as f32 / params.t as f32));
                 i_prev = i;
                 j_prev = j;

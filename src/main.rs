@@ -10,7 +10,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
 use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
-use sampler::density::estimate_transcript_density;
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, estimate_cell_centroids, estimate_full_area, filter_cellfree_transcripts,
@@ -18,6 +17,7 @@ use sampler::transcripts::{
 };
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
+use ndarray::Array1;
 
 use output::*;
 
@@ -491,18 +491,9 @@ fn main() {
         zspan = 1.0;
     }
 
-    let (mut transcript_density, _total_transcript_density) = estimate_transcript_density(
-        &transcripts,
-        ngenes,
-        layer_depth,
-        args.density_sigma,
-        args.density_binsize,
-        args.density_k,
-        args.density_eps,
-    );
-
     // TODO: remove this whole density system
-    transcript_density.fill(1.0);
+    let transcript_density = Array1::from_elem(ntranscripts, 1.0);
+
 
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);

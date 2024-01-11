@@ -108,64 +108,89 @@ impl PolygonBuilder {
                     polygon.push(edge.1);
                     polygon.push(edge.2);
 
-                    while polygon.first() != polygon.last() && nvisited < nedges {
-                        let u = polygon.last().unwrap();
+                    let mut u = edge.1;
+                    let mut v = edge.2;
 
-                        let δi = u.0 - polygon[polygon.len()-2].0;
-                        let δj = u.1 - polygon[polygon.len()-2].1;
+                    // TODO: Stopping when first==last does miss the oppourtunity to
+                    // join cornering voxels if we start at a corner. This is pretty
+                    // rare though.
+                    while nvisited < nedges {
+                        let δi = v.0 - u.0;
+                        let δj = v.1 - u.1;
                         assert!(δi.abs() + δj.abs() == 1);
 
-                        let first = edges_k.partition_point(|edge| edge.1 < *u);
-                        let last = edges_k.partition_point(|edge| edge.1 < next_point(*u));
+                        let first = edges_k.partition_point(|edge| edge.1 < v);
+                        let last = edges_k.partition_point(|edge| edge.1 < next_point(v));
                         let adjacent_edges = &edges_k[first..last];
                         let adjacent_edges_visited = &mut visited_k[first..last];
 
                         // we have either an unambiguous path or we are at the corner of two voxels
-                        assert!(adjacent_edges.len() == 1 || adjacent_edges.len() == 3);
+                        assert!(adjacent_edges.len() == 2 || adjacent_edges.len() == 4);
 
-                        if adjacent_edges.len() == 1 {
-                            let edge = adjacent_edges[0];
-                            assert!(!adjacent_edges_visited[0]);
-                            mark_visited(edges_k, visited_k, &edge);
+                        if adjacent_edges.len() == 2 {
+                            let adjacent_edge;
+                            if *adjacent_edges.first().unwrap() == (k, v, u) {
+                                adjacent_edge = adjacent_edges.last().unwrap();
+                                if *adjacent_edges_visited.last().unwrap() {
+                                    assert!(polygon.first() == polygon.last());
+                                    break;
+                                }
+                            } else {
+                                adjacent_edge = adjacent_edges.first().unwrap();
+                                if *adjacent_edges_visited.first().unwrap() {
+                                    assert!(polygon.first() == polygon.last());
+                                    break;
+                                }
+                            }
+
+                            mark_visited(edges_k, visited_k, &adjacent_edge);
                             nvisited += 2;
-                            polygon.push(edge.2);
+                            polygon.push(adjacent_edge.2);
+
+                            u = v;
+                            v = adjacent_edge.2;
                         } else {
-                            let v;
+                            let w;
 
                             // Might be a nicer way, but I'm just going to handle
                             // each case exhaustively here.
-                            if voxels.contains(&Cube::new(k, u.0, u.1)) {
+                            if voxels.contains(&Cube::new(k, v.0, v.1)) {
                                 if δi == -1 {
-                                    v = (u.0, u.1-1);
+                                    w = (v.0, v.1-1);
                                 } else if δi == 1 {
-                                    v = (u.0, u.1+1);
+                                    w = (v.0, v.1+1);
                                 } else if δj == -1 {
-                                    v = (u.0-1, u.1);
+                                    w = (v.0-1, v.1);
                                 } else if δj == 1 {
-                                    v = (u.0+1, u.1);
+                                    w = (v.0+1, v.1);
                                 } else {
                                     unreachable!();
                                 }
                             } else {
                                 if δi == -1 {
-                                    v = (u.0, u.1+1);
+                                    w = (v.0, v.1+1);
                                 } else if δi == 1 {
-                                    v = (u.0, u.1-1);
+                                    w = (v.0, v.1-1);
                                 } else if δj == -1 {
-                                    v = (u.0+1, u.1);
+                                    w = (v.0+1, v.1);
                                 } else if δj == 1 {
-                                    v = (u.0-1, u.1);
+                                    w = (v.0-1, v.1);
                                 } else {
                                     unreachable!();
                                 }
                             }
-                            let edge = (k, *u, v);
-                            assert!(adjacent_edges.contains(&edge));
-                            assert!(!adjacent_edges_visited[adjacent_edges.iter().position(|e| *e == edge).unwrap()]);
+                            let adjacent_edge = (k, v, w);
+                            assert!(adjacent_edges.contains(&adjacent_edge));
+                            if adjacent_edges_visited[adjacent_edges.iter().position(|e| *e == adjacent_edge).unwrap()] {
+                                assert!(polygon.first() == polygon.last());
+                                break;
+                            }
 
-                            mark_visited(edges_k, visited_k, &edge);
+                            mark_visited(edges_k, visited_k, &adjacent_edge);
                             nvisited += 2;
-                            polygon.push(v);
+                            polygon.push(w);
+                            u = v;
+                            v = w;
                         }
                     }
 
