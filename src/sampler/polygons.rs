@@ -6,6 +6,7 @@ use super::cubebinsampler::{Cube, CubeLayout};
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::algorithm::simplify::Simplify;
 use petgraph::adj;
+use itertools::Itertools;
 
 
 // TODO: Plan for polygon generation:
@@ -43,6 +44,73 @@ fn mark_visited(edges_k: &[(i32, (i32, i32), (i32, i32))], visited_k: &mut [bool
     let pos = edges_k.binary_search(&reverse_edge(edge)).unwrap();
     assert!(!visited_k[pos]);
     visited_k[pos] = true;
+}
+
+
+fn antialias_polygon(polygon: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    let mut smoothed_polygon = Vec::new();
+    if polygon.len() <= 5 {
+        return polygon.clone();
+    }
+
+    smoothed_polygon.push(polygon[0]);
+    smoothed_polygon.push(polygon[1]);
+
+    for (p1, u, v, w, p2) in polygon.iter().tuple_windows::<(_,_,_,_,_)>() {
+        // dbg!(p1, u, v, w, p2);
+
+        let δi_v = v.0 - u.0;
+        let δj_v = v.1 - u.1;
+        let δi_w = w.0 - v.0;
+        let δj_w = w.1 - v.1;
+
+        if ((δi_v == 0) != (δi_w == 0)) && ((δj_v == 0) != (δj_w == 0)) {
+            // (u, v, w) forms a stair step. Smooth the polygon by skipping over
+            // vertex v on some conditions.
+
+            if ((w.0 - p1.0).abs() + (w.1 - p1.1).abs()) != 3 || ((u.0 - p2.0).abs() + (u.1 - p2.1).abs()) != 3 {
+                smoothed_polygon.push(*v);
+            }
+        } else {
+            smoothed_polygon.push(*v);
+        }
+    }
+
+    smoothed_polygon.push(polygon[polygon.len()-2]);
+    smoothed_polygon.push(polygon.last().unwrap().clone());
+
+    assert!(smoothed_polygon.first() == smoothed_polygon.last());
+
+    return smoothed_polygon;
+}
+
+
+// This is an exact simplification algorithm: we just want to merge segments
+// that are part of the same line.
+fn simplify_polygon(polygon: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    if polygon.len() <= 3 {
+        return polygon.clone();
+    }
+
+    let mut simplified_polygon = Vec::new();
+    simplified_polygon.push(*polygon.first().unwrap());
+
+    for (u, v, w) in polygon.iter().tuple_windows::<(_,_,_)>() {
+        // If v is colinear with (u, w), then skip it, otherwise push it.
+        let δi_v = v.0 - u.0;
+        let δj_v = v.1 - u.1;
+        let δi_w = w.0 - v.0;
+        let δj_w = w.1 - v.1;
+
+        if δi_v == δi_w && δj_v == δj_w {
+            continue;
+        } else {
+            simplified_polygon.push(*v);
+        }
+    }
+    simplified_polygon.push(simplified_polygon.first().unwrap().clone());
+
+    return simplified_polygon;
 }
 
 
@@ -111,9 +179,6 @@ impl PolygonBuilder {
                     let mut u = edge.1;
                     let mut v = edge.2;
 
-                    // TODO: Stopping when first==last does miss the oppourtunity to
-                    // join cornering voxels if we start at a corner. This is pretty
-                    // rare though.
                     while nvisited < nedges {
                         let δi = v.0 - u.0;
                         let δj = v.1 - u.1;
@@ -196,8 +261,8 @@ impl PolygonBuilder {
 
                     assert!(polygon.first() == polygon.last());
 
-                    // TODO: run anti-aliaising on the polygon
-                    // TODO: run line simplification on the polygon
+                    let polygon = antialias_polygon(polygon);
+                    let polygon = simplify_polygon(polygon);
 
                     // convert coordinates to μm
                     let polygon: Vec<(f32, f32)> = polygon
