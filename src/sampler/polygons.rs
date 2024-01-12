@@ -4,7 +4,8 @@ use super::cubebinsampler::{Cube, CubeLayout};
 
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
-use geo::algorithm::simplify::Simplify;
+use geo::algorithm::simplify::{Simplify};
+use geo::SimplifyVw;
 use petgraph::adj;
 use itertools::Itertools;
 
@@ -261,7 +262,7 @@ impl PolygonBuilder {
 
                     assert!(polygon.first() == polygon.last());
 
-                    let polygon = antialias_polygon(polygon);
+                    // let polygon = antialias_polygon(polygon);
                     let polygon = simplify_polygon(polygon);
 
                     // convert coordinates to μm
@@ -273,9 +274,13 @@ impl PolygonBuilder {
                         })
                         .collect();
 
-                    polygons_k.push(Polygon::<f32>::new(
+                    let polygon = Polygon::<f32>::new(
                         LineString::from(polygon),
-                        Vec::new()));
+                        Vec::new());
+
+                    // let polygon = polygon.simplify_vw(&0.25);
+
+                    polygons_k.push(polygon);
                 } else {
                     // no unvisited edges left
                     break;

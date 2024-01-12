@@ -11,6 +11,9 @@ mod common;
 mod saddlepoint;
 use saddlepoint::sample_polyagamma_saddlepoint;
 
+mod alternate;
+use alternate::sample_polyagamma_alternate;
+
 
 pub struct PolyaGamma<T: Float> {
     h: T,
@@ -66,11 +69,22 @@ where
 
     #[replace_float_literals(T::from(literal).unwrap())]
     pub fn sample<R: Rng>(&self, rng: &mut R) -> T {
+        assert!(self.h > T::zero(), "h must be non-negative");
+
+        // if self.h >= 50.0 {
+        //     return self.sample_normal(rng);
+        // } else {
+        //     return self.sample_saddlepoint(rng);
+        // };
+
         if self.h >= 50.0 {
             return self.sample_normal(rng);
-        } else {
+        } else if self.h >= 8.0 || (self.h > 4.0 && self.z <= 4.0) {
             return self.sample_saddlepoint(rng);
+        } else {
+            return self.sample_alternate(rng);
         }
+
         // } else if self.h >= 8.0 || (self.h > 4.0 && self.z <= 4.0) {
         //     return self.sample_saddlepoint(rng);
         // } else if self.h == 1.0 || (self.h == self.h.floor() && self.z <= 1.0) {
@@ -91,6 +105,9 @@ where
         return sample_polyagamma_saddlepoint(rng, self.h, self.z);
     }
 
+    fn sample_alternate<R: Rng>(&self, rng: &mut R) -> T {
+        return sample_polyagamma_alternate(rng, self.h, self.z);
+    }
 }
 
 

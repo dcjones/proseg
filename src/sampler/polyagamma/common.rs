@@ -281,7 +281,7 @@ const LOG_FACTORIAL: [f64; 200] = [
 ];
 
 #[replace_float_literals(T::from(literal).unwrap())]
-fn pgm_lgamma<T: Float>(z: T) -> T {
+pub fn pgm_lgamma<T: Float>(z: T) -> T {
     if z.floor() == z && z < 201.0 {
         return T::from(LOG_FACTORIAL[(z - 1.0).as_usize()]).unwrap();
     }

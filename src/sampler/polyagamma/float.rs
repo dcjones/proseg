@@ -1,11 +1,11 @@
 
 use num_traits::{cast::NumCast, float};
-use std::ops::{AddAssign, MulAssign};
+use std::ops::{AddAssign, SubAssign, MulAssign};
 use libm::{erf, erff, erfc, erfcf, lgamma_r, lgammaf_r};
 
 
 // Wrapping the num_traits Float trait to add more special functions.
-pub trait Float: float::Float + AddAssign + MulAssign {
+pub trait Float: float::Float + AddAssign + SubAssign + MulAssign {
     fn erf(self) -> Self;
     fn erfc(self) -> Self;
     fn lgamma(self) -> Self;
