@@ -843,7 +843,7 @@ fn run_hexbin_sampler(
         if *total_steps % monitor_cell_polygons_freq == 0 {
             if let Some(basename) = monitor_cell_polygons {
                 let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
-                let (cell_polygons, cell_flattened_polygons) = sampler.cell_polygons();
+                let (cell_polygons, _cell_flattened_polygons) = sampler.cell_polygons();
                 write_cell_layered_multipolygons(&Some(filename), cell_polygons);
             }
         }

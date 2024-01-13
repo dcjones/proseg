@@ -1518,7 +1518,7 @@ where
                             assert!(r.is_finite());
 
                             // TODO: Without this, things get kind of fucky.
-                            *r = r.min(200.0).max(1e-5);
+                            *r = r.min(200.0).max(2e-4);
                             // *r = r.min(50.0);
                             // *r = r.max(1e-5);
 

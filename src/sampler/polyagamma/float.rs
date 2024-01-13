@@ -12,6 +12,10 @@ pub trait Float: float::Float + AddAssign + SubAssign + MulAssign {
     fn as_usize(self) -> usize {
         return <usize as NumCast>::from(self).unwrap();
     }
+
+    fn as_f64(self) -> f64 {
+        return <f64 as NumCast>::from(self).unwrap();
+    }
 }
 
 impl Float for f32 {

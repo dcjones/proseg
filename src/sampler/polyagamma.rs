@@ -34,8 +34,10 @@ where
     Exp1: Distribution<T>,
 {
     pub fn new(h: T, z: T) -> Self {
-        if h.is_sign_negative() {
-            panic!("b must be non-negative")
+        let eps = T::from(1e-4).unwrap();
+        // if h.is_sign_negative() {
+        if h < eps {
+            panic!("h must be positive (and not too small)")
         }
 
         return Self {
@@ -106,7 +108,7 @@ where
     }
 
     fn sample_alternate<R: Rng>(&self, rng: &mut R) -> T {
-        return sample_polyagamma_alternate(rng, self.h, self.z);
+        return T::from(sample_polyagamma_alternate(rng, self.h.as_f64(), self.z.as_f64())).unwrap();
     }
 }
 

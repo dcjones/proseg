@@ -5,24 +5,23 @@ use rand_distr::{Distribution, StandardNormal, Standard, Exp1};
 use super::float::Float;
 use super::common::{upper_incomplete_gamma, pgm_lgamma, random_left_bounded_gamma};
 
+const PGM_MAXH: f64 = 4.0;
 
-#[replace_float_literals(T::from(literal).unwrap())]
-pub fn sample_polyagamma_alternate<T: Float, R: Rng>(rng: &mut R, mut h: T, z: T) -> T
-where Exp1: Distribution<T>, StandardNormal: Distribution<T>
+
+pub fn sample_polyagamma_alternate<R: Rng>(rng: &mut R, mut h: f64, z: f64) -> f64
 {
-    let mut pr = Parameters::new(h, z);
-    let pgm_maxh = T::from(PGM_MAXH).unwrap();
-    let mut out = T::zero();
+    let mut pr = Parameters::new(z);
+    let mut out = 0.0;
 
-    if h > pgm_maxh {
-        let chunk = if h >= pgm_maxh + 1.0 {
-            pgm_maxh
+    if h > PGM_MAXH {
+        let chunk = if h >= PGM_MAXH + 1.0 {
+            PGM_MAXH
         } else {
-            pgm_maxh - 1.0
+            PGM_MAXH - 1.0
         };
         pr.set(chunk, false);
 
-        while h > pgm_maxh {
+        while h > PGM_MAXH {
             out += 0.25 * pr.random_jacobi_star(rng);
             h -= chunk;
         }
@@ -44,114 +43,111 @@ const PGM_PI2_8: f64 = 1.233700550136169827354311374984519;  // pi^2 / 8
 const SQRT2_INV: f64 = 0.7071067811865475;
 const PGM_LS2PI: f64 = 0.9189385332046727417803297364056177;  // log(sqrt(2 * pi))
 
-struct Parameters<T: Float> {
-    proposal_probability: T,
-    log_lambda_z: T,
-    lambda_z: T,
-    half_h2: T,
-    // loggamma(h)
-    lgammah: T,
-    hlog2: T,
-    // 1 / t: T,
-    t_inv: T,
-    logx: T,
-    // (h / z) ** 2
-    h_z2: T,
-    h_z: T,
-    z2: T,
-    h: T,
-    z: T,
-    x: T,
-    t: T,
+struct Parameters {
+    proposal_probability: f32,
+    log_lambda_z: f64,
+    lambda_z: f64,
+    half_h2: f64,
+    lgammah: f64,
+    hlog2: f64,
+    t_inv: f64,
+    logx: f64,
+    h_z2: f64,
+    h_z: f64,
+    z2: f64,
+    h: f64,
+    z: f64,
+    x: f64,
+    t: f64,
 }
 
 
-impl<T: Float> Parameters<T> {
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn new(h: T, z: T) -> Self {
+impl Parameters {
+    fn new(z: f64) -> Self {
         let params =  Self {
-            proposal_probability: T::zero(),
-            log_lambda_z: T::zero(),
-            lambda_z: T::zero(),
-            half_h2: T::zero(),
-            lgammah: T::zero(),
-            hlog2: T::zero(),
-            t_inv: T::zero(),
-            logx: T::zero(),
-            h_z2: T::zero(),
-            h_z: T::zero(),
-            z2: T::zero(),
-            h: T::zero(),
+            proposal_probability: 0.0,
+            log_lambda_z: 0.0,
+            lambda_z: 0.0,
+            half_h2: 0.0,
+            lgammah: 0.0,
+            hlog2: 0.0,
+            t_inv: 0.0,
+            logx: 0.0,
+            h_z2: 0.0,
+            h_z: 0.0,
+            z2: 0.0,
+            h: 0.0,
             z: 0.5 * z.abs(),
-            x: T::zero(),
-            t: T::zero(),
+            x: 0.0,
+            t: 0.0,
         };
 
         return params;
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn set(&mut self, h: T, update: bool) {
+    fn set(&mut self, h: f64, update: bool) {
         self.h = h;
         self.t = get_truncation_point(h);
         self.t_inv = self.t.recip();
         self.half_h2 = 0.5 * h * h;
         self.lgammah = pgm_lgamma(h);
-        self.hlog2 = h * T::from(PGM_LOG2).unwrap();
+        self.hlog2 = h * PGM_LOG2;
         let p;
 
         if !update && self.z > 0.0 {
             self.h_z = h / self.z;
             self.z2 = self.z * self.z;
             self.h_z2 = self.h_z * self.h_z;
-            self.lambda_z = T::from(PGM_PI2_8).unwrap() + 0.5 * self.h_z2;
+            self.lambda_z = PGM_PI2_8 + 0.5 * self.z2;
             self.log_lambda_z = self.lambda_z.ln();
-            p = (self.hlog2 - h * self.z).exp() * self.invgauss_cdf();
+            p = (self.hlog2 - h * self.z).exp() * self.invgauss_cdf() as f64;
         } else if self.z > 0.0 {
             self.h_z = h / self.z;
             self.h_z2 = self.h_z * self.h_z;
-            p = (self.hlog2 - h * self.z).exp() * self.invgauss_cdf();
+            p = (self.hlog2 - h * self.z).exp() * self.invgauss_cdf() as f64;
         } else if !update {
-            self.lambda_z = T::from(PGM_PI2_8).unwrap();
+            self.lambda_z = PGM_PI2_8;
             self.log_lambda_z = self.lambda_z.ln();
             p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc();
         } else {
             p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc();
         }
 
-        let q = (h * (T::from(PGM_LOGPI_2).unwrap() - self.log_lambda_z)).exp() *
+        let q = (h * (PGM_LOGPI_2 - self.log_lambda_z)).exp() *
             upper_incomplete_gamma(h, self.lambda_z * self.t, true);
 
-        self.proposal_probability = q / (p + q);
+        self.proposal_probability = (q / (p + q)) as f32;
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn invgauss_cdf(&self) -> T {
-
+    fn invgauss_cdf(&self) -> f32 {
         let st = self.t.sqrt();
-        let a = T::from(SQRT2_INV).unwrap() * self.h / st;
-        let b = self.z * st * T::from(SQRT2_INV).unwrap();
-        let ez = (self.h * self.z).exp();
+        let a = SQRT2_INV * self.h / st;
+        let b = self.z * st * SQRT2_INV;
+        let ez = (self.h * self.z).exp() as f32;
 
-        return 0.5 * ((a - b).erfc() + ez * (b + a).erfc() * ez);
+        return 0.5f32 * (
+            ((a - b) as f32).erfc() +
+            ez * ((b + a) as f32).erfc() * ez
+        );
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> T
-    where Exp1: Distribution<T>, StandardNormal: Distribution<T>
+    fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64
     {
         loop {
-            let u = T::from(rng.gen::<f32>()).unwrap();
+            let u = rng.gen::<f32>();
             if u <= self.proposal_probability {
                 self.x = random_left_bounded_gamma(rng, self.h, self.lambda_z, self.t);
             } else if self.z > 0.0 {
                 self.random_right_bounded_invgauss(rng);
             } else {
-                self.x = 1.0 / random_left_bounded_gamma(rng, 0.5, self.half_h2, self.t_inv);
+                self.x = random_left_bounded_gamma(rng, 0.5, self.half_h2, self.t_inv).recip();
             }
 
-            self.logx = self.x.ln();
-            let u = T::from(rng.gen::<f32>()).unwrap() * self.bounding_kernel();
+            // we get stuck in an infinite loop below if x is 0
+            assert!(self.x > 0.0);
+
+            self.logx = (self.x as f32).ln() as f64;
+            let u = rng.gen::<f32>() * self.bounding_kernel();
             let mut s = self.piecewise_coef(0);
 
             let mut n = 1;
@@ -173,60 +169,62 @@ impl<T: Float> Parameters<T> {
         }
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn piecewise_coef(&self, n: u32) -> T {
-        let a = 2.0 * T::from(n).unwrap() + self.h;
+    fn piecewise_coef(&self, n: u32) -> f32 {
+        let a = 2.0 * (n as f64) + self.h;
         let b = if n != 0 {
-            pgm_lgamma(T::from(n).unwrap() + self.h) - self.lgammah
+            pgm_lgamma(n as f64 + self.h) - self.lgammah
         } else {
             0.0
         };
 
-        return (self.hlog2 + b -
-            pgm_lgamma(T::from(n + 1).unwrap()) -
-            T::from(PGM_LS2PI).unwrap() -
+        return ((self.hlog2 + b -
+            pgm_lgamma((n + 1) as f64) -
+            PGM_LS2PI -
             1.5 * self.logx -
-            0.5 * a * a / self.x).exp() * a;
+            0.5 * a * a / self.x) as f32).exp() * a as f32;
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
-    fn bounding_kernel(&self) -> T {
+    fn bounding_kernel(&self) -> f32 {
         if self.x > self.t {
             let a = 0.22579135264472733;
-            return (self.h * a + (self.h - 1.0) * self.logx -
-                T::from(PGM_PI2_8).unwrap() * self.x -
-                self.lgammah).exp();
+            return ((self.h * a + (self.h - 1.0) * self.logx -
+                PGM_PI2_8 * self.x -
+                self.lgammah) as f32).exp();
         } else if self.x > 0.0 {
-            return (self.hlog2 - self.half_h2 / self.x -
+            return ((self.hlog2 - self.half_h2 / self.x -
                 1.5 * self.logx -
-                T::from(PGM_LS2PI).unwrap()).exp() * self.h;
+                PGM_LS2PI) as f32).exp() * self.h as f32;
         }
         return 0.0;
     }
 
-    #[replace_float_literals(T::from(literal).unwrap())]
     fn random_right_bounded_invgauss<R: Rng>(&mut self, rng: &mut R)
-    where Exp1: Distribution<T>, StandardNormal: Distribution<T>
     {
         if self.t < self.h_z {
             loop {
                 self.x = random_left_bounded_gamma(rng, 0.5, self.half_h2, self.t_inv).recip();
 
-                let u = T::from(rng.gen::<f32>()).unwrap();
-                if (-u).ln_1p() < -0.5 * self.z2 * self.x {
+                let u = rng.gen::<f32>();
+                if (-u).ln_1p() < (-0.5 * self.z2 * self.x) as f32 {
                     return;
                 }
             }
         }
         loop {
-            let y = rng.sample::<T, StandardNormal>(StandardNormal);
+            let y = rng.sample::<f64, StandardNormal>(StandardNormal);
             let w = self.h_z + 0.5 * y * y / self.z2;
             self.x = w - (w * w - self.h_z2).abs().sqrt();
 
-            let u = T::from(rng.gen::<f32>()).unwrap();
+            // If `y` happens to be very large, we can end up with x=0,
+            // causing things to break downstream
+            self.x = self.x.max(1e-10);
+
+            let u = rng.gen::<f64>();
             if u * (self.h_z + self.x) > self.h_z {
                 self.x = self.h_z2 / self.x;
             }
+
+            assert!(self.x > 0.0);
 
             if self.x < self.t {
                 break;
@@ -254,15 +252,12 @@ const PGM_F: [f32; 25] = [
     7.211854235, 7.473186206, 7.734284136, 7.995175158, 8.255882407
 ];
 
-const PGM_MAXH: f32 = 4.0;
 
-
-#[replace_float_literals(T::from(literal).unwrap())]
-fn get_truncation_point<T: Float>(h: T) -> T {
+fn get_truncation_point(h: f64) -> f64 {
     if h < 1.0 {
-        return T::from(PGM_F[0]).unwrap();
-    } else if h == T::from(PGM_MAXH).unwrap() {
-        return T::from(*PGM_F.last().unwrap()).unwrap();
+        return PGM_F[0] as f64;
+    } else if h == PGM_MAXH {
+        return *PGM_F.last().unwrap() as f64;
     } else {
         // start binary search
         let mut offset = 0;
@@ -271,23 +266,21 @@ fn get_truncation_point<T: Float>(h: T) -> T {
 
         while len > 0 {
             index = offset + len / 2;
-            if T::from(PGM_H[index]).unwrap() < h {
-                len = len - (index + 1 - offset);
+            if (PGM_H[index] as f64) < h {
+                len -= index + 1 - offset;
                 offset = index + 1;
-                continue;
-            } else if offset < index && T::from(PGM_H[index]).unwrap() > h {
+            } else if offset < index && (PGM_H[index] as f64) > h {
                 len = index - offset;
-                continue;
             } else {
                 break;
             }
         }
 
-        let x0 = PGM_H[index - 1];
-        let f0 = PGM_F[index - 1];
+        let x0 = PGM_H[index];
+        let f0 = PGM_F[index];
         let x1 = PGM_H[index + 1];
         let f1 = PGM_F[index + 1];
 
-        return T::from(f0 + (f1 - f0) * (PGM_H[index] - x0) / (x1 - x0)).unwrap();
+        return (f0 + (f1 - f0) * (h as f32 - x0) / (x1 - x0)) as f64;
     }
 }
