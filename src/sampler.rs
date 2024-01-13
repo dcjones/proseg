@@ -1304,8 +1304,8 @@ where
                 }
             });
 
-        dbg!(params.background_counts.sum());
-        dbg!(params.confusion_counts.sum());
+        // dbg!(params.background_counts.sum());
+        // dbg!(params.confusion_counts.sum());
     }
 
     fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
@@ -1334,7 +1334,7 @@ where
         // let vmax = params.cell_volume.iter().max_by(|a, b| a.partial_cmp(b).unwrap());
         // dbg!(vmin, vmax);
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0)))
             .and(&params.cell_volume)
@@ -1350,10 +1350,10 @@ where
                         *ω = PolyaGamma::new(c.sum() as f32 + r, logv + φ).sample(&mut rng);
                     });
                 });
-        println!("  Sample ω: {:?}", t0.elapsed());
+        // println!("  Sample ω: {:?}", t0.elapsed());
 
         // Compute parameters to sample φ
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         params.μ_φ.fill(0.0);
         params.σ_φ.fill(0.0);
         Zip::from(params.ω.rows()) // for every cell
@@ -1379,10 +1379,10 @@ where
         Zip::from(&mut params.μ_φ)
             .and(&params.σ_φ)
             .for_each(|μ, σ| *μ *= σ);
-        println!("  Compute φ parameters: {:?}", t0.elapsed());
+        // println!("  Compute φ parameters: {:?}", t0.elapsed());
 
         // Sample φ
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(&mut params.φ)
             .and(&params.μ_φ)
             .and(&params.σ_φ)
@@ -1390,7 +1390,7 @@ where
                 let mut rng = thread_rng();
                 *φ = Normal::new(μ, σ.sqrt()).unwrap().sample(&mut rng);
             });
-        println!("  Sample φ: {:?}", t0.elapsed());
+        // println!("  Sample φ: {:?}", t0.elapsed());
 
         //     });
         // Zip::from(&mut params.ω)
@@ -1563,7 +1563,7 @@ where
         )
         .unwrap()
         .sample(&mut thread_rng());
-        dbg!(params.h);
+        // dbg!(params.h);
     }
 
     fn sample_rates(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
@@ -1741,7 +1741,7 @@ where
                 params.component_population[z as usize] += 1;
             });
 
-        dbg!(&params.component_population);
+        // dbg!(&params.component_population);
 
         // sample μ parameters
         Zip::from(&mut params.μ_volume)
