@@ -17,7 +17,6 @@ use sampler::transcripts::{
 };
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
-use ndarray::Array1;
 
 use output::*;
 
@@ -264,9 +263,6 @@ fn set_cosmx_presets(args: &mut Args) {
 
     // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
     args.scale = 4.0;
-
-    // TODO: Because the scale is different, we need to set different parameters
-    // for max_nucleaus_transcript_distance, density_sigma, density_binsize
 }
 
 
@@ -292,7 +288,7 @@ fn set_merfish_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell"));
     // args.cell_id_unassigned.get_or_insert(String::from("NA"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.scale = 1.0;
+    args.scale = 4.0;
 }
 
 
@@ -479,17 +475,11 @@ fn main() {
         zspan = 1.0;
     }
 
-    // TODO: remove this whole density system
-    let transcript_density = Array1::from_elem(ntranscripts, 1.0);
-
-
     let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);
     let full_volume = full_area * zspan;
 
     let full_layer_volume = full_volume / (args.nlayers as f32);
-    // let full_layer_volume = total_transcript_density;
-
     println!("Full volume: {}", full_volume);
 
 
@@ -566,7 +556,6 @@ fn main() {
         zmin,
         layer_depth,
         &transcripts,
-        &transcript_density,
         &nucleus_assignments,
         &nucleus_population,
         &cell_assignments,
@@ -590,7 +579,6 @@ fn main() {
         &priors,
         &mut params,
         &transcripts,
-        transcript_density,
         ngenes,
         args.voxellayers,
         args.nlayers,

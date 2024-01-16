@@ -9,7 +9,7 @@ use super::polygons::PolygonBuilder;
 // use arrow;
 use geo::geometry::{MultiPolygon, Polygon};
 use geo::BooleanOps;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array2};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -412,7 +412,6 @@ pub struct CubeBinSampler {
     transcript_cubes: Vec<Cube>,
     transcript_cube_ord: Vec<usize>,
     transcript_layers: Vec<u32>,
-    density: Array1<f32>,
     nlayers: usize,
 
     mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
@@ -443,7 +442,6 @@ impl CubeBinSampler {
         priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
-        density: Array1<f32>,
         ngenes: usize,
         voxellayers: usize,
         nlayers: usize,
@@ -540,7 +538,6 @@ impl CubeBinSampler {
             transcript_cubes,
             transcript_cube_ord,
             transcript_layers,
-            density,
             nlayers,
             mismatch_edges,
             transcript_x_ord,
@@ -592,7 +589,7 @@ impl CubeBinSampler {
         let mut cubecells = CubeCellMap::new();
 
         // 1.3s
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         // Build a set of every cube that is either populated with transcripts
         // or assigned to a cell.
         let mut cubeset = HashSet::<Cube>::new();
@@ -601,10 +598,10 @@ impl CubeBinSampler {
                 cubeset.insert(cube);
             }
         }
-        println!("cubeset: {:?}", t0.elapsed());
+        // println!("cubeset: {:?}", t0.elapsed());
 
         // 15.3s
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         if double_z_layers {
             for cube in cubeset {
                 let cell = self.cubecells.get(cube);
@@ -626,7 +623,7 @@ impl CubeBinSampler {
                 }
             }
         }
-        println!("cubebins: {:?}", t0.elapsed());
+        // println!("cubebins: {:?}", t0.elapsed());
 
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -657,7 +654,6 @@ impl CubeBinSampler {
             transcript_cubes: self.transcript_cubes.clone(),
             transcript_cube_ord: self.transcript_cube_ord.clone(),
             transcript_layers: self.transcript_layers.clone(),
-            density: self.density.clone(),
             nlayers: self.nlayers,
             mismatch_edges,
             transcript_x_ord: self.transcript_x_ord.clone(),
@@ -674,19 +670,19 @@ impl CubeBinSampler {
         };
 
         // 11.3s
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         sampler.populate_mismatches();
-        println!("populate_mismatches: {:?}", t0.elapsed());
+        // println!("populate_mismatches: {:?}", t0.elapsed());
 
         // 141ms
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         sampler.recompute_cell_population();
-        println!("recompute_cell_population: {:?}", t0.elapsed());
+        // println!("recompute_cell_population: {:?}", t0.elapsed());
 
         // 85.4s
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         sampler.recompute_cell_perimeter();
-        println!("recompute_cell_perimeter: {:?}", t0.elapsed());
+        // println!("recompute_cell_perimeter: {:?}", t0.elapsed());
 
         sampler.update_transcript_positions(
             &vec![true; params.transcript_positions.len()],
@@ -1191,24 +1187,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let layer = self.transcript_layers[t] as usize;
                     proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
                 }
-
-                // average the density from the constitutive transcripts
-                proposal.density.fill(1e-2);
-                // if let Some(transcripts) = transcripts {
-                //     let genepop = proposal.genepop.sum_axis(Axis(1));
-
-                //     for &t in transcripts.lock().unwrap().iter() {
-                //         let g = self.transcript_genes[t] as usize;
-                //         proposal.density[g] += self.density[t] / genepop[g] as f32;
-                //     }
-                // }
-                if !proposal.transcripts.is_empty() {
-                    let genepop = proposal.genepop.sum_axis(Axis(1));
-                    for &t in proposal.transcripts.iter() {
-                        let g = self.transcript_genes[t] as usize;
-                        proposal.density[g] += self.density[t] / genepop[g] as f32;
-                    }
-                }
             });
 
         // Increment so we run updates on the next quad
@@ -1436,9 +1414,6 @@ pub struct CubeBinProposal {
     // [ngenes, nlayers] gene count for this rect
     genepop: Array2<u32>,
 
-    // transcript density
-    density: Array1<f32>,
-
     old_cell: u32,
     new_cell: u32,
 
@@ -1462,7 +1437,6 @@ impl CubeBinProposal {
             cube: Cube::new(0, 0, 0),
             transcripts: Vec::new(),
             genepop: Array2::from_elem((ngenes, nlayers), 0),
-            density: Array1::zeros(ngenes),
             old_cell: 0,
             new_cell: 0,
             log_weight: 0.0,
@@ -1523,13 +1497,6 @@ impl Proposal for CubeBinProposal {
         'b: 'c,
     {
         return &self.genepop;
-    }
-
-    fn density<'b, 'c>(&'b self) -> &'c Array1<f32>
-    where
-        'b: 'c,
-    {
-        return &self.density;
     }
 }
 

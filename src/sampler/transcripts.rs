@@ -356,8 +356,6 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
     let xbins = ((xmax - xmin) / binsize).ceil() as usize;
     let ybins = ((ymax - ymin) / binsize).ceil() as usize;
 
-    dbg!(xbins, ybins, binsize, mean_nucleus_area);
-
     let mut occupied = Array2::from_elem((xbins, ybins), false);
 
     for transcript in transcripts {
@@ -366,8 +364,6 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
 
         occupied[[xbin, ybin]] = true;
     }
-
-    dbg!(occupied.iter().filter(|&&x| x).count(), occupied.len(),);
 
     return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
 }

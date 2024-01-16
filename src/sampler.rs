@@ -154,9 +154,6 @@ pub struct ModelParams {
     // area of the convex hull containing all transcripts
     full_layer_volume: f32,
 
-    // [ntranscripts]
-    transcript_density: Array1<f32>,
-
     z0: f32,
     layer_depth: f32,
 
@@ -250,7 +247,6 @@ impl ModelParams {
         z0: f32,
         layer_depth: f32,
         transcripts: &Vec<Transcript>,
-        transcript_density: &Array1<f32>,
         init_cell_assignments: &Vec<u32>,
         init_cell_population: &Vec<usize>,
         prior_seg_cell_assignment: &Vec<u32>,
@@ -326,7 +322,6 @@ impl ModelParams {
             cell_volume,
             component_volume,
             full_layer_volume,
-            transcript_density: transcript_density.clone(),
             z0,
             layer_depth,
             transcript_state,
@@ -730,7 +725,6 @@ impl UncertaintyTracker {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
                 // let layer = params.zlayer(params.transcript_positions[i].2);
-                // let density = params.transcript_density[i];
 
                 // TODO: This doesn't really make sense, because we are tracking
                 // the proportion of time a transcript is assigned to background
@@ -739,7 +733,7 @@ impl UncertaintyTracker {
                 // let λ_cell = params.λ[[gene as usize, *j as usize]];
                 // let λ_bg = params.λ_bg[[gene as usize, layer]];
                 // let λ_c = params.λ_c[gene as usize];
-                // let fg_pr = λ_cell / (λ_cell + density * λ_bg + λ_c);
+                // let fg_pr = λ_cell / (λ_cell + λ_bg + λ_c);
 
                 // if fg_pr > foreground_pr_cutoff {
                     counts[[gene as usize, *j as usize]] += 1;
@@ -764,7 +758,6 @@ impl UncertaintyTracker {
 
             let gene = transcripts[i].gene;
             // let layer = params.zlayer(params.transcript_positions[i].2);
-            // let density = params.transcript_density[i];
 
             let w_d = d as f32 / (params.t - 1) as f32;
 
@@ -808,10 +801,6 @@ pub trait Proposal {
     // Iterator over number of transcripts in the proposal of each gene
     // Returns a [ngenes, nlayers]
     fn gene_count<'b, 'c>(&'b self) -> &'c Array2<u32>
-    where
-        'b: 'c;
-
-    fn density<'b, 'c>(&'b self) -> &'c Array1<f32>
     where
         'b: 'c;
 
@@ -864,11 +853,10 @@ pub trait Proposal {
 
         if from_background {
             Zip::from(self.gene_count().rows())
-                .and(self.density())
                 .and(params.λ_bg.rows())
-                .for_each(|gene_counts, &d, λ_bg| {
+                .for_each(|gene_counts, λ_bg| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
-                        δ -= count as f32 * (d * λ_bg).ln();
+                        δ -= count as f32 * λ_bg.ln();
                     });
                 });
         } else {
@@ -882,14 +870,13 @@ pub trait Proposal {
                 .fold(0.0, |acc, &λ| acc - λ * volume_diff);
 
             Zip::from(self.gene_count().rows())
-                .and(self.density())
                 .and(params.λ_bg.rows())
                 .and(&params.λ_c)
                 .and(params.λ.column(old_cell as usize))
-                .for_each(|gene_counts, &d, λ_bg, &λ_c, λ| {
+                .for_each(|gene_counts, λ_bg, &λ_c, λ| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
                         if count > 0 {
-                            δ -= count as f32 * (d * λ_bg + λ_c + λ).ln();
+                            δ -= count as f32 * (λ_bg + λ_c + λ).ln();
                         }
                     })
                 });
@@ -909,11 +896,10 @@ pub trait Proposal {
 
         if to_background {
             Zip::from(self.gene_count().rows())
-                .and(self.density())
                 .and(params.λ_bg.rows())
-                .for_each(|gene_counts, &d, λ_bg| {
+                .for_each(|gene_counts, λ_bg| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
-                        δ += count as f32 * (d * λ_bg).ln();
+                        δ += count as f32 * λ_bg.ln();
                     });
                 });
         } else {
@@ -928,14 +914,13 @@ pub trait Proposal {
 
             // add in new cell likelihood terms
             Zip::from(self.gene_count().rows())
-                .and(self.density())
                 .and(params.λ_bg.rows())
                 .and(&params.λ_c)
                 .and(params.λ.column(new_cell as usize))
-                .for_each(|gene_counts, &d, λ_bg, &λ_c, λ| {
+                .for_each(|gene_counts, λ_bg, &λ_c, λ| {
                     Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
                         if count > 0 {
-                            δ += count as f32 * (d * λ_bg + λ_c + λ).ln();
+                            δ += count as f32 * (λ_bg + λ_c + λ).ln();
                         }
                     })
                 });
@@ -1200,9 +1185,8 @@ where
         Zip::indexed(&mut params.transcript_state)
             .and(&params.cell_assignments)
             .and(&params.transcript_positions)
-            .and(&params.transcript_density)
             .and(transcripts)
-            .for_each(|i, state, &cell, position, &d, t| {
+            .for_each(|i, state, &cell, position, t| {
                 let mut rng = thread_rng();
 
                 if cell == BACKGROUND_CELL {
@@ -1213,7 +1197,7 @@ where
                     let layer = layer.min(nlayers - 1);
 
                     let λ_cell = params.λ[[gene, cell as usize]];
-                    let λ_bg = d * params.λ_bg[[gene, layer]];
+                    let λ_bg = params.λ_bg[[gene, layer]];
                     let λ_c = params.λ_c[gene];
                     let λ = λ_cell + λ_bg + λ_c;
 
@@ -1613,9 +1597,6 @@ where
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // TODO: How does this work now? What exactly are we adding to β?
-        //
-        // I think the right thing is to take the full_layer_volume multiplied by the total density.
         let mut rng = thread_rng();
 
         Zip::from(params.λ_bg.rows_mut())
@@ -1624,8 +1605,6 @@ where
                 Zip::from(λs).and(cs).for_each(|λ, c| {
                     let α = priors.α_bg + *c as f32;
                     let β = priors.β_bg + params.full_layer_volume;
-                    // let β = priors.β_bg + total_density * params.full_layer_volume;
-                    // let β = priors.β_bg + total_density;
                     *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                 });
             });
@@ -1843,7 +1822,6 @@ where
                 δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
                 δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));
 
-                let density = params.transcript_density[i];
                 let gene = transcript.gene as usize;
 
                 let layer_prev = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
@@ -1853,7 +1831,7 @@ where
                     0.0
                 } else {
                     params.λ[[gene, cell_prev as usize]] + params.λ_c[gene]
-                } + density * params.λ_bg[[gene, layer_prev]];
+                } + params.λ_bg[[gene, layer_prev]];
 
                 let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
                 let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
@@ -1862,7 +1840,7 @@ where
                     0.0
                 } else {
                     params.λ[[gene, cell_new as usize]] + params.λ_c[gene]
-                } + density * params.λ_bg[[gene, layer_new]];
+                } + params.λ_bg[[gene, layer_new]];
 
                 let ln_λ_diff = λ_new.ln() - λ_prev.ln();
                 δ += ln_λ_diff;
