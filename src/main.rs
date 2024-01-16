@@ -154,18 +154,6 @@ struct Args {
     #[arg(long, default_value_t = 80.0)]
     diffusion_sigma_far: f32,
 
-    #[arg(long, default_value_t = 50.0_f32)]
-    density_binsize: f32,
-
-    #[arg(long, default_value_t = 150.0_f32)]
-    density_sigma: f32,
-
-    #[arg(long, default_value_t = 10)]
-    density_k: usize,
-
-    #[arg(long, default_value_t = 1e-2)]
-    density_eps: f32,
-
     #[arg(long, default_value_t = false)]
     variable_burnin_dispersion: bool,
 
@@ -304,7 +292,7 @@ fn set_merfish_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell"));
     // args.cell_id_unassigned.get_or_insert(String::from("NA"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.scale = 4.0;
+    args.scale = 1.0;
 }
 
 

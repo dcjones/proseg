@@ -7,9 +7,8 @@ use super::polygons::PolygonBuilder;
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
-use geo::geometry::{LineString, MultiPolygon, Polygon};
-use geo::algorithm::simplify::Simplify;
-use geo::{BooleanOps, polygon};
+use geo::geometry::{MultiPolygon, Polygon};
+use geo::BooleanOps;
 use ndarray::{Array1, Array2, Axis};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
@@ -783,24 +782,6 @@ impl CubeBinSampler {
             .map(|(cube, cell)| (*cell, self.chunkquad.layout.cube_to_world_coords(*cube)));
     }
 
-    // pub fn cell_polygons(&self) -> Vec<MultiPolygon<f32>> {
-    //     let mut cell_polys: Vec<Vec<Polygon<f32>>> = vec![Vec::new(); self.ncells()];
-    //     for (cell, (x0, y0, _z0, x1, y1, _z1)) in self.cubes() {
-    //         cell_polys[cell as usize].push(Polygon::<f32>::new(
-    //             LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
-    //             vec![],
-    //         ))
-    //     }
-
-    //     let cell_polys = cell_polys
-    //         .into_par_iter()
-    //         .map(union_all_into_multipolygon)
-    //         .map(|p| p.simplify(&1e-2))
-    //         .collect();
-
-    //     return cell_polys;
-    // }
-
     pub fn cell_polygons(&self) -> (Vec<Vec<(i32, MultiPolygon<f32>)>>, Vec<MultiPolygon<f32>>) {
         // Build sets of voxels for each cell
         let mut cell_voxels = vec![HashSet::new(); self.ncells()];
@@ -828,7 +809,7 @@ impl CubeBinSampler {
             .par_iter()
             .map( |polys| {
                 let mut flat_polys: Vec<Polygon<f32>> = Vec::new();
-                for (k, poly) in polys {
+                for (_k, poly) in polys {
                     flat_polys.extend(poly.iter().cloned());
                 }
 
@@ -837,40 +818,6 @@ impl CubeBinSampler {
             .collect();
 
         return (cell_polygons, cell_flattened_polygons);
-
-        // let mut cell_polys = HashMap::new();
-
-        // for (cube, &cell) in self.cubecells.iter() {
-        //     if cell == BACKGROUND_CELL {
-        //         continue;
-        //     }
-
-        //     let (x0, y0, _z0, x1, y1, _z1) = self.chunkquad.layout.cube_to_world_coords(*cube);
-
-        //     let cell_polys = cell_polys
-        //         .entry(cube.k)
-        //         .or_insert_with(|| vec![Vec::new(); self.ncells()]);
-        //     cell_polys[cell as usize].push(Polygon::<f32>::new(
-        //         LineString::from(vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
-        //         vec![],
-        //     ))
-        // }
-
-        // let cell_polys = cell_polys
-        //     .into_iter()
-        //     .map(|(k, polys)| {
-        //         (
-        //             k,
-        //             polys
-        //                 .into_par_iter()
-        //                 .map(union_all_into_multipolygon)
-        //                 .map(|p| p.simplify(&1e-2))
-        //                 .collect(),
-        //         )
-        //     })
-        //     .collect();
-
-        // return cell_polys;
     }
 
     // pub fn mismatch_edge_stats(&self) -> (usize, usize) {

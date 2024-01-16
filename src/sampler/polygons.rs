@@ -4,9 +4,8 @@ use super::cubebinsampler::{Cube, CubeLayout};
 
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
-use geo::algorithm::simplify::{Simplify};
-use geo::SimplifyVw;
-use petgraph::adj;
+// use geo::algorithm::simplify::Simplify;
+// use geo::SimplifyVw;
 use itertools::Itertools;
 
 
@@ -48,42 +47,42 @@ fn mark_visited(edges_k: &[(i32, (i32, i32), (i32, i32))], visited_k: &mut [bool
 }
 
 
-fn antialias_polygon(polygon: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
-    let mut smoothed_polygon = Vec::new();
-    if polygon.len() <= 5 {
-        return polygon.clone();
-    }
+// fn antialias_polygon(polygon: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+//     let mut smoothed_polygon = Vec::new();
+//     if polygon.len() <= 5 {
+//         return polygon.clone();
+//     }
 
-    smoothed_polygon.push(polygon[0]);
-    smoothed_polygon.push(polygon[1]);
+//     smoothed_polygon.push(polygon[0]);
+//     smoothed_polygon.push(polygon[1]);
 
-    for (p1, u, v, w, p2) in polygon.iter().tuple_windows::<(_,_,_,_,_)>() {
-        // dbg!(p1, u, v, w, p2);
+//     for (p1, u, v, w, p2) in polygon.iter().tuple_windows::<(_,_,_,_,_)>() {
+//         // dbg!(p1, u, v, w, p2);
 
-        let δi_v = v.0 - u.0;
-        let δj_v = v.1 - u.1;
-        let δi_w = w.0 - v.0;
-        let δj_w = w.1 - v.1;
+//         let δi_v = v.0 - u.0;
+//         let δj_v = v.1 - u.1;
+//         let δi_w = w.0 - v.0;
+//         let δj_w = w.1 - v.1;
 
-        if ((δi_v == 0) != (δi_w == 0)) && ((δj_v == 0) != (δj_w == 0)) {
-            // (u, v, w) forms a stair step. Smooth the polygon by skipping over
-            // vertex v on some conditions.
+//         if ((δi_v == 0) != (δi_w == 0)) && ((δj_v == 0) != (δj_w == 0)) {
+//             // (u, v, w) forms a stair step. Smooth the polygon by skipping over
+//             // vertex v on some conditions.
 
-            if ((w.0 - p1.0).abs() + (w.1 - p1.1).abs()) != 3 || ((u.0 - p2.0).abs() + (u.1 - p2.1).abs()) != 3 {
-                smoothed_polygon.push(*v);
-            }
-        } else {
-            smoothed_polygon.push(*v);
-        }
-    }
+//             if ((w.0 - p1.0).abs() + (w.1 - p1.1).abs()) != 3 || ((u.0 - p2.0).abs() + (u.1 - p2.1).abs()) != 3 {
+//                 smoothed_polygon.push(*v);
+//             }
+//         } else {
+//             smoothed_polygon.push(*v);
+//         }
+//     }
 
-    smoothed_polygon.push(polygon[polygon.len()-2]);
-    smoothed_polygon.push(polygon.last().unwrap().clone());
+//     smoothed_polygon.push(polygon[polygon.len()-2]);
+//     smoothed_polygon.push(polygon.last().unwrap().clone());
 
-    assert!(smoothed_polygon.first() == smoothed_polygon.last());
+//     assert!(smoothed_polygon.first() == smoothed_polygon.last());
 
-    return smoothed_polygon;
-}
+//     return smoothed_polygon;
+// }
 
 
 // This is an exact simplification algorithm: we just want to merge segments

@@ -1,7 +1,6 @@
 
-use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::{Distribution, StandardNormal, Standard, Exp1};
+use rand_distr::StandardNormal;
 use super::float::Float;
 use super::common::{upper_incomplete_gamma, pgm_lgamma, random_left_bounded_gamma};
 

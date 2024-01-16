@@ -11,9 +11,9 @@ path = "src/main.rs"
 name = "proseg-to-baysor"
 path = "src/to_baysor.rs"
 
-[[bin]]
-name = "proseg-centroid-distance"
-path = "src/centroid_distance.rs"
+# [[bin]]
+# name = "proseg-centroid-distance"
+# path = "src/centroid_distance.rs"
 
 [profile.release]
 debug = true

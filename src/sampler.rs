@@ -1,6 +1,5 @@
 mod connectivity;
 pub mod cubebinsampler;
-pub mod density;
 pub mod hull;
 mod math;
 mod sampleset;
@@ -37,7 +36,7 @@ use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 
-use std::time::Instant;
+// use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
