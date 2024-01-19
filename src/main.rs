@@ -225,6 +225,9 @@ struct Args {
 
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
+
+    #[arg(long, default_value_t = false)]
+    enforce_connectivity: bool,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -548,6 +551,8 @@ fn main() {
 
         zmin,
         zmax,
+
+        enforce_connectivity: args.enforce_connectivity,
     };
 
     let mut params = ModelParams::new(

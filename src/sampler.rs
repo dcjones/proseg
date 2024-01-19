@@ -128,6 +128,9 @@ pub struct ModelPriors {
     // bounds on z coordinate
     pub zmin: f32,
     pub zmax: f32,
+
+    // whether to check if voxel updates break local connectivity
+    pub enforce_connectivity: bool,
 }
 
 // Model global parameters.
@@ -1501,7 +1504,8 @@ where
                             assert!(r.is_finite());
 
                             // TODO: Without this, things get kind of fucky.
-                            *r = r.min(200.0).max(2e-4);
+                            // *r = r.min(200.0).max(2e-4);
+                            *r = r.max(2e-4);
                             // *r = r.min(50.0);
                             // *r = r.max(1e-5);
 

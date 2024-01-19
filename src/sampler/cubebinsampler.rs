@@ -982,45 +982,31 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     cell_to = BACKGROUND_CELL;
                 }
 
-                // let cubeindex = self.cubeindex.read().unwrap();
-                // let cubebin = cubeindex.get(i);
-
-
                 // Local connectivity condition: don't propose changes that render increase the
                 // number of connected components of either the cell_from or cell_to
                 // neighbors subgraphs.
-                let mut connectivity_checker = self
-                    .connectivity_checker
-                    .get_or(|| RefCell::new(ConnectivityChecker::new()))
-                    .borrow_mut();
+                if priors.enforce_connectivity {
+                    let mut connectivity_checker = self
+                        .connectivity_checker
+                        .get_or(|| RefCell::new(ConnectivityChecker::new()))
+                        .borrow_mut();
 
-                let art_from = connectivity_checker.cube_isarticulation(
-                    *i,
-                    |cube| self.cubecells.get(cube),
-                    cell_from,
-                );
+                    let art_from = connectivity_checker.cube_isarticulation(
+                        *i,
+                        |cube| self.cubecells.get(cube),
+                        cell_from,
+                    );
 
-                let art_to = connectivity_checker.cube_isarticulation(
-                    *i,
-                    |cube| self.cubecells.get(cube),
-                    cell_to,
-                );
+                    let art_to = connectivity_checker.cube_isarticulation(
+                        *i,
+                        |cube| self.cubecells.get(cube),
+                        cell_to,
+                    );
 
-                if (art_from && !from_unassigned) || (art_to && !to_unassigned) {
-                    proposal.ignore = true;
-                    return;
-                }
-
-                // find transcripts within the voxel
-                let transcript_range_start = self.transcript_cube_ord
-                    .partition_point(|&t| self.transcript_cubes[t] < *i);
-
-                proposal.transcripts.clear();
-                for &t in self.transcript_cube_ord[transcript_range_start..].iter() {
-                    if self.transcript_cubes[t] != *i {
-                        break;
+                    if (art_from && !from_unassigned) || (art_to && !to_unassigned) {
+                        proposal.ignore = true;
+                        return;
                     }
-                    proposal.transcripts.push(t);
                 }
 
                 // Don't propose removing the last voxel from a cell. (This is
@@ -1174,6 +1160,18 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         proposal.ignore = true;
                         return;
                     }
+                }
+
+                // find transcripts within the voxel
+                let transcript_range_start = self.transcript_cube_ord
+                    .partition_point(|&t| self.transcript_cubes[t] < *i);
+
+                proposal.transcripts.clear();
+                for &t in self.transcript_cube_ord[transcript_range_start..].iter() {
+                    if self.transcript_cubes[t] != *i {
+                        break;
+                    }
+                    proposal.transcripts.push(t);
                 }
 
                 proposal.genepop.fill(0);
