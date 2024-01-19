@@ -17,7 +17,7 @@ use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
-    logistic, normal_pdf,
+    logistic, normal_pdf, normal_x2_pdf,
     lognormal_logpdf, negbin_logpmf_fast, rand_crt, LogFactorial,
     LogGammaPlus,
 };
@@ -36,7 +36,7 @@ use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 
-// use std::time::Instant;
+use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -150,6 +150,7 @@ pub struct ModelParams {
 
     // per-cell volumes
     pub cell_volume: Array1<f32>,
+    pub cell_log_volume: Array1<f32>,
 
     // per-component volumes
     pub component_volume: Array1<f32>,
@@ -162,6 +163,7 @@ pub struct ModelParams {
 
     // [ntranscripts] current assignment of transcripts to background
     pub transcript_state: Array1<TranscriptState>,
+    pub prev_transcript_state: Array1<TranscriptState>,
 
     // [ngenes, ncells, nlayers] transcripts counts
     pub counts: Array3<u16>,
@@ -269,6 +271,7 @@ impl ModelParams {
 
         let r = Array2::<f32>::from_elem((ncomponents, ngenes), 100.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
+        let cell_log_volume = Array1::<f32>::zeros(ncells);
         let h = 10.0;
 
         // compute initial counts
@@ -311,6 +314,7 @@ impl ModelParams {
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
         let transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
+        let prev_transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
         return ModelParams {
             transcript_positions,
@@ -323,11 +327,13 @@ impl ModelParams {
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.clone(),
             cell_volume,
+            cell_log_volume,
             component_volume,
             full_layer_volume,
             z0,
             layer_depth,
             transcript_state,
+            prev_transcript_state,
             counts,
             foreground_counts: Array3::<u16>::from_elem((ncells, ngenes, nlayers), 0),
             confusion_counts: Array1::<u32>::from_elem(ngenes, 0),
@@ -1120,23 +1126,27 @@ where
     ) {
         let mut rng = thread_rng();
 
+        let t0 = Instant::now();
         self.sample_volume_params(priors, params);
+        println!("  Sample volume params: {:?}", t0.elapsed());
 
-        // Sample background/foreground counts
-        // let t0 = Instant::now();
+        // // Sample background/foreground counts
+        let t0 = Instant::now();
         self.sample_transcript_state(priors, params, transcripts, uncertainty);
-        // println!("  Sample background counts: {:?}", t0.elapsed());
+        println!("  Sample transcript states: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.compute_counts(priors, params, transcripts);
+        println!("  Compute counts: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_component_nb_params(priors, params, burnin);
-        // println!("  Sample nb params: {:?}", t0.elapsed());
+        println!("  Sample nb params: {:?}", t0.elapsed());
 
         // Sample λ
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_rates(priors, params);
-        // println!("  Sample λ: {:?}", t0.elapsed());
+        println!("  Sample λ: {:?}", t0.elapsed());
 
         // TODO:
         // This is the most expensive part. We could sample this less frequently,
@@ -1146,9 +1156,9 @@ where
         //     anything obvious to do about that.
 
         // Sample z
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_component_assignments(priors, params);
-        // println!("  Sample z: {:?}", t0.elapsed());
+        println!("  Sample z: {:?}", t0.elapsed());
 
         // sample π
         let mut α = vec![1_f32; params.ncomponents()];
@@ -1170,11 +1180,19 @@ where
             );
         }
 
+        let t0 = Instant::now();
         self.sample_background_rates(priors, params);
+        println!("  Sample background rates: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         self.sample_confusion_rates(priors, params);
+        println!("  Sample confusion rates: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
+        println!("  Sample transcript positions: {:?}", t0.elapsed());
     }
 
     fn sample_transcript_state(
@@ -1184,14 +1202,15 @@ where
         transcripts: &Vec<Transcript>,
         uncertainty: &mut Option<&mut UncertaintyTracker>)
     {
+        params.prev_transcript_state.clone_from(&params.transcript_state);
         let nlayers = params.nlayers();
-        Zip::indexed(&mut params.transcript_state)
+        Zip::from(&mut params.transcript_state)
             .and(&params.cell_assignments)
             .and(&params.transcript_positions)
             .and(transcripts)
-            .for_each(|i, state, &cell, position, t| {
-                let mut rng = thread_rng();
-
+            .into_par_iter()
+            .with_min_len(100)
+            .for_each(|(state, &cell, position, t)| {
                 if cell == BACKGROUND_CELL {
                     *state = TranscriptState::Background;
                 } else {
@@ -1204,8 +1223,7 @@ where
                     let λ_c = params.λ_c[gene];
                     let λ = λ_cell + λ_bg + λ_c;
 
-                    let u = rng.gen::<f32>();
-                    let prev_state = *state;
+                    let u = thread_rng().gen::<f32>();
                     *state = if u < λ_cell / λ {
                         TranscriptState::Foreground
                     } else if u < (λ_cell + λ_bg) / λ {
@@ -1213,54 +1231,35 @@ where
                     } else {
                         TranscriptState::Confusion
                     };
-
-                    let is_foreground = *state == TranscriptState::Foreground;
-                    let was_foreground = prev_state == TranscriptState::Foreground;
-
-                    if is_foreground != was_foreground {
-                        if let Some(uncertainty) = uncertainty.as_mut() {
-                            let prev_assignment = if !was_foreground {
-                                BACKGROUND_CELL
-                            } else {
-                                params.cell_assignments[i]
-                            };
-                            let duration = params.t - params.cell_assignment_time[i];
-                            uncertainty.update_assignment_duration(i, prev_assignment, duration);
-                            params.cell_assignment_time[i] = params.t;
-                        }
-                    }
                 }
             });
+
+            if let Some(uncertainty) = uncertainty.as_mut() {
+                Zip::indexed(&mut params.cell_assignment_time)
+                    .and(&params.prev_transcript_state)
+                    .and(&params.transcript_state)
+                    .and(&params.cell_assignments)
+                    .for_each(|i, cell_assignment_time, &prev_state, &state, &assignment| {
+                        let is_foreground = state == TranscriptState::Foreground;
+                        let was_foreground = prev_state == TranscriptState::Foreground;
+
+                        if is_foreground == was_foreground {
+                            return;
+                        }
+
+                        let prev_assignment = if !was_foreground {
+                            BACKGROUND_CELL
+                        } else {
+                            assignment
+                        };
+
+                        let duration = params.t - *cell_assignment_time;
+                        uncertainty.update_assignment_duration(i, prev_assignment, duration);
+                        *cell_assignment_time = params.t;
+                    });
+            }
+
     }
-
-    // fn sample_confusion_assignments(
-    //     &self,
-    //     _priors: &ModelPriors,
-    //     params: &mut ModelParams,
-    //     transcripts: &Vec<Transcript>)
-    // {
-    //     Zip::from(&mut params.isconfusion)
-    //         .and(&params.isbackground)
-    //         .and(&params.cell_assignments)
-    //         .and(transcripts)
-    //         .par_for_each(|confusion, &bg, &cell, t| {
-    //             let mut rng = thread_rng();
-
-    //             if bg {
-    //                 *confusion = false;
-    //             } else {
-    //                 assert!(cell != BACKGROUND_CELL);
-
-    //                 let gene = t.gene as usize;
-    //                 // confusion probability from cell and confusion rate
-    //                 let λ_cell = params.λ[[gene, cell as usize]];
-    //                 let λ_c = params.λ_c[gene];
-
-    //                 let p = λ_c / (λ_c + λ_cell);
-    //                 *confusion = rng.gen::<f32>() < p;
-    //             }
-    //     });
-    // }
 
     fn compute_counts(&self, _priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
         let nlayers = params.nlayers();
@@ -1646,8 +1645,8 @@ where
         // loop over cells
         Zip::from(params.foreground_counts.axis_iter(Axis(0)))
             .and(&mut params.z)
-            .and(&params.cell_volume)
-            .par_for_each(|cs, z_i, cell_volume| {
+            .and(&params.cell_log_volume)
+            .par_for_each(|cs, z_i, cell_log_volume| {
                 let mut z_probs = params
                     .z_probs
                     .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
@@ -1672,7 +1671,7 @@ where
                             .and(lgamma_r)
                             .and(loggammaplus)
                             .fold(0_f32, |accum, cs, &r, φ, &lgamma_r, lgammaplus| {
-                                let ψ = φ + cell_volume.ln();
+                                let ψ = φ + cell_log_volume;
                                 let c = cs.iter().map(|&x| x as u32).sum(); // sum counts across layers
                                 accum
                                     + negbin_logpmf_fast(
@@ -1686,7 +1685,7 @@ where
                             }) as f64)
                             .exp();
 
-                    *zp *= lognormal_logpdf(μ_volume, σ_volume, *cell_volume).exp() as f64;
+                    *zp *= normal_pdf(μ_volume, σ_volume, *cell_log_volume).exp() as f64;
                 }
 
                 // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
@@ -1713,23 +1712,32 @@ where
     }
 
     fn sample_volume_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        Zip::from(&mut params.cell_log_volume)
+            .and(&params.cell_volume)
+            .into_par_iter()
+            .with_min_len(50)
+            .for_each(|(log_volume, &volume)| {
+                *log_volume = volume.ln();
+            });
+
         // compute sample means
         params.component_population.fill(0_u32);
         params.μ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_volume)
-            .for_each(|&z, &volume| {
-                params.μ_volume[z as usize] += volume.ln();
+            .and(&params.cell_log_volume)
+            .for_each(|&z, &log_volume| {
+                params.μ_volume[z as usize] += log_volume;
                 params.component_population[z as usize] += 1;
             });
 
-        // dbg!(&params.component_population);
+        // Sampling is parallelizable, but unually number of components is low,
+        // so it's dominated by overhead.
 
         // sample μ parameters
         Zip::from(&mut params.μ_volume)
             .and(&params.σ_volume)
             .and(&params.component_population)
-            .par_for_each(|μ, &σ, &pop| {
+            .for_each(|μ, &σ, &pop| {
                 let mut rng = thread_rng();
 
                 let v = (1_f32 / priors.σ_μ_volume.powi(2) + pop as f32 / σ.powi(2)).recip();
@@ -1744,15 +1752,15 @@ where
         // compute sample variances
         params.σ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_volume)
-            .for_each(|&z, &volume| {
-                params.σ_volume[z as usize] += (params.μ_volume[z as usize] - volume.ln()).powi(2);
+            .and(&params.cell_log_volume)
+            .for_each(|&z, &log_volume| {
+                params.σ_volume[z as usize] += (params.μ_volume[z as usize] - log_volume).powi(2);
             });
 
         // sample σ parameters
         Zip::from(&mut params.σ_volume)
             .and(&params.component_population)
-            .par_for_each(|σ, &pop| {
+            .for_each(|σ, &pop| {
                 let mut rng = thread_rng();
                 *σ = Gamma::new(
                     priors.α_σ_volume + (pop as f32) / 2.0,
@@ -1818,10 +1826,10 @@ where
 
                 // TODO: account for the possibility that sigma is 0
 
-                δ -= ((1.0 - priors.p_diffusion) * normal_pdf(priors.σ_diffusion_near, sq_dist_prev) +
-                    priors.p_diffusion * normal_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();
-                δ += ((1.0 - priors.p_diffusion) * normal_pdf(priors.σ_diffusion_near, sq_dist_new) +
-                    priors.p_diffusion * normal_pdf(priors.σ_diffusion_far, sq_dist_new)).ln();
+                δ -= ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_prev) +
+                    priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();
+                δ += ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_new) +
+                    priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_new)).ln();
 
                 δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
                 δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));

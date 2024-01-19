@@ -1488,13 +1488,13 @@ pub fn filter_sparse_cells(
     cell_assignments: &mut Vec<CellIndex>,
     nucleus_population: &mut Vec<usize>,
 ) {
-    let t0 = Instant::now();
+    // let t0 = Instant::now();
     let (_layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
-    println!("bin_transcripts: {:?}", t0.elapsed());
+    // println!("bin_transcripts: {:?}", t0.elapsed());
 
-    let t0 = Instant::now();
+    // let t0 = Instant::now();
     let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
-    println!("cube_assignments: {:?}", t0.elapsed());
+    // println!("cube_assignments: {:?}", t0.elapsed());
 
     let t0 = Instant::now();
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
