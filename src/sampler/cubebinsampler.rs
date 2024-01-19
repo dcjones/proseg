@@ -927,20 +927,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams) {
         const UNASSIGNED_PROPOSAL_PROB: f64 = 0.01;
 
-        // let t0 = Instant::now();
-        // self.transcript_x_ord.par_sort_unstable_by(
-        //     |&i, &j| params.transcript_positions[i].0.partial_cmp(&params.transcript_positions[j].0).unwrap() );
-        // println!("sort on x coord: {:?}", t0.elapsed());
-
-        // TODO: Let's try some more to rid ourselves of the whole `cubeindex`
-        // contrivence.
-        //
-        // Current plan: let's sort on one coordinate so we can at least narrow
-        // down a cube's transcripts with binary search by a pretty huge factor.
-        // Then we can 
-        //
-        // I think rayon has a parallel sort.
-
         self.proposals
             .par_iter_mut()
             // .iter_mut()
@@ -1166,25 +1152,19 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let transcript_range_start = self.transcript_cube_ord
                     .partition_point(|&t| self.transcript_cubes[t] < *i);
 
-                proposal.transcripts.clear();
+                let mut transcript_range_end = transcript_range_start;
+                proposal.genepop.fill(0);
                 for &t in self.transcript_cube_ord[transcript_range_start..].iter() {
                     if self.transcript_cubes[t] != *i {
                         break;
                     }
-                    proposal.transcripts.push(t);
-                }
-
-                proposal.genepop.fill(0);
-                // if let Some(transcripts) = transcripts {
-                //     for &t in transcripts.lock().unwrap().iter() {
-                //         let layer = self.transcript_layers[t] as usize;
-                //         proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
-                //     }
-                // }
-                for &t in proposal.transcripts.iter() {
+                    transcript_range_end += 1;
                     let layer = self.transcript_layers[t] as usize;
                     proposal.genepop[[self.transcript_genes[t] as usize, layer]] += 1;
                 }
+
+                proposal.transcripts.clear();
+                proposal.transcripts.extend_from_slice(&self.transcript_cube_ord[transcript_range_start..transcript_range_end]);
             });
 
         // Increment so we run updates on the next quad
