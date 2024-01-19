@@ -36,7 +36,7 @@ use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 
-use std::time::Instant;
+// use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -1126,27 +1126,27 @@ where
     ) {
         let mut rng = thread_rng();
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_volume_params(priors, params);
-        println!("  Sample volume params: {:?}", t0.elapsed());
+        // println!("  Sample volume params: {:?}", t0.elapsed());
 
         // // Sample background/foreground counts
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_transcript_state(priors, params, transcripts, uncertainty);
-        println!("  Sample transcript states: {:?}", t0.elapsed());
+        // println!("  Sample transcript states: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.compute_counts(priors, params, transcripts);
-        println!("  Compute counts: {:?}", t0.elapsed());
+        // println!("  Compute counts: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_component_nb_params(priors, params, burnin);
-        println!("  Sample nb params: {:?}", t0.elapsed());
+        // println!("  Sample nb params: {:?}", t0.elapsed());
 
         // Sample λ
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_rates(priors, params);
-        println!("  Sample λ: {:?}", t0.elapsed());
+        // println!("  Sample λ: {:?}", t0.elapsed());
 
         // TODO:
         // This is the most expensive part. We could sample this less frequently,
@@ -1156,9 +1156,9 @@ where
         //     anything obvious to do about that.
 
         // Sample z
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_component_assignments(priors, params);
-        println!("  Sample z: {:?}", t0.elapsed());
+        // println!("  Sample z: {:?}", t0.elapsed());
 
         // sample π
         let mut α = vec![1_f32; params.ncomponents()];
@@ -1180,19 +1180,19 @@ where
             );
         }
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_background_rates(priors, params);
-        println!("  Sample background rates: {:?}", t0.elapsed());
+        // println!("  Sample background rates: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_confusion_rates(priors, params);
-        println!("  Sample confusion rates: {:?}", t0.elapsed());
+        // println!("  Sample confusion rates: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
-        println!("  Sample transcript positions: {:?}", t0.elapsed());
+        // println!("  Sample transcript positions: {:?}", t0.elapsed());
     }
 
     fn sample_transcript_state(
@@ -1322,10 +1322,9 @@ where
         // let t0 = Instant::now();
         Zip::from(params.ω.rows_mut()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0)))
-            .and(&params.cell_volume)
+            .and(&params.cell_log_volume)
             .and(&params.z)
-            .par_for_each(|ωs, cs, v, &z| {
-                let logv = v.ln();
+            .par_for_each(|ωs, cs, &logv, &z| {
                 let mut rng = thread_rng();
                 Zip::from(cs.axis_iter(Axis(0))) // for every gene
                     .and(ωs)
@@ -1343,10 +1342,9 @@ where
         params.σ_φ.fill(0.0);
         Zip::from(params.ω.rows()) // for every cell
             .and(params.foreground_counts.axis_iter(Axis(0))) // for each cell
-            .and(&params.cell_volume)
+            .and(&params.cell_log_volume)
             .and(&params.z)
-            .for_each(|ωs, cs, v, &z| {
-                let logv = v.ln();
+            .for_each(|ωs, cs, &logv, &z| {
                 Zip::from(params.μ_φ.row_mut(z as usize)) // for every gene
                     .and(params.σ_φ.row_mut(z as usize))
                     .and(params.r.row(z as usize))

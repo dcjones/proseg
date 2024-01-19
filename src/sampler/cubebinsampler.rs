@@ -1496,7 +1496,7 @@ pub fn filter_sparse_cells(
     let cubecells = cube_assignments(&cubebins, &nucleus_assignments);
     // println!("cube_assignments: {:?}", t0.elapsed());
 
-    let t0 = Instant::now();
+    // let t0 = Instant::now();
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for (_, cell_id) in cubecells.iter() {
         if *cell_id != BACKGROUND_CELL {
@@ -1525,7 +1525,7 @@ pub fn filter_sparse_cells(
             }
         }
     }
-    println!("index assignments {:?}", t0.elapsed());
+    // println!("index assignments {:?}", t0.elapsed());
 
     nucleus_population.resize(used_cell_ids.len(), 0);
     nucleus_population.fill(0);
