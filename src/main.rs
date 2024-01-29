@@ -117,7 +117,7 @@ struct Args {
     #[arg(long, default_value_t = 0.9)]
     foreground_pr_cutoff: f32,
 
-    #[arg(long, default_value_t = 1.4_f32)]
+    #[arg(long, default_value_t = 1.3_f32)]
     perimeter_bound: f32,
 
     #[arg(long, default_value_t = 5e-2_f32)]

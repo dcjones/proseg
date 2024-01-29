@@ -20,7 +20,7 @@ use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use thread_local::ThreadLocal;
 use itertools::Itertools;
 
-use std::time::Instant;
+// use std::time::Instant;
 
 // taken from: https://github.com/a-b-street/abstreet
 fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32> {

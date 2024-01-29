@@ -16,8 +16,9 @@ use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
+use linfa_clustering::GaussianMixtureModel;
 use math::{
-    logistic, normal_pdf, normal_x2_pdf,
+    logistic, normal_pdf, normal_x2_pdf, normal_x2_logpdf,
     lognormal_logpdf, negbin_logpmf_fast, rand_crt, LogFactorial,
     LogGammaPlus,
 };
@@ -287,16 +288,43 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let kmeans_samples =
-            DatasetBase::from(counts.sum_axis(Axis(0)).map(|&x| (x as f32).ln_1p()));
+        let norm_constant = 1e3;
+        let mut init_samples = counts.sum_axis(Axis(2)).map(|&x| (x as f32)).reversed_axes();
+        init_samples.rows_mut()
+            .into_iter()
+            .for_each(|mut row| {
+                let rowsum = row.sum();
+                row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
+            });
+        let init_samples = DatasetBase::from(init_samples);
+
+        // log1p transformed counts
+        // let init_samples =
+        //     DatasetBase::from(counts.sum_axis(Axis(2)).map(|&x| (x as f32).ln_1p()).reversed_axes());
 
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
             .tolerance(1e-1)
-            .fit(&kmeans_samples)
+            .fit(&init_samples)
             .expect("kmeans failed to converge");
 
-        let z = model.predict(&kmeans_samples).map(|&x| x as u32);
+        let z = model.predict(&init_samples).map(|&x| x as u32);
+
+        // let rng = rand::thread_rng();
+        // let model = GaussianMixtureModel::params_with_rng(ncomponents, rng)
+        //     .tolerance(1e-1)
+        //     .fit(&init_samples)
+        //     .expect("gmm failed to converge");
+
+        // let z = model.predict(&init_samples).map(|&x| x as u32);
+
+        // // initial component assignments
+        // let mut rng = rand::thread_rng();
+        // let z = (0..ncells)
+        //     .map(|_| rng.gen_range(0..ncomponents) as u32)
+        //     .collect::<Vec<_>>()
+        //     .into();
+
         let uv = Array2::<(u32, f32)>::from_elem((ncomponents, ngenes), (0_u32, 0_f32));
         let lgamma_r = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let loggammaplus = Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
@@ -305,12 +333,6 @@ impl ModelParams {
         let μ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let σ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
 
-        // // initial component assignments
-        // let mut rng = rand::thread_rng();
-        // let z = (0..ncells)
-        //     .map(|_| rng.gen_range(0..ncomponents) as u32)
-        //     .collect::<Vec<_>>()
-        //     .into();
 
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
         let transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
@@ -1186,6 +1208,7 @@ where
 
         // let t0 = Instant::now();
         self.sample_confusion_rates(priors, params);
+        // TODO: disabling confusion to see if it actually does anything
         // println!("  Sample confusion rates: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
@@ -1778,14 +1801,24 @@ where
         // let t0 = Instant::now();
         params.proposed_transcript_positions
             .par_iter_mut()
-            .zip(&params.transcript_positions)
-            .for_each(|(proposed_position, current_position)| {
+            // .zip(&params.transcript_positions)
+            .zip(transcripts)
+            .for_each(|(proposed_position, t)| {
                 let mut rng = thread_rng();
                 *proposed_position = (
-                    current_position.0 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    current_position.1 + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    (current_position.2 + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                    t.x + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    t.y + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    // t.x,
+                    // t.y,
+                    (t.z + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
                 );
+
+                // Only z-axis repo
+                // *proposed_position = (
+                //     t.x,
+                //     t.y,
+                //     (t.z + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                // );
             });
         // println!("  Generate transcript position proposals: {:?}", t0.elapsed());
 
@@ -1824,13 +1857,23 @@ where
 
                 // TODO: account for the possibility that sigma is 0
 
+                // prior on xy-diffusion distances
                 δ -= ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_prev) +
                     priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();
                 δ += ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_new) +
                     priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_new)).ln();
 
+                // weight by xy proposal distribution
+                δ += normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_prev);
+                δ -= normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_new);
+
+                // prior on z diffusion distance
                 δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
                 δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));
+
+                // weight by z proposal distribution
+                δ += normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_prev);
+                δ -= normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_new);
 
                 let gene = transcript.gene as usize;
 

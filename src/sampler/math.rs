@@ -25,9 +25,14 @@ pub fn lfact(k: u32) -> f32 {
 // }
 
 const SQRT_TWO_PI: f32 = 2.5066282746310002_f32;
+const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
 
 pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
     return (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI);
+}
+
+pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
+    return -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI;
 }
 
 
@@ -57,7 +62,6 @@ pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     return -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0;
 }
 
-const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
 
 // Negative binomial log probability function with capacity for precomputing some values.
 pub fn negbin_logpmf_fast(
