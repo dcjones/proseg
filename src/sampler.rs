@@ -288,7 +288,7 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let norm_constant = 1e3;
+        let norm_constant = 1e4;
         let mut init_samples = counts.sum_axis(Axis(2)).map(|&x| (x as f32)).reversed_axes();
         init_samples.rows_mut()
             .into_iter()
@@ -1808,8 +1808,6 @@ where
                 *proposed_position = (
                     t.x + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
                     t.y + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    // t.x,
-                    // t.y,
                     (t.z + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
                 );
 
