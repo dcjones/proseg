@@ -1896,20 +1896,20 @@ where
                 let ln_λ_diff = λ_new.ln() - λ_prev.ln();
                 δ += ln_λ_diff;
 
-                let cell_nuc = params.init_nuclear_cell_assignment[i];
-                if cell_nuc != BACKGROUND_CELL {
-                    if cell_nuc == cell_prev {
-                        δ -= priors.nuclear_reassignment_1mlog_prob;
-                    } else {
-                        δ -= priors.nuclear_reassignment_log_prob;
-                    }
+                // let cell_nuc = params.init_nuclear_cell_assignment[i];
+                // if cell_nuc != BACKGROUND_CELL {
+                //     if cell_nuc == cell_prev {
+                //         δ -= priors.nuclear_reassignment_1mlog_prob;
+                //     } else {
+                //         δ -= priors.nuclear_reassignment_log_prob;
+                //     }
 
-                    if cell_nuc == cell_new {
-                        δ += priors.nuclear_reassignment_1mlog_prob;
-                    } else {
-                        δ += priors.nuclear_reassignment_log_prob;
-                    }
-                }
+                //     if cell_nuc == cell_new {
+                //         δ += priors.nuclear_reassignment_1mlog_prob;
+                //     } else {
+                //         δ += priors.nuclear_reassignment_log_prob;
+                //     }
+                // }
 
                 let cell_prior = params.prior_seg_cell_assignment[i];
                 if cell_prior == cell_prev {
