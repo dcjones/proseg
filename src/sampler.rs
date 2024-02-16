@@ -16,7 +16,6 @@ use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use linfa_clustering::GaussianMixtureModel;
 use math::{
     logistic, normal_pdf, normal_x2_pdf, normal_x2_logpdf,
     lognormal_logpdf, negbin_logpmf_fast, rand_crt, LogFactorial,
@@ -1750,6 +1749,8 @@ where
                 params.μ_volume[z as usize] += log_volume;
                 params.component_population[z as usize] += 1;
             });
+
+        dbg!(&params.component_population);
 
         // Sampling is parallelizable, but unually number of components is low,
         // so it's dominated by overhead.

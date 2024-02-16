@@ -273,13 +273,14 @@ pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: &Option<String>,
     params: &ModelParams,
-    cell_centroids: &Vec<(f32, f32)>,
+    cell_centroids: &Vec<(f32, f32, f32)>,
 ) {
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::from(vec![
             Field::new("cell", DataType::UInt32, false),
             Field::new("centroid_x", DataType::Float32, false),
             Field::new("centroid_y", DataType::Float32, false),
+            Field::new("centroid_z", DataType::Float32, false),
             Field::new("cluster", DataType::UInt16, false),
             Field::new("volume", DataType::Float32, false),
             Field::new("population", DataType::UInt64, false),
@@ -288,10 +289,13 @@ pub fn write_cell_metadata(
         let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
             Arc::new(array::UInt32Array::from_values(0..params.ncells() as u32)),
             Arc::new(array::Float32Array::from_values(
-                cell_centroids.iter().map(|(x, _)| *x),
+                cell_centroids.iter().map(|(x, _, _)| *x),
             )),
             Arc::new(array::Float32Array::from_values(
-                cell_centroids.iter().map(|(_, y)| *y),
+                cell_centroids.iter().map(|(_, y, _)| *y),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                cell_centroids.iter().map(|(_, _, z)| *z),
             )),
             Arc::new(array::UInt16Array::from_values(
                 params.z.iter().map(|&z| z as u16),

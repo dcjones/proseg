@@ -778,6 +778,30 @@ impl CubeBinSampler {
             .map(|(cube, cell)| (*cell, self.chunkquad.layout.cube_to_world_coords(*cube)));
     }
 
+    pub fn cell_centroids(&self) -> Vec<(f32, f32, f32)> {
+        let mut centroids = vec![(0.0, 0.0, 0.0); self.ncells()];
+        let mut counts = vec![0; self.ncells()];
+        for (&cube, &cell) in self.cubecells.iter() {
+            if cell != BACKGROUND_CELL {
+                let (x0, y0, z0, x1, y1, z1) = self.chunkquad.layout.cube_to_world_coords(cube);
+                centroids[cell as usize].0 += (x0 + x1) / 2.0;
+                centroids[cell as usize].1 += (y0 + y1) / 2.0;
+                centroids[cell as usize].2 += (z0 + z1) / 2.0;
+                counts[cell as usize] += 1;
+            }
+        }
+
+        for (i, count) in counts.iter().enumerate() {
+            if *count > 0 {
+                centroids[i].0 /= *count as f32;
+                centroids[i].1 /= *count as f32;
+                centroids[i].2 /= *count as f32;
+            }
+        }
+
+        return centroids;
+    }
+
     pub fn cell_polygons(&self) -> (Vec<Vec<(i32, MultiPolygon<f32>)>>, Vec<MultiPolygon<f32>>) {
         // Build sets of voxels for each cell
         let mut cell_voxels = vec![HashSet::new(); self.ncells()];
