@@ -995,7 +995,7 @@ where
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // get to a reasonably high probability assignment
-        for _ in 0..20 {
+        for _ in 0..40 {
             self.sample_component_nb_params(priors, params, true);
         }
     }
