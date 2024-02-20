@@ -87,13 +87,13 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 4)]
     nlayers: usize,
 
     #[arg(long, default_value_t=false)]
     detect_layers: bool,
 
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 4)]
     voxellayers: usize,
 
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
@@ -120,7 +120,7 @@ struct Args {
     #[arg(long, default_value_t = 1.3_f32)]
     perimeter_bound: f32,
 
-    #[arg(long, default_value_t = 5e-2_f32)]
+    #[arg(long, default_value_t = 2e-1_f32)]
     nuclear_reassignment_prob: f32,
 
     #[arg(long, default_value_t = 5e-1_f32)]
@@ -141,19 +141,19 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_diffusion: bool,
 
-    #[arg(long, default_value_t = 0.25)]
+    #[arg(long, default_value_t = 0.2)]
     diffusion_probability: f32,
 
-    #[arg(long, default_value_t = 20.0)]
+    #[arg(long, default_value_t = 4.0)]
     diffusion_proposal_sigma: f32,
 
-    #[arg(long, default_value_t = 8.0)]
+    #[arg(long, default_value_t = 0.5)]
     diffusion_sigma_near: f32,
 
-    #[arg(long, default_value_t = 80.0)]
+    #[arg(long, default_value_t = 4.0)]
     diffusion_sigma_far: f32,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     variable_burnin_dispersion: bool,
 
     #[arg(long, default_value = None)]
