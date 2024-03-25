@@ -36,13 +36,13 @@ Most output files can be either `.csv.gz` files or `.parquet` files.
 
 Most importantly:
 
-  * `--expected-counts expected-counts.csv.gz`: Cell-by-gene count matrix. Proseg is a sampling method, so these are posterior expectations that will generally not be integers but fractional counts.
+  * `--output-expected-counts expected-counts.csv.gz`: Cell-by-gene count matrix. Proseg is a sampling method, so these are posterior expectations that will generally not be integers but fractional counts.
   * `--output-cell-metadata cell-metadata.csv.gz`: Cell centroids, volume, and other information.
   * `--output-cell-polygons cell-polygons.geojson.gz`: 2D polygons for each cell in GeoJSON format. These are flattened from 3D, so will overlap.
   * `--output-cell-polygon-layers cell-polygons-layers.geojson.gz`: 2D polygons for each cell in GeoJSON format. These are flattened from 3D, so will overlap.
 
 Addition output options that may be useful:
-  * `--transcript-metadata transcript-metadata.csv.gz`: Transcript position, repositioned location, cell assignemnet, etc.
+  * `--output-transcript-metadata transcript-metadata.csv.gz`: Transcript position, repositioned location, cell assignemnet, etc.
   * `--output-counts counts.csv.gz`: Cell-by-gene count matrix point estimate. This is integer values, unlike expected-counts. Expected counts is somewhat more reliable in our experience.
   * `--output-rates rates.csv.gz`: Cell-by-gene Poisson rate parameters. These are essentially expected relative expression values, but may be too overly-smoothed for use in downstream analysis.
 
