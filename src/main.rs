@@ -156,6 +156,9 @@ struct Args {
     #[arg(long, default_value_t = false)]
     variable_burnin_dispersion: bool,
 
+    #[arg(long, default_value_t = 1.0)]
+    burnin_dispersion: f32,
+
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
 
@@ -506,7 +509,7 @@ fn main() {
 
     let priors = ModelPriors {
         dispersion: args.dispersion,
-        burnin_dispersion: if args.variable_burnin_dispersion { None } else { Some(1.0) },
+        burnin_dispersion: if args.variable_burnin_dispersion { None } else { Some(args.burnin_dispersion) },
 
         min_cell_volume,
 
