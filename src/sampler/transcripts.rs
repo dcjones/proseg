@@ -10,7 +10,7 @@ pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 
 // Should probably rearrange this...
-use super::super::output::{determine_format, OutputFormat};
+use super::super::output::{infer_format_from_filename, OutputFormat};
 
 #[derive(Copy, Clone, PartialEq)]
 pub struct Transcript {
@@ -47,7 +47,7 @@ pub fn read_transcripts_csv(
     min_qv: f32,
     ignore_z_column: bool,
 ) -> TranscriptDataset {
-    let fmt = determine_format(path, &None);
+    let fmt = infer_format_from_filename(path);
 
     match fmt {
         OutputFormat::Csv => {
@@ -89,6 +89,7 @@ pub fn read_transcripts_csv(
             )
         }
         OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
+        OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
     }
 }
 

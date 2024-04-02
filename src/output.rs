@@ -8,12 +8,16 @@ use ndarray::{Array1, Array2, Axis, Zip};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
+use clap::ValueEnum;
 
 use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::transcripts::Transcript;
 use super::sampler::{ModelParams, TranscriptState};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum OutputFormat {
+    /// Blah
+    Infer,
     Csv,
     CsvGz,
     Parquet,
@@ -21,11 +25,16 @@ pub enum OutputFormat {
 
 pub fn write_table(
     filename: &str,
-    fmtstr: &Option<String>,
+    fmt: OutputFormat,
     schema: Schema,
     chunk: Chunk<Arc<dyn arrow2::array::Array>>,
 ) {
-    let fmt = determine_format(filename, fmtstr);
+
+    let fmt = match fmt {
+        OutputFormat::Infer => infer_format_from_filename(filename),
+        _ => fmt,
+    };
+
     let mut file = File::create(filename).unwrap();
 
     match fmt {
@@ -44,6 +53,9 @@ pub fn write_table(
             if write_table_parquet(&mut file, schema, chunk).is_err() {
                 panic!("Error writing parquet file: {}", filename);
             }
+        }
+        OutputFormat::Infer => {
+            panic!("Cannot infer output format for filename: {}", filename);
         }
     }
 }
@@ -114,19 +126,8 @@ where
     Ok(())
 }
 
-pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
-    if let Some(fmtstr) = fmtstr {
-        if fmtstr == "csv.gz" {
-            return OutputFormat::CsvGz;
-        } else if fmtstr == "csv" {
-            return OutputFormat::Csv;
-        } else if fmtstr == "parquet" {
-            return OutputFormat::Parquet;
-        } else {
-            panic!("Unknown file format: {}", fmtstr);
-        }
-    }
 
+pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
     if filename.ends_with(".csv.gz") {
         OutputFormat::CsvGz
     } else if filename.ends_with(".csv") {
@@ -134,13 +135,13 @@ pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat
     } else if filename.ends_with(".parquet") {
         OutputFormat::Parquet
     } else {
-        panic!("Unknown file format for: {}", filename);
+        panic!("Unknown file format for filename: {}", filename);
     }
 }
 
 pub fn write_counts(
     output_counts: &Option<String>,
-    output_counts_fmt: &Option<String>,
+    output_counts_fmt: OutputFormat,
     transcript_names: &[String],
     counts: &Array2<u32>,
 ) {
@@ -168,7 +169,7 @@ pub fn write_counts(
 
 pub fn write_expected_counts(
     output_expected_counts: &Option<String>,
-    output_expected_counts_fmt: &Option<String>,
+    output_expected_counts_fmt: OutputFormat,
     transcript_names: &[String],
     ecounts: &Array2<f32>,
 ) {
@@ -201,7 +202,7 @@ pub fn write_expected_counts(
 
 pub fn write_rates(
     output_rates: &Option<String>,
-    output_rates_fmt: &Option<String>,
+    output_rates_fmt: OutputFormat,
     params: &ModelParams,
     transcript_names: &[String],
 ) {
@@ -229,7 +230,7 @@ pub fn write_rates(
 
 pub fn write_component_params(
     output_component_params: &Option<String>,
-    output_component_params_fmt: &Option<String>,
+    output_component_params_fmt: OutputFormat,
     params: &ModelParams,
     transcript_names: &[String],
 ) {
@@ -274,7 +275,7 @@ pub fn write_component_params(
 
 pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
-    output_cell_metadata_fmt: &Option<String>,
+    output_cell_metadata_fmt: OutputFormat,
     params: &ModelParams,
     cell_centroids: &[(f32, f32, f32)],
 ) {
@@ -324,7 +325,7 @@ pub fn write_cell_metadata(
 
 pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
-    output_transcript_metadata_fmt: &Option<String>,
+    output_transcript_metadata_fmt: OutputFormat,
     transcripts: &[Transcript],
     transcript_positions: &[(f32, f32, f32)],
     transcript_names: &[String],
@@ -405,7 +406,7 @@ pub fn write_transcript_metadata(
 
 pub fn write_gene_metadata(
     output_gene_metadata: &Option<String>,
-    output_gene_metadata_fmt: &Option<String>,
+    output_gene_metadata_fmt: OutputFormat,
     params: &ModelParams,
     transcript_names: &[String],
     expected_counts: &Array2<f32>,
@@ -492,7 +493,7 @@ pub fn write_gene_metadata(
 
 pub fn write_voxels(
     output_voxels: &Option<String>,
-    output_voxels_fmt: &Option<String>,
+    output_voxels_fmt: OutputFormat,
     sampler: &VoxelSampler,
 ) {
     if let Some(output_voxels) = output_voxels {

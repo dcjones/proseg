@@ -20,95 +20,131 @@ use std::collections::HashSet;
 
 use output::*;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(name = "proseg")]
 #[command(author = "Daniel C. Jones")]
 #[command(
-    about = "High-speed cell segmentation of transcript-resolution spatial transcriptomics data."
+    about = "High-speed cell segmentation of transcript-resolution spatial transcriptomics data.",
 )]
 struct Args {
+    /// CSV with transcript information. How this is interpreted is determined
+    /// either by using a preset (`--xenium`, `--cosmx`, `--cosmx-micron`, `--merfish`)
+    /// or by manually setting column names using (`--x-column`, `--transcript-column`, etc).
     transcript_csv: String,
-    // TODO: We also want to be able to read from xenium parquet files.
+
+    /// Preset for 10X Xenium data
     #[arg(long, default_value_t = false)]
     xenium: bool,
 
+    /// Preset for NanoString CosMx data that using pixel coordinates. Output will still be
+    /// in microns.
     #[arg(long, default_value_t = false)]
     cosmx: bool,
 
+    /// Preset for NanoString CosMx data that has been pre-scaled to microns.
     #[arg(long, default_value_t = false)]
     cosmx_micron: bool,
 
+    /// Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
 
+    /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
-    transcript_column: Option<String>,
+    gene_column: Option<String>,
 
+    /// Name of column containing the transcript ID
     #[arg(long, default_value = None)]
     transcript_id_column: Option<String>,
 
+    /// Name of column containing the x coordinate
     #[arg(short, long, default_value = None)]
     x_column: Option<String>,
 
+    /// Name of column containing the y coordinate
     #[arg(short, long, default_value = None)]
     y_column: Option<String>,
 
+    /// Name of column containing the z coordinate
     #[arg(short, long, default_value = None)]
     z_column: Option<String>,
 
+    /// Name of column containing the cellular compartment
     #[arg(long, default_value = None)]
     compartment_column: Option<String>,
 
+    /// Value in the cellular compartment column indicated the nucleus
     #[arg(long, default_value = None)]
     compartment_nuclear: Option<String>,
 
+    /// Name of column containing the field of view
     #[arg(long, default_value = None)]
     fov_column: Option<String>,
 
+    /// Name of column containing the cell ID
     #[arg(long, default_value = None)]
     cell_id_column: Option<String>,
 
+    /// Value in the cell ID column indicating an unassigned transcript
     #[arg(long, default_value = None)]
     cell_id_unassigned: Option<String>,
 
+    /// Name of column containing the quality value
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
+    /// Ignore the z coordinate, flattening the data to 2D
     #[arg(long, default_value_t = false)]
     ignore_z_coord: bool,
 
+    /// Filter out transcripts with quality values below this threshold
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
 
+    /// Target number of cells per chunk in the parallelization scheme
+    /// Smaller number enabled more parallelization, but too small a number
+    /// risks inconsistent updates.
     #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
+    /// Number of components in the mixture model of cellular gene expression
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
+    // TODO: This should really be called like "background layers" or something
+    /// Number of z-axis layers used to model background expression
     #[arg(long, default_value_t = 4)]
     nlayers: usize,
 
+    /// Detect the number of z-layers from the data when it's discrete
     #[arg(long, default_value_t = false)]
     detect_layers: bool,
 
+    // TODO: make this `voxel_layers``
+    /// Number of layers of voxels in the z-axis used for segmentation
     #[arg(long, default_value_t = 4)]
     voxellayers: usize,
 
+    /// Sampler schedule, indicating the number of iterations between doubling resolution.
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
     schedule: Vec<usize>,
 
+    /// Whether to double the z-layers when doubling resolution
     #[arg(long, default_value_t = false)]
     double_z_layers: bool,
 
+    /// Number of samples at the end of the schedule used to compute
+    /// expectations and uncertainty
     #[arg(long, default_value_t = 100)]
     recorded_samples: usize,
 
+    /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
 
+    /// Number of sub-iterations sampling cell morphology per overall iteration
     #[arg(short, long, default_value_t = 1000)]
-    local_steps_per_iter: usize,
+    morphology_steps_per_iter: usize,
 
     #[arg(long, default_value_t = 0.1)]
     count_pr_cutoff: f32,
@@ -125,113 +161,134 @@ struct Args {
     #[arg(long, default_value_t = 5e-1_f32)]
     prior_seg_reassignment_prob: f32,
 
-    // TODO: We need a microns-per-pixel argument. We have a bunch of priors
-    // that are basically assuming microns.
+    /// Initial size x/y size of voxels.
     #[arg(long, default_value_t = 4.0_f32)]
-    scale: f32,
+    initial_voxel_size: f32,
 
+    /// Exclude transcripts that are more than this distance from any nucleus
     #[arg(long, default_value_t = 60_f32)]
     max_transcript_nucleus_distance: f32,
 
-    #[arg(long, default_value_t = false)]
-    calibrate_scale: bool,
-
+    /// Disable transcript diffusion model
     #[arg(long, default_value_t = false)]
     no_diffusion: bool,
 
+    /// Probability of transcript diffusion
     #[arg(long, default_value_t = 0.2)]
     diffusion_probability: f32,
 
+    /// Stddev of the proposal distribution for transcript repositioning
     #[arg(long, default_value_t = 4.0)]
     diffusion_proposal_sigma: f32,
 
+    /// Stddev parameter for repositioning of non-diffused transcripts
     #[arg(long, default_value_t = 0.5)]
     diffusion_sigma_near: f32,
 
+    /// Stddev parameter for repositioning of diffused transcripts
     #[arg(long, default_value_t = 4.0)]
     diffusion_sigma_far: f32,
 
+    /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
     variable_burnin_dispersion: bool,
 
+    /// Fixed dispersion parameter value during burn-in
     #[arg(long, default_value_t = 1.0)]
     burnin_dispersion: f32,
 
+    /// Fixed dispersion parameter throughout sampling
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
 
+    /// Run time consuming checks to make sure data structures are in a consistent state
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 
+    /// Output a point estimate of 
     #[arg(long, default_value = None)]
     output_counts: Option<String>,
 
-    #[arg(long, default_value = None)]
-    output_counts_fmt: Option<String>,
+    // TODO: make all these fmt arguments enum based
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_counts_fmt: OutputFormat,
 
+    /// Output a matrix of expected transcript counts per cell
     #[arg(long, default_value = "expected-counts.csv.gz")]
     output_expected_counts: Option<String>,
 
+    /// Output a matrix of estimated Poisson expression rates per cell
     #[arg(long, default_value = None)]
     output_rates: Option<String>,
 
-    #[arg(long, default_value = None)]
-    output_rates_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_rates_fmt: OutputFormat,
 
+    /// Output per-component parameter values
     #[arg(long, default_value = None)]
     output_component_params: Option<String>,
 
-    #[arg(long, default_value = None)]
-    output_component_params_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_component_params_fmt: OutputFormat,
 
-    #[arg(long, default_value = None)]
-    output_expected_counts_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_expected_counts_fmt: OutputFormat,
 
+    /// Output cell convex hulls
     #[arg(long, default_value = None)]
     output_cell_hulls: Option<String>,
 
+    /// Output cell metadata
     #[arg(long, default_value = "cell-metadata.csv.gz")]
     output_cell_metadata: Option<String>,
 
-    #[arg(long, default_value = None)]
-    output_cell_metadata_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_cell_metadata_fmt: OutputFormat,
 
+    /// Output transcript metadata
     #[arg(long, default_value = "transcript-metadata.csv.gz")]
     output_transcript_metadata: Option<String>,
 
-    #[arg(long, default_value=None)]
-    output_transcript_metadata_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_transcript_metadata_fmt: OutputFormat,
 
+    /// Output gene metadata
     #[arg(long, default_value=None)]
     output_gene_metadata: Option<String>,
 
-    #[arg(long, default_value=None)]
-    output_gene_metadata_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_gene_metadata_fmt: OutputFormat,
 
+    /// Output a table of each voxel in each cell
     #[arg(long, default_value=None)]
     output_cell_voxels: Option<String>,
 
-    #[arg(long, default_value=None)]
-    output_cell_voxels_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_cell_voxels_fmt: OutputFormat,
 
+    /// Output cell polygons flattened to 2D
     #[arg(long, default_value = "cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
 
+    /// Output separate cell polygons for each layer of voxels along the z-axis
     #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
     output_cell_polygon_layers: Option<String>,
 
+    /// Output cell polygons repeatedly during sampling
     #[arg(long, default_value = None)]
     monitor_cell_polygons: Option<String>,
 
+    /// How frequently to output cell polygons during monitoring
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
+    /// Use connectivity checks to prevent cells from having any disconnected voxels
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
 }
 
 fn set_xenium_presets(args: &mut Args) {
-    args.transcript_column
+    args.gene_column
         .get_or_insert(String::from("feature_name"));
     args.transcript_id_column
         .get_or_insert(String::from("transcript_id"));
@@ -247,7 +304,7 @@ fn set_xenium_presets(args: &mut Args) {
     args.qv_column.get_or_insert(String::from("qv"));
 
     // Xenium coordinates are in microns.
-    args.scale = 4.0;
+    args.initial_voxel_size = 4.0;
 
     // TODO: This is not a good thing to be doing, but I'm finding that I need
     // to force the dispersion up to get good results on some of the data.
@@ -257,7 +314,7 @@ fn set_xenium_presets(args: &mut Args) {
 }
 
 fn set_cosmx_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("target"));
+    args.gene_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
@@ -270,11 +327,11 @@ fn set_cosmx_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
     // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
-    args.scale = 4.0;
+    args.initial_voxel_size = 4.0;
 }
 
 fn set_cosmx_micron_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("target"));
+    args.gene_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
@@ -286,18 +343,18 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
-    args.scale = 4.0;
+    args.initial_voxel_size = 4.0;
 }
 
 fn set_merfish_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("gene"));
+    args.gene_column.get_or_insert(String::from("gene"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
     args.cell_id_column.get_or_insert(String::from("cell"));
     // args.cell_id_unassigned.get_or_insert(String::from("NA"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.scale = 4.0;
+    args.initial_voxel_size = 4.0;
 }
 
 fn main() {
@@ -369,7 +426,7 @@ fn main() {
 
     let mut dataset = read_transcripts_csv(
         &args.transcript_csv,
-        &expect_arg(args.transcript_column, "transcript-column"),
+        &expect_arg(args.gene_column, "transcript-column"),
         args.transcript_id_column,
         args.compartment_column,
         args.compartment_nuclear,
@@ -437,7 +494,7 @@ fn main() {
         let prev_ncells = ncells;
 
         filter_sparse_cells(
-            args.scale,
+            args.initial_voxel_size,
             args.voxellayers,
             &dataset.transcripts,
             &mut dataset.nucleus_assignments,
@@ -458,12 +515,6 @@ fn main() {
         compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
         / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
-
-    // If scale isn't specified set it to something reasonable based on mean nuclei size
-    let mut scale = args.scale;
-    if args.calibrate_scale {
-        scale = 0.5 * mean_nucleus_area.sqrt();
-    }
 
     if args.detect_layers {
         const MAX_ZLAYERS: usize = 30;
@@ -613,7 +664,7 @@ fn main() {
         args.nlayers,
         zmin,
         layer_depth,
-        scale,
+        args.initial_voxel_size,
         chunk_size,
     ));
     sampler.borrow_mut().initialize(&priors, &mut params);
@@ -628,7 +679,7 @@ fn main() {
             &mut params,
             &dataset.transcripts,
             args.schedule[0],
-            args.local_steps_per_iter,
+            args.morphology_steps_per_iter,
             None,
             &mut total_steps,
             &args.monitor_cell_polygons,
@@ -652,7 +703,7 @@ fn main() {
                 &mut params,
                 &dataset.transcripts,
                 niter,
-                args.local_steps_per_iter,
+                args.morphology_steps_per_iter,
                 None,
                 &mut total_steps,
                 &args.monitor_cell_polygons,
@@ -675,7 +726,7 @@ fn main() {
         &mut params,
         &dataset.transcripts,
         *args.schedule.last().unwrap() - args.recorded_samples,
-        args.local_steps_per_iter,
+        args.morphology_steps_per_iter,
         None,
         &mut total_steps,
         &args.monitor_cell_polygons,
@@ -692,7 +743,7 @@ fn main() {
         &mut params,
         &dataset.transcripts,
         args.recorded_samples,
-        args.local_steps_per_iter,
+        args.morphology_steps_per_iter,
         Some(&mut uncertainty),
         &mut total_steps,
         &args.monitor_cell_polygons,
@@ -720,37 +771,37 @@ fn main() {
 
     write_expected_counts(
         &args.output_expected_counts,
-        &args.output_expected_counts_fmt,
+        args.output_expected_counts_fmt,
         &dataset.transcript_names,
         &ecounts,
     );
     write_counts(
         &args.output_counts,
-        &args.output_counts_fmt,
+        args.output_counts_fmt,
         &dataset.transcript_names,
         &counts,
     );
     write_rates(
         &args.output_rates,
-        &args.output_rates_fmt,
+        args.output_rates_fmt,
         &params,
         &dataset.transcript_names,
     );
     write_component_params(
         &args.output_component_params,
-        &args.output_component_params_fmt,
+        args.output_component_params_fmt,
         &params,
         &dataset.transcript_names,
     );
     write_cell_metadata(
         &args.output_cell_metadata,
-        &args.output_cell_metadata_fmt,
+        args.output_cell_metadata_fmt,
         &params,
         &cell_centroids,
     );
     write_transcript_metadata(
         &args.output_transcript_metadata,
-        &args.output_transcript_metadata_fmt,
+        args.output_transcript_metadata_fmt,
         &dataset.transcripts,
         &params.transcript_positions,
         &dataset.transcript_names,
@@ -759,14 +810,14 @@ fn main() {
     );
     write_gene_metadata(
         &args.output_gene_metadata,
-        &args.output_gene_metadata_fmt,
+        args.output_gene_metadata_fmt,
         &params,
         &dataset.transcript_names,
         &ecounts,
     );
     write_voxels(
         &args.output_cell_voxels,
-        &args.output_cell_voxels_fmt,
+        args.output_cell_voxels_fmt,
         &sampler.borrow(),
     );
 
