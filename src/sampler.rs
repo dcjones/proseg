@@ -2,10 +2,10 @@ mod connectivity;
 pub mod cubebinsampler;
 pub mod hull;
 mod math;
-mod sampleset;
-mod polygons;
-pub mod transcripts;
 pub mod polyagamma;
+mod polygons;
+mod sampleset;
+pub mod transcripts;
 
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
@@ -17,12 +17,11 @@ use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
-    logistic, normal_pdf, normal_x2_pdf, normal_x2_logpdf,
-    lognormal_logpdf, negbin_logpmf_fast, rand_crt, LogFactorial,
-    LogGammaPlus,
+    logistic, lognormal_logpdf, negbin_logpmf_fast, normal_pdf, normal_x2_logpdf, normal_x2_pdf,
+    rand_crt, LogFactorial, LogGammaPlus,
 };
-use polyagamma::PolyaGamma;
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use polyagamma::PolyaGamma;
 use rand::{thread_rng, Rng};
 use rand_distr::{Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
@@ -34,7 +33,6 @@ use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
-
 
 // use std::time::Instant;
 
@@ -289,13 +287,14 @@ impl ModelParams {
 
         // initial component assignments
         let norm_constant = 1e4;
-        let mut init_samples = counts.sum_axis(Axis(2)).map(|&x| (x as f32)).reversed_axes();
-        init_samples.rows_mut()
-            .into_iter()
-            .for_each(|mut row| {
-                let rowsum = row.sum();
-                row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
-            });
+        let mut init_samples = counts
+            .sum_axis(Axis(2))
+            .map(|&x| (x as f32))
+            .reversed_axes();
+        init_samples.rows_mut().into_iter().for_each(|mut row| {
+            let rowsum = row.sum();
+            row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
+        });
         let init_samples = DatasetBase::from(init_samples);
 
         // log1p transformed counts
@@ -327,16 +326,18 @@ impl ModelParams {
 
         let uv = Array2::<(u32, f32)>::from_elem((ncomponents, ngenes), (0_u32, 0_f32));
         let lgamma_r = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
-        let loggammaplus = Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
+        let loggammaplus =
+            Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
         let ω = Array2::<f32>::from_elem((ncells, ngenes), 0.0);
         let φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let μ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
         let σ_φ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
 
-
         let component_volume = Array1::<f32>::from_elem(ncomponents, 0.0);
-        let transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
-        let prev_transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
+        let transcript_state =
+            Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
+        let prev_transcript_state =
+            Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
         ModelParams {
             transcript_positions,
@@ -408,7 +409,9 @@ impl ModelParams {
     }
 
     fn check_counts(&self, transcripts: &[Transcript]) {
-        for (i, (transcript, &assignment)) in transcripts.iter().zip(&self.cell_assignments).enumerate() {
+        for (i, (transcript, &assignment)) in
+            transcripts.iter().zip(&self.cell_assignments).enumerate()
+        {
             let layer = self.zlayer(self.transcript_positions[i].2);
             if assignment != BACKGROUND_CELL {
                 assert!(self.counts[[transcript.gene as usize, assignment as usize, layer]] > 0);
@@ -421,8 +424,7 @@ impl ModelParams {
     }
 
     pub fn nassigned(&self) -> usize {
-        self
-            .cell_assignments
+        self.cell_assignments
             .iter()
             .filter(|&c| *c != BACKGROUND_CELL)
             .count()
@@ -454,19 +456,19 @@ impl ModelParams {
 
                 // iterate over genes
                 let part = Zip::from(λ)
-                        .and(cs.outer_iter())
-                        .fold(0_f32, |accum, λ, cs| {
-                            accum
-                                + Zip::from(cs).fold(0_f32, |accum, &c| {
-                                    if c > 0 {
-                                        // accum + (c as f32) * (λ + λ_bg).ln()
-                                        accum + (c as f32) * λ.ln()
-                                    } else {
-                                        accum
-                                    }
-                                })
-                                - λ * cell_volume
-                        });
+                    .and(cs.outer_iter())
+                    .fold(0_f32, |accum, λ, cs| {
+                        accum
+                            + Zip::from(cs).fold(0_f32, |accum, &c| {
+                                if c > 0 {
+                                    // accum + (c as f32) * (λ + λ_bg).ln()
+                                    accum + (c as f32) * λ.ln()
+                                } else {
+                                    accum
+                                }
+                            })
+                            - λ * cell_volume
+                    });
                 // if part < -57983890000.0 {
                 //     dbg!(part, cell_volume, cs.sum());
                 //     dbg!(λ);
@@ -494,12 +496,12 @@ impl ModelParams {
         ll += Zip::from(&self.cell_assignments)
             .and(&self.prior_seg_cell_assignment)
             .fold(0_f32, |accum, &cell, &nuc_cell| {
-                    if cell == nuc_cell {
-                        accum + priors.prior_seg_reassignment_1mlog_prob
-                    } else {
-                        accum + priors.prior_seg_reassignment_log_prob
-                    }
-                });
+                if cell == nuc_cell {
+                    accum + priors.prior_seg_reassignment_1mlog_prob
+                } else {
+                    accum + priors.prior_seg_reassignment_log_prob
+                }
+            });
 
         // cell volume terms
         ll += Zip::from(&self.cell_volume)
@@ -766,7 +768,7 @@ impl UncertaintyTracker {
                 // let fg_pr = λ_cell / (λ_cell + λ_bg + λ_c);
 
                 // if fg_pr > foreground_pr_cutoff {
-                    counts[[gene as usize, *j as usize]] += 1;
+                counts[[gene as usize, *j as usize]] += 1;
                 // }
             }
         }
@@ -774,11 +776,7 @@ impl UncertaintyTracker {
         (counts, maxpost_assignments)
     }
 
-    pub fn expected_counts(
-        &self,
-        params: &ModelParams,
-        transcripts: &[Transcript],
-    ) -> Array2<f32> {
+    pub fn expected_counts(&self, params: &ModelParams, transcripts: &[Transcript]) -> Array2<f32> {
         let mut ecounts = Array2::<f32>::zeros((params.ngenes(), params.ncells()));
 
         for (&(i, j), &d) in self.cell_assignment_duration.iter() {
@@ -990,7 +988,7 @@ pub trait Proposal {
 pub trait Sampler<P>
 where
     P: Proposal + Send,
-    Self: Sync
+    Self: Sync,
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1068,7 +1066,7 @@ where
                     stats.cell_to_cell_ignore += 1;
                 }
             } else if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                    stats.background_to_cell_reject += 1;
+                stats.background_to_cell_reject += 1;
             } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
                 stats.cell_to_background_reject += 1;
             } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
@@ -1108,7 +1106,9 @@ where
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
-                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = ((params.transcript_positions[i].2 - params.z0)
+                        / params.layer_depth)
+                        .max(0.0) as usize;
                     let layer = layer.min(params.nlayers() - 1);
                     params.counts[[gene as usize, old_cell as usize, layer]] -= 1;
                 }
@@ -1124,12 +1124,13 @@ where
 
                 for &i in proposal.transcripts() {
                     let gene = transcripts[i].gene;
-                    let layer = ((params.transcript_positions[i].2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer = ((params.transcript_positions[i].2 - params.z0)
+                        / params.layer_depth)
+                        .max(0.0) as usize;
                     let layer = layer.min(params.nlayers() - 1);
                     params.counts[[gene as usize, new_cell as usize, layer]] += 1;
                 }
             }
-
         }
 
         self.update_sampler_state(params);
@@ -1190,12 +1191,9 @@ where
             params.π.push(1.0);
         } else {
             params.π.clear();
-            params.π.extend(
-                Dirichlet::new(&α)
-                    .unwrap()
-                    .sample(&mut rng)
-                    .iter(),
-            );
+            params
+                .π
+                .extend(Dirichlet::new(&α).unwrap().sample(&mut rng).iter());
         }
 
         // let t0 = Instant::now();
@@ -1219,9 +1217,11 @@ where
         _priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
-        uncertainty: &mut Option<&mut UncertaintyTracker>)
-    {
-        params.prev_transcript_state.clone_from(&params.transcript_state);
+        uncertainty: &mut Option<&mut UncertaintyTracker>,
+    ) {
+        params
+            .prev_transcript_state
+            .clone_from(&params.transcript_state);
         let nlayers = params.nlayers();
         Zip::from(&mut params.transcript_state)
             .and(&params.cell_assignments)
@@ -1253,12 +1253,13 @@ where
                 }
             });
 
-            if let Some(uncertainty) = uncertainty.as_mut() {
-                Zip::indexed(&mut params.cell_assignment_time)
-                    .and(&params.prev_transcript_state)
-                    .and(&params.transcript_state)
-                    .and(&params.cell_assignments)
-                    .for_each(|i, cell_assignment_time, &prev_state, &state, &assignment| {
+        if let Some(uncertainty) = uncertainty.as_mut() {
+            Zip::indexed(&mut params.cell_assignment_time)
+                .and(&params.prev_transcript_state)
+                .and(&params.transcript_state)
+                .and(&params.cell_assignments)
+                .for_each(
+                    |i, cell_assignment_time, &prev_state, &state, &assignment| {
                         let is_foreground = state == TranscriptState::Foreground;
                         let was_foreground = prev_state == TranscriptState::Foreground;
 
@@ -1275,12 +1276,17 @@ where
                         let duration = params.t - *cell_assignment_time;
                         uncertainty.update_assignment_duration(i, prev_assignment, duration);
                         *cell_assignment_time = params.t;
-                    });
-            }
-
+                    },
+                );
+        }
     }
 
-    fn compute_counts(&self, _priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
+    fn compute_counts(
+        &self,
+        _priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+    ) {
         let nlayers = params.nlayers();
         params.confusion_counts.fill(0_u32);
         params.background_counts.fill(0_u32);
@@ -1298,13 +1304,13 @@ where
                 match state {
                     TranscriptState::Background => {
                         params.background_counts[[gene, layer]] += 1;
-                    },
+                    }
                     TranscriptState::Confusion => {
                         params.confusion_counts[gene] += 1;
-                    },
+                    }
                     TranscriptState::Foreground => {
                         params.foreground_counts[[cell as usize, gene, layer]] += 1;
-                    },
+                    }
                 }
             });
 
@@ -1312,7 +1318,12 @@ where
         // dbg!(params.confusion_counts.sum());
     }
 
-    fn sample_component_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
+    fn sample_component_nb_params(
+        &mut self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        burnin: bool,
+    ) {
         // total component area
         // let mut component_cell_area = vec![0_f32; params.ncomponents()];
         params.component_volume.fill(0.0);
@@ -1352,7 +1363,7 @@ where
                     .for_each(|c, ω, φ, &r| {
                         *ω = PolyaGamma::new(c.sum() as f32 + r, logv + φ).sample(&mut rng);
                     });
-                });
+            });
         // println!("  Sample ω: {:?}", t0.elapsed());
 
         // Compute parameters to sample φ
@@ -1375,8 +1386,7 @@ where
                     });
             });
 
-        Zip::from(&mut params.σ_φ)
-            .for_each(|σ| *σ = (priors.γ + *σ).recip());
+        Zip::from(&mut params.σ_φ).for_each(|σ| *σ = (priors.γ + *σ).recip());
 
         Zip::from(&mut params.μ_φ)
             .and(&params.σ_φ)
@@ -1455,14 +1465,7 @@ where
                 .and(params.φ.columns())
                 .and(params.foreground_counts.axis_iter(Axis(1)))
                 .and(params.uv.columns_mut())
-                .par_for_each(|
-                    rs,
-                    lgamma_rs,
-                    loggammaplus,
-                    φs,
-                    cs,
-                    mut uv|
-                {
+                .par_for_each(|rs, lgamma_rs, loggammaplus, φs, cs, mut uv| {
                     let mut rng = thread_rng();
 
                     // iterate over cells computing u and v
@@ -1483,10 +1486,7 @@ where
                                 dbg!(uv[z], ψ, φ, vol);
                             }
 
-                            uv[z] = (
-                                uv_z.0 + rand_crt(&mut rng, c as u32, r),
-                                uv_z.1 + δv
-                            );
+                            uv[z] = (uv_z.0 + rand_crt(&mut rng, c as u32, r), uv_z.1 + δv);
 
                             assert!(uv[z].1.is_finite());
                         });
@@ -1496,13 +1496,9 @@ where
                         .and(lgamma_rs)
                         .and(loggammaplus)
                         .and(uv)
-                        .for_each(|
-                            r,
-                            lgamma_r,
-                            loggammaplus,
-                            uv |
-                        {
-                            let dist = Gamma::new(priors.e_r + uv.0 as f32, (params.h - uv.1).recip());
+                        .for_each(|r, lgamma_r, loggammaplus, uv| {
+                            let dist =
+                                Gamma::new(priors.e_r + uv.0 as f32, (params.h - uv.1).recip());
                             if dist.is_err() {
                                 dbg!(uv.0, uv.1, params.h);
                             }
@@ -1594,13 +1590,7 @@ where
                     let β0 = (-φ).exp();
                     let β = β0 + cell_volume;
 
-
-                    *λ = Gamma::new(
-                        α,
-                        β.recip()
-                    )
-                    .unwrap()
-                    .sample(&mut rng);
+                    *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng);
                     // .max(1e-14);
 
                     // if c > 10 {
@@ -1792,21 +1782,30 @@ where
             });
     }
 
-
-    fn propose_eval_transcript_positions(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>)
-    {
+    fn propose_eval_transcript_positions(
+        &mut self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        transcripts: &Vec<Transcript>,
+    ) {
         // make proposals
         // let t0 = Instant::now();
-        params.proposed_transcript_positions
+        params
+            .proposed_transcript_positions
             .par_iter_mut()
             // .zip(&params.transcript_positions)
             .zip(transcripts)
             .for_each(|(proposed_position, t)| {
                 let mut rng = thread_rng();
                 *proposed_position = (
-                    t.x + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    t.y + priors.σ_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal),
-                    (t.z + priors.σ_z_diffusion_proposal * rng.sample::<f32, StandardNormal>(StandardNormal)).min(priors.zmax).max(priors.zmin),
+                    t.x + priors.σ_diffusion_proposal
+                        * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    t.y + priors.σ_diffusion_proposal
+                        * rng.sample::<f32, StandardNormal>(StandardNormal),
+                    (t.z + priors.σ_z_diffusion_proposal
+                        * rng.sample::<f32, StandardNormal>(StandardNormal))
+                    .min(priors.zmax)
+                    .max(priors.zmin),
                 );
 
                 // Only z-axis repo
@@ -1820,112 +1819,119 @@ where
 
         // accept/reject proposals
         // let t0 = Instant::now();
-        params.accept_proposed_transcript_positions
+        params
+            .accept_proposed_transcript_positions
             .par_iter_mut()
             .zip(&params.transcript_positions)
             .zip(&params.proposed_transcript_positions)
             .zip(transcripts)
             .enumerate()
-            .for_each(|(i, (((accept, position), proposed_position), transcript))| {
-                // Reject out of bounds proposals, to avoid detailed balance
-                // issues.
-                if proposed_position.2 == priors.zmin || proposed_position.2 == priors.zmax {
-                    *accept = false;
-                    return;
-                }
+            .for_each(
+                |(i, (((accept, position), proposed_position), transcript))| {
+                    // Reject out of bounds proposals, to avoid detailed balance
+                    // issues.
+                    if proposed_position.2 == priors.zmin || proposed_position.2 == priors.zmax {
+                        *accept = false;
+                        return;
+                    }
 
-                // Reject nops
-                if proposed_position == position {
-                    *accept = false;
-                    return;
-                }
+                    // Reject nops
+                    if proposed_position == position {
+                        *accept = false;
+                        return;
+                    }
 
-                let sq_dist_new =
-                    (proposed_position.0 - transcript.x).powi(2) +
-                    (proposed_position.1 - transcript.y).powi(2);
-                let sq_dist_prev =
-                    (position.0 - transcript.x).powi(2) +
-                    (position.1 - transcript.y).powi(2);
-                let z_sq_dist_new = (proposed_position.2 - transcript.z).powi(2);
-                let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
+                    let sq_dist_new = (proposed_position.0 - transcript.x).powi(2)
+                        + (proposed_position.1 - transcript.y).powi(2);
+                    let sq_dist_prev =
+                        (position.0 - transcript.x).powi(2) + (position.1 - transcript.y).powi(2);
+                    let z_sq_dist_new = (proposed_position.2 - transcript.z).powi(2);
+                    let z_sq_dist_prev = (position.2 - transcript.z).powi(2);
 
-                let mut δ = 0.0;
+                    let mut δ = 0.0;
 
-                // TODO: account for the possibility that sigma is 0
+                    // TODO: account for the possibility that sigma is 0
 
-                // prior on xy-diffusion distances
-                δ -= ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_prev) +
-                    priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_prev)).ln();
-                δ += ((1.0 - priors.p_diffusion) * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_new) +
-                    priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_new)).ln();
+                    // prior on xy-diffusion distances
+                    δ -= ((1.0 - priors.p_diffusion)
+                        * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_prev)
+                        + priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_prev))
+                    .ln();
+                    δ += ((1.0 - priors.p_diffusion)
+                        * normal_x2_pdf(priors.σ_diffusion_near, sq_dist_new)
+                        + priors.p_diffusion * normal_x2_pdf(priors.σ_diffusion_far, sq_dist_new))
+                    .ln();
 
-                // weight by xy proposal distribution
-                δ += normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_prev);
-                δ -= normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_new);
+                    // weight by xy proposal distribution
+                    δ += normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_prev);
+                    δ -= normal_x2_logpdf(priors.σ_diffusion_proposal, sq_dist_new);
 
-                // prior on z diffusion distance
-                δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
-                δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));
+                    // prior on z diffusion distance
+                    δ -= -0.5 * (z_sq_dist_prev / priors.σ_z_diffusion.powi(2));
+                    δ += -0.5 * (z_sq_dist_new / priors.σ_z_diffusion.powi(2));
 
-                // weight by z proposal distribution
-                δ += normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_prev);
-                δ -= normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_new);
+                    // weight by z proposal distribution
+                    δ += normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_prev);
+                    δ -= normal_x2_logpdf(priors.σ_z_diffusion_proposal, z_sq_dist_new);
 
-                let gene = transcript.gene as usize;
+                    let gene = transcript.gene as usize;
 
-                let layer_prev = ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
-                let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
-                let cell_prev = self.cell_at_position(*position);
-                let λ_prev = if cell_prev == BACKGROUND_CELL {
-                    0.0
-                } else {
-                    params.λ[[gene, cell_prev as usize]] + params.λ_c[gene]
-                } + params.λ_bg[[gene, layer_prev]];
+                    let layer_prev =
+                        ((position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
+                    let cell_prev = self.cell_at_position(*position);
+                    let λ_prev = if cell_prev == BACKGROUND_CELL {
+                        0.0
+                    } else {
+                        params.λ[[gene, cell_prev as usize]] + params.λ_c[gene]
+                    } + params.λ_bg[[gene, layer_prev]];
 
-                let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
-                let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
-                let cell_new = self.cell_at_position(*proposed_position);
-                let λ_new = if cell_new == BACKGROUND_CELL {
-                    0.0
-                } else {
-                    params.λ[[gene, cell_new as usize]] + params.λ_c[gene]
-                } + params.λ_bg[[gene, layer_new]];
+                    let layer_new =
+                        ((proposed_position.2 - params.z0) / params.layer_depth).max(0.0) as usize;
+                    let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
+                    let cell_new = self.cell_at_position(*proposed_position);
+                    let λ_new = if cell_new == BACKGROUND_CELL {
+                        0.0
+                    } else {
+                        params.λ[[gene, cell_new as usize]] + params.λ_c[gene]
+                    } + params.λ_bg[[gene, layer_new]];
 
-                let ln_λ_diff = λ_new.ln() - λ_prev.ln();
-                δ += ln_λ_diff;
+                    let ln_λ_diff = λ_new.ln() - λ_prev.ln();
+                    δ += ln_λ_diff;
 
-                // let cell_nuc = params.init_nuclear_cell_assignment[i];
-                // if cell_nuc != BACKGROUND_CELL {
-                //     if cell_nuc == cell_prev {
-                //         δ -= priors.nuclear_reassignment_1mlog_prob;
-                //     } else {
-                //         δ -= priors.nuclear_reassignment_log_prob;
-                //     }
+                    // let cell_nuc = params.init_nuclear_cell_assignment[i];
+                    // if cell_nuc != BACKGROUND_CELL {
+                    //     if cell_nuc == cell_prev {
+                    //         δ -= priors.nuclear_reassignment_1mlog_prob;
+                    //     } else {
+                    //         δ -= priors.nuclear_reassignment_log_prob;
+                    //     }
 
-                //     if cell_nuc == cell_new {
-                //         δ += priors.nuclear_reassignment_1mlog_prob;
-                //     } else {
-                //         δ += priors.nuclear_reassignment_log_prob;
-                //     }
-                // }
+                    //     if cell_nuc == cell_new {
+                    //         δ += priors.nuclear_reassignment_1mlog_prob;
+                    //     } else {
+                    //         δ += priors.nuclear_reassignment_log_prob;
+                    //     }
+                    // }
 
-                let cell_prior = params.prior_seg_cell_assignment[i];
-                if cell_prior == cell_prev {
-                    δ -= priors.prior_seg_reassignment_1mlog_prob;
-                } else {
-                    δ -= priors.prior_seg_reassignment_log_prob;
-                }
+                    let cell_prior = params.prior_seg_cell_assignment[i];
+                    if cell_prior == cell_prev {
+                        δ -= priors.prior_seg_reassignment_1mlog_prob;
+                    } else {
+                        δ -= priors.prior_seg_reassignment_log_prob;
+                    }
 
-                if cell_prior == cell_new {
-                    δ += priors.prior_seg_reassignment_1mlog_prob;
-                } else {
-                    δ += priors.prior_seg_reassignment_log_prob;
-                }
+                    if cell_prior == cell_new {
+                        δ += priors.prior_seg_reassignment_1mlog_prob;
+                    } else {
+                        δ += priors.prior_seg_reassignment_log_prob;
+                    }
 
-                let mut rng = thread_rng();
-                let logu = rng.gen::<f32>().ln();
-                *accept = logu < δ;
-            });
+                    let mut rng = thread_rng();
+                    let logu = rng.gen::<f32>().ln();
+                    *accept = logu < δ;
+                },
+            );
         // println!("  Eval transcript position proposals: {:?}", t0.elapsed());
 
         // let naccepted = params.accept_proposed_transcript_positions.iter().map(|&x| x as u32).sum::<u32>();
@@ -1934,76 +1940,92 @@ where
     }
 
     fn sample_transcript_positions(
-        &mut self, priors: &ModelPriors,
+        &mut self,
+        priors: &ModelPriors,
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
-        uncertainty: &mut Option<&mut UncertaintyTracker>)
-    {
+        uncertainty: &mut Option<&mut UncertaintyTracker>,
+    ) {
         self.propose_eval_transcript_positions(priors, params, transcripts);
 
         // Update position and compute cell and layer changes for updates
-        params.transcript_position_updates
+        params
+            .transcript_position_updates
             .par_iter_mut()
             .zip(&mut params.transcript_positions)
             .zip(&params.proposed_transcript_positions)
             .zip(&params.cell_assignments)
             .zip(&params.accept_proposed_transcript_positions)
-            .for_each(|((((update, position), proposed_position), cell_prev), &accept)| {
-                if accept {
-                    let layer_prev = ((position.2 - params.z0) / params.layer_depth) as usize;
-                    let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
+            .for_each(
+                |((((update, position), proposed_position), cell_prev), &accept)| {
+                    if accept {
+                        let layer_prev = ((position.2 - params.z0) / params.layer_depth) as usize;
+                        let layer_prev = layer_prev.min(params.λ_bg.ncols() - 1);
 
-                    let cell_new = self.cell_at_position(*proposed_position);
-                    let layer_new = ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
-                    let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
+                        let cell_new = self.cell_at_position(*proposed_position);
+                        let layer_new =
+                            ((proposed_position.2 - params.z0) / params.layer_depth) as usize;
+                        let layer_new = layer_new.min(params.λ_bg.ncols() - 1);
 
-                    // assert!(self.cell_at_position(*position) == *cell_prev);
+                        // assert!(self.cell_at_position(*position) == *cell_prev);
 
-                    *update = (*cell_prev, cell_new, layer_prev as u32, layer_new as u32);
-                    *position = *proposed_position;
-                }
-            });
+                        *update = (*cell_prev, cell_new, layer_prev as u32, layer_new as u32);
+                        *position = *proposed_position;
+                    }
+                },
+            );
 
         // Update counts and cell_population
-        params.transcript_position_updates
+        params
+            .transcript_position_updates
             .iter()
             .zip(transcripts)
             .zip(&params.accept_proposed_transcript_positions)
             .zip(&mut params.cell_assignments)
             .zip(&mut params.cell_assignment_time)
             .enumerate()
-            .for_each(|(i, ((((update, transcript), &accept), cell_assignment), cell_assignment_time))| {
-                let (cell_prev, cell_new, layer_prev, layer_new) = *update;
-                if accept {
-                    let gene = transcript.gene as usize;
-                    if cell_prev != BACKGROUND_CELL {
-                        assert!(params.counts[[gene, cell_prev as usize, layer_prev as usize]] > 0);
-                        params.counts[[gene, cell_prev as usize, layer_prev as usize]] -= 1;
-                        assert!(params.cell_population[cell_prev as usize] > 0);
-                        params.cell_population[cell_prev as usize] -= 1;
-                    }
-                    if cell_new != BACKGROUND_CELL {
-                        params.counts[[gene, cell_new as usize, layer_new as usize]] += 1;
-                        params.cell_population[cell_new as usize] += 1;
-                    }
-
-                    if cell_prev != cell_new {
-                        // annoying borrowing bullshit
-                        // uncertainty.update_assignment(params, i, cell_new);
-
-                        if let Some(uncertainty) = uncertainty.as_mut() {
-                            if params.transcript_state[i] == TranscriptState::Foreground {
-                                let duration = params.t - *cell_assignment_time;
-                                uncertainty.update_assignment_duration(i, cell_prev, duration);
-                            }
+            .for_each(
+                |(
+                    i,
+                    ((((update, transcript), &accept), cell_assignment), cell_assignment_time),
+                )| {
+                    let (cell_prev, cell_new, layer_prev, layer_new) = *update;
+                    if accept {
+                        let gene = transcript.gene as usize;
+                        if cell_prev != BACKGROUND_CELL {
+                            assert!(
+                                params.counts[[gene, cell_prev as usize, layer_prev as usize]] > 0
+                            );
+                            params.counts[[gene, cell_prev as usize, layer_prev as usize]] -= 1;
+                            assert!(params.cell_population[cell_prev as usize] > 0);
+                            params.cell_population[cell_prev as usize] -= 1;
+                        }
+                        if cell_new != BACKGROUND_CELL {
+                            params.counts[[gene, cell_new as usize, layer_new as usize]] += 1;
+                            params.cell_population[cell_new as usize] += 1;
                         }
 
-                        *cell_assignment = cell_new;
-                        *cell_assignment_time = params.t;
-                    }
-                }
-            });
+                        if cell_prev != cell_new {
+                            // annoying borrowing bullshit
+                            // uncertainty.update_assignment(params, i, cell_new);
 
-        self.update_transcript_positions(&params.accept_proposed_transcript_positions, &params.transcript_positions);
+                            if let Some(uncertainty) = uncertainty.as_mut() {
+                                if params.transcript_state[i] == TranscriptState::Foreground {
+                                    let duration = params.t - *cell_assignment_time;
+                                    uncertainty.update_assignment_duration(i, cell_prev, duration);
+                                }
+                            }
+
+                            *cell_assignment = cell_new;
+                            *cell_assignment_time = params.t;
+                        }
+                    }
+                },
+            );
+
+        self.update_transcript_positions(
+            &params.accept_proposed_transcript_positions,
+            &params.transcript_positions,
+        );
     }
 }

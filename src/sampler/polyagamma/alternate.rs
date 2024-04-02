@@ -1,14 +1,11 @@
-
+use super::common::{pgm_lgamma, random_left_bounded_gamma, upper_incomplete_gamma};
+use super::float::Float;
 use rand::Rng;
 use rand_distr::StandardNormal;
-use super::float::Float;
-use super::common::{upper_incomplete_gamma, pgm_lgamma, random_left_bounded_gamma};
 
 const PGM_MAXH: f64 = 4.0;
 
-
-pub fn sample_polyagamma_alternate<R: Rng>(rng: &mut R, mut h: f64, z: f64) -> f64
-{
+pub fn sample_polyagamma_alternate<R: Rng>(rng: &mut R, mut h: f64, z: f64) -> f64 {
     let mut pr = Parameters::new(z);
     let mut out = 0.0;
 
@@ -35,12 +32,11 @@ pub fn sample_polyagamma_alternate<R: Rng>(rng: &mut R, mut h: f64, z: f64) -> f
     }
 }
 
-
 const PGM_LOG2: f64 = std::f64::consts::LN_2; // log(2)
-const PGM_LOGPI_2: f64 = 0.451_582_705_289_454_9;  // log(pi / 2)
-const PGM_PI2_8: f64 = 1.233_700_550_136_169_7;  // pi^2 / 8
+const PGM_LOGPI_2: f64 = 0.451_582_705_289_454_9; // log(pi / 2)
+const PGM_PI2_8: f64 = 1.233_700_550_136_169_7; // pi^2 / 8
 const SQRT2_INV: f64 = 0.7071067811865475;
-const PGM_LS2PI: f64 = 0.918_938_533_204_672_8;  // log(sqrt(2 * pi))
+const PGM_LS2PI: f64 = 0.918_938_533_204_672_8; // log(sqrt(2 * pi))
 
 struct Parameters {
     proposal_probability: f32,
@@ -59,7 +55,6 @@ struct Parameters {
     x: f64,
     t: f64,
 }
-
 
 impl Parameters {
     fn new(z: f64) -> Self {
@@ -110,8 +105,8 @@ impl Parameters {
             p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc();
         }
 
-        let q = (h * (PGM_LOGPI_2 - self.log_lambda_z)).exp() *
-            upper_incomplete_gamma(h, self.lambda_z * self.t, true);
+        let q = (h * (PGM_LOGPI_2 - self.log_lambda_z)).exp()
+            * upper_incomplete_gamma(h, self.lambda_z * self.t, true);
 
         self.proposal_probability = (q / (p + q)) as f32;
     }
@@ -122,14 +117,10 @@ impl Parameters {
         let b = self.z * st * SQRT2_INV;
         let ez = (self.h * self.z).exp() as f32;
 
-        0.5f32 * (
-            ((a - b) as f32).erfc() +
-            ez * ((b + a) as f32).erfc() * ez
-        )
+        0.5f32 * (((a - b) as f32).erfc() + ez * ((b + a) as f32).erfc() * ez)
     }
 
-    fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64
-    {
+    fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64 {
         loop {
             let u = rng.gen::<f32>();
             if u <= self.proposal_probability {
@@ -174,30 +165,29 @@ impl Parameters {
             0.0
         };
 
-        ((self.hlog2 + b -
-            pgm_lgamma((n + 1) as f64) -
-            PGM_LS2PI -
-            1.5 * self.logx -
-            0.5 * a * a / self.x) as f32).exp() * a as f32
+        ((self.hlog2 + b
+            - pgm_lgamma((n + 1) as f64)
+            - PGM_LS2PI
+            - 1.5 * self.logx
+            - 0.5 * a * a / self.x) as f32)
+            .exp()
+            * a as f32
     }
 
     fn bounding_kernel(&self) -> f32 {
         if self.x > self.t {
             let a = 0.22579135264472733;
-            ((self.h * a + (self.h - 1.0) * self.logx -
-                PGM_PI2_8 * self.x -
-                self.lgammah) as f32).exp()
+            ((self.h * a + (self.h - 1.0) * self.logx - PGM_PI2_8 * self.x - self.lgammah) as f32)
+                .exp()
         } else if self.x > 0.0 {
-            ((self.hlog2 - self.half_h2 / self.x -
-                1.5 * self.logx -
-                PGM_LS2PI) as f32).exp() * self.h as f32
+            ((self.hlog2 - self.half_h2 / self.x - 1.5 * self.logx - PGM_LS2PI) as f32).exp()
+                * self.h as f32
         } else {
             0.0
         }
     }
 
-    fn random_right_bounded_invgauss<R: Rng>(&mut self, rng: &mut R)
-    {
+    fn random_right_bounded_invgauss<R: Rng>(&mut self, rng: &mut R) {
         if self.t < self.h_z {
             loop {
                 self.x = random_left_bounded_gamma(rng, 0.5, self.half_h2, self.t_inv).recip();
@@ -229,29 +219,65 @@ impl Parameters {
             }
         }
     }
-
 }
-
-
 
 #[allow(clippy::excessive_precision)]
 const PGM_H: [f32; 25] = [
-    1.000000000, 1.125000000, 1.250000000, 1.375000000, 1.500000000,
-    1.625000000, 1.750000000, 1.875000000, 2.000000000, 2.125000000,
-    2.250000000, 2.375000000, 2.500000000, 2.625000000, 2.750000000,
-    2.875000000, 3.000000000, 3.125000000, 3.250000000, 3.375000000,
-    3.500000000, 3.625000000, 3.750000000, 3.875000000, 4.000000000
+    1.000000000,
+    1.125000000,
+    1.250000000,
+    1.375000000,
+    1.500000000,
+    1.625000000,
+    1.750000000,
+    1.875000000,
+    2.000000000,
+    2.125000000,
+    2.250000000,
+    2.375000000,
+    2.500000000,
+    2.625000000,
+    2.750000000,
+    2.875000000,
+    3.000000000,
+    3.125000000,
+    3.250000000,
+    3.375000000,
+    3.500000000,
+    3.625000000,
+    3.750000000,
+    3.875000000,
+    4.000000000,
 ];
 
 #[allow(clippy::excessive_precision)]
 const PGM_F: [f32; 25] = [
-    1.273239366, 1.901515423, 2.281992126, 2.607829551, 2.910421526,
-    3.200449543, 3.482766779, 3.759955106, 4.033540671, 4.304486011,
-    4.573437633, 4.840840644, 5.107017272, 5.372204821, 5.636581947,
-    5.900288573, 6.163432428, 6.426094330, 6.688351603, 6.950254767,
-    7.211854235, 7.473186206, 7.734284136, 7.995175158, 8.255882407
+    1.273239366,
+    1.901515423,
+    2.281992126,
+    2.607829551,
+    2.910421526,
+    3.200449543,
+    3.482766779,
+    3.759955106,
+    4.033540671,
+    4.304486011,
+    4.573437633,
+    4.840840644,
+    5.107017272,
+    5.372204821,
+    5.636581947,
+    5.900288573,
+    6.163432428,
+    6.426094330,
+    6.688351603,
+    6.950254767,
+    7.211854235,
+    7.473186206,
+    7.734284136,
+    7.995175158,
+    8.255882407,
 ];
-
 
 fn get_truncation_point(h: f64) -> f64 {
     if h < 1.0 {

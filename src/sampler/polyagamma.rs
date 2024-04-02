@@ -1,8 +1,7 @@
-
 // use num_traits::{cast::FromPrimitive, float::Float};
-use numeric_literals::{replace_float_literals};
+use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::{Distribution, StandardNormal, Normal, Exp1, Standard};
+use rand_distr::{Distribution, Exp1, Normal, Standard, StandardNormal};
 
 mod float;
 use float::Float;
@@ -14,18 +13,15 @@ use saddlepoint::sample_polyagamma_saddlepoint;
 mod alternate;
 use alternate::sample_polyagamma_alternate;
 
-
 pub struct PolyaGamma<T: Float> {
     h: T,
     z: T,
 }
 
-
 #[replace_float_literals(T::from(literal).unwrap())]
 fn sech<T: Float>(x: T) -> T {
     1.0 / x.cosh()
 }
-
 
 impl<T: Float> PolyaGamma<T>
 where
@@ -40,9 +36,7 @@ where
             panic!("h must be positive (and not too small)")
         }
 
-        Self {
-            h, z
-        }
+        Self { h, z }
     }
 
     #[replace_float_literals(T::from(literal).unwrap())]
@@ -59,13 +53,16 @@ where
         if self.z == T::zero() {
             self.h / 24.0
         } else if self.z.sinh().is_infinite() {
-            self.h * 0.25 * (
-                self.z.powi(3).recip() * 2.0*self.z.signum() -
-                self.z.recip().powi(2) * sech(0.5*self.z).powi(2))
+            self.h
+                * 0.25
+                * (self.z.powi(3).recip() * 2.0 * self.z.signum()
+                    - self.z.recip().powi(2) * sech(0.5 * self.z).powi(2))
         } else {
-            self.h * 0.25 * self.z.powi(3).recip() *
-                (self.z.sinh() - self.z) *
-                sech(0.5*self.z).powi(2)
+            self.h
+                * 0.25
+                * self.z.powi(3).recip()
+                * (self.z.sinh() - self.z)
+                * sech(0.5 * self.z).powi(2)
         }
     }
 
@@ -97,10 +94,9 @@ where
     }
 
     fn sample_normal<R: Rng>(&self, rng: &mut R) -> T {
-        Normal::new(
-            self.mean(),
-            self.var().sqrt()
-        ).unwrap().sample(rng)
+        Normal::new(self.mean(), self.var().sqrt())
+            .unwrap()
+            .sample(rng)
     }
 
     fn sample_saddlepoint<R: Rng>(&self, rng: &mut R) -> T {
@@ -108,14 +104,17 @@ where
     }
 
     fn sample_alternate<R: Rng>(&self, rng: &mut R) -> T {
-        T::from(sample_polyagamma_alternate(rng, self.h.as_f64(), self.z.as_f64())).unwrap()
+        T::from(sample_polyagamma_alternate(
+            rng,
+            self.h.as_f64(),
+            self.z.as_f64(),
+        ))
+        .unwrap()
     }
 }
 
-
 #[test]
 fn try_pg_sampler() {
-
     let mut rng = rand::thread_rng();
     let pg = PolyaGamma::new(2.0, 2.0);
     let mut rs = Vec::new();

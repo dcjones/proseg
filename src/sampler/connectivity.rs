@@ -71,9 +71,9 @@ impl ConnectivityChecker {
             // for neighbor in root.von_neumann_neighborhood() {
             let neighbor_cell = cubecell(neighbor);
             if cell == neighbor_cell {
-                self.cube_to_subgraph.entry(neighbor).or_insert_with(|| {
-                    self.subgraph.add_node(())
-                });
+                self.cube_to_subgraph
+                    .entry(neighbor)
+                    .or_insert_with(|| self.subgraph.add_node(()));
             }
         }
 

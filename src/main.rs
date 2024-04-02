@@ -5,18 +5,18 @@ use clap::Parser;
 mod output;
 mod sampler;
 
-use std::collections::HashSet;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
 use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts,
-    read_transcripts_csv, Transcript,
+    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
+    Transcript,
 };
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use output::*;
 
@@ -29,17 +29,16 @@ use output::*;
 struct Args {
     transcript_csv: String,
     // TODO: We also want to be able to read from xenium parquet files.
-
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     xenium: bool,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     cosmx: bool,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     cosmx_micron: bool,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     merfish: bool,
 
     #[arg(long, default_value = None)]
@@ -75,7 +74,7 @@ struct Args {
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     ignore_z_coord: bool,
 
     #[arg(long, default_value_t = 0.0_f32)]
@@ -90,7 +89,7 @@ struct Args {
     #[arg(long, default_value_t = 4)]
     nlayers: usize,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     detect_layers: bool,
 
     #[arg(long, default_value_t = 4)]
@@ -99,10 +98,10 @@ struct Args {
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
     schedule: Vec<usize>,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     double_z_layers: bool,
 
-    #[arg(long, default_value_t=100)]
+    #[arg(long, default_value_t = 100)]
     recorded_samples: usize,
 
     #[arg(short = 't', long, default_value=None)]
@@ -128,7 +127,6 @@ struct Args {
 
     // TODO: We need a microns-per-pixel argument. We have a bunch of priors
     // that are basically assuming microns.
-
     #[arg(long, default_value_t = 4.0_f32)]
     scale: f32,
 
@@ -216,10 +214,10 @@ struct Args {
     #[arg(long, default_value=None)]
     output_cell_cubes_fmt: Option<String>,
 
-    #[arg(long, default_value="cell-polygons.geojson.gz")]
+    #[arg(long, default_value = "cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
 
-    #[arg(long, default_value="cell-polygons-layers.geojson.gz")]
+    #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
     output_cell_polygon_layers: Option<String>,
 
     #[arg(long, default_value = None)]
@@ -233,15 +231,19 @@ struct Args {
 }
 
 fn set_xenium_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("feature_name"));
-    args.transcript_id_column.get_or_insert(String::from("transcript_id"));
+    args.transcript_column
+        .get_or_insert(String::from("feature_name"));
+    args.transcript_id_column
+        .get_or_insert(String::from("transcript_id"));
     args.x_column.get_or_insert(String::from("x_location"));
     args.y_column.get_or_insert(String::from("y_location"));
     args.z_column.get_or_insert(String::from("z_location"));
-    args.compartment_column.get_or_insert(String::from("overlaps_nucleus"));
+    args.compartment_column
+        .get_or_insert(String::from("overlaps_nucleus"));
     args.compartment_nuclear.get_or_insert(String::from("1"));
     args.cell_id_column.get_or_insert(String::from("cell_id"));
-    args.cell_id_unassigned.get_or_insert(String::from("UNASSIGNED"));
+    args.cell_id_unassigned
+        .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
 
     // Xenium coordinates are in microns.
@@ -254,14 +256,15 @@ fn set_xenium_presets(args: &mut Args) {
     // args.dispersion.get_or_insert(10.0);
 }
 
-
 fn set_cosmx_presets(args: &mut Args) {
     args.transcript_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
-    args.compartment_column.get_or_insert(String::from("CellComp"));
-    args.compartment_nuclear.get_or_insert(String::from("Nuclear"));
+    args.compartment_column
+        .get_or_insert(String::from("CellComp"));
+    args.compartment_nuclear
+        .get_or_insert(String::from("Nuclear"));
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
@@ -270,14 +273,15 @@ fn set_cosmx_presets(args: &mut Args) {
     args.scale = 4.0;
 }
 
-
 fn set_cosmx_micron_presets(args: &mut Args) {
     args.transcript_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
-    args.compartment_column.get_or_insert(String::from("CellComp"));
-    args.compartment_nuclear.get_or_insert(String::from("Nuclear"));
+    args.compartment_column
+        .get_or_insert(String::from("CellComp"));
+    args.compartment_nuclear
+        .get_or_insert(String::from("Nuclear"));
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
@@ -295,7 +299,6 @@ fn set_merfish_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
     args.scale = 4.0;
 }
-
 
 fn main() {
     // // TODO: Just testing PG sampling
@@ -326,7 +329,9 @@ fn main() {
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
 
-    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8) > 1 {
+    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8)
+        > 1
+    {
         panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish can be set");
     }
 
@@ -357,28 +362,27 @@ fn main() {
     }
 
     /* let (transcript_names,
-         mut transcripts,
-         mut nucleus_assignments,
-         mut cell_assignments,
-         mut nucleus_population) = */
+    mut transcripts,
+    mut nucleus_assignments,
+    mut cell_assignments,
+    mut nucleus_population) = */
 
-    let mut dataset =
-        read_transcripts_csv(
-            &args.transcript_csv,
-            &expect_arg(args.transcript_column, "transcript-column"),
-            args.transcript_id_column,
-            args.compartment_column,
-            args.compartment_nuclear,
-            args.fov_column,
-            &expect_arg(args.cell_id_column, "cell-id-column"),
-            &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
-            args.qv_column,
-            &expect_arg(args.x_column, "x-column"),
-            &expect_arg(args.y_column, "y-column"),
-            &expect_arg(args.z_column, "z-column"),
-            args.min_qv,
-            args.ignore_z_coord,
-        );
+    let mut dataset = read_transcripts_csv(
+        &args.transcript_csv,
+        &expect_arg(args.transcript_column, "transcript-column"),
+        args.transcript_id_column,
+        args.compartment_column,
+        args.compartment_nuclear,
+        args.fov_column,
+        &expect_arg(args.cell_id_column, "cell-id-column"),
+        &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
+        args.qv_column,
+        &expect_arg(args.x_column, "x-column"),
+        &expect_arg(args.y_column, "y-column"),
+        &expect_arg(args.z_column, "z-column"),
+        args.min_qv,
+        args.ignore_z_coord,
+    );
 
     /* let transcripts = &mut transcript_dataset.transcripts;
     let transcript_names = &transcript_dataset.transcript_names;
@@ -389,7 +393,8 @@ fn main() {
     // Clamp transcript depth
     // This is we get some reasonable depth slices when we step up to
     // 3d sampling.
-    let zs: Vec<f32> = dataset.transcripts
+    let zs: Vec<f32> = dataset
+        .transcripts
         .iter()
         .map(|t| t.z)
         .sorted_by(|a, b| a.partial_cmp(b).unwrap())
@@ -411,16 +416,21 @@ fn main() {
     // }
 
     let mut ncells = dataset.nucleus_population.len();
-    let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
-        &dataset.transcripts,
-        &dataset.nucleus_assignments,
-        &dataset.cell_assignments,
-        ncells,
-        args.max_transcript_nucleus_distance,
-    );
+    let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) =
+        filter_cellfree_transcripts(
+            &dataset.transcripts,
+            &dataset.nucleus_assignments,
+            &dataset.cell_assignments,
+            ncells,
+            args.max_transcript_nucleus_distance,
+        );
     dataset.transcripts.clone_from(&filtered_transcripts);
-    dataset.nucleus_assignments.clone_from(&filtered_nucleus_assignments);
-    dataset.cell_assignments.clone_from(&filtered_cell_assignments);
+    dataset
+        .nucleus_assignments
+        .clone_from(&filtered_nucleus_assignments);
+    dataset
+        .cell_assignments
+        .clone_from(&filtered_cell_assignments);
 
     // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
@@ -444,7 +454,8 @@ fn main() {
     let ncells = dataset.nucleus_population.len();
     let ntranscripts = dataset.transcripts.len();
 
-    let nucleus_areas = compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
+    let nucleus_areas =
+        compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
         / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
 
@@ -495,7 +506,6 @@ fn main() {
     let full_layer_volume = full_volume / (args.nlayers as f32);
     println!("Full volume: {}", full_volume);
 
-
     // Find a reasonable grid size to use to chunk the data
     let area = (xmax - xmin) * (ymax - ymin);
 
@@ -516,7 +526,11 @@ fn main() {
 
     let priors = ModelPriors {
         dispersion: args.dispersion,
-        burnin_dispersion: if args.variable_burnin_dispersion { None } else { Some(args.burnin_dispersion) },
+        burnin_dispersion: if args.variable_burnin_dispersion {
+            None
+        } else {
+            Some(args.burnin_dispersion)
+        },
 
         min_cell_volume,
 
@@ -629,7 +643,8 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            sampler.replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
+            sampler
+                .replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
             run_hexbin_sampler(
                 &mut prog,
                 sampler.get_mut(),

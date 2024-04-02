@@ -231,7 +231,7 @@ pub fn write_component_params(
     output_component_params: &Option<String>,
     output_component_params_fmt: &Option<String>,
     params: &ModelParams,
-    transcript_names: &[String]
+    transcript_names: &[String],
 ) {
     if let Some(output_component_params) = output_component_params {
         // What does this look like: rows for each gene, columns for α1, β1, α2, β2, etc.
@@ -254,8 +254,12 @@ pub fn write_component_params(
             transcript_names.iter().cloned(),
         )));
         Zip::from(α.rows()).and(β.rows()).for_each(|α, β| {
-            columns.push(Arc::new(array::Float32Array::from_values(α.iter().cloned())));
-            columns.push(Arc::new(array::Float32Array::from_values(β.iter().cloned())));
+            columns.push(Arc::new(array::Float32Array::from_values(
+                α.iter().cloned(),
+            )));
+            columns.push(Arc::new(array::Float32Array::from_values(
+                β.iter().cloned(),
+            )));
         });
 
         let chunk = arrow2::chunk::Chunk::new(columns);
@@ -376,8 +380,16 @@ pub fn write_transcript_metadata(
             Arc::new(array::Float32Array::from_values(
                 cell_assignments.iter().map(|(_, pr)| *pr),
             )),
-            Arc::new(array::UInt8Array::from_values(transcript_state.iter().map(|&s| (s == TranscriptState::Background) as u8))),
-            Arc::new(array::UInt8Array::from_values(transcript_state.iter().map(|&s| (s == TranscriptState::Confusion) as u8))),
+            Arc::new(array::UInt8Array::from_values(
+                transcript_state
+                    .iter()
+                    .map(|&s| (s == TranscriptState::Background) as u8),
+            )),
+            Arc::new(array::UInt8Array::from_values(
+                transcript_state
+                    .iter()
+                    .map(|&s| (s == TranscriptState::Confusion) as u8),
+            )),
         ];
 
         let chunk = arrow2::chunk::Chunk::new(columns);
@@ -427,9 +439,13 @@ pub fn write_gene_metadata(
 
         // cell type dispersions
         for i in 0..params.ncomponents() {
-            schema_fields.push(Field::new(&format!("dispersion_{}", i), DataType::Float32, false));
+            schema_fields.push(Field::new(
+                &format!("dispersion_{}", i),
+                DataType::Float32,
+                false,
+            ));
             columns.push(Arc::new(array::Float32Array::from_values(
-                params.r.row(i).iter().cloned()
+                params.r.row(i).iter().cloned(),
             )));
         }
 
@@ -531,9 +547,11 @@ pub fn write_cubes(
 // the coordinates to pixel space. It also doesn't seem like it supports
 // MultiPolygons, so we need to write each polygon in a cell to a separate Polygon entry.
 
-pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, polygons: Vec<MultiPolygon<f32>>) {
+pub fn write_cell_multipolygons(
+    output_cell_polygons: &Option<String>,
+    polygons: Vec<MultiPolygon<f32>>,
+) {
     if let Some(output_cell_polygons) = output_cell_polygons {
-
         let file = File::create(output_cell_polygons).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
 

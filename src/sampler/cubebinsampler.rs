@@ -1,24 +1,24 @@
 use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
+use super::polygons::PolygonBuilder;
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
-use super::polygons::PolygonBuilder;
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
 use geo::geometry::{MultiPolygon, Polygon};
 use geo::BooleanOps;
-use ndarray::{Array2};
+use itertools::Itertools;
+use ndarray::Array2;
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
+use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::{HashMap, HashSet};
 use std::f32;
 use std::sync::{Arc, Mutex};
-use std::cmp::{Ord, Ordering, PartialOrd, PartialEq};
 use thread_local::ThreadLocal;
-use itertools::Itertools;
 
 pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
@@ -39,7 +39,6 @@ fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32>
     result
 }
 
-
 fn clip_z_position(position: (f32, f32, f32), zmin: f32, zmax: f32) -> (f32, f32, f32) {
     let eps = (zmax - zmin) * 1e-6;
     (
@@ -48,7 +47,6 @@ fn clip_z_position(position: (f32, f32, f32), zmin: f32, zmax: f32) -> (f32, f32
         position.2.max(zmin + eps).min(zmax - eps),
     )
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cube {
@@ -62,7 +60,7 @@ impl Cube {
         Cube { i, j, k }
     }
 
-    fn default () -> Cube {
+    fn default() -> Cube {
         Cube { i: 0, j: 0, k: 0 }
     }
 
@@ -114,13 +112,8 @@ impl Cube {
     }
 
     pub fn von_neumann_neighborhood_xy(&self) -> [Cube; 4] {
-        [
-            (-1, 0, 0),
-            (1, 0, 0),
-            (0, -1, 0),
-            (0, 1, 0),
-        ]
-        .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
+        [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
+            .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
     }
 
     pub fn radius2_xy_neighborhood(&self) -> [Cube; 12] {
@@ -189,7 +182,10 @@ impl PartialOrd for Cube {
 
 impl Ord for Cube {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.k.cmp(&other.k).then(self.j.cmp(&other.j)).then(self.i.cmp(&other.i))
+        self.k
+            .cmp(&other.k)
+            .then(self.j.cmp(&other.j))
+            .then(self.i.cmp(&other.i))
     }
 }
 
@@ -332,7 +328,11 @@ impl CubeCellMap {
 }
 
 // Initial binning of the transcripts
-fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32, zlayers: usize) -> (CubeLayout, Vec<CubeBin>) {
+fn bin_transcripts(
+    transcripts: &Vec<Transcript>,
+    scale: f32,
+    zlayers: usize,
+) -> (CubeLayout, Vec<CubeBin>) {
     let (_, _, _, _, zmin, zmax) = coordinate_span(transcripts);
 
     let mut height = zmax - zmin;
@@ -367,11 +367,10 @@ fn bin_transcripts(transcripts: &Vec<Transcript>, scale: f32, zlayers: usize) ->
         .into_iter()
         .for_each(|(cube, group)| {
             let transcripts = group.map(|(_, transcript)| *transcript).collect::<Vec<_>>();
-            cubebins.push(
-                CubeBin {
-                    cube,
-                    transcripts: Arc::new(Mutex::new(transcripts))
-                });
+            cubebins.push(CubeBin {
+                cube,
+                transcripts: Arc::new(Mutex::new(transcripts)),
+            });
         });
 
     (layout, cubebins)
@@ -561,7 +560,10 @@ impl CubeBinSampler {
         sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
         sampler.populate_mismatches();
-        sampler.update_transcript_positions(&vec![true; transcripts.len()], &params.transcript_positions);
+        sampler.update_transcript_positions(
+            &vec![true; transcripts.len()],
+            &params.transcript_positions,
+        );
 
         sampler
     }
@@ -643,8 +645,10 @@ impl CubeBinSampler {
             self.voxellayers
         };
 
-        let cell_population = Array2::from_elem((voxellayers, self.cell_population.shape()[1]), 0.0_f32);
-        let cell_perimeter = Array2::from_elem((voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
+        let cell_population =
+            Array2::from_elem((voxellayers, self.cell_population.shape()[1]), 0.0_f32);
+        let cell_perimeter =
+            Array2::from_elem((voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
 
         let mut sampler = CubeBinSampler {
             chunkquad: ChunkQuadMap {
@@ -690,7 +694,8 @@ impl CubeBinSampler {
 
         sampler.update_transcript_positions(
             &vec![true; params.transcript_positions.len()],
-            &params.transcript_positions);
+            &params.transcript_positions,
+        );
 
         sampler
     }
@@ -831,7 +836,7 @@ impl CubeBinSampler {
 
         let cell_flattened_polygons: Vec<_> = cell_polygons
             .par_iter()
-            .map( |polys| {
+            .map(|polys| {
                 let mut flat_polys: Vec<Polygon<f32>> = Vec::new();
                 for (_k, poly) in polys {
                     flat_polys.extend(poly.iter().cloned());
@@ -1027,7 +1032,10 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 // breaks the markov chain balance, since there's no path back to the previous state.)
                 //
                 // We could allow this if we introduce a spontaneous nucleation move.
-                if !from_unassigned && params.cell_volume[cell_from as usize] - self.cubevolume < priors.min_cell_volume {
+                if !from_unassigned
+                    && params.cell_volume[cell_from as usize] - self.cubevolume
+                        < priors.min_cell_volume
+                {
                     proposal.ignore = true;
                     return;
                 }
@@ -1038,9 +1046,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let num_new_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| {
-                        j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_to
-                    })
+                    .filter(|&&j| j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_to)
                     .count();
 
                 let num_prev_state_neighbors = i
@@ -1051,8 +1057,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     })
                     .count();
 
-                let mut proposal_prob =
-                    (1.0 - UNASSIGNED_PROPOSAL_PROB) * (num_new_state_neighbors as f64 / num_mismatching_edges as f64);
+                let mut proposal_prob = (1.0 - UNASSIGNED_PROPOSAL_PROB)
+                    * (num_new_state_neighbors as f64 / num_mismatching_edges as f64);
 
                 // If this is an unassigned proposal, account for multiple ways of doing unassigned proposals
                 if to_unassigned {
@@ -1061,15 +1067,16 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .iter()
                         .filter(|&&j| self.cubecells.get(j) != cell_from)
                         .count();
-                    proposal_prob += UNASSIGNED_PROPOSAL_PROB * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64);
+                    proposal_prob += UNASSIGNED_PROPOSAL_PROB
+                        * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64);
                 }
 
                 let new_num_mismatching_edges = num_mismatching_edges
                     + 2*num_prev_state_neighbors // edges that are newly mismatching
                     - 2*num_new_state_neighbors; // edges that are newly matching
 
-                let mut reverse_proposal_prob =
-                    (1.0 - UNASSIGNED_PROPOSAL_PROB) * (num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64);
+                let mut reverse_proposal_prob = (1.0 - UNASSIGNED_PROPOSAL_PROB)
+                    * (num_prev_state_neighbors as f64 / new_num_mismatching_edges as f64);
 
                 // If this is a proposal from unassigned, account for multiple ways of reversing it
                 if from_unassigned {
@@ -1078,7 +1085,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .iter()
                         .filter(|&&j| self.cubecells.get(j) != cell_to)
                         .count();
-                    reverse_proposal_prob += UNASSIGNED_PROPOSAL_PROB * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64);
+                    reverse_proposal_prob += UNASSIGNED_PROPOSAL_PROB
+                        * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64);
                 }
 
                 // if proposal_prob > 0.5 || reverse_proposal_prob > 0.5 {
@@ -1140,8 +1148,10 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let prev_bound = perimeter_bound(
                         priors.perimeter_eta,
                         priors.perimeter_bound,
-                        self.cell_population[[i.k as usize, cell_from as usize]]);
-                    let prev_bound_ratio = self.cell_perimeter[[i.k as usize, cell_from as usize]] / prev_bound;
+                        self.cell_population[[i.k as usize, cell_from as usize]],
+                    );
+                    let prev_bound_ratio =
+                        self.cell_perimeter[[i.k as usize, cell_from as usize]] / prev_bound;
 
                     let old_cell_perimeter = self.cell_perimeter
                         [[i.k as usize, cell_from as usize]]
@@ -1161,8 +1171,10 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let prev_bound = perimeter_bound(
                         priors.perimeter_eta,
                         priors.perimeter_bound,
-                        self.cell_population[[i.k as usize, cell_to as usize]]);
-                    let prev_bound_ratio = self.cell_perimeter[[i.k as usize, cell_to as usize]] / prev_bound;
+                        self.cell_population[[i.k as usize, cell_to as usize]],
+                    );
+                    let prev_bound_ratio =
+                        self.cell_perimeter[[i.k as usize, cell_to as usize]] / prev_bound;
 
                     let new_cell_perimeter = self.cell_perimeter[[i.k as usize, cell_to as usize]]
                         + proposal.new_cell_perimeter_delta;
@@ -1177,7 +1189,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 }
 
                 // find transcripts within the voxel
-                let transcript_range_start = self.transcript_cube_ord
+                let transcript_range_start = self
+                    .transcript_cube_ord
                     .partition_point(|&t| self.transcript_cubes[t] < *i);
 
                 let mut transcript_range_end = transcript_range_start;
@@ -1192,7 +1205,9 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 }
 
                 proposal.transcripts.clear();
-                proposal.transcripts.extend_from_slice(&self.transcript_cube_ord[transcript_range_start..transcript_range_end]);
+                proposal.transcripts.extend_from_slice(
+                    &self.transcript_cube_ord[transcript_range_start..transcript_range_end],
+                );
             });
 
         // Increment so we run updates on the next quad
@@ -1408,8 +1423,6 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
     //             }
     //         });
     // }
-
-
 }
 
 #[derive(Clone, Debug)]
@@ -1505,7 +1518,6 @@ impl Proposal for CubeBinProposal {
         &self.genepop
     }
 }
-
 
 // We need to exclude cells that can't be initalized with a non-zero number of voxels.
 pub fn filter_sparse_cells(

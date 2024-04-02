@@ -35,15 +35,11 @@ pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
     -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI
 }
 
-
 // pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
 //     let k_ln_factorial = lgammaf(k as f32 + 1.0);
 //     let lgamma_rpk = lgammaf(r + k as f32);
 //     return negbin_logpmf_fast(r, lgamma_r, lgamma_rpk, p, k, k_ln_factorial);
 // }
-
-
-
 
 // const SQRT2: f32 = 1.4142135623730951_f32;
 
@@ -56,12 +52,10 @@ pub fn normal_pdf(μ: f32, σ: f32, x: f32) -> f32 {
     (-xμ.powi(2) / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
 }
 
-
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
     -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0
 }
-
 
 // Negative binomial log probability function with capacity for precomputing some values.
 pub fn negbin_logpmf_fast(
@@ -111,8 +105,7 @@ impl LogFactorial {
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        self
-            .values
+        self.values
             .get(k as usize)
             .map_or_else(|| lfact(k), |&value| value)
     }
@@ -149,8 +142,7 @@ impl LogGammaPlus {
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        self
-            .values
+        self.values
             .get(k as usize)
             .map_or_else(|| lgammaf(self.r + k as f32), |&value| value)
     }

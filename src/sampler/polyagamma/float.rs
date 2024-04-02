@@ -1,8 +1,6 @@
-
+use libm::{erf, erfc, erfcf, erff, lgamma_r, lgammaf_r};
 use num_traits::{cast::NumCast, float};
-use std::ops::{AddAssign, SubAssign, MulAssign};
-use libm::{erf, erff, erfc, erfcf, lgamma_r, lgammaf_r};
-
+use std::ops::{AddAssign, MulAssign, SubAssign};
 
 // Wrapping the num_traits Float trait to add more special functions.
 pub trait Float: float::Float + AddAssign + SubAssign + MulAssign {
@@ -54,4 +52,3 @@ impl Float for f64 {
     const TAU: Self = std::f64::consts::TAU;
     const SQRT_2: Self = std::f64::consts::SQRT_2;
 }
-

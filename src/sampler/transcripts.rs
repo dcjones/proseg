@@ -47,7 +47,6 @@ pub fn read_transcripts_csv(
     min_qv: f32,
     ignore_z_column: bool,
 ) -> TranscriptDataset {
-
     let fmt = determine_format(path, &None);
 
     match fmt {
@@ -69,7 +68,7 @@ pub fn read_transcripts_csv(
                 min_qv,
                 ignore_z_column,
             )
-        },
+        }
         OutputFormat::CsvGz => {
             let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
             read_transcripts_csv_xyz(
@@ -88,7 +87,7 @@ pub fn read_transcripts_csv(
                 min_qv,
                 ignore_z_column,
             )
-        },
+        }
         OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
     }
 }
@@ -101,7 +100,10 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-fn postprocess_cell_assignments(nucleus_assignments: &mut [CellIndex], cell_assignments: &mut [CellIndex]) -> Vec<usize> {
+fn postprocess_cell_assignments(
+    nucleus_assignments: &mut [CellIndex],
+    cell_assignments: &mut [CellIndex],
+) -> Vec<usize> {
     // reassign cell ids to exclude anything that no initial transcripts assigned
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for &cell_id in nucleus_assignments.iter() {
@@ -170,7 +172,8 @@ where
     let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     let cell_id_col = find_column(headers, cell_id_column);
-    let compartment_col = compartment_column.map(|compartment_column| find_column(headers, &compartment_column));
+    let compartment_col =
+        compartment_column.map(|compartment_column| find_column(headers, &compartment_column));
     let has_compartment = compartment_col.is_some();
 
     let compartment_nuclear = if has_compartment {
@@ -191,7 +194,6 @@ where
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
     let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
-
 
     for result in rdr.records() {
         let row = result.unwrap();
@@ -233,7 +235,9 @@ where
         let y = row[y_col].parse::<f32>().unwrap();
         let z = row[z_col].parse::<f32>().unwrap();
         let transcript_id = if let Some(id_col) = id_col {
-            row[id_col].parse::<u64>().unwrap_or_else(|_| panic!("Transcript ID must be an integer: {}", &row[id_col]))
+            row[id_col]
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("Transcript ID must be an integer: {}", &row[id_col]))
         } else {
             transcripts.len() as u64
         };
@@ -290,11 +294,10 @@ where
     // let transcripts = ord.iter().map(|&i| transcripts[i]).collect::<Vec<_>>();
     // let mut cell_assignments = ord.iter().map(|&i| cell_assignments[i]).collect::<Vec<_>>();
 
-    let nucleus_population = postprocess_cell_assignments(
-        &mut nucleus_assignments,
-        &mut cell_assignments);
+    let nucleus_population =
+        postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
-    TranscriptDataset{
+    TranscriptDataset {
         transcript_names,
         transcripts,
         nucleus_assignments,
@@ -302,7 +305,6 @@ where
         nucleus_population,
     }
 }
-
 
 // pub fn normalize_z_coord(transcripts: &mut Vec<Transcript>, fovs: Vec<u32>) {
 //     let nfovs = (*fovs.iter().max().unwrap() + 1) as usize;
@@ -334,7 +336,6 @@ where
 //         transcript.z = (transcript.z - z_mean[*fov as usize]) / z_std[*fov as usize];
 //     }
 // }
-
 
 pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
     let mut min_x = std::f32::MAX;
@@ -385,9 +386,6 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
 // {
 //     // TODO: Plan is for each cell to vote, and assign it to the fov that the
 //     // majority of its transcripts belong to.
-
-
-
 
 // }
 
@@ -474,5 +472,9 @@ pub fn filter_cellfree_transcripts(
         .cloned()
         .collect::<Vec<_>>();
 
-    (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments)
+    (
+        filtered_transcripts,
+        filtered_nucleus_assignments,
+        filtered_cell_assignments,
+    )
 }

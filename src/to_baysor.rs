@@ -47,11 +47,11 @@ enum OutputFormat {
 fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
     if let Some(fmtstr) = fmtstr {
         if fmtstr == "csv.gz" {
-            return OutputFormat::CsvGz
+            return OutputFormat::CsvGz;
         } else if fmtstr == "csv" {
-            return OutputFormat::Csv
+            return OutputFormat::Csv;
         } else if fmtstr == "parquet" {
-            return OutputFormat::Parquet
+            return OutputFormat::Parquet;
         } else {
             panic!("Unknown file format: {}", fmtstr);
         }
@@ -243,12 +243,24 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
 
     let names = ["transcript_id", "cell", "is_noise", "x", "y", "z"];
     let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-        Arc::new(arrow2::array::UInt64Array::from_values(metadata.transcript_id.iter().cloned())),
-        Arc::new(arrow2::array::UInt32Array::from_values(metadata.cell.iter().cloned())),
-        Arc::new(arrow2::array::BooleanArray::from_iter(metadata.cell.iter().map(|x| Some(*x == u32::MAX)))),
-        Arc::new(arrow2::array::Float32Array::from_values(metadata.x.iter().cloned())),
-        Arc::new(arrow2::array::Float32Array::from_values(metadata.y.iter().cloned())),
-        Arc::new(arrow2::array::Float32Array::from_values(metadata.z.iter().cloned())),
+        Arc::new(arrow2::array::UInt64Array::from_values(
+            metadata.transcript_id.iter().cloned(),
+        )),
+        Arc::new(arrow2::array::UInt32Array::from_values(
+            metadata.cell.iter().cloned(),
+        )),
+        Arc::new(arrow2::array::BooleanArray::from_iter(
+            metadata.cell.iter().map(|x| Some(*x == u32::MAX)),
+        )),
+        Arc::new(arrow2::array::Float32Array::from_values(
+            metadata.x.iter().cloned(),
+        )),
+        Arc::new(arrow2::array::Float32Array::from_values(
+            metadata.y.iter().cloned(),
+        )),
+        Arc::new(arrow2::array::Float32Array::from_values(
+            metadata.z.iter().cloned(),
+        )),
     ];
 
     let chunk = arrow2::chunk::Chunk::new(columns);

@@ -1,8 +1,8 @@
+use super::common::{random_left_bounded_gamma, upper_incomplete_gamma};
+use super::float::Float;
 use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::{Distribution, StandardNormal, Standard, Exp1};
-use super::float::Float;
-use super::common::{upper_incomplete_gamma, random_left_bounded_gamma};
+use rand_distr::{Distribution, Exp1, Standard, StandardNormal};
 
 #[replace_float_literals(T::from(literal).unwrap())]
 pub fn sample_polyagamma_saddlepoint<T: Float, R: Rng>(rng: &mut R, h: T, z: T) -> T
@@ -15,16 +15,19 @@ where
     let sqrt_rho = (-2.0 * pr.left_tangent_slope).sqrt();
     let sqrt_rho_inv = sqrt_rho.recip();
 
-    let p = (h * (0.5 / pr.xc + pr.left_tangent_intercept - sqrt_rho) +
-        invgauss_logcdf(pr.xc, sqrt_rho_inv, h)).exp() + pr.sqrt_alpha;
+    let p = (h * (0.5 / pr.xc + pr.left_tangent_intercept - sqrt_rho)
+        + invgauss_logcdf(pr.xc, sqrt_rho_inv, h))
+    .exp()
+        + pr.sqrt_alpha;
     assert!(p.is_finite());
 
     let hrho = -h * pr.right_tangent_slope;
 
     // let q = upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef *
     //     (h * (pr.right_tangent_intercept - hrho.ln())).exp();
-    let q = ((upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef).ln() +
-        (h * (pr.right_tangent_intercept - hrho.ln()))).exp();
+    let q = ((upper_incomplete_gamma(h, hrho * pr.xc, false) * pr.right_kernel_coef).ln()
+        + (h * (pr.right_tangent_intercept - hrho.ln())))
+    .exp();
     assert!(q.is_finite());
 
     let proposal_probability = p / (p + q);
@@ -90,32 +93,32 @@ struct Parameters<T: Float> {
 
 impl<T: Float> Parameters<T> {
     /*
-    * Configure some constants to be used during sampling.
-    *
-    * NOTE
-    * ----
-    * Note that unlike the recommendations of Windle et al (2014) to use
-    * xc = 1.1 * xl and xr = 1.2 * xl, we found that using xc = 2.75 * xl and
-    * xr = 3 * xl provides the best envelope for the target density function and
-    * thus gives the best performance in terms of runtime due to the algorithm
-    * rejecting much fewer proposals; while the former produces an envelope that
-    * exceeds the target by too much in height and has a narrower variance, thus
-    * leading to many rejected proposal samples. Tests show that the latter
-    * selection results in the saddle approximation being over twice as fast as
-    * when using the former. Also note that log(xr) and log(xc) need not be
-    * computed directly. Since both xr and xc depend on xl, then their logs can
-    * be written as log(xr) = log(3) + log(xl) and log(xc) = log(2.75) + log(xl).
-    * Thus the log() function can be called once on xl and then the constants
-    * be precalculated at compile time, making the calculation of the logs a
-    * little more efficient.
-    */
+     * Configure some constants to be used during sampling.
+     *
+     * NOTE
+     * ----
+     * Note that unlike the recommendations of Windle et al (2014) to use
+     * xc = 1.1 * xl and xr = 1.2 * xl, we found that using xc = 2.75 * xl and
+     * xr = 3 * xl provides the best envelope for the target density function and
+     * thus gives the best performance in terms of runtime due to the algorithm
+     * rejecting much fewer proposals; while the former produces an envelope that
+     * exceeds the target by too much in height and has a narrower variance, thus
+     * leading to many rejected proposal samples. Tests show that the latter
+     * selection results in the saddle approximation being over twice as fast as
+     * when using the former. Also note that log(xr) and log(xc) need not be
+     * computed directly. Since both xr and xc depend on xl, then their logs can
+     * be written as log(xr) = log(3) + log(xl) and log(xc) = log(2.75) + log(xl).
+     * Thus the log() function can be called once on xl and then the constants
+     * be precalculated at compile time, making the calculation of the logs a
+     * little more efficient.
+     */
     #[replace_float_literals(T::from(literal).unwrap())]
     fn new(h: T, z: T) -> Self {
         let log275 = 1.0116009116784799;
         let log3 = 1.0986122886681098;
 
         let xl;
-        let logxl ;
+        let logxl;
         let half_z2;
         let log_cosh_z;
 
@@ -124,8 +127,7 @@ impl<T: Float> Parameters<T> {
             logxl = xl.ln();
             half_z2 = 0.5 * (z * z);
             log_cosh_z = z.cosh().ln();
-        }
-        else {
+        } else {
             xl = 1.;
             logxl = 0.;
             half_z2 = 0.;
@@ -152,8 +154,8 @@ impl<T: Float> Parameters<T> {
         let right_tangent_intercept = cumulant(ur, log_cosh_z) + 1.0 - log3 - logxl + logxc;
         assert!(right_tangent_intercept.is_finite());
 
-        let alpha_r = rv.fprime * (xc_inv * xc_inv);  // K''(t(xc)) / xc^2
-        let alpha_l = xc_inv * alpha_r;  // K''(t(xc)) / xc^3
+        let alpha_r = rv.fprime * (xc_inv * xc_inv); // K''(t(xc)) / xc^2
+        let alpha_l = xc_inv * alpha_r; // K''(t(xc)) / xc^3
 
         let sqrt_alpha = 1.0 / alpha_l.sqrt();
 
@@ -180,10 +182,7 @@ impl<T: Float> Parameters<T> {
             x: 0.0,
         }
     }
-
 }
-
-
 
 /*
  * Compute f(x) = tanh(x) / x in the range [0, infinity).
@@ -213,18 +212,16 @@ fn tanh_x<T: Float>(x: T) -> T {
     let p0 = -1.613_411_902_399_622_7e3;
     let p1 = -9.922_592_967_223_608e1;
     let p2 = -9.643_749_277_722_548e-1;
-        /* denominator coefficients */
+    /* denominator coefficients */
     let q0 = 4.840_235_707_198_869e3;
     let q1 = 2.233_772_071_896_231_4e3;
     let q2 = 1.127_447_438_053_494_9e2;
     let x2 = x * x;
 
-    1. + x2 * ((p2 * x2 + p1) * x2 + p0) /
-              (((x2 + q2) * x2 + q1) * x2 + q0)
+    1. + x2 * ((p2 * x2 + p1) * x2 + p0) / (((x2 + q2) * x2 + q1) * x2 + q0)
 }
 
-fn tan_x<T: Float>(x: T) -> T
-{
+fn tan_x<T: Float>(x: T) -> T {
     x.tan() / x
 }
 
@@ -272,11 +269,9 @@ fn cumulant_prime<T: Float>(u: T) -> FuncReturnValue<T> {
     FuncReturnValue { f, fprime }
 }
 
-
 fn isclose<T: Float>(a: T, b: T, atol: T, rtol: T) -> bool {
     (a - b).abs() <= atol.max(rtol * a.abs().max(b.abs()))
 }
-
 
 /*
  * Select the starting guess for the solution `u` of Newton's method given a
@@ -290,13 +285,21 @@ fn isclose<T: Float>(a: T, b: T, atol: T, rtol: T) -> bool {
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn select_starting_guess<T: Float>(x: T) -> T {
-    if x <= 0.25 { -9.0
-    } else if x <= 0.5  { -1.78
-    } else if x <= 1.0  { -0.147
-    } else if x <= 1.5  {  0.345
-    } else if x <= 2.5  {  0.72
-    } else if x <= 4.0  {  0.95
-    } else { 1.15 }
+    if x <= 0.25 {
+        -9.0
+    } else if x <= 0.5 {
+        -1.78
+    } else if x <= 1.0 {
+        -0.147
+    } else if x <= 1.5 {
+        0.345
+    } else if x <= 2.5 {
+        0.72
+    } else if x <= 4.0 {
+        0.95
+    } else {
+        1.15
+    }
 }
 
 const PGM_MAX_ITER: usize = 25;
@@ -332,12 +335,10 @@ fn newton_raphson<T: Float>(arg: T, mut x0: T) -> (T, FuncReturnValue<T>) {
  * Compute the saddle point estimate at x.
  */
 fn saddle_point<T: Float>(pr: &Parameters<T>) -> T {
-    let (u, rv) = newton_raphson(
-        pr.x, select_starting_guess(pr.x));
+    let (u, rv) = newton_raphson(pr.x, select_starting_guess(pr.x));
     let t = u + pr.half_z2;
 
-    (pr.h * (cumulant(u, pr.log_cosh_z) - t * pr.x)).exp() *
-        pr.sqrt_h2pi / rv.fprime.sqrt()
+    (pr.h * (cumulant(u, pr.log_cosh_z) - t * pr.x)).exp() * pr.sqrt_h2pi / rv.fprime.sqrt()
 }
 
 /*
@@ -351,8 +352,8 @@ fn bounding_kernel<T: Float>(pr: &Parameters<T>) -> T {
         (pr.h * (pr.logxc + point) + (pr.h - 1.0) * pr.x.ln()).exp() * pr.right_kernel_coef
     } else {
         let point = pr.left_tangent_slope * pr.x + pr.left_tangent_intercept;
-        (0.5 * pr.h * (1.0 / pr.xc - 1.0 / pr.x) +
-            pr.h * point - 1.5 * pr.x.ln()).exp() * pr.left_kernel_coef
+        (0.5 * pr.h * (1.0 / pr.xc - 1.0 / pr.x) + pr.h * point - 1.5 * pr.x.ln()).exp()
+            * pr.left_kernel_coef
     }
 }
 
@@ -379,12 +380,10 @@ fn log_norm_cdf<T: Float>(x: T) -> T {
 #[replace_float_literals(T::from(literal).unwrap())]
 fn invgauss_logcdf<T: Float>(x: T, mu: T, lambda: T) -> T {
     let qm = x / mu;
-    let tm =  mu / lambda;
+    let tm = mu / lambda;
     let r = (x / lambda).sqrt();
     let a = log_norm_cdf((qm - 1.) / r);
     let b = 2. / tm + log_norm_cdf(-(qm + 1.) / r);
 
     a + (b - a).exp().ln_1p()
 }
-
-

@@ -1,13 +1,10 @@
-
-use std::collections::HashSet;
 use super::cubebinsampler::{Cube, CubeLayout};
-
+use std::collections::HashSet;
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 // use geo::algorithm::simplify::Simplify;
 // use geo::SimplifyVw;
 use itertools::Itertools;
-
 
 // TODO: Plan for polygon generation:
 //   - For each cell (in parallel)
@@ -17,7 +14,7 @@ use itertools::Itertools;
 //   -     these outlines are the polygons
 //
 // Edge simplification:
-//   To reduce the jagged edges: 
+//   To reduce the jagged edges:
 
 type VoxelIJ = (i32, i32);
 type VoxelK = i32;
@@ -27,19 +24,20 @@ pub struct PolygonBuilder {
     visited: Vec<bool>,
 }
 
-
 fn reverse_edge(edge: &(VoxelK, VoxelIJ, VoxelIJ)) -> (VoxelK, VoxelIJ, VoxelIJ) {
     (edge.0, edge.2, edge.1)
 }
 
-
 // return the lexigraphically next point
 fn next_point(v: VoxelIJ) -> VoxelIJ {
-    (v.0, v.1+1)
+    (v.0, v.1 + 1)
 }
 
-
-fn mark_visited(edges_k: &[(VoxelK, VoxelIJ, VoxelIJ)], visited_k: &mut [bool], edge: &(VoxelK, VoxelIJ, VoxelIJ)) {
+fn mark_visited(
+    edges_k: &[(VoxelK, VoxelIJ, VoxelIJ)],
+    visited_k: &mut [bool],
+    edge: &(VoxelK, VoxelIJ, VoxelIJ),
+) {
     let pos = edges_k.binary_search(edge).unwrap();
     assert!(!visited_k[pos]);
     visited_k[pos] = true;
@@ -48,7 +46,6 @@ fn mark_visited(edges_k: &[(VoxelK, VoxelIJ, VoxelIJ)], visited_k: &mut [bool], 
     assert!(!visited_k[pos]);
     visited_k[pos] = true;
 }
-
 
 // fn antialias_polygon(polygon: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
 //     let mut smoothed_polygon = Vec::new();
@@ -87,7 +84,6 @@ fn mark_visited(edges_k: &[(VoxelK, VoxelIJ, VoxelIJ)], visited_k: &mut [bool], 
 //     return smoothed_polygon;
 // }
 
-
 // This is an exact simplification algorithm: we just want to merge segments
 // that are part of the same line.
 fn simplify_polygon(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
@@ -98,7 +94,7 @@ fn simplify_polygon(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     let mut simplified_polygon = Vec::new();
     simplified_polygon.push(*polygon.first().unwrap());
 
-    for (u, v, w) in polygon.iter().tuple_windows::<(_,_,_)>() {
+    for (u, v, w) in polygon.iter().tuple_windows::<(_, _, _)>() {
         // If v is colinear with (u, w), then skip it, otherwise push it.
         let δi_v = v.0 - u.0;
         let δj_v = v.1 - u.1;
@@ -116,7 +112,6 @@ fn simplify_polygon(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     simplified_polygon
 }
 
-
 impl PolygonBuilder {
     pub fn new() -> Self {
         PolygonBuilder {
@@ -125,7 +120,11 @@ impl PolygonBuilder {
         }
     }
 
-    pub fn cell_voxels_to_polygons(&mut self, layout: &CubeLayout, voxels: &HashSet<Cube>) -> Vec<(i32, MultiPolygon<f32>)> {
+    pub fn cell_voxels_to_polygons(
+        &mut self,
+        layout: &CubeLayout,
+        voxels: &HashSet<Cube>,
+    ) -> Vec<(i32, MultiPolygon<f32>)> {
         // if we store edges in in μm, we run the risk of failing line up points
         // due to numerical imprecision. Instead we use integer coordinates,
         // where (i, j, k) represents the corner of voxel (i, j, k)
@@ -154,9 +153,9 @@ impl PolygonBuilder {
 
         let mut multipolygons = Vec::new();
 
-        for k in kmin..kmax+1 {
+        for k in kmin..kmax + 1 {
             let first = self.edges.partition_point(|edge| edge.0 < k);
-            let last = self.edges.partition_point(|edge| edge.0 < k+1);
+            let last = self.edges.partition_point(|edge| edge.0 < k + 1);
 
             let edges_k = &self.edges[first..last];
             let visited_k = &mut self.visited[first..last];
@@ -224,30 +223,34 @@ impl PolygonBuilder {
                             // each case exhaustively here.
                             if voxels.contains(&Cube::new(k, v.0, v.1)) {
                                 if δi == -1 {
-                                    w = (v.0, v.1-1);
+                                    w = (v.0, v.1 - 1);
                                 } else if δi == 1 {
-                                    w = (v.0, v.1+1);
+                                    w = (v.0, v.1 + 1);
                                 } else if δj == -1 {
-                                    w = (v.0-1, v.1);
+                                    w = (v.0 - 1, v.1);
                                 } else if δj == 1 {
-                                    w = (v.0+1, v.1);
+                                    w = (v.0 + 1, v.1);
                                 } else {
                                     unreachable!();
                                 }
                             } else if δi == -1 {
-                                w = (v.0, v.1+1);
+                                w = (v.0, v.1 + 1);
                             } else if δi == 1 {
-                                w = (v.0, v.1-1);
+                                w = (v.0, v.1 - 1);
                             } else if δj == -1 {
-                                w = (v.0+1, v.1);
+                                w = (v.0 + 1, v.1);
                             } else if δj == 1 {
-                                w = (v.0-1, v.1);
+                                w = (v.0 - 1, v.1);
                             } else {
                                 unreachable!();
                             }
                             let adjacent_edge = (k, v, w);
                             assert!(adjacent_edges.contains(&adjacent_edge));
-                            if adjacent_edges_visited[adjacent_edges.iter().position(|e| *e == adjacent_edge).unwrap()] {
+                            if adjacent_edges_visited[adjacent_edges
+                                .iter()
+                                .position(|e| *e == adjacent_edge)
+                                .unwrap()]
+                            {
                                 assert!(polygon.first() == polygon.last());
                                 break;
                             }
@@ -269,14 +272,13 @@ impl PolygonBuilder {
                     let polygon: Vec<(f32, f32)> = polygon
                         .iter()
                         .map(|v| {
-                            let (x, y, _z) = layout.cube_corner_to_world_pos(Cube::new(v.0, v.1, 0));
+                            let (x, y, _z) =
+                                layout.cube_corner_to_world_pos(Cube::new(v.0, v.1, 0));
                             (x, y)
                         })
                         .collect();
 
-                    let polygon = Polygon::<f32>::new(
-                        LineString::from(polygon),
-                        Vec::new());
+                    let polygon = Polygon::<f32>::new(LineString::from(polygon), Vec::new());
 
                     // let polygon = polygon.simplify_vw(&0.25);
 
