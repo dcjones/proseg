@@ -8,15 +8,15 @@ use rand::Rng;
 // }
 
 pub fn logistic(x: f32) -> f32 {
-    return 1.0 / (1.0 + (-x).exp());
+    1.0 / (1.0 + (-x).exp())
 }
 
 pub fn relerr(a: f32, b: f32) -> f32 {
-    return ((a - b) / a).abs();
+    ((a - b) / a).abs()
 }
 
 pub fn lfact(k: u32) -> f32 {
-    return lgammaf(k as f32 + 1.0);
+    lgammaf(k as f32 + 1.0)
 }
 
 // // Partial Student-T log-pdf (just the terms that don't cancel out when doing MH sampling)
@@ -24,15 +24,15 @@ pub fn lfact(k: u32) -> f32 {
 //     return -((df + 1.0) / 2.0) * ((x2 / σ2) / df).ln_1p();
 // }
 
-const SQRT_TWO_PI: f32 = 2.5066282746310002_f32;
-const LN_SQRT_TWO_PI: f32 = 0.9189385332046727_f32;
+const SQRT_TWO_PI: f32 = 2.506_628_3_f32;
+const LN_SQRT_TWO_PI: f32 = 0.918_938_5_f32;
 
 pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
-    return (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI);
+    (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
 }
 
 pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
-    return -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI;
+    -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI
 }
 
 
@@ -53,13 +53,13 @@ pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
 
 pub fn normal_pdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xμ = x - μ;
-    return (-xμ.powi(2) / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI);
+    (-xμ.powi(2) / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
 }
 
 
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
-    return -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0;
+    -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0
 }
 
 
@@ -75,7 +75,7 @@ pub fn negbin_logpmf_fast(
     const MINP: f32 = 0.999999_f32;
     let p = p.min(MINP);
 
-    let result = if k == 0 {
+    if k == 0 {
         // handle common case in sparse data efficiently
         // r * (1.0 - p).ln()
         r * (-p).ln_1p()
@@ -85,15 +85,13 @@ pub fn negbin_logpmf_fast(
             - k_ln_factorial
             // + (k as f32) * p.ln() + r * (1.0 - p).ln()
             + (k as f32) * p.ln() + r * (-p).ln_1p()
-    };
-
-    return result;
+    }
 }
 
 pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
-    return (0..n)
+    (0..n)
         .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
-        .sum();
+        .sum()
 }
 
 // log-factorial with precomputed values for small numbers
@@ -103,20 +101,20 @@ pub struct LogFactorial {
 
 impl LogFactorial {
     fn new_with_n(n: usize) -> Self {
-        return LogFactorial {
-            values: Vec::from_iter((0..n as u32).map(|x| lfact(x))),
-        };
+        LogFactorial {
+            values: Vec::from_iter((0..n as u32).map(lfact)),
+        }
     }
 
     pub fn new() -> Self {
-        return LogFactorial::new_with_n(100);
+        LogFactorial::new_with_n(100)
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        return self
+        self
             .values
             .get(k as usize)
-            .map_or_else(|| lfact(k), |&value| value);
+            .map_or_else(|| lfact(k), |&value| value)
     }
 }
 
@@ -129,18 +127,18 @@ pub struct LogGammaPlus {
 
 impl LogGammaPlus {
     fn new_with_n(r: f32, n: usize) -> Self {
-        return LogGammaPlus {
+        LogGammaPlus {
             r,
             values: Vec::from_iter((0..n as u32).map(|x| lgammaf(r + x as f32))),
-        };
+        }
     }
 
     pub fn new(r: f32) -> Self {
-        return LogGammaPlus::new_with_n(r, 100);
+        LogGammaPlus::new_with_n(r, 100)
     }
 
     pub fn default() -> Self {
-        return LogGammaPlus::new(0.0);
+        LogGammaPlus::new(0.0)
     }
 
     pub fn reset(&mut self, r: f32) {
@@ -151,9 +149,9 @@ impl LogGammaPlus {
     }
 
     pub fn eval(&self, k: u32) -> f32 {
-        return self
+        self
             .values
             .get(k as usize)
-            .map_or_else(|| lgammaf(self.r + k as f32), |&value| value);
+            .map_or_else(|| lgammaf(self.r + k as f32), |&value| value)
     }
 }

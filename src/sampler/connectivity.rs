@@ -16,11 +16,11 @@ struct DfsInfo {
 
 impl Default for DfsInfo {
     fn default() -> Self {
-        return Self {
+        Self {
             parent: NodeIndex::end(),
             depth: 0,
             low: 0,
-        };
+        }
     }
 }
 
@@ -34,11 +34,11 @@ impl ConnectivityChecker {
     pub fn new() -> Self {
         let subgraph: NeighborhoodGraph = Graph::default();
 
-        return Self {
-            subgraph: subgraph,
+        Self {
+            subgraph,
             cube_to_subgraph: HashMap::new(),
             visited: HashSet::new(),
-        };
+        }
     }
 
     pub fn cube_isarticulation<F>(&mut self, root: Cube, cubecell: F, cell: u32) -> bool
@@ -50,11 +50,11 @@ impl ConnectivityChecker {
         // dbg!(self.subgraph.node_count(), self.subgraph.edge_count(), cell);
 
         self.visited.clear();
-        return is_articulation_dfs(
+        is_articulation_dfs(
             &self.subgraph,
             &mut self.visited,
             self.cube_to_subgraph[&root],
-        );
+        )
     }
 
     fn construct_cube_subgraph<F>(&mut self, root: Cube, cubecell: F, cell: u32)
@@ -72,8 +72,7 @@ impl ConnectivityChecker {
             let neighbor_cell = cubecell(neighbor);
             if cell == neighbor_cell {
                 self.cube_to_subgraph.entry(neighbor).or_insert_with(|| {
-                    let j_idx = self.subgraph.add_node(());
-                    j_idx
+                    self.subgraph.add_node(())
                 });
             }
         }
@@ -126,5 +125,5 @@ fn is_articulation_dfs(
         is_articulation_dfs(subgraph, visited, j);
     }
 
-    return child_count > 1;
+    child_count > 1
 }

@@ -10,39 +10,48 @@ pub trait Float: float::Float + AddAssign + SubAssign + MulAssign {
     fn erfc(self) -> Self;
     fn lgamma(self) -> Self;
     fn as_usize(self) -> usize {
-        return <usize as NumCast>::from(self).unwrap();
+        <usize as NumCast>::from(self).unwrap()
     }
 
     fn as_f64(self) -> f64 {
-        return <f64 as NumCast>::from(self).unwrap();
+        <f64 as NumCast>::from(self).unwrap()
     }
+
+    const TAU: Self;
+    const SQRT_2: Self;
 }
 
 impl Float for f32 {
     fn erf(self) -> Self {
-        return erff(self);
+        erff(self)
     }
 
     fn erfc(self) -> Self {
-        return erfcf(self);
+        erfcf(self)
     }
 
     fn lgamma(self) -> Self {
-        return lgammaf_r(self).0;
+        lgammaf_r(self).0
     }
+
+    const TAU: Self = std::f32::consts::TAU;
+    const SQRT_2: Self = std::f32::consts::SQRT_2;
 }
 
 impl Float for f64 {
     fn erf(self) -> Self {
-        return erf(self);
+        erf(self)
     }
 
     fn erfc(self) -> Self {
-        return erfc(self);
+        erfc(self)
     }
 
     fn lgamma(self) -> Self {
-        return lgamma_r(self).0;
+        lgamma_r(self).0
     }
+
+    const TAU: Self = std::f64::consts::TAU;
+    const SQRT_2: Self = std::f64::consts::SQRT_2;
 }
 

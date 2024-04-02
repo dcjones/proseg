@@ -56,7 +56,7 @@ where
         }
     }
 
-    return 0.25 * h * pr.x;
+    0.25 * h * pr.x
 }
 
 struct Parameters<T: Float> {
@@ -157,11 +157,12 @@ impl<T: Float> Parameters<T> {
 
         let sqrt_alpha = 1.0 / alpha_l.sqrt();
 
-        let sqrt_h2pi = (h / 6.283185307179586).sqrt();
+        // let sqrt_h2pi = (h / 6.283185307179586).sqrt();
+        let sqrt_h2pi = (h / T::TAU).sqrt();
         let left_kernel_coef = sqrt_h2pi * sqrt_alpha;
         let right_kernel_coef = sqrt_h2pi / alpha_r.sqrt();
 
-        return Parameters {
+        Parameters {
             right_tangent_intercept,
             left_tangent_intercept,
             right_tangent_slope,
@@ -177,7 +178,7 @@ impl<T: Float> Parameters<T> {
             h,
             // z,
             x: 0.0,
-        };
+        }
     }
 
 }
@@ -209,22 +210,22 @@ fn tanh_x<T: Float>(x: T) -> T {
     if x > 4.95 {
         return 1. / x;
     }
-    let p0 = -0.16134119023996228053e+04;
-    let p1 = -0.99225929672236083313e+02;
-    let p2 = -0.96437492777225469787e+00;
+    let p0 = -1.613_411_902_399_622_7e3;
+    let p1 = -9.922_592_967_223_608e1;
+    let p2 = -9.643_749_277_722_548e-1;
         /* denominator coefficients */
-    let q0 = 0.48402357071988688686e+04;
-    let q1 = 0.22337720718962312926e+04;
-    let q2 = 0.11274474380534949335e+03;
+    let q0 = 4.840_235_707_198_869e3;
+    let q1 = 2.233_772_071_896_231_4e3;
+    let q2 = 1.127_447_438_053_494_9e2;
     let x2 = x * x;
 
-    return 1. + x2 * ((p2 * x2 + p1) * x2 + p0) /
-                     (((x2 + q2) * x2 + q1) * x2 + q0);
+    1. + x2 * ((p2 * x2 + p1) * x2 + p0) /
+              (((x2 + q2) * x2 + q1) * x2 + q0)
 }
 
 fn tan_x<T: Float>(x: T) -> T
 {
-    return x.tan() / x;
+    x.tan() / x
 }
 
 /*
@@ -245,11 +246,11 @@ struct FuncReturnValue<T: Float> {
 #[replace_float_literals(T::from(literal).unwrap())]
 fn cumulant<T: Float>(u: T, log_cosh_z: T) -> T {
     if u < 0.0 {
-        return log_cosh_z - (-2.0 * u).sqrt().cosh().ln();
+        log_cosh_z - (-2.0 * u).sqrt().cosh().ln()
     } else if u > 0.0 {
-        return log_cosh_z - (2.0 * u).sqrt().cos().ln();
+        log_cosh_z - (2.0 * u).sqrt().cos().ln()
     } else {
-        return log_cosh_z;
+        log_cosh_z
     }
 }
 
@@ -268,12 +269,12 @@ fn cumulant_prime<T: Float>(u: T) -> FuncReturnValue<T> {
     };
     let fprime = f * f + (1.0 - f) / s;
 
-    return FuncReturnValue { f, fprime };
+    FuncReturnValue { f, fprime }
 }
 
 
 fn isclose<T: Float>(a: T, b: T, atol: T, rtol: T) -> bool {
-    return (a - b).abs() <= atol.max(rtol * a.abs().max(b.abs()));
+    (a - b).abs() <= atol.max(rtol * a.abs().max(b.abs()))
 }
 
 
@@ -289,13 +290,13 @@ fn isclose<T: Float>(a: T, b: T, atol: T, rtol: T) -> bool {
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn select_starting_guess<T: Float>(x: T) -> T {
-    return if x <= 0.25 { -9.0
+    if x <= 0.25 { -9.0
     } else if x <= 0.5  { -1.78
     } else if x <= 1.0  { -0.147
     } else if x <= 1.5  {  0.345
     } else if x <= 2.5  {  0.72
     } else if x <= 4.0  {  0.95
-    } else { 1.15 };
+    } else { 1.15 }
 }
 
 const PGM_MAX_ITER: usize = 25;
@@ -324,7 +325,7 @@ fn newton_raphson<T: Float>(arg: T, mut x0: T) -> (T, FuncReturnValue<T>) {
         }
     }
 
-    return (x, value);
+    (x, value)
 }
 
 /*
@@ -335,8 +336,8 @@ fn saddle_point<T: Float>(pr: &Parameters<T>) -> T {
         pr.x, select_starting_guess(pr.x));
     let t = u + pr.half_z2;
 
-    return (pr.h * (cumulant(u, pr.log_cosh_z) - t * pr.x)).exp() *
-        pr.sqrt_h2pi / rv.fprime.sqrt();
+    (pr.h * (cumulant(u, pr.log_cosh_z) - t * pr.x)).exp() *
+        pr.sqrt_h2pi / rv.fprime.sqrt()
 }
 
 /*
@@ -347,12 +348,12 @@ fn saddle_point<T: Float>(pr: &Parameters<T>) -> T {
 fn bounding_kernel<T: Float>(pr: &Parameters<T>) -> T {
     if pr.x > pr.xc {
         let point = pr.right_tangent_slope * pr.x + pr.right_tangent_intercept;
-        return (pr.h * (pr.logxc + point) + (pr.h - 1.0) * pr.x.ln()).exp() * pr.right_kernel_coef;
+        (pr.h * (pr.logxc + point) + (pr.h - 1.0) * pr.x.ln()).exp() * pr.right_kernel_coef
+    } else {
+        let point = pr.left_tangent_slope * pr.x + pr.left_tangent_intercept;
+        (0.5 * pr.h * (1.0 / pr.xc - 1.0 / pr.x) +
+            pr.h * point - 1.5 * pr.x.ln()).exp() * pr.left_kernel_coef
     }
-
-    let point = pr.left_tangent_slope * pr.x + pr.left_tangent_intercept;
-    return (0.5 * pr.h * (1.0 / pr.xc - 1.0 / pr.x) +
-        pr.h * point - 1.5 * pr.x.ln()).exp() * pr.left_kernel_coef;
 }
 
 /*
@@ -360,7 +361,7 @@ fn bounding_kernel<T: Float>(pr: &Parameters<T>) -> T {
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn log_norm_cdf<T: Float>(x: T) -> T {
-    return (-0.5 * (x / 1.4142135623730951).erfc()).ln_1p()
+    (-0.5 * (x / T::SQRT_2).erfc()).ln_1p()
 }
 
 /*
@@ -383,7 +384,7 @@ fn invgauss_logcdf<T: Float>(x: T, mu: T, lambda: T) -> T {
     let a = log_norm_cdf((qm - 1.) / r);
     let b = 2. / tm + log_norm_cdf(-(qm + 1.) / r);
 
-    return a + (b - a).exp().ln_1p();
+    a + (b - a).exp().ln_1p()
 }
 
 

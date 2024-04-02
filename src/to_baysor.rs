@@ -8,7 +8,6 @@ use arrow2::io::csv as arrow_csv;
 use arrow2::io::parquet;
 use csv::StringRecord;
 use flate2::read::GzDecoder;
-use json;
 use json::JsonValue;
 use std::cmp::Ordering;
 use std::fs::File;
@@ -48,22 +47,22 @@ enum OutputFormat {
 fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
     if let Some(fmtstr) = fmtstr {
         if fmtstr == "csv.gz" {
-            return OutputFormat::CsvGz;
+            return OutputFormat::CsvGz
         } else if fmtstr == "csv" {
-            return OutputFormat::Csv;
+            return OutputFormat::Csv
         } else if fmtstr == "parquet" {
-            return OutputFormat::Parquet;
+            return OutputFormat::Parquet
         } else {
             panic!("Unknown file format: {}", fmtstr);
         }
     }
 
     if filename.ends_with(".csv.gz") {
-        return OutputFormat::CsvGz;
+        OutputFormat::CsvGz
     } else if filename.ends_with(".csv") {
-        return OutputFormat::Csv;
+        OutputFormat::Csv
     } else if filename.ends_with(".parquet") {
-        return OutputFormat::Parquet;
+        OutputFormat::Parquet
     } else {
         panic!("Unknown file format for: {}", filename);
     }
@@ -100,13 +99,13 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
         OutputFormat::Csv => {
             let rdr =
                 arrow_csv::read::Reader::from_path(filename).expect("Unable to open csv file.");
-            return read_proseg_transcript_metadata_csv(rdr);
+            read_proseg_transcript_metadata_csv(rdr)
         }
         OutputFormat::CsvGz => {
             let rdr = arrow_csv::read::Reader::from_reader(GzDecoder::new(
                 File::open(filename).expect("Unable to open csv.gz file."),
             ));
-            return read_proseg_transcript_metadata_csv(rdr);
+            read_proseg_transcript_metadata_csv(rdr)
         }
         OutputFormat::Parquet => {
             let mut metadata = TranscriptMetadata {
@@ -196,9 +195,9 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
                 }
             }
 
-            return metadata;
+            metadata
         }
-    };
+    }
 }
 
 fn read_proseg_transcript_metadata_csv<T>(mut rdr: arrow_csv::read::Reader<T>) -> TranscriptMetadata
@@ -235,7 +234,7 @@ where
         metadata.z.push(row[z_col].parse::<f32>().unwrap());
     }
 
-    return metadata;
+    metadata
 }
 
 fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetadata) {
@@ -243,25 +242,15 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
         File::create(filename).expect("Unable to create output transcript metadata file.");
 
     let names = ["transcript_id", "cell", "is_noise", "x", "y", "z"];
-    let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
-    columns.push(Arc::new(arrow2::array::UInt64Array::from_values(
-        metadata.transcript_id.iter().cloned(),
-    )));
-    columns.push(Arc::new(arrow2::array::UInt32Array::from_values(
-        metadata.cell.iter().cloned(),
-    )));
-    columns.push(Arc::new(arrow2::array::BooleanArray::from_iter(
-        metadata.cell.iter().map(|x| Some(*x == u32::MAX)),
-    )));
-    columns.push(Arc::new(arrow2::array::Float32Array::from_values(
-        metadata.x.iter().cloned(),
-    )));
-    columns.push(Arc::new(arrow2::array::Float32Array::from_values(
-        metadata.y.iter().cloned(),
-    )));
-    columns.push(Arc::new(arrow2::array::Float32Array::from_values(
-        metadata.z.iter().cloned(),
-    )));
+    let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
+        Arc::new(arrow2::array::UInt64Array::from_values(metadata.transcript_id.iter().cloned())),
+        Arc::new(arrow2::array::UInt32Array::from_values(metadata.cell.iter().cloned())),
+        Arc::new(arrow2::array::BooleanArray::from_iter(metadata.cell.iter().map(|x| Some(*x == u32::MAX)))),
+        Arc::new(arrow2::array::Float32Array::from_values(metadata.x.iter().cloned())),
+        Arc::new(arrow2::array::Float32Array::from_values(metadata.y.iter().cloned())),
+        Arc::new(arrow2::array::Float32Array::from_values(metadata.z.iter().cloned())),
+    ];
+
     let chunk = arrow2::chunk::Chunk::new(columns);
 
     let options = arrow2::io::csv::write::SerializeOptions::default();
@@ -280,7 +269,7 @@ fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
     }
     x /= vertices.len() as f32;
     y /= vertices.len() as f32;
-    return (x, y);
+    (x, y)
 }
 
 fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
@@ -301,24 +290,24 @@ fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
     let det = (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1);
 
     if det < 0.0 {
-        return Ordering::Less;
+        Ordering::Less
     } else if det > 0.0 {
-        return Ordering::Greater;
+        Ordering::Greater
     } else {
         // points a and b are on the same line from the c
         // check which point is closer to the c
         let d1 = (a.0 - c.0) * (a.0 - c.0) + (a.1 - c.1) * (a.1 - c.1);
         let d2 = (b.0 - c.0) * (b.0 - c.0) + (b.1 - c.1) * (b.1 - c.1);
         if d1 >= d2 {
-            return Ordering::Greater;
+            Ordering::Greater
         } else {
-            return Ordering::Less;
+            Ordering::Less
         }
     }
 }
 
 fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
-    let c = center(&vertices);
+    let c = center(vertices);
     vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b));
 
     let mut area = 0.0;
@@ -335,7 +324,7 @@ fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
     }
     area = area.abs() / 2.0;
 
-    return area;
+    area
 }
 
 // We need to rename
@@ -389,7 +378,7 @@ fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String
             .insert("cell", feature["properties"]["cell"].clone())
             .unwrap();
 
-        return geometry;
+        geometry
     });
 
     let geometries = JsonValue::from(geometries.collect::<Vec<JsonValue>>());

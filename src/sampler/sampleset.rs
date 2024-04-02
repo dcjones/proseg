@@ -17,19 +17,19 @@ where
     T: Eq + Hash + Copy,
 {
     pub fn new() -> Self {
-        return SampleSet {
+        SampleSet {
             set: HashMap::new(),
             vec: Vec::new(),
-        };
+        }
     }
 
     pub fn len(&self) -> usize {
         assert!(self.set.len() == self.vec.len());
-        return self.vec.len();
+        self.vec.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        return self.len() == 0;
+        self.len() == 0
     }
 
     // pub fn clear(&mut self) {
@@ -41,9 +41,9 @@ where
         if let Vacant(entry) = self.set.entry(value) {
             entry.insert(self.vec.len());
             self.vec.push(value);
-            return true;
+            true
         } else {
-            return false;
+            false
         }
     }
 
@@ -56,9 +56,9 @@ where
             if index < self.vec.len() {
                 self.set.insert(self.vec[index], index);
             }
-            return true;
+            true
         } else {
-            return false;
+            false
         }
     }
 
@@ -67,7 +67,7 @@ where
             return None;
         }
         let index = rng.gen_range(0..self.len());
-        return Some(&self.vec[index]);
+        Some(&self.vec[index])
     }
 
     // fn contains(&self, value: &T) -> bool {

@@ -1,4 +1,3 @@
-use arrow2;
 use arrow2::array;
 use arrow2::chunk::Chunk;
 use arrow2::datatypes::{DataType, Field, Schema};
@@ -27,7 +26,7 @@ pub fn write_table(
     chunk: Chunk<Arc<dyn arrow2::array::Array>>,
 ) {
     let fmt = determine_format(filename, fmtstr);
-    let mut file = File::create(&filename).unwrap();
+    let mut file = File::create(filename).unwrap();
 
     match fmt {
         OutputFormat::Csv => {
@@ -65,7 +64,7 @@ where
         .collect::<Vec<_>>();
     arrow2::io::csv::write::write_header(output, &names, &options)?;
     arrow2::io::csv::write::write_chunk(output, &chunk, &options)?;
-    return Ok(());
+    Ok(())
 }
 
 fn write_table_parquet<W>(
@@ -112,7 +111,7 @@ where
 
     writer.end(None)?;
 
-    return Ok(());
+    Ok(())
 }
 
 pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
@@ -129,11 +128,11 @@ pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat
     }
 
     if filename.ends_with(".csv.gz") {
-        return OutputFormat::CsvGz;
+        OutputFormat::CsvGz
     } else if filename.ends_with(".csv") {
-        return OutputFormat::Csv;
+        OutputFormat::Csv
     } else if filename.ends_with(".parquet") {
-        return OutputFormat::Parquet;
+        OutputFormat::Parquet
     } else {
         panic!("Unknown file format for: {}", filename);
     }
@@ -142,7 +141,7 @@ pub fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat
 pub fn write_counts(
     output_counts: &Option<String>,
     output_counts_fmt: &Option<String>,
-    transcript_names: &Vec<String>,
+    transcript_names: &[String],
     counts: &Array2<u32>,
 ) {
     if let Some(output_counts) = output_counts {
@@ -163,14 +162,14 @@ pub fn write_counts(
         }
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_counts, output_counts_fmt, schema, chunk);
+        write_table(output_counts, output_counts_fmt, schema, chunk);
     }
 }
 
 pub fn write_expected_counts(
     output_expected_counts: &Option<String>,
     output_expected_counts_fmt: &Option<String>,
-    transcript_names: &Vec<String>,
+    transcript_names: &[String],
     ecounts: &Array2<f32>,
 ) {
     if let Some(output_expected_counts) = output_expected_counts {
@@ -192,8 +191,8 @@ pub fn write_expected_counts(
         let chunk = arrow2::chunk::Chunk::new(columns);
 
         write_table(
-            &output_expected_counts,
-            &output_expected_counts_fmt,
+            output_expected_counts,
+            output_expected_counts_fmt,
             schema,
             chunk,
         );
@@ -204,7 +203,7 @@ pub fn write_rates(
     output_rates: &Option<String>,
     output_rates_fmt: &Option<String>,
     params: &ModelParams,
-    transcript_names: &Vec<String>,
+    transcript_names: &[String],
 ) {
     if let Some(output_rates) = output_rates {
         let schema = arrow2::datatypes::Schema::from(
@@ -224,7 +223,7 @@ pub fn write_rates(
         }
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_rates, &output_rates_fmt, schema, chunk);
+        write_table(output_rates, output_rates_fmt, schema, chunk);
     }
 }
 
@@ -232,7 +231,7 @@ pub fn write_component_params(
     output_component_params: &Option<String>,
     output_component_params_fmt: &Option<String>,
     params: &ModelParams,
-    transcript_names: &Vec<String>
+    transcript_names: &[String]
 ) {
     if let Some(output_component_params) = output_component_params {
         // What does this look like: rows for each gene, columns for α1, β1, α2, β2, etc.
@@ -261,8 +260,8 @@ pub fn write_component_params(
 
         let chunk = arrow2::chunk::Chunk::new(columns);
         write_table(
-            &output_component_params,
-            &output_component_params_fmt,
+            output_component_params,
+            output_component_params_fmt,
             schema,
             chunk,
         );
@@ -273,7 +272,7 @@ pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: &Option<String>,
     params: &ModelParams,
-    cell_centroids: &Vec<(f32, f32, f32)>,
+    cell_centroids: &[(f32, f32, f32)],
 ) {
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::from(vec![
@@ -311,8 +310,8 @@ pub fn write_cell_metadata(
         let chunk = arrow2::chunk::Chunk::new(columns);
 
         write_table(
-            &output_cell_metadata,
-            &output_cell_metadata_fmt,
+            output_cell_metadata,
+            output_cell_metadata_fmt,
             schema,
             chunk,
         );
@@ -322,10 +321,10 @@ pub fn write_cell_metadata(
 pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: &Option<String>,
-    transcripts: &Vec<Transcript>,
-    transcript_positions: &Vec<(f32, f32, f32)>,
-    transcript_names: &Vec<String>,
-    cell_assignments: &Vec<(u32, f32)>,
+    transcripts: &[Transcript],
+    transcript_positions: &[(f32, f32, f32)],
+    transcript_names: &[String],
+    cell_assignments: &[(u32, f32)],
     transcript_state: &Array1<TranscriptState>,
 ) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
@@ -384,8 +383,8 @@ pub fn write_transcript_metadata(
         let chunk = arrow2::chunk::Chunk::new(columns);
 
         write_table(
-            &output_transcript_metadata,
-            &output_transcript_metadata_fmt,
+            output_transcript_metadata,
+            output_transcript_metadata_fmt,
             schema,
             chunk,
         );
@@ -396,7 +395,7 @@ pub fn write_gene_metadata(
     output_gene_metadata: &Option<String>,
     output_gene_metadata_fmt: &Option<String>,
     params: &ModelParams,
-    transcript_names: &Vec<String>,
+    transcript_names: &[String],
     expected_counts: &Array2<f32>,
 ) {
     if let Some(output_gene_metadata) = output_gene_metadata {
@@ -467,8 +466,8 @@ pub fn write_gene_metadata(
         let chunk = arrow2::chunk::Chunk::new(columns);
 
         write_table(
-            &output_gene_metadata,
-            &output_gene_metadata_fmt,
+            output_gene_metadata,
+            output_gene_metadata_fmt,
             schema,
             chunk,
         );
@@ -523,7 +522,7 @@ pub fn write_cubes(
 
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(&output_cubes, &output_cubes_fmt, schema, chunk);
+        write_table(output_cubes, output_cubes_fmt, schema, chunk);
     }
 }
 
@@ -572,7 +571,7 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, polygons:
                     if j < ncoords - 1 {
                         writeln!(encoder, ",").unwrap();
                     } else {
-                        writeln!(encoder, "").unwrap();
+                        writeln!(encoder).unwrap();
                     }
                 }
 
@@ -581,7 +580,7 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, polygons:
                 if i < npolys - 1 {
                     writeln!(encoder, ",").unwrap();
                 } else {
-                    writeln!(encoder, "").unwrap();
+                    writeln!(encoder).unwrap();
                 }
             }
 
@@ -589,7 +588,7 @@ pub fn write_cell_multipolygons(output_cell_polygons: &Option<String>, polygons:
             if cell < ncells - 1 {
                 writeln!(encoder, ",").unwrap();
             } else {
-                writeln!(encoder, "").unwrap();
+                writeln!(encoder).unwrap();
             }
         }
 
@@ -618,7 +617,7 @@ pub fn write_cell_layered_multipolygons(
 
         let mut count = 0;
         for (cell, cell_polys) in polygons.iter().enumerate() {
-            for (layer, polys) in cell_polys.into_iter() {
+            for (layer, polys) in cell_polys.iter() {
                 writeln!(
                     encoder,
                     concat!(
@@ -646,7 +645,7 @@ pub fn write_cell_layered_multipolygons(
                         if j < ncoords - 1 {
                             writeln!(encoder, ",").unwrap();
                         } else {
-                            writeln!(encoder, "").unwrap();
+                            writeln!(encoder).unwrap();
                         }
                     }
 
@@ -655,7 +654,7 @@ pub fn write_cell_layered_multipolygons(
                     if i < npolys - 1 {
                         writeln!(encoder, ",").unwrap();
                     } else {
-                        writeln!(encoder, "").unwrap();
+                        writeln!(encoder).unwrap();
                     }
                 }
 
@@ -663,7 +662,7 @@ pub fn write_cell_layered_multipolygons(
                 if count < nmultipolys - 1 {
                     writeln!(encoder, ",").unwrap();
                 } else {
-                    writeln!(encoder, "").unwrap();
+                    writeln!(encoder).unwrap();
                 }
 
                 count += 1;

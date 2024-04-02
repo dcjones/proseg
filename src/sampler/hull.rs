@@ -14,7 +14,7 @@ struct QuickhullAbove;
 
 impl QuickhullSide for QuickhullAbove {
     fn tricontains(u: (f32, f32), v: (f32, f32), w: (f32, f32), p: (f32, f32)) -> bool {
-        return !isabove(u, w, p) && !isabove(w, v, p);
+        !isabove(u, w, p) && !isabove(w, v, p)
     }
 }
 
@@ -23,7 +23,7 @@ struct QuickhullBelow;
 
 impl QuickhullSide for QuickhullBelow {
     fn tricontains(u: (f32, f32), v: (f32, f32), w: (f32, f32), p: (f32, f32)) -> bool {
-        return isabove(u, w, p) && isabove(w, v, p);
+        isabove(u, w, p) && isabove(w, v, p)
     }
 }
 
@@ -36,8 +36,8 @@ impl QuickhullSide for QuickhullBelow {
 
 pub fn compute_cell_areas(
     ncells: usize,
-    transcripts: &Vec<Transcript>,
-    cell_assignments: &Vec<CellIndex>,
+    transcripts: &[Transcript],
+    cell_assignments: &[CellIndex],
 ) -> Vec<f32> {
     let mut vertices: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ncells];
     for (&c, &t) in cell_assignments.iter().zip(transcripts.iter()) {
@@ -52,11 +52,11 @@ pub fn compute_cell_areas(
         .map(|vs| convex_hull_area(vs, &mut hull))
         .collect();
 
-    return areas;
+    areas
 }
 
 /// Compute the convex hull and return it's area.
-pub fn convex_hull_area(vertices: &mut Vec<(f32, f32)>, hull: &mut Vec<(f32, f32)>) -> f32 {
+pub fn convex_hull_area(vertices: &mut [(f32, f32)], hull: &mut Vec<(f32, f32)>) -> f32 {
     if vertices.len() < 3 {
         hull.clear();
         hull.extend(vertices.iter().cloned());
@@ -64,7 +64,7 @@ pub fn convex_hull_area(vertices: &mut Vec<(f32, f32)>, hull: &mut Vec<(f32, f32
     }
 
     // find the leftmost and rightmost points
-    let (l, r) = horizontal_extrema_indices(&vertices);
+    let (l, r) = horizontal_extrema_indices(vertices);
     let (u, v) = (vertices[l], vertices[r]);
 
     hull.clear();
@@ -106,11 +106,11 @@ pub fn convex_hull_area(vertices: &mut Vec<(f32, f32)>, hull: &mut Vec<(f32, f32
     }
 
     // compute the area
-    return polygon_area(hull);
+    polygon_area(hull)
 }
 
 pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
-    let c = center(&vertices);
+    let c = center(vertices);
     vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b));
 
     let mut area = 0.0;
@@ -127,7 +127,7 @@ pub fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
     }
     area = area.abs() / 2.0;
 
-    return area;
+    area
 }
 
 fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
@@ -139,7 +139,7 @@ fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
     }
     x /= vertices.len() as f32;
     y /= vertices.len() as f32;
-    return (x, y);
+    (x, y)
 }
 
 fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
@@ -160,24 +160,24 @@ fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
     let det = (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1);
 
     if det < 0.0 {
-        return Ordering::Less;
+        Ordering::Less
     } else if det > 0.0 {
-        return Ordering::Greater;
+        Ordering::Greater
     } else {
         // points a and b are on the same line from the c
         // check which point is closer to the c
         let d1 = (a.0 - c.0) * (a.0 - c.0) + (a.1 - c.1) * (a.1 - c.1);
         let d2 = (b.0 - c.0) * (b.0 - c.0) + (b.1 - c.1) * (b.1 - c.1);
         if d1 >= d2 {
-            return Ordering::Greater;
+            Ordering::Greater
         } else {
-            return Ordering::Less;
+            Ordering::Less
         }
     }
 }
 
 fn quickhull_part<T>(
-    side: T,
+    _side: T,
     vertices: &mut [(f32, f32)],
     hull: &mut Vec<(f32, f32)>,
     u: (f32, f32),
@@ -185,7 +185,9 @@ fn quickhull_part<T>(
 ) where
     T: QuickhullSide + Debug,
 {
-    if vertices.len() == 0 {
+    // TODO: Should we be doing something with side here?
+
+    if vertices.is_empty() {
         return;
     }
 
@@ -224,7 +226,7 @@ fn quickhull_part<T>(
         vertices.swap(i, j);
     }
 
-    quickhull_part(side, &mut vertices[i..], hull, u, v);
+    quickhull_part(_side, &mut vertices[i..], hull, u, v);
 }
 
 fn horizontal_extrema_indices(vertices: &[(f32, f32)]) -> (usize, usize) {
@@ -238,17 +240,17 @@ fn horizontal_extrema_indices(vertices: &[(f32, f32)]) -> (usize, usize) {
         }
     }
 
-    return (i_min, i_max);
+    (i_min, i_max)
 }
 
 // Compute the distance from the line uv to the point w.
 fn linedist(u: (f32, f32), v: (f32, f32), w: (f32, f32)) -> f32 {
     let a = v.0 - u.0;
     let b = v.1 - u.1;
-    return (a * (u.1 - w.1) - b * (u.0 - w.0)).abs() / (a * a + b * b).sqrt();
+    (a * (u.1 - w.1) - b * (u.0 - w.0)).abs() / (a * a + b * b).sqrt()
 }
 
 // Test if the point w is above the line from u to v.
 fn isabove(u: (f32, f32), v: (f32, f32), w: (f32, f32)) -> bool {
-    return (v.0 - u.0) * (w.1 - u.1) - (v.1 - u.1) * (w.0 - u.0) > 0.0;
+    (v.0 - u.0) * (w.1 - u.1) - (v.1 - u.1) * (w.0 - u.0) > 0.0
 }

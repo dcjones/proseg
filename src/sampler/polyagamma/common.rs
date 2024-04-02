@@ -71,7 +71,7 @@ pub fn upper_incomplete_gamma<T: Float>(p: T, x: T, normalized: bool) -> T {
 
     if normalized {
         let out = f * (-x + p * x.ln() - pgm_lgamma(p)).exp();
-        return if x_smaller { 1.0 - out } else { out };
+        if x_smaller { 1.0 - out } else { out }
     } else if x_smaller {
         let lgam = pgm_lgamma(p);
         let exp_lgam = if lgam >= pgm_max_exp_t {
@@ -81,10 +81,10 @@ pub fn upper_incomplete_gamma<T: Float>(p: T, x: T, normalized: bool) -> T {
         };
         let arg = (-x + p * x.ln() - lgam).min(pgm_max_exp_t).max(-pgm_max_exp_t);
 
-        return (1.0 - f * arg.exp()) * exp_lgam;
+        (1.0 - f * arg.exp()) * exp_lgam
     } else {
         let arg = (-x + p * x.ln()).min(T::from(PGM_MAX_EXP).unwrap());
-        return f * arg.exp();
+        f * arg.exp()
     }
 }
 
@@ -149,7 +149,7 @@ fn confluent_x_smaller<T: Float>(p: T, x: T) -> T {
         }
     }
 
-    return f;
+    f
 }
 
 /*
@@ -206,10 +206,11 @@ fn confluent_p_smaller<T: Float>(p: T, x: T) -> T {
         n += 1.0;
     }
 
-    return f;
+    f
 }
 
 
+#[allow(clippy::excessive_precision)]
 const LOG_FACTORIAL: [f64; 200] = [
     0.00000000000000000000, 0.00000000000000000000, 0.69314718055994530943,
     1.79175946922805500079, 3.17805383034794561975, 4.78749174278204599415,
@@ -283,9 +284,10 @@ const LOG_FACTORIAL: [f64; 200] = [
 #[replace_float_literals(T::from(literal).unwrap())]
 pub fn pgm_lgamma<T: Float>(z: T) -> T {
     if z.floor() == z && z < 201.0 {
-        return T::from(LOG_FACTORIAL[(z - 1.0).as_usize()]).unwrap();
+        T::from(LOG_FACTORIAL[(z - 1.0).as_usize()]).unwrap()
+    } else {
+        z.lgamma()
     }
-    return z.lgamma();
 }
 
 
@@ -314,9 +316,9 @@ where Exp1: Distribution<T>
                 break;
             }
         }
-        return t * (x / b);
+        t * (x / b)
     } else if a == 1.0 {
-        return t + rng.sample::<T, Exp1>(Exp1) / b;
+        t + rng.sample::<T, Exp1>(Exp1) / b
     } else {
         let amin1 = a - 1.0;
         let tb = t * b;
@@ -328,7 +330,7 @@ where Exp1: Distribution<T>
             }
         }
 
-        return t * x;
+        t * x
     }
 }
 

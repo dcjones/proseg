@@ -27,20 +27,20 @@ pub fn sample_polyagamma_alternate<R: Rng>(rng: &mut R, mut h: f64, z: f64) -> f
 
         pr.set(h, true);
         out += 0.25 * pr.random_jacobi_star(rng);
-        return out;
+        out
+    } else {
+        pr.set(h, false);
+        out += 0.25 * pr.random_jacobi_star(rng);
+        out
     }
-
-    pr.set(h, false);
-    out += 0.25 * pr.random_jacobi_star(rng);
-    return out;
 }
 
 
-const PGM_LOG2: f64 = 0.6931471805599453094172321214581766; // log(2)
-const PGM_LOGPI_2: f64 = 0.4515827052894548647261952298948821;  // log(pi / 2)
-const PGM_PI2_8: f64 = 1.233700550136169827354311374984519;  // pi^2 / 8
+const PGM_LOG2: f64 = std::f64::consts::LN_2; // log(2)
+const PGM_LOGPI_2: f64 = 0.451_582_705_289_454_9;  // log(pi / 2)
+const PGM_PI2_8: f64 = 1.233_700_550_136_169_7;  // pi^2 / 8
 const SQRT2_INV: f64 = 0.7071067811865475;
-const PGM_LS2PI: f64 = 0.9189385332046727417803297364056177;  // log(sqrt(2 * pi))
+const PGM_LS2PI: f64 = 0.918_938_533_204_672_8;  // log(sqrt(2 * pi))
 
 struct Parameters {
     proposal_probability: f32,
@@ -63,7 +63,7 @@ struct Parameters {
 
 impl Parameters {
     fn new(z: f64) -> Self {
-        let params =  Self {
+        Self {
             proposal_probability: 0.0,
             log_lambda_z: 0.0,
             lambda_z: 0.0,
@@ -79,9 +79,7 @@ impl Parameters {
             z: 0.5 * z.abs(),
             x: 0.0,
             t: 0.0,
-        };
-
-        return params;
+        }
     }
 
     fn set(&mut self, h: f64, update: bool) {
@@ -124,10 +122,10 @@ impl Parameters {
         let b = self.z * st * SQRT2_INV;
         let ez = (self.h * self.z).exp() as f32;
 
-        return 0.5f32 * (
+        0.5f32 * (
             ((a - b) as f32).erfc() +
             ez * ((b + a) as f32).erfc() * ez
-        );
+        )
     }
 
     fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64
@@ -176,25 +174,26 @@ impl Parameters {
             0.0
         };
 
-        return ((self.hlog2 + b -
+        ((self.hlog2 + b -
             pgm_lgamma((n + 1) as f64) -
             PGM_LS2PI -
             1.5 * self.logx -
-            0.5 * a * a / self.x) as f32).exp() * a as f32;
+            0.5 * a * a / self.x) as f32).exp() * a as f32
     }
 
     fn bounding_kernel(&self) -> f32 {
         if self.x > self.t {
             let a = 0.22579135264472733;
-            return ((self.h * a + (self.h - 1.0) * self.logx -
+            ((self.h * a + (self.h - 1.0) * self.logx -
                 PGM_PI2_8 * self.x -
-                self.lgammah) as f32).exp();
+                self.lgammah) as f32).exp()
         } else if self.x > 0.0 {
-            return ((self.hlog2 - self.half_h2 / self.x -
+            ((self.hlog2 - self.half_h2 / self.x -
                 1.5 * self.logx -
-                PGM_LS2PI) as f32).exp() * self.h as f32;
+                PGM_LS2PI) as f32).exp() * self.h as f32
+        } else {
+            0.0
         }
-        return 0.0;
     }
 
     fn random_right_bounded_invgauss<R: Rng>(&mut self, rng: &mut R)
@@ -235,6 +234,7 @@ impl Parameters {
 
 
 
+#[allow(clippy::excessive_precision)]
 const PGM_H: [f32; 25] = [
     1.000000000, 1.125000000, 1.250000000, 1.375000000, 1.500000000,
     1.625000000, 1.750000000, 1.875000000, 2.000000000, 2.125000000,
@@ -243,6 +243,7 @@ const PGM_H: [f32; 25] = [
     3.500000000, 3.625000000, 3.750000000, 3.875000000, 4.000000000
 ];
 
+#[allow(clippy::excessive_precision)]
 const PGM_F: [f32; 25] = [
     1.273239366, 1.901515423, 2.281992126, 2.607829551, 2.910421526,
     3.200449543, 3.482766779, 3.759955106, 4.033540671, 4.304486011,
@@ -254,9 +255,9 @@ const PGM_F: [f32; 25] = [
 
 fn get_truncation_point(h: f64) -> f64 {
     if h < 1.0 {
-        return PGM_F[0] as f64;
+        PGM_F[0] as f64
     } else if h == PGM_MAXH {
-        return *PGM_F.last().unwrap() as f64;
+        *PGM_F.last().unwrap() as f64
     } else {
         // start binary search
         let mut offset = 0;
@@ -280,6 +281,6 @@ fn get_truncation_point(h: f64) -> f64 {
         let x1 = PGM_H[index + 1];
         let f1 = PGM_F[index + 1];
 
-        return (f0 + (f1 - f0) * (h as f32 - x0) / (x1 - x0)) as f64;
+        (f0 + (f1 - f0) * (h as f32 - x0) / (x1 - x0)) as f64
     }
 }

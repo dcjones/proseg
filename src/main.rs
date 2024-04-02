@@ -353,14 +353,16 @@ fn main() {
     assert!(args.ncomponents > 0);
 
     fn expect_arg<T>(arg: Option<T>, argname: &str) -> T {
-        return arg.expect(&format!("Missing required argument: --{}", argname));
+        arg.unwrap_or_else(|| panic!("Missing required argument: --{}", argname))
     }
 
-    let (transcript_names,
+    /* let (transcript_names,
          mut transcripts,
          mut nucleus_assignments,
          mut cell_assignments,
-         mut nucleus_population) =
+         mut nucleus_population) = */
+
+    let mut dataset =
         read_transcripts_csv(
             &args.transcript_csv,
             &expect_arg(args.transcript_column, "transcript-column"),
@@ -378,10 +380,16 @@ fn main() {
             args.ignore_z_coord,
         );
 
+    /* let transcripts = &mut transcript_dataset.transcripts;
+    let transcript_names = &transcript_dataset.transcript_names;
+    let cell_assignments = &mut transcript_dataset.cell_assignments;
+    let nucleus_assignments = &mut transcript_dataset.nucleus_assignments;
+    let nucleus_population = &transcript_dataset.nucleus_population; */
+
     // Clamp transcript depth
     // This is we get some reasonable depth slices when we step up to
     // 3d sampling.
-    let zs: Vec<f32> = transcripts
+    let zs: Vec<f32> = dataset.transcripts
         .iter()
         .map(|t| t.z)
         .sorted_by(|a, b| a.partial_cmp(b).unwrap())
@@ -390,7 +398,7 @@ fn main() {
     let (q0, q1) = (0.01, 0.99);
     let zmin = zs[(q0 * (zs.len() as f32)) as usize];
     let zmax = zs[(q1 * (zs.len() as f32)) as usize];
-    for t in &mut transcripts {
+    for t in &mut dataset.transcripts {
         t.z = t.z.max(zmin).min(zmax);
     }
 
@@ -402,17 +410,17 @@ fn main() {
     //     // }
     // }
 
-    let mut ncells = nucleus_population.len();
+    let mut ncells = dataset.nucleus_population.len();
     let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) = filter_cellfree_transcripts(
-        &transcripts,
-        &nucleus_assignments,
-        &cell_assignments,
+        &dataset.transcripts,
+        &dataset.nucleus_assignments,
+        &dataset.cell_assignments,
         ncells,
         args.max_transcript_nucleus_distance,
     );
-    transcripts.clone_from(&filtered_transcripts);
-    nucleus_assignments.clone_from(&filtered_nucleus_assignments);
-    cell_assignments.clone_from(&filtered_cell_assignments);
+    dataset.transcripts.clone_from(&filtered_transcripts);
+    dataset.nucleus_assignments.clone_from(&filtered_nucleus_assignments);
+    dataset.cell_assignments.clone_from(&filtered_cell_assignments);
 
     // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
@@ -421,22 +429,22 @@ fn main() {
         filter_sparse_cells(
             args.scale,
             args.voxellayers,
-            &transcripts,
-            &mut nucleus_assignments,
-            &mut cell_assignments,
-            &mut nucleus_population,
+            &dataset.transcripts,
+            &mut dataset.nucleus_assignments,
+            &mut dataset.cell_assignments,
+            &mut dataset.nucleus_population,
         );
-        ncells = nucleus_population.len();
+        ncells = dataset.nucleus_population.len();
         if ncells == prev_ncells {
             break;
         }
     }
 
-    let ngenes = transcript_names.len();
-    let ncells = nucleus_population.len();
-    let ntranscripts = transcripts.len();
+    let ngenes = dataset.transcript_names.len();
+    let ncells = dataset.nucleus_population.len();
+    let ntranscripts = dataset.transcripts.len();
 
-    let nucleus_areas = compute_cell_areas(ncells, &transcripts, &nucleus_assignments);
+    let nucleus_areas = compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
         / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
 
@@ -450,7 +458,7 @@ fn main() {
         const MAX_ZLAYERS: usize = 30;
         let mut undetectable = false;
         let mut zlayers = HashSet::new();
-        for t in &transcripts {
+        for t in &dataset.transcripts {
             if t.z.round() == t.z {
                 zlayers.insert(t.z as i32);
             } else {
@@ -474,13 +482,13 @@ fn main() {
     println!("     {} cells", ncells);
     println!("     {} genes", ngenes);
 
-    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&transcripts);
+    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&dataset.transcripts);
     let (xspan, yspan, mut zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
     if zspan == 0.0 {
         zspan = 1.0;
     }
 
-    let full_area = estimate_full_area(&transcripts, mean_nucleus_area);
+    let full_area = estimate_full_area(&dataset.transcripts, mean_nucleus_area);
     println!("Estimated full area: {}", full_area);
     let full_volume = full_area * zspan;
 
@@ -562,10 +570,10 @@ fn main() {
         full_layer_volume,
         zmin,
         layer_depth,
-        &transcripts,
-        &nucleus_assignments,
-        &nucleus_population,
-        &cell_assignments,
+        &dataset.transcripts,
+        &dataset.nucleus_assignments,
+        &dataset.nucleus_population,
+        &dataset.cell_assignments,
         args.ncomponents,
         args.nlayers,
         ncells,
@@ -585,7 +593,7 @@ fn main() {
     let mut sampler = RefCell::new(CubeBinSampler::new(
         &priors,
         &mut params,
-        &transcripts,
+        &dataset.transcripts,
         ngenes,
         args.voxellayers,
         args.nlayers,
@@ -604,7 +612,7 @@ fn main() {
             sampler.get_mut(),
             &priors,
             &mut params,
-            &transcripts,
+            &dataset.transcripts,
             args.schedule[0],
             args.local_steps_per_iter,
             None,
@@ -627,7 +635,7 @@ fn main() {
                 sampler.get_mut(),
                 &priors,
                 &mut params,
-                &transcripts,
+                &dataset.transcripts,
                 niter,
                 args.local_steps_per_iter,
                 None,
@@ -650,7 +658,7 @@ fn main() {
         sampler.get_mut(),
         &priors,
         &mut params,
-        &transcripts,
+        &dataset.transcripts,
         *args.schedule.last().unwrap() - args.recorded_samples,
         args.local_steps_per_iter,
         None,
@@ -667,7 +675,7 @@ fn main() {
         sampler.get_mut(),
         &priors,
         &mut params,
-        &transcripts,
+        &dataset.transcripts,
         args.recorded_samples,
         args.local_steps_per_iter,
         Some(&mut uncertainty),
@@ -687,37 +695,37 @@ fn main() {
     uncertainty.finish(&params);
     let (counts, cell_assignments) = uncertainty.max_posterior_transcript_counts_assignments(
         &params,
-        &transcripts,
+        &dataset.transcripts,
         args.count_pr_cutoff,
         args.foreground_pr_cutoff,
     );
 
-    let ecounts = uncertainty.expected_counts(&params, &transcripts);
+    let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
     let cell_centroids = sampler.borrow().cell_centroids();
 
     write_expected_counts(
         &args.output_expected_counts,
         &args.output_expected_counts_fmt,
-        &transcript_names,
+        &dataset.transcript_names,
         &ecounts,
     );
     write_counts(
         &args.output_counts,
         &args.output_counts_fmt,
-        &transcript_names,
+        &dataset.transcript_names,
         &counts,
     );
     write_rates(
         &args.output_rates,
         &args.output_rates_fmt,
         &params,
-        &transcript_names,
+        &dataset.transcript_names,
     );
     write_component_params(
         &args.output_component_params,
         &args.output_component_params_fmt,
         &params,
-        &transcript_names,
+        &dataset.transcript_names,
     );
     write_cell_metadata(
         &args.output_cell_metadata,
@@ -728,9 +736,9 @@ fn main() {
     write_transcript_metadata(
         &args.output_transcript_metadata,
         &args.output_transcript_metadata_fmt,
-        &transcripts,
+        &dataset.transcripts,
         &params.transcript_positions,
-        &transcript_names,
+        &dataset.transcript_names,
         &cell_assignments,
         &params.transcript_state,
     );
@@ -738,7 +746,7 @@ fn main() {
         &args.output_gene_metadata,
         &args.output_gene_metadata_fmt,
         &params,
-        &transcript_names,
+        &dataset.transcript_names,
         &ecounts,
     );
     write_cubes(
@@ -754,10 +762,11 @@ fn main() {
     }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
-        params.write_cell_hulls(&transcripts, &counts, &output_cell_hulls);
+        params.write_cell_hulls(&dataset.transcripts, &counts, &output_cell_hulls);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_hexbin_sampler(
     prog: &mut ProgressBar,
     sampler: &mut CubeBinSampler,

@@ -23,7 +23,7 @@ pub struct PolyaGamma<T: Float> {
 
 #[replace_float_literals(T::from(literal).unwrap())]
 fn sech<T: Float>(x: T) -> T {
-    return 1.0 / x.cosh();
+    1.0 / x.cosh()
 }
 
 
@@ -40,32 +40,32 @@ where
             panic!("h must be positive (and not too small)")
         }
 
-        return Self {
+        Self {
             h, z
-        };
+        }
     }
 
     #[replace_float_literals(T::from(literal).unwrap())]
     pub fn mean(&self) -> T {
         if self.z == T::zero() {
-            return self.h / 4.0;
+            self.h / 4.0
         } else {
-            return self.h * 0.5 * self.z.recip() * (0.5 * self.z).tanh();
+            self.h * 0.5 * self.z.recip() * (0.5 * self.z).tanh()
         }
     }
 
     #[replace_float_literals(T::from(literal).unwrap())]
     pub fn var(&self) -> T {
         if self.z == T::zero() {
-            return self.h / 24.0;
+            self.h / 24.0
         } else if self.z.sinh().is_infinite() {
-            return self.h * 0.25 * (
+            self.h * 0.25 * (
                 self.z.powi(3).recip() * 2.0*self.z.signum() -
-                self.z.recip().powi(2) * sech(0.5*self.z).powi(2));
+                self.z.recip().powi(2) * sech(0.5*self.z).powi(2))
         } else {
-            return self.h * 0.25 * self.z.powi(3).recip() *
+            self.h * 0.25 * self.z.powi(3).recip() *
                 (self.z.sinh() - self.z) *
-                sech(0.5*self.z).powi(2);
+                sech(0.5*self.z).powi(2)
         }
     }
 
@@ -80,11 +80,11 @@ where
         // };
 
         if self.h >= 50.0 {
-            return self.sample_normal(rng);
+            self.sample_normal(rng)
         } else if self.h >= 8.0 || (self.h > 4.0 && self.z <= 4.0) {
-            return self.sample_saddlepoint(rng);
+            self.sample_saddlepoint(rng)
         } else {
-            return self.sample_alternate(rng);
+            self.sample_alternate(rng)
         }
 
         // } else if self.h >= 8.0 || (self.h > 4.0 && self.z <= 4.0) {
@@ -97,18 +97,18 @@ where
     }
 
     fn sample_normal<R: Rng>(&self, rng: &mut R) -> T {
-        return Normal::new(
+        Normal::new(
             self.mean(),
             self.var().sqrt()
-        ).unwrap().sample(rng);
+        ).unwrap().sample(rng)
     }
 
     fn sample_saddlepoint<R: Rng>(&self, rng: &mut R) -> T {
-        return sample_polyagamma_saddlepoint(rng, self.h, self.z);
+        sample_polyagamma_saddlepoint(rng, self.h, self.z)
     }
 
     fn sample_alternate<R: Rng>(&self, rng: &mut R) -> T {
-        return T::from(sample_polyagamma_alternate(rng, self.h.as_f64(), self.z.as_f64())).unwrap();
+        T::from(sample_polyagamma_alternate(rng, self.h.as_f64(), self.z.as_f64())).unwrap()
     }
 }
 

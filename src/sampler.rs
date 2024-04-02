@@ -48,7 +48,7 @@ use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 // cells: potential cell behaviours revealed by analytical and computational
 // studies of cell surface mechanics. BMC Biophys., 8, 8.
 pub fn perimeter_bound(eta: f32, bound: f32, population: f32) -> f32 {
-    return bound * eta * (2.0 * (f32::consts::PI * population).sqrt());
+    bound * eta * (2.0 * (f32::consts::PI * population).sqrt())
 }
 
 // Compute chunk and quadrant for a single a single (x,y) point.
@@ -59,7 +59,7 @@ fn chunkquad(x: f32, y: f32, xmin: f32, ymin: f32, chunk_size: f32, nxchunks: us
     let chunk = (xchunkquad / 2) + (ychunkquad / 2) * (nxchunks as u32);
     let quad = (xchunkquad % 2) + (ychunkquad % 2) * 2;
 
-    return (chunk, quad);
+    (chunk, quad)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -246,15 +246,16 @@ pub struct ModelParams {
 impl ModelParams {
     // initialize model parameters, with random cell assignments
     // and other parameterz unninitialized.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         priors: &ModelPriors,
         full_layer_volume: f32,
         z0: f32,
         layer_depth: f32,
-        transcripts: &Vec<Transcript>,
-        init_cell_assignments: &Vec<u32>,
-        init_cell_population: &Vec<usize>,
-        prior_seg_cell_assignment: &Vec<u32>,
+        transcripts: &[Transcript],
+        init_cell_assignments: &[u32],
+        init_cell_population: &[usize],
+        prior_seg_cell_assignment: &[u32],
         ncomponents: usize,
         nlayers: usize,
         ncells: usize,
@@ -337,16 +338,16 @@ impl ModelParams {
         let transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
         let prev_transcript_state = Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
-        return ModelParams {
+        ModelParams {
             transcript_positions,
             proposed_transcript_positions,
             accept_proposed_transcript_positions,
             transcript_position_updates,
-            init_nuclear_cell_assignment: init_cell_assignments.clone(),
-            prior_seg_cell_assignment: prior_seg_cell_assignment.clone(),
-            cell_assignments: init_cell_assignments.clone(),
+            init_nuclear_cell_assignment: init_cell_assignments.to_vec(),
+            prior_seg_cell_assignment: prior_seg_cell_assignment.to_vec(),
+            cell_assignments: init_cell_assignments.to_vec(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
-            cell_population: init_cell_population.clone(),
+            cell_population: init_cell_population.to_vec(),
             cell_volume,
             cell_log_volume,
             component_volume,
@@ -381,20 +382,19 @@ impl ModelParams {
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
             λ_c: Array1::<f32>::from_elem(ngenes, 1e-4),
             t: 0,
-        };
+        }
     }
 
     pub fn ncomponents(&self) -> usize {
-        return self.π.len();
+        self.π.len()
     }
 
     fn zlayer(&self, z: f32) -> usize {
         let layer = ((z - self.z0) / self.layer_depth).max(0.0) as usize;
-        let layer = layer.min(self.nlayers() - 1);
-        return layer;
+        layer.min(self.nlayers() - 1)
     }
 
-    fn recompute_counts(&mut self, transcripts: &Vec<Transcript>) {
+    fn recompute_counts(&mut self, transcripts: &[Transcript]) {
         self.counts.fill(0);
         for (i, &j) in self.cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
@@ -407,7 +407,7 @@ impl ModelParams {
         self.check_counts(transcripts);
     }
 
-    fn check_counts(&self, transcripts: &Vec<Transcript>) {
+    fn check_counts(&self, transcripts: &[Transcript]) {
         for (i, (transcript, &assignment)) in transcripts.iter().zip(&self.cell_assignments).enumerate() {
             let layer = self.zlayer(self.transcript_positions[i].2);
             if assignment != BACKGROUND_CELL {
@@ -417,27 +417,27 @@ impl ModelParams {
     }
 
     pub fn nforeground(&self) -> usize {
-        return self.foreground_counts.iter().map(|x| *x as usize).sum();
+        self.foreground_counts.iter().map(|x| *x as usize).sum()
     }
 
     pub fn nassigned(&self) -> usize {
-        return self
+        self
             .cell_assignments
             .iter()
             .filter(|&c| *c != BACKGROUND_CELL)
-            .count();
+            .count()
     }
 
     pub fn ncells(&self) -> usize {
-        return self.cell_population.len();
+        self.cell_population.len()
     }
 
     pub fn ngenes(&self) -> usize {
-        return self.total_gene_counts.shape()[0];
+        self.total_gene_counts.shape()[0]
     }
 
     pub fn nlayers(&self) -> usize {
-        return self.total_gene_counts.shape()[1];
+        self.total_gene_counts.shape()[1]
     }
 
     pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
@@ -519,12 +519,12 @@ impl ModelParams {
                 }
             });
 
-        return ll;
+        ll
     }
 
     pub fn write_cell_hulls(
         &self,
-        transcripts: &Vec<Transcript>,
+        transcripts: &[Transcript],
         counts: &Array2<u32>,
         filename: &str,
     ) {
@@ -651,9 +651,9 @@ impl UncertaintyTracker {
     pub fn new() -> UncertaintyTracker {
         let cell_assignment_duration = HashMap::new();
 
-        return UncertaintyTracker {
+        UncertaintyTracker {
             cell_assignment_duration,
-        };
+        }
     }
 
     // record the duration of the current cell assignment. Called when the state
@@ -739,18 +739,18 @@ impl UncertaintyTracker {
             }
         }
 
-        return maxpost_cell_assignments;
+        maxpost_cell_assignments
     }
 
     pub fn max_posterior_transcript_counts_assignments(
         &self,
         params: &ModelParams,
-        transcripts: &Vec<Transcript>,
+        transcripts: &[Transcript],
         count_pr_cutoff: f32,
         _foreground_pr_cutoff: f32,
     ) -> (Array2<u32>, Vec<(u32, f32)>) {
         let mut counts = Array2::<u32>::from_elem((params.ngenes(), params.ncells()), 0_u32);
-        let maxpost_assignments = self.max_posterior_cell_assignments(&params);
+        let maxpost_assignments = self.max_posterior_cell_assignments(params);
         for (i, (j, pr)) in maxpost_assignments.iter().enumerate() {
             if *pr > count_pr_cutoff && *j != BACKGROUND_CELL {
                 let gene = transcripts[i].gene;
@@ -771,13 +771,13 @@ impl UncertaintyTracker {
             }
         }
 
-        return (counts, maxpost_assignments);
+        (counts, maxpost_assignments)
     }
 
     pub fn expected_counts(
         &self,
         params: &ModelParams,
-        transcripts: &Vec<Transcript>,
+        transcripts: &[Transcript],
     ) -> Array2<f32> {
         let mut ecounts = Array2::<f32>::zeros((params.ngenes(), params.ncells()));
 
@@ -802,7 +802,7 @@ impl UncertaintyTracker {
             ecounts[[gene as usize, j as usize]] += w_d;
         }
 
-        return ecounts;
+        ecounts
     }
 }
 
@@ -1015,7 +1015,7 @@ where
 
     // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32));
     // fn update_transcript_positions(&mut self, accept: &Vec<bool>, positions: &Vec<(f32, f32, f32)>, proposed_positions: &Vec<(f32, f32, f32)>);
-    fn update_transcript_positions(&mut self, updated: &Vec<bool>, positions: &Vec<(f32, f32, f32)>);
+    fn update_transcript_positions(&mut self, updated: &[bool], positions: &[(f32, f32, f32)]);
 
     fn cell_at_position(&self, pos: (f32, f32, f32)) -> u32;
 
@@ -1024,7 +1024,7 @@ where
         priors: &ModelPriors,
         params: &mut ModelParams,
         stats: &mut ProposalStats,
-        transcripts: &Vec<Transcript>,
+        transcripts: &[Transcript],
         hillclimb: bool,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
@@ -1042,7 +1042,7 @@ where
     fn apply_accepted_proposals(
         &mut self,
         stats: &mut ProposalStats,
-        transcripts: &Vec<Transcript>,
+        transcripts: &[Transcript],
         priors: &ModelPriors,
         params: &mut ModelParams,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
@@ -1067,14 +1067,12 @@ where
                 } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                     stats.cell_to_cell_ignore += 1;
                 }
-            } else {
-                if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+            } else if old_cell == BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
                     stats.background_to_cell_reject += 1;
-                } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
-                    stats.cell_to_background_reject += 1;
-                } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
-                    stats.cell_to_cell_reject += 1;
-                }
+            } else if old_cell != BACKGROUND_CELL && new_cell == BACKGROUND_CELL {
+                stats.cell_to_background_reject += 1;
+            } else if old_cell != BACKGROUND_CELL && new_cell != BACKGROUND_CELL {
+                stats.cell_to_cell_reject += 1;
             }
         }
 
@@ -1196,8 +1194,7 @@ where
                 Dirichlet::new(&α)
                     .unwrap()
                     .sample(&mut rng)
-                    .iter()
-                    .map(|x| *x as f32),
+                    .iter(),
             );
         }
 

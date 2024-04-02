@@ -22,6 +22,15 @@ pub struct Transcript {
     pub fov: u32,
 }
 
+pub struct TranscriptDataset {
+    pub transcript_names: Vec<String>,
+    pub transcripts: Vec<Transcript>,
+    pub nucleus_assignments: Vec<CellIndex>,
+    pub cell_assignments: Vec<CellIndex>,
+    pub nucleus_population: Vec<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_csv(
     path: &str,
     transcript_column: &str,
@@ -37,14 +46,14 @@ pub fn read_transcripts_csv(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
-) -> (Vec<String>, Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>, Vec<usize>) {
+) -> TranscriptDataset {
 
     let fmt = determine_format(path, &None);
 
     match fmt {
         OutputFormat::Csv => {
             let mut rdr = csv::Reader::from_path(path).unwrap();
-            return read_transcripts_csv_xyz(
+            read_transcripts_csv_xyz(
                 &mut rdr,
                 transcript_column,
                 id_column,
@@ -59,11 +68,11 @@ pub fn read_transcripts_csv(
                 z_column,
                 min_qv,
                 ignore_z_column,
-            );
+            )
         },
         OutputFormat::CsvGz => {
             let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
-            return read_transcripts_csv_xyz(
+            read_transcripts_csv_xyz(
                 &mut rdr,
                 transcript_column,
                 id_column,
@@ -78,10 +87,10 @@ pub fn read_transcripts_csv(
                 z_column,
                 min_qv,
                 ignore_z_column,
-            );
+            )
         },
         OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
-    };
+    }
 }
 
 fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
@@ -92,7 +101,7 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     }
 }
 
-fn postprocess_cell_assignments(nucleus_assignments: &mut Vec<CellIndex>, cell_assignments: &mut Vec<CellIndex>) -> Vec<usize> {
+fn postprocess_cell_assignments(nucleus_assignments: &mut [CellIndex], cell_assignments: &mut [CellIndex]) -> Vec<usize> {
     // reassign cell ids to exclude anything that no initial transcripts assigned
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for &cell_id in nucleus_assignments.iter() {
@@ -129,9 +138,10 @@ fn postprocess_cell_assignments(nucleus_assignments: &mut Vec<CellIndex>, cell_a
         }
     }
 
-    return nucleus_population;
+    nucleus_population
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     transcript_column: &str,
@@ -147,7 +157,7 @@ fn read_transcripts_csv_xyz<T>(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
-) -> (Vec<String>, Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>, Vec<usize>)
+) -> TranscriptDataset
 where
     T: std::io::Read,
 {
@@ -223,7 +233,7 @@ where
         let y = row[y_col].parse::<f32>().unwrap();
         let z = row[z_col].parse::<f32>().unwrap();
         let transcript_id = if let Some(id_col) = id_col {
-            row[id_col].parse::<u64>().expect(&format!("Transcript ID must be an integer: {}", &row[id_col]))
+            row[id_col].parse::<u64>().unwrap_or_else(|_| panic!("Transcript ID must be an integer: {}", &row[id_col]))
         } else {
             transcripts.len() as u64
         };
@@ -284,13 +294,13 @@ where
         &mut nucleus_assignments,
         &mut cell_assignments);
 
-    return (
+    TranscriptDataset{
         transcript_names,
         transcripts,
         nucleus_assignments,
         cell_assignments,
         nucleus_population,
-    );
+    }
 }
 
 
@@ -343,12 +353,12 @@ pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f3
         max_z = max_z.max(t.z);
     }
 
-    return (min_x, max_x, min_y, max_y, min_z, max_z);
+    (min_x, max_x, min_y, max_y, min_z, max_z)
 }
 
 // Estimate what region of the slide to model by counting the number of occupied bins.
 pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32) -> f32 {
-    let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(&transcripts);
+    let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(transcripts);
 
     const SCALE: f32 = 2.0;
     let binsize = SCALE * mean_nucleus_area.sqrt();
@@ -365,7 +375,7 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
         occupied[[xbin, ybin]] = true;
     }
 
-    return occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize;
+    occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize
 }
 
 // pub fn estimate_cell_fovs(
@@ -383,8 +393,8 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
 
 // Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
 pub fn estimate_cell_centroids(
-    transcripts: &Vec<Transcript>,
-    cell_assignments: &Vec<CellIndex>,
+    transcripts: &[Transcript],
+    cell_assignments: &[CellIndex],
     ncells: usize,
 ) -> Vec<(f32, f32)> {
     let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); ncells];
@@ -396,7 +406,7 @@ pub fn estimate_cell_centroids(
 
     let mut centroids = Vec::with_capacity(ncells);
     for ts in cell_transcripts.iter() {
-        if ts.len() == 0 {
+        if ts.is_empty() {
             centroids.push((f32::NAN, f32::NAN));
             continue;
         }
@@ -412,13 +422,13 @@ pub fn estimate_cell_centroids(
         centroids.push((x, y));
     }
 
-    return centroids;
+    centroids
 }
 
 pub fn filter_cellfree_transcripts(
-    transcripts: &Vec<Transcript>,
-    nucleus_assignments: &Vec<CellIndex>,
-    cell_assignments: &Vec<CellIndex>,
+    transcripts: &[Transcript],
+    nucleus_assignments: &[CellIndex],
+    cell_assignments: &[CellIndex],
     ncells: usize,
     max_distance: f32,
 ) -> (Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>) {
@@ -464,5 +474,5 @@ pub fn filter_cellfree_transcripts(
         .cloned()
         .collect::<Vec<_>>();
 
-    return (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments);
+    (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments)
 }
