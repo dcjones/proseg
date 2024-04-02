@@ -226,7 +226,7 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
 }
 
