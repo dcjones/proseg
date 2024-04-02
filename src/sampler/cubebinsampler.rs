@@ -49,22 +49,22 @@ fn clip_z_position(position: (f32, f32, f32), zmin: f32, zmax: f32) -> (f32, f32
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Cube {
+pub struct Voxel {
     pub i: i32,
     pub j: i32,
     pub k: i32,
 }
 
-impl Cube {
-    pub fn new(i: i32, j: i32, k: i32) -> Cube {
-        Cube { i, j, k }
+impl Voxel {
+    pub fn new(i: i32, j: i32, k: i32) -> Voxel {
+        Voxel { i, j, k }
     }
 
-    fn default() -> Cube {
-        Cube { i: 0, j: 0, k: 0 }
+    fn default() -> Voxel {
+        Voxel { i: 0, j: 0, k: 0 }
     }
 
-    pub fn moore_neighborhood(&self) -> [Cube; 26] {
+    pub fn moore_neighborhood(&self) -> [Voxel; 26] {
         [
             // top layer
             (-1, 0, -1),
@@ -96,10 +96,10 @@ impl Cube {
             (0, -1, 1),
             (1, -1, 1),
         ]
-        .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
+        .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
-    pub fn von_neumann_neighborhood(&self) -> [Cube; 6] {
+    pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         [
             (-1, 0, 0),
             (1, 0, 0),
@@ -108,15 +108,15 @@ impl Cube {
             (0, 0, -1),
             (0, 0, 1),
         ]
-        .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
+        .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
-    pub fn von_neumann_neighborhood_xy(&self) -> [Cube; 4] {
+    pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
         [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
-            .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
+            .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
-    pub fn radius2_xy_neighborhood(&self) -> [Cube; 12] {
+    pub fn radius2_xy_neighborhood(&self) -> [Voxel; 12] {
         [
             (0, -2, 0),
             (-1, -1, 0),
@@ -131,28 +131,28 @@ impl Cube {
             (1, 1, 0),
             (0, 2, 0),
         ]
-        .map(|(di, dj, dk)| Cube::new(self.i + di, self.j + dj, self.k + dk))
+        .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
-    fn double_resolution_and_layers_children(&self) -> [Cube; 8] {
+    fn double_resolution_and_layers_children(&self) -> [Voxel; 8] {
         [
-            Cube::new(2 * self.i, 2 * self.j, 2 * self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
-            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
-            Cube::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
-            Cube::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
-            Cube::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
-            Cube::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
+            Voxel::new(2 * self.i, 2 * self.j, 2 * self.k),
+            Voxel::new(2 * self.i + 1, 2 * self.j, 2 * self.k),
+            Voxel::new(2 * self.i, 2 * self.j + 1, 2 * self.k),
+            Voxel::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k),
+            Voxel::new(2 * self.i, 2 * self.j, 2 * self.k + 1),
+            Voxel::new(2 * self.i + 1, 2 * self.j, 2 * self.k + 1),
+            Voxel::new(2 * self.i, 2 * self.j + 1, 2 * self.k + 1),
+            Voxel::new(2 * self.i + 1, 2 * self.j + 1, 2 * self.k + 1),
         ]
     }
 
-    fn double_resolution_children(&self) -> [Cube; 4] {
+    fn double_resolution_children(&self) -> [Voxel; 4] {
         [
-            Cube::new(2 * self.i, 2 * self.j, self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j, self.k),
-            Cube::new(2 * self.i, 2 * self.j + 1, self.k),
-            Cube::new(2 * self.i + 1, 2 * self.j + 1, self.k),
+            Voxel::new(2 * self.i, 2 * self.j, self.k),
+            Voxel::new(2 * self.i + 1, 2 * self.j, self.k),
+            Voxel::new(2 * self.i, 2 * self.j + 1, self.k),
+            Voxel::new(2 * self.i + 1, 2 * self.j + 1, self.k),
         ]
     }
 
@@ -160,7 +160,7 @@ impl Cube {
         self.k >= 0 && self.k < nlayers as i32
     }
 
-    pub fn edge_xy(&self, other: &Cube) -> ((i32, i32), (i32, i32)) {
+    pub fn edge_xy(&self, other: &Voxel) -> ((i32, i32), (i32, i32)) {
         assert!(self.k == other.k);
         assert!((self.i - other.i).abs() + (self.j - other.j).abs() == 1);
 
@@ -174,13 +174,13 @@ impl Cube {
     }
 }
 
-impl PartialOrd for Cube {
+impl PartialOrd for Voxel {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Cube {
+impl Ord for Voxel {
     fn cmp(&self, other: &Self) -> Ordering {
         self.k
             .cmp(&other.k)
@@ -190,84 +190,84 @@ impl Ord for Cube {
 }
 
 #[derive(Debug)]
-pub struct CubeLayout {
+pub struct VoxelLayout {
     origin: (f32, f32, f32),
-    cube_size: (f32, f32, f32),
+    size: (f32, f32, f32),
 }
 
-impl CubeLayout {
-    fn double_resolution(&self) -> CubeLayout {
-        CubeLayout {
+impl VoxelLayout {
+    fn double_resolution(&self) -> VoxelLayout {
+        VoxelLayout {
             origin: (self.origin.0, self.origin.1, self.origin.2),
-            cube_size: (
-                self.cube_size.0 / 2.0,
-                self.cube_size.1 / 2.0,
-                self.cube_size.2,
+            size: (
+                self.size.0 / 2.0,
+                self.size.1 / 2.0,
+                self.size.2,
             ),
         }
     }
 
-    fn double_resolution_and_layers(&self) -> CubeLayout {
-        CubeLayout {
+    fn double_resolution_and_layers(&self) -> VoxelLayout {
+        VoxelLayout {
             origin: (self.origin.0, self.origin.1, self.origin.2),
-            cube_size: (
-                self.cube_size.0 / 2.0,
-                self.cube_size.1 / 2.0,
-                self.cube_size.2 / 2.0,
+            size: (
+                self.size.0 / 2.0,
+                self.size.1 / 2.0,
+                self.size.2 / 2.0,
             ),
         }
     }
 
-    pub fn cube_corner_to_world_pos(&self, cube: Cube) -> (f32, f32, f32) {
+    pub fn voxel_corner_to_world_pos(&self, voxel: Voxel) -> (f32, f32, f32) {
         (
-            self.origin.0 + (cube.i as f32) * self.cube_size.0,
-            self.origin.1 + (cube.j as f32) * self.cube_size.1,
-            self.origin.2 + (cube.k as f32) * self.cube_size.2,
+            self.origin.0 + (voxel.i as f32) * self.size.0,
+            self.origin.1 + (voxel.j as f32) * self.size.1,
+            self.origin.2 + (voxel.k as f32) * self.size.2,
         )
     }
 
-    fn cube_to_world_pos(&self, cube: Cube) -> (f32, f32, f32) {
+    fn voxel_to_world_pos(&self, voxel: Voxel) -> (f32, f32, f32) {
         (
-            self.origin.0 + (0.5 + cube.i as f32) * self.cube_size.0,
-            self.origin.1 + (0.5 + cube.j as f32) * self.cube_size.1,
-            self.origin.2 + (0.5 + cube.k as f32) * self.cube_size.2,
+            self.origin.0 + (0.5 + voxel.i as f32) * self.size.0,
+            self.origin.1 + (0.5 + voxel.j as f32) * self.size.1,
+            self.origin.2 + (0.5 + voxel.k as f32) * self.size.2,
         )
     }
 
-    fn world_pos_to_cube(&self, pos: (f32, f32, f32)) -> Cube {
-        Cube::new(
-            ((pos.0 - self.origin.0) / self.cube_size.0).floor() as i32,
-            ((pos.1 - self.origin.1) / self.cube_size.1).floor() as i32,
-            ((pos.2 - self.origin.2) / self.cube_size.2).floor() as i32,
+    fn world_pos_to_voxel(&self, pos: (f32, f32, f32)) -> Voxel {
+        Voxel::new(
+            ((pos.0 - self.origin.0) / self.size.0).floor() as i32,
+            ((pos.1 - self.origin.1) / self.size.1).floor() as i32,
+            ((pos.2 - self.origin.2) / self.size.2).floor() as i32,
         )
     }
 
-    fn cube_to_world_coords(&self, cube: Cube) -> (f32, f32, f32, f32, f32, f32) {
-        let x0 = self.origin.0 + cube.i as f32 * self.cube_size.0;
-        let y0 = self.origin.1 + cube.j as f32 * self.cube_size.1;
-        let z0 = self.origin.2 + cube.k as f32 * self.cube_size.2;
+    fn voxel_to_world_coords(&self, voxel: Voxel) -> (f32, f32, f32, f32, f32, f32) {
+        let x0 = self.origin.0 + voxel.i as f32 * self.size.0;
+        let y0 = self.origin.1 + voxel.j as f32 * self.size.1;
+        let z0 = self.origin.2 + voxel.k as f32 * self.size.2;
 
         (
             x0,
             y0,
             z0,
-            x0 + self.cube_size.0,
-            y0 + self.cube_size.1,
-            z0 + self.cube_size.2,
+            x0 + self.size.0,
+            y0 + self.size.1,
+            z0 + self.size.2,
         )
     }
 }
 
-type CubeEdgeSampleSet = SampleSet<(Cube, Cube)>;
+type VoxelEdgeSampleSet = SampleSet<(Voxel, Voxel)>;
 
 #[derive(Clone, Debug)]
-struct CubeBin {
-    cube: Cube,
+struct VoxelBin {
+    voxel: Voxel,
     transcripts: Arc<Mutex<Vec<usize>>>,
 }
 
 struct ChunkQuadMap {
-    layout: CubeLayout,
+    layout: VoxelLayout,
     xmin: f32,
     ymin: f32,
     chunk_size: f32,
@@ -275,11 +275,11 @@ struct ChunkQuadMap {
 }
 
 impl ChunkQuadMap {
-    fn get(&self, cube: Cube) -> (u32, u32) {
-        let cube_xyz = self.layout.cube_to_world_pos(cube);
+    fn get(&self, voxel: Voxel) -> (u32, u32) {
+        let voxel_xyz = self.layout.voxel_to_world_pos(voxel);
         chunkquad(
-            cube_xyz.0,
-            cube_xyz.1,
+            voxel_xyz.0,
+            voxel_xyz.1,
             self.xmin,
             self.ymin,
             self.chunk_size,
@@ -288,30 +288,30 @@ impl ChunkQuadMap {
     }
 }
 
-struct CubeCellMap {
-    index: HashMap<Cube, CellIndex>,
+struct VoxelCellMap {
+    index: HashMap<Voxel, CellIndex>,
 }
 
-impl CubeCellMap {
+impl VoxelCellMap {
     fn new() -> Self {
         Self {
             index: HashMap::new(),
         }
     }
 
-    fn insert(&mut self, cube: Cube, cell: CellIndex) {
-        self.index.insert(cube, cell);
+    fn insert(&mut self, voxel: Voxel, cell: CellIndex) {
+        self.index.insert(voxel, cell);
     }
 
-    fn get(&self, cube: Cube) -> CellIndex {
-        match self.index.get(&cube) {
+    fn get(&self, voxel: Voxel) -> CellIndex {
+        match self.index.get(&voxel) {
             Some(cell) => *cell,
             None => BACKGROUND_CELL,
         }
     }
 
-    fn set(&mut self, cube: Cube, cell: CellIndex) {
-        self.index.insert(cube, cell);
+    fn set(&mut self, voxel: Voxel, cell: CellIndex) {
+        self.index.insert(voxel, cell);
     }
 
     // fn len(&self) -> usize {
@@ -322,7 +322,7 @@ impl CubeCellMap {
     //     return self.index.values().filter(|&&c| c == cell).count();
     // }
 
-    fn iter(&self) -> std::collections::hash_map::Iter<Cube, CellIndex> {
+    fn iter(&self) -> std::collections::hash_map::Iter<Voxel, CellIndex> {
         return self.index.iter();
     }
 }
@@ -332,7 +332,7 @@ fn bin_transcripts(
     transcripts: &Vec<Transcript>,
     scale: f32,
     zlayers: usize,
-) -> (CubeLayout, Vec<CubeBin>) {
+) -> (VoxelLayout, Vec<VoxelBin>) {
     let (_, _, _, _, zmin, zmax) = coordinate_span(transcripts);
 
     let mut height = zmax - zmin;
@@ -342,50 +342,50 @@ fn bin_transcripts(
 
     let voxel_height = height / zlayers as f32;
 
-    let cube_size = scale;
-    let layout = CubeLayout {
+    let voxel_size = scale;
+    let layout = VoxelLayout {
         origin: (0.0, 0.0, zmin),
-        cube_size: (cube_size, cube_size, voxel_height),
+        size: (voxel_size, voxel_size, voxel_height),
     };
 
-    let mut cube_transcripts = transcripts
+    let mut voxel_transcripts = transcripts
         .par_iter()
         .enumerate()
         .map(|(i, t)| {
             let position = clip_z_position((t.x, t.y, t.z), zmin, zmax);
-            let cube = layout.world_pos_to_cube(position);
-            (cube, i)
+            let voxel = layout.world_pos_to_voxel(position);
+            (voxel, i)
         })
         .collect::<Vec<_>>();
 
-    cube_transcripts.par_sort_unstable_by_key(|(cube, _)| *cube);
+    voxel_transcripts.par_sort_unstable_by_key(|(voxel, _)| *voxel);
 
-    let mut cubebins = Vec::new();
-    cube_transcripts
+    let mut voxel_bins = Vec::new();
+    voxel_transcripts
         .iter()
-        .group_by(|(cube, _)| *cube)
+        .group_by(|(voxel, _)| *voxel)
         .into_iter()
-        .for_each(|(cube, group)| {
+        .for_each(|(voxel, group)| {
             let transcripts = group.map(|(_, transcript)| *transcript).collect::<Vec<_>>();
-            cubebins.push(CubeBin {
-                cube,
+            voxel_bins.push(VoxelBin {
+                voxel,
                 transcripts: Arc::new(Mutex::new(transcripts)),
             });
         });
 
-    (layout, cubebins)
+    (layout, voxel_bins)
 }
 
-fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &[CellIndex]) -> CubeCellMap {
-    let mut cube_assignments = HashMap::new();
-    let mut cubecells = CubeCellMap::new();
-    for cubebin in cubebins {
-        cube_assignments.clear();
+fn voxel_assignments(voxel_bins: &Vec<VoxelBin>, cell_assignments: &[CellIndex]) -> VoxelCellMap {
+    let mut voxel_assignments = HashMap::new();
+    let mut voxel_cells = VoxelCellMap::new();
+    for voxel_bin in voxel_bins {
+        voxel_assignments.clear();
 
         // vote on rect assignment
-        for &t in cubebin.transcripts.lock().unwrap().iter() {
+        for &t in voxel_bin.transcripts.lock().unwrap().iter() {
             if cell_assignments[t] != BACKGROUND_CELL {
-                cube_assignments
+                voxel_assignments
                     .entry(cell_assignments[t])
                     .and_modify(|count| *count += 1)
                     .or_insert(1);
@@ -394,53 +394,53 @@ fn cube_assignments(cubebins: &Vec<CubeBin>, cell_assignments: &[CellIndex]) -> 
 
         // Need to break ties deterministically here, otherwise
         // weird bugs emerge.
-        let winner = cube_assignments
+        let winner = voxel_assignments
             .iter()
             .max_by_key(|(cell, count)| (*count, *cell))
             .map(|(cell, _)| *cell)
             .unwrap_or(BACKGROUND_CELL);
 
         if winner != BACKGROUND_CELL {
-            cubecells.insert(cubebin.cube, winner);
+            voxel_cells.insert(voxel_bin.voxel, winner);
         }
     }
 
-    cubecells
+    voxel_cells
 }
 
-pub struct CubeBinSampler {
+pub struct VoxelSampler {
     chunkquad: ChunkQuadMap,
     transcript_genes: Vec<u32>,
-    transcript_cubes: Vec<Cube>,
-    transcript_cube_ord: Vec<usize>,
+    transcript_voxels: Vec<Voxel>,
+    transcript_voxel_ord: Vec<usize>,
     transcript_layers: Vec<u32>,
     nlayers: usize,
 
-    mismatch_edges: [Vec<Arc<Mutex<CubeEdgeSampleSet>>>; 4],
+    mismatch_edges: [Vec<Arc<Mutex<VoxelEdgeSampleSet>>>; 4],
     transcript_x_ord: Vec<usize>,
 
     // assignment of rectbins to cells
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
-    cubecells: CubeCellMap,
+    voxel_cells: VoxelCellMap,
 
     // need to track the per z-layer cell population and perimeter in order
     // to implement perimeter constraints.
-    voxellayers: usize,
+    voxel_layers: usize,
     cell_population: Array2<f32>, // [voxellayers, ncells]
     cell_perimeter: Array2<f32>,  // [voxellayers, ncells]
 
-    proposals: Vec<CubeBinProposal>,
+    proposals: Vec<VoxelProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
 
     zmin: f32,
     zmax: f32,
 
-    cubevolume: f32,
+    voxel_volume: f32,
     quad: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
-impl CubeBinSampler {
+impl VoxelSampler {
     pub fn new(
         priors: &ModelPriors,
         params: &mut ModelParams,
@@ -458,7 +458,7 @@ impl CubeBinSampler {
         let nychunks = ((ymax - ymin) / chunk_size).ceil() as usize;
         let nchunks = nxchunks * nychunks;
 
-        let (layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
+        let (layout, voxel_bins) = bin_transcripts(transcripts, scale, voxellayers);
 
         let transcript_genes = transcripts.iter().map(|t| t.gene).collect::<Vec<_>>();
         let transcript_layers = transcripts
@@ -466,23 +466,23 @@ impl CubeBinSampler {
             .map(|t| ((t.z - z0) / layer_depth) as u32)
             .collect::<Vec<_>>();
 
-        assert!(layout.cube_size.0 == layout.cube_size.1);
-        let cubevolume = layout.cube_size.0 * layout.cube_size.1 * layout.cube_size.2;
+        assert!(layout.size.0 == layout.size.1);
+        let voxel_volume = layout.size.0 * layout.size.1 * layout.size.2;
 
         // initialize mismatch_edges
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chunks in mismatch_edges.iter_mut() {
             for _ in 0..nchunks {
-                chunks.push(Arc::new(Mutex::new(CubeEdgeSampleSet::new())));
+                chunks.push(Arc::new(Mutex::new(VoxelEdgeSampleSet::new())));
             }
         }
 
-        // initial cube assignments
-        let cubecells = cube_assignments(&cubebins, &params.cell_assignments);
+        // initial voxel assignments
+        let voxel_cells = voxel_assignments(&voxel_bins, &params.cell_assignments);
 
         // TODO: debugging
         let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
-        for (_, cell_id) in cubecells.iter() {
+        for (_, cell_id) in voxel_cells.iter() {
             if *cell_id != BACKGROUND_CELL {
                 let next_id = used_cell_ids.len() as CellIndex;
                 used_cell_ids.entry(*cell_id).or_insert(next_id);
@@ -490,15 +490,15 @@ impl CubeBinSampler {
         }
 
         // build index
-        let mut cubeindex = HashMap::new();
-        for cubebin in cubebins {
-            cubeindex.insert(cubebin.cube, cubebin);
+        let mut voxel_index = HashMap::new();
+        for voxel_bin in voxel_bins {
+            voxel_index.insert(voxel_bin.voxel, voxel_bin);
         }
 
         // homogenize the rect: assign every transcript in the rect to the winner
-        for cubebin in cubeindex.values() {
-            let cell = cubecells.get(cubebin.cube);
-            for &t in cubebin.transcripts.lock().unwrap().iter() {
+        for voxel_bin in voxel_index.values() {
+            let cell = voxel_cells.get(voxel_bin.voxel);
+            for &t in voxel_bin.transcripts.lock().unwrap().iter() {
                 if params.cell_assignments[t] != BACKGROUND_CELL {
                     params.cell_population[params.cell_assignments[t] as usize] -= 1;
                 }
@@ -523,13 +523,13 @@ impl CubeBinSampler {
         let cell_population = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
         let cell_perimeter = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
 
-        let proposals = vec![CubeBinProposal::new(ngenes, nlayers); nchunks];
+        let proposals = vec![VoxelProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
         // let transcript_x_pos = (0..transcripts.len()).collect::<Vec<_>>();
-        let transcript_cubes = vec![Cube::default(); transcripts.len()];
-        let transcript_cube_ord = (0..transcripts.len()).collect::<Vec<_>>();
+        let transcript_voxels = vec![Voxel::default(); transcripts.len()];
+        let transcript_voxel_ord = (0..transcripts.len()).collect::<Vec<_>>();
 
-        let mut sampler = CubeBinSampler {
+        let mut sampler = VoxelSampler {
             chunkquad: ChunkQuadMap {
                 layout,
                 xmin,
@@ -538,21 +538,21 @@ impl CubeBinSampler {
                 nxchunks,
             },
             transcript_genes,
-            transcript_cubes,
-            transcript_cube_ord,
+            transcript_voxels,
+            transcript_voxel_ord,
             transcript_layers,
             nlayers,
             mismatch_edges,
             transcript_x_ord,
-            cubecells,
-            voxellayers,
+            voxel_cells,
+            voxel_layers: voxellayers,
             cell_population,
             cell_perimeter,
             proposals,
             connectivity_checker,
             zmin,
             zmax,
-            cubevolume,
+            voxel_volume,
             quad: 0,
         };
 
@@ -574,13 +574,13 @@ impl CubeBinSampler {
 
     // Allocate a new RectBinSampler with the same state as this one, but
     // grid resolution doubled (i.e. rect size halved).
-    pub fn double_resolution(&self, params: &ModelParams, double_z_layers: bool) -> CubeBinSampler {
+    pub fn double_resolution(&self, params: &ModelParams, double_z_layers: bool) -> VoxelSampler {
         let nchunks = self.mismatch_edges[0].len();
         let ngenes = self.proposals[0].genepop.shape()[0];
-        let cubevolume = if double_z_layers {
-            self.cubevolume / 8.0
+        let voxel_volume = if double_z_layers {
+            self.voxel_volume / 8.0
         } else {
-            self.cubevolume / 4.0
+            self.voxel_volume / 4.0
         };
 
         let layout = if double_z_layers {
@@ -589,19 +589,19 @@ impl CubeBinSampler {
             self.chunkquad.layout.double_resolution()
         };
 
-        let proposals = vec![CubeBinProposal::new(ngenes, self.nlayers); nchunks];
+        let proposals = vec![VoxelProposal::new(ngenes, self.nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
 
-        let mut cubecells = CubeCellMap::new();
+        let mut voxel_cells = VoxelCellMap::new();
 
         // 1.3s
         // let t0 = Instant::now();
         // Build a set of every cube that is either populated with transcripts
         // or assigned to a cell.
-        let mut cubeset = HashSet::<Cube>::new();
-        for (&cube, &cell) in self.cubecells.iter() {
+        let mut voxel_set = HashSet::<Voxel>::new();
+        for (&voxel, &cell) in self.voxel_cells.iter() {
             if cell != BACKGROUND_CELL {
-                cubeset.insert(cube);
+                voxel_set.insert(voxel);
             }
         }
         // println!("cubeset: {:?}", t0.elapsed());
@@ -609,22 +609,22 @@ impl CubeBinSampler {
         // 15.3s
         // let t0 = Instant::now();
         if double_z_layers {
-            for cube in cubeset {
-                let cell = self.cubecells.get(cube);
+            for voxel in voxel_set {
+                let cell = self.voxel_cells.get(voxel);
                 if cell != BACKGROUND_CELL {
-                    let subcubes = cube.double_resolution_and_layers_children();
-                    for subcube in &subcubes {
-                        cubecells.insert(*subcube, cell);
+                    let subvoxels = voxel.double_resolution_and_layers_children();
+                    for subvoxel in &subvoxels {
+                        voxel_cells.insert(*subvoxel, cell);
                     }
                 }
             }
         } else {
-            for cube in cubeset {
-                let cell = self.cubecells.get(cube);
+            for voxel in voxel_set {
+                let cell = self.voxel_cells.get(voxel);
                 if cell != BACKGROUND_CELL {
-                    let subcubes = cube.double_resolution_children();
-                    for subcube in &subcubes {
-                        cubecells.insert(*subcube, cell);
+                    let subvoxels = voxel.double_resolution_children();
+                    for subvoxel in &subvoxels {
+                        voxel_cells.insert(*subvoxel, cell);
                     }
                 }
             }
@@ -635,14 +635,14 @@ impl CubeBinSampler {
         let mut mismatch_edges = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chunks in mismatch_edges.iter_mut() {
             for _ in 0..nchunks {
-                chunks.push(Arc::new(Mutex::new(CubeEdgeSampleSet::new())));
+                chunks.push(Arc::new(Mutex::new(VoxelEdgeSampleSet::new())));
             }
         }
 
         let voxellayers = if double_z_layers {
-            self.voxellayers * 2
+            self.voxel_layers * 2
         } else {
-            self.voxellayers
+            self.voxel_layers
         };
 
         let cell_population =
@@ -650,7 +650,7 @@ impl CubeBinSampler {
         let cell_perimeter =
             Array2::from_elem((voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
 
-        let mut sampler = CubeBinSampler {
+        let mut sampler = VoxelSampler {
             chunkquad: ChunkQuadMap {
                 layout,
                 xmin: self.chunkquad.xmin,
@@ -659,21 +659,21 @@ impl CubeBinSampler {
                 nxchunks: self.chunkquad.nxchunks,
             },
             transcript_genes: self.transcript_genes.clone(),
-            transcript_cubes: self.transcript_cubes.clone(),
-            transcript_cube_ord: self.transcript_cube_ord.clone(),
+            transcript_voxels: self.transcript_voxels.clone(),
+            transcript_voxel_ord: self.transcript_voxel_ord.clone(),
             transcript_layers: self.transcript_layers.clone(),
             nlayers: self.nlayers,
             mismatch_edges,
             transcript_x_ord: self.transcript_x_ord.clone(),
-            cubecells,
-            voxellayers,
+            voxel_cells,
+            voxel_layers: voxellayers,
             cell_population,
             cell_perimeter,
             proposals,
             connectivity_checker,
             zmin: self.zmin,
             zmax: self.zmax,
-            cubevolume,
+            voxel_volume,
             quad: 0,
         };
 
@@ -703,11 +703,11 @@ impl CubeBinSampler {
     fn recompute_cell_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // recompute cell areas as the sum of rect areas
         params.cell_volume.fill(0.0_f32);
-        for (_, &cell) in self.cubecells.iter() {
+        for (_, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
-            params.cell_volume[cell as usize] += self.cubevolume;
+            params.cell_volume[cell as usize] += self.voxel_volume;
         }
 
         for cell_volume in params.cell_volume.iter_mut() {
@@ -718,44 +718,44 @@ impl CubeBinSampler {
 
     fn recompute_cell_population(&mut self) {
         self.cell_population.fill(0.0_f32);
-        for (&cube, &cell) in self.cubecells.iter() {
+        for (&voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
-            self.cell_population[[cube.k as usize, cell as usize]] += 1.0_f32;
+            self.cell_population[[voxel.k as usize, cell as usize]] += 1.0_f32;
         }
     }
 
     fn recompute_cell_perimeter(&mut self) {
         // TODO: This function is super expensive. It's hard to update in parallel
-        // though, each cell consists of many cubes. So we'd either need mutexes
+        // though, each cell consists of many voxels. So we'd either need mutexes
         // or more likelily, organize things by cell first.
 
         self.cell_perimeter.fill(0.0_f32);
-        for (&cube, &cell) in self.cubecells.iter() {
+        for (&voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
 
-            for neighbor in cube.radius2_xy_neighborhood() {
-                let neighbor_cell = self.cubecells.get(neighbor);
+            for neighbor in voxel.radius2_xy_neighborhood() {
+                let neighbor_cell = self.voxel_cells.get(neighbor);
                 if neighbor_cell != cell {
-                    self.cell_perimeter[[cube.k as usize, cell as usize]] += 1.0_f32;
+                    self.cell_perimeter[[voxel.k as usize, cell as usize]] += 1.0_f32;
                 }
             }
         }
     }
 
     fn populate_mismatches(&mut self) {
-        for (&cube, &cell) in self.cubecells.iter() {
-            let (chunk, quad) = self.chunkquad.get(cube);
-            for neighbor in cube.von_neumann_neighborhood() {
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            let (chunk, quad) = self.chunkquad.get(voxel);
+            for neighbor in voxel.von_neumann_neighborhood() {
                 // don't consider neighbors that are out of bounds on the z-axis
-                if neighbor.k < 0 || neighbor.k >= self.voxellayers as i32 {
+                if neighbor.k < 0 || neighbor.k >= self.voxel_layers as i32 {
                     continue;
                 }
 
-                let neighbor_cell = self.cubecells.get(neighbor);
+                let neighbor_cell = self.voxel_cells.get(neighbor);
                 if cell != neighbor_cell {
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
 
@@ -764,7 +764,7 @@ impl CubeBinSampler {
                         mismatch_edges[chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((cube, neighbor));
+                            .insert((voxel, neighbor));
                     }
 
                     let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
@@ -772,27 +772,27 @@ impl CubeBinSampler {
                         mismatch_edges[neighbor_chunk as usize]
                             .lock()
                             .unwrap()
-                            .insert((neighbor, cube));
+                            .insert((neighbor, voxel));
                     }
                 }
             }
         }
     }
 
-    pub fn cubes(&self) -> impl Iterator<Item = (CellIndex, (f32, f32, f32, f32, f32, f32))> + '_ {
+    pub fn voxels(&self) -> impl Iterator<Item = (CellIndex, (f32, f32, f32, f32, f32, f32))> + '_ {
         return self
-            .cubecells
+            .voxel_cells
             .iter()
             .filter(|(_, &cell)| cell != BACKGROUND_CELL)
-            .map(|(cube, cell)| (*cell, self.chunkquad.layout.cube_to_world_coords(*cube)));
+            .map(|(voxel, cell)| (*cell, self.chunkquad.layout.voxel_to_world_coords(*voxel)));
     }
 
     pub fn cell_centroids(&self) -> Vec<(f32, f32, f32)> {
         let mut centroids = vec![(0.0, 0.0, 0.0); self.ncells()];
         let mut counts = vec![0; self.ncells()];
-        for (&cube, &cell) in self.cubecells.iter() {
+        for (&voxel, &cell) in self.voxel_cells.iter() {
             if cell != BACKGROUND_CELL {
-                let (x0, y0, z0, x1, y1, z1) = self.chunkquad.layout.cube_to_world_coords(cube);
+                let (x0, y0, z0, x1, y1, z1) = self.chunkquad.layout.voxel_to_world_coords(voxel);
                 centroids[cell as usize].0 += (x0 + x1) / 2.0;
                 centroids[cell as usize].1 += (y0 + y1) / 2.0;
                 centroids[cell as usize].2 += (z0 + z1) / 2.0;
@@ -814,12 +814,12 @@ impl CubeBinSampler {
     pub fn cell_polygons(&self) -> (Vec<CellPolygonLayers>, Vec<CellPolygon>) {
         // Build sets of voxels for each cell
         let mut cell_voxels = vec![HashSet::new(); self.ncells()];
-        for (cube, &cell) in self.cubecells.iter() {
+        for (voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
 
-            cell_voxels[cell as usize].insert(*cube);
+            cell_voxels[cell as usize].insert(*voxel);
         }
 
         let polygon_builder = ThreadLocal::new();
@@ -956,7 +956,7 @@ impl CubeBinSampler {
     // }
 }
 
-impl Sampler<CubeBinProposal> for CubeBinSampler {
+impl Sampler<VoxelProposal> for VoxelSampler {
     fn repopulate_proposals(&mut self, priors: &ModelPriors, params: &ModelParams) {
         const UNASSIGNED_PROPOSAL_PROB: f64 = 0.01;
 
@@ -979,8 +979,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let mut rng = thread_rng();
                 let (i, j) = mismatch_edges.choose(&mut rng).unwrap();
 
-                let cell_from = self.cubecells.get(*i);
-                let mut cell_to = self.cubecells.get(*j);
+                let cell_from = self.voxel_cells.get(*i);
+                let mut cell_to = self.voxel_cells.get(*j);
                 assert!(cell_from != cell_to);
 
                 let from_unassigned = cell_from == BACKGROUND_CELL;
@@ -990,7 +990,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 // of the data. Not strictly necessary to restrict it this way,
                 // but lessens the tendency to produce weird shaped cells.
                 if from_unassigned && !to_unassigned {
-                    let (_, _, z0, _, _, z1) = self.chunkquad.layout.cube_to_world_coords(*i);
+                    let (_, _, z0, _, _, z1) = self.chunkquad.layout.voxel_to_world_coords(*i);
                     if z1 < self.zmin || z0 > self.zmax {
                         proposal.ignore = true;
                         return;
@@ -1010,15 +1010,15 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                         .get_or(|| RefCell::new(ConnectivityChecker::new()))
                         .borrow_mut();
 
-                    let art_from = connectivity_checker.cube_isarticulation(
+                    let art_from = connectivity_checker.voxel_isarticulation(
                         *i,
-                        |cube| self.cubecells.get(cube),
+                        |voxel| self.voxel_cells.get(voxel),
                         cell_from,
                     );
 
-                    let art_to = connectivity_checker.cube_isarticulation(
+                    let art_to = connectivity_checker.voxel_isarticulation(
                         *i,
-                        |cube| self.cubecells.get(cube),
+                        |voxel| self.voxel_cells.get(voxel),
                         cell_to,
                     );
 
@@ -1033,7 +1033,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 //
                 // We could allow this if we introduce a spontaneous nucleation move.
                 if !from_unassigned
-                    && params.cell_volume[cell_from as usize] - self.cubevolume
+                    && params.cell_volume[cell_from as usize] - self.voxel_volume
                         < priors.min_cell_volume
                 {
                     proposal.ignore = true;
@@ -1046,14 +1046,14 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 let num_new_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_to)
+                    .filter(|&&j| j.inbounds(self.voxel_layers) && self.voxel_cells.get(j) == cell_to)
                     .count();
 
                 let num_prev_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
                     .filter(|&&j| {
-                        j.inbounds(self.voxellayers) && self.cubecells.get(j) == cell_from
+                        j.inbounds(self.voxel_layers) && self.voxel_cells.get(j) == cell_from
                     })
                     .count();
 
@@ -1065,7 +1065,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let num_mismatching_neighbors = i
                         .von_neumann_neighborhood()
                         .iter()
-                        .filter(|&&j| self.cubecells.get(j) != cell_from)
+                        .filter(|&&j| self.voxel_cells.get(j) != cell_from)
                         .count();
                     proposal_prob += UNASSIGNED_PROPOSAL_PROB
                         * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64);
@@ -1083,7 +1083,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                     let new_num_mismatching_neighbors = i
                         .von_neumann_neighborhood()
                         .iter()
-                        .filter(|&&j| self.cubecells.get(j) != cell_to)
+                        .filter(|&&j| self.voxel_cells.get(j) != cell_to)
                         .count();
                     reverse_proposal_prob += UNASSIGNED_PROPOSAL_PROB
                         * (new_num_mismatching_neighbors as f64 / new_num_mismatching_edges as f64);
@@ -1101,7 +1101,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 //     );
                 // }
 
-                proposal.cube = *i;
+                proposal.voxel = *i;
                 // if let Some(transcripts) = transcripts {
                 //     proposal.transcripts.clone_from(&transcripts.lock().unwrap());
                 // } else {
@@ -1112,14 +1112,14 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                 proposal.log_weight = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
                 proposal.ignore = false;
                 proposal.accept = false;
-                proposal.old_cell_volume_delta = -self.cubevolume;
-                proposal.new_cell_volume_delta = self.cubevolume;
+                proposal.old_cell_volume_delta = -self.voxel_volume;
+                proposal.new_cell_volume_delta = self.voxel_volume;
 
                 proposal.old_cell_perimeter_delta = 0.0;
                 proposal.new_cell_perimeter_delta = 0.0;
 
                 for neighbor in i.radius2_xy_neighborhood() {
-                    let neighbor_cell = self.cubecells.get(neighbor);
+                    let neighbor_cell = self.voxel_cells.get(neighbor);
 
                     // cube i's new mismatches
                     if neighbor_cell != cell_to {
@@ -1190,13 +1190,13 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 // find transcripts within the voxel
                 let transcript_range_start = self
-                    .transcript_cube_ord
-                    .partition_point(|&t| self.transcript_cubes[t] < *i);
+                    .transcript_voxel_ord
+                    .partition_point(|&t| self.transcript_voxels[t] < *i);
 
                 let mut transcript_range_end = transcript_range_start;
                 proposal.genepop.fill(0);
-                for &t in self.transcript_cube_ord[transcript_range_start..].iter() {
-                    if self.transcript_cubes[t] != *i {
+                for &t in self.transcript_voxel_ord[transcript_range_start..].iter() {
+                    if self.transcript_voxels[t] != *i {
                         break;
                     }
                     transcript_range_end += 1;
@@ -1206,7 +1206,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
                 proposal.transcripts.clear();
                 proposal.transcripts.extend_from_slice(
-                    &self.transcript_cube_ord[transcript_range_start..transcript_range_end],
+                    &self.transcript_voxel_ord[transcript_range_start..transcript_range_end],
                 );
             });
 
@@ -1214,14 +1214,14 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
         self.quad = (self.quad + 1) % 4;
     }
 
-    fn proposals<'a, 'b>(&'a self) -> &'b [CubeBinProposal]
+    fn proposals<'a, 'b>(&'a self) -> &'b [VoxelProposal]
     where
         'a: 'b,
     {
         &self.proposals
     }
 
-    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [CubeBinProposal]
+    fn proposals_mut<'a, 'b>(&'a mut self) -> &'b mut [VoxelProposal]
     where
         'a: 'b,
     {
@@ -1230,20 +1230,20 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
     fn update_sampler_state(&mut self, _: &ModelParams) {
         for proposal in self.proposals.iter().filter(|p| !p.ignore && p.accept) {
-            self.cubecells.set(proposal.cube, proposal.new_cell);
+            self.voxel_cells.set(proposal.voxel, proposal.new_cell);
 
             // update cell population and perimeter
             if proposal.old_cell != BACKGROUND_CELL {
-                self.cell_population[[proposal.cube.k as usize, proposal.old_cell as usize]] -=
+                self.cell_population[[proposal.voxel.k as usize, proposal.old_cell as usize]] -=
                     1.0_f32;
-                self.cell_perimeter[[proposal.cube.k as usize, proposal.old_cell as usize]] +=
+                self.cell_perimeter[[proposal.voxel.k as usize, proposal.old_cell as usize]] +=
                     proposal.old_cell_perimeter_delta;
             }
 
             if proposal.new_cell != BACKGROUND_CELL {
-                self.cell_population[[proposal.cube.k as usize, proposal.new_cell as usize]] +=
+                self.cell_population[[proposal.voxel.k as usize, proposal.new_cell as usize]] +=
                     1.0_f32;
-                self.cell_perimeter[[proposal.cube.k as usize, proposal.new_cell as usize]] +=
+                self.cell_perimeter[[proposal.voxel.k as usize, proposal.new_cell as usize]] +=
                     proposal.new_cell_perimeter_delta;
             }
         }
@@ -1252,23 +1252,23 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
             .par_iter()
             .filter(|p| !p.ignore && p.accept)
             .for_each(|proposal| {
-                let (chunk, quad) = self.chunkquad.get(proposal.cube);
+                let (chunk, quad) = self.chunkquad.get(proposal.voxel);
 
                 // update mismatch edges
-                for neighbor in proposal.cube.von_neumann_neighborhood() {
-                    if neighbor.k < 0 || neighbor.k >= self.voxellayers as i32 {
+                for neighbor in proposal.voxel.von_neumann_neighborhood() {
+                    if neighbor.k < 0 || neighbor.k >= self.voxel_layers as i32 {
                         continue;
                     }
 
                     let (neighbor_chunk, neighbor_quad) = self.chunkquad.get(neighbor);
-                    let neighbor_cell = self.cubecells.get(neighbor);
+                    let neighbor_cell = self.voxel_cells.get(neighbor);
                     if proposal.new_cell == neighbor_cell {
                         let mismatch_edges = &self.mismatch_edges[quad as usize];
                         if (chunk as usize) < mismatch_edges.len() {
                             mismatch_edges[chunk as usize]
                                 .lock()
                                 .unwrap()
-                                .remove((proposal.cube, neighbor));
+                                .remove((proposal.voxel, neighbor));
                         }
 
                         let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
@@ -1276,7 +1276,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                             mismatch_edges[neighbor_chunk as usize]
                                 .lock()
                                 .unwrap()
-                                .remove((neighbor, proposal.cube));
+                                .remove((neighbor, proposal.voxel));
                         }
                     } else {
                         let mismatch_edges = &self.mismatch_edges[quad as usize];
@@ -1284,7 +1284,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                             mismatch_edges[chunk as usize]
                                 .lock()
                                 .unwrap()
-                                .insert((proposal.cube, neighbor));
+                                .insert((proposal.voxel, neighbor));
                         }
 
                         let mismatch_edges = &self.mismatch_edges[neighbor_quad as usize];
@@ -1292,7 +1292,7 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
                             mismatch_edges[neighbor_chunk as usize]
                                 .lock()
                                 .unwrap()
-                                .insert((neighbor, proposal.cube));
+                                .insert((neighbor, proposal.voxel));
                         }
                     }
                 }
@@ -1301,24 +1301,24 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 
     fn cell_at_position(&self, position: (f32, f32, f32)) -> u32 {
         let position = clip_z_position(position, self.zmin, self.zmax);
-        let cubindex = self.chunkquad.layout.world_pos_to_cube(position);
-        self.cubecells.get(cubindex)
+        let cubindex = self.chunkquad.layout.world_pos_to_voxel(position);
+        self.voxel_cells.get(cubindex)
     }
 
     fn update_transcript_positions(&mut self, updated: &[bool], positions: &[(f32, f32, f32)]) {
-        self.transcript_cubes
+        self.transcript_voxels
             .par_iter_mut()
             .zip(positions)
             .zip(updated)
-            .for_each(|((cube, position), &updated)| {
+            .for_each(|((voxel, position), &updated)| {
                 if updated {
                     let position = clip_z_position(*position, self.zmin, self.zmax);
-                    *cube = self.chunkquad.layout.world_pos_to_cube(position);
+                    *voxel = self.chunkquad.layout.world_pos_to_voxel(position);
                 }
             });
 
-        self.transcript_cube_ord
-            .par_sort_unstable_by_key(|&t| self.transcript_cubes[t]);
+        self.transcript_voxel_ord
+            .par_sort_unstable_by_key(|&t| self.transcript_voxels[t]);
     }
 
     // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {
@@ -1426,8 +1426,8 @@ impl Sampler<CubeBinProposal> for CubeBinSampler {
 }
 
 #[derive(Clone, Debug)]
-pub struct CubeBinProposal {
-    cube: Cube,
+pub struct VoxelProposal {
+    voxel: Voxel,
     transcripts: Vec<usize>,
 
     // [ngenes, nlayers] gene count for this rect
@@ -1450,10 +1450,10 @@ pub struct CubeBinProposal {
     new_cell_perimeter_delta: f32,
 }
 
-impl CubeBinProposal {
-    fn new(ngenes: usize, nlayers: usize) -> CubeBinProposal {
-        CubeBinProposal {
-            cube: Cube::new(0, 0, 0),
+impl VoxelProposal {
+    fn new(ngenes: usize, nlayers: usize) -> VoxelProposal {
+        VoxelProposal {
+            voxel: Voxel::new(0, 0, 0),
             transcripts: Vec::new(),
             genepop: Array2::from_elem((ngenes, nlayers), 0),
             old_cell: 0,
@@ -1469,7 +1469,7 @@ impl CubeBinProposal {
     }
 }
 
-impl Proposal for CubeBinProposal {
+impl Proposal for VoxelProposal {
     fn accept(&mut self) {
         self.accept = true;
     }
@@ -1529,16 +1529,16 @@ pub fn filter_sparse_cells(
     nucleus_population: &mut Vec<usize>,
 ) {
     // let t0 = Instant::now();
-    let (_layout, cubebins) = bin_transcripts(transcripts, scale, voxellayers);
+    let (_layout, voxel_bins) = bin_transcripts(transcripts, scale, voxellayers);
     // println!("bin_transcripts: {:?}", t0.elapsed());
 
     // let t0 = Instant::now();
-    let cubecells = cube_assignments(&cubebins, nucleus_assignments);
+    let voxel_cells = voxel_assignments(&voxel_bins, nucleus_assignments);
     // println!("cube_assignments: {:?}", t0.elapsed());
 
     // let t0 = Instant::now();
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
-    for (_, cell_id) in cubecells.iter() {
+    for (_, cell_id) in voxel_cells.iter() {
         if *cell_id != BACKGROUND_CELL {
             let next_id = used_cell_ids.len() as CellIndex;
             used_cell_ids.entry(*cell_id).or_insert(next_id);

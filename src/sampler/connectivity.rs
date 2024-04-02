@@ -1,4 +1,4 @@
-use super::cubebinsampler::Cube;
+use super::cubebinsampler::Voxel;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::Undirected;
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,7 @@ impl Default for DfsInfo {
 
 pub struct ConnectivityChecker {
     subgraph: NeighborhoodGraph,
-    cube_to_subgraph: HashMap<Cube, NodeIndex<usize>>,
+    voxel_to_subgraph: HashMap<Voxel, NodeIndex<usize>>,
     visited: HashSet<NodeIndex<usize>>,
 }
 
@@ -36,16 +36,16 @@ impl ConnectivityChecker {
 
         Self {
             subgraph,
-            cube_to_subgraph: HashMap::new(),
+            voxel_to_subgraph: HashMap::new(),
             visited: HashSet::new(),
         }
     }
 
-    pub fn cube_isarticulation<F>(&mut self, root: Cube, cubecell: F, cell: u32) -> bool
+    pub fn voxel_isarticulation<F>(&mut self, root: Voxel, voxel_cell: F, cell: u32) -> bool
     where
-        F: Fn(Cube) -> u32,
+        F: Fn(Voxel) -> u32,
     {
-        self.construct_cube_subgraph(root, cubecell, cell);
+        self.construct_voxel_subgraph(root, voxel_cell, cell);
 
         // dbg!(self.subgraph.node_count(), self.subgraph.edge_count(), cell);
 
@@ -53,25 +53,25 @@ impl ConnectivityChecker {
         is_articulation_dfs(
             &self.subgraph,
             &mut self.visited,
-            self.cube_to_subgraph[&root],
+            self.voxel_to_subgraph[&root],
         )
     }
 
-    fn construct_cube_subgraph<F>(&mut self, root: Cube, cubecell: F, cell: u32)
+    fn construct_voxel_subgraph<F>(&mut self, root: Voxel, voxel_cell: F, cell: u32)
     where
-        F: Fn(Cube) -> u32,
+        F: Fn(Voxel) -> u32,
     {
         self.subgraph.clear();
-        self.cube_to_subgraph.clear();
+        self.voxel_to_subgraph.clear();
 
         let i_idx = self.subgraph.add_node(());
-        self.cube_to_subgraph.insert(root, i_idx);
+        self.voxel_to_subgraph.insert(root, i_idx);
 
         for neighbor in root.moore_neighborhood() {
             // for neighbor in root.von_neumann_neighborhood() {
-            let neighbor_cell = cubecell(neighbor);
+            let neighbor_cell = voxel_cell(neighbor);
             if cell == neighbor_cell {
-                self.cube_to_subgraph
+                self.voxel_to_subgraph
                     .entry(neighbor)
                     .or_insert_with(|| self.subgraph.add_node(()));
             }
@@ -80,23 +80,23 @@ impl ConnectivityChecker {
         // add edges from i to neighbors, and neighbors' neighbors
         for neighbor in root.moore_neighborhood() {
             // for neighbor in root.von_neumann_neighborhood() {
-            if !self.cube_to_subgraph.contains_key(&neighbor) {
+            if !self.voxel_to_subgraph.contains_key(&neighbor) {
                 continue;
             }
 
             self.subgraph.add_edge(
-                self.cube_to_subgraph[&root],
-                self.cube_to_subgraph[&neighbor],
+                self.voxel_to_subgraph[&root],
+                self.voxel_to_subgraph[&neighbor],
                 (),
             );
 
             for k in neighbor.moore_neighborhood() {
                 // for k in neighbor.von_neumann_neighborhood() {
-                let k_cell = cubecell(k);
-                if self.cube_to_subgraph.contains_key(&k) && k_cell == cell {
+                let k_cell = voxel_cell(k);
+                if self.voxel_to_subgraph.contains_key(&k) && k_cell == cell {
                     self.subgraph.add_edge(
-                        self.cube_to_subgraph[&neighbor],
-                        self.cube_to_subgraph[&k],
+                        self.voxel_to_subgraph[&neighbor],
+                        self.voxel_to_subgraph[&k],
                         (),
                     );
                 }

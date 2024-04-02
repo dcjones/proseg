@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
-use super::sampler::cubebinsampler::CubeBinSampler;
+use super::sampler::cubebinsampler::VoxelSampler;
 use super::sampler::transcripts::Transcript;
 use super::sampler::{ModelParams, TranscriptState};
 
@@ -490,23 +490,23 @@ pub fn write_gene_metadata(
     }
 }
 
-pub fn write_cubes(
-    output_cubes: &Option<String>,
-    output_cubes_fmt: &Option<String>,
-    sampler: &CubeBinSampler,
+pub fn write_voxels(
+    output_voxels: &Option<String>,
+    output_voxels_fmt: &Option<String>,
+    sampler: &VoxelSampler,
 ) {
-    if let Some(output_cubes) = output_cubes {
-        let ncubes = sampler.cubes().count();
+    if let Some(output_voxels) = output_voxels {
+        let nvoxels = sampler.voxels().count();
 
-        let mut cells = Vec::with_capacity(ncubes);
-        let mut x0s = Vec::with_capacity(ncubes);
-        let mut y0s = Vec::with_capacity(ncubes);
-        let mut z0s = Vec::with_capacity(ncubes);
-        let mut x1s = Vec::with_capacity(ncubes);
-        let mut y1s = Vec::with_capacity(ncubes);
-        let mut z1s = Vec::with_capacity(ncubes);
+        let mut cells = Vec::with_capacity(nvoxels);
+        let mut x0s = Vec::with_capacity(nvoxels);
+        let mut y0s = Vec::with_capacity(nvoxels);
+        let mut z0s = Vec::with_capacity(nvoxels);
+        let mut x1s = Vec::with_capacity(nvoxels);
+        let mut y1s = Vec::with_capacity(nvoxels);
+        let mut z1s = Vec::with_capacity(nvoxels);
 
-        for (cell, (x0, y0, z0, x1, y1, z1)) in sampler.cubes() {
+        for (cell, (x0, y0, z0, x1, y1, z1)) in sampler.voxels() {
             cells.push(cell);
             x0s.push(x0);
             y0s.push(y0);
@@ -538,7 +538,7 @@ pub fn write_cubes(
 
         let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(output_cubes, output_cubes_fmt, schema, chunk);
+        write_table(output_voxels, output_voxels_fmt, schema, chunk);
     }
 }
 

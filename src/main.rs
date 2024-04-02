@@ -8,7 +8,7 @@ mod sampler;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::cubebinsampler::{filter_sparse_cells, CubeBinSampler};
+use sampler::cubebinsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
@@ -209,10 +209,10 @@ struct Args {
     output_gene_metadata_fmt: Option<String>,
 
     #[arg(long, default_value=None)]
-    output_cell_cubes: Option<String>,
+    output_cell_voxels: Option<String>,
 
     #[arg(long, default_value=None)]
-    output_cell_cubes_fmt: Option<String>,
+    output_cell_voxels_fmt: Option<String>,
 
     #[arg(long, default_value = "cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
@@ -604,7 +604,7 @@ fn main() {
 
     let mut uncertainty = UncertaintyTracker::new();
 
-    let mut sampler = RefCell::new(CubeBinSampler::new(
+    let mut sampler = RefCell::new(VoxelSampler::new(
         &priors,
         &mut params,
         &dataset.transcripts,
@@ -764,9 +764,9 @@ fn main() {
         &dataset.transcript_names,
         &ecounts,
     );
-    write_cubes(
-        &args.output_cell_cubes,
-        &args.output_cell_cubes_fmt,
+    write_voxels(
+        &args.output_cell_voxels,
+        &args.output_cell_voxels_fmt,
         &sampler.borrow(),
     );
 
@@ -784,7 +784,7 @@ fn main() {
 #[allow(clippy::too_many_arguments)]
 fn run_hexbin_sampler(
     prog: &mut ProgressBar,
-    sampler: &mut CubeBinSampler,
+    sampler: &mut VoxelSampler,
     priors: &ModelPriors,
     params: &mut ModelParams,
     transcripts: &Vec<Transcript>,

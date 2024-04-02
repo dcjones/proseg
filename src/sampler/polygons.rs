@@ -1,4 +1,4 @@
-use super::cubebinsampler::{Cube, CubeLayout};
+use super::cubebinsampler::{Voxel, VoxelLayout};
 use std::collections::HashSet;
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
@@ -122,8 +122,8 @@ impl PolygonBuilder {
 
     pub fn cell_voxels_to_polygons(
         &mut self,
-        layout: &CubeLayout,
-        voxels: &HashSet<Cube>,
+        layout: &VoxelLayout,
+        voxels: &HashSet<Voxel>,
     ) -> Vec<(i32, MultiPolygon<f32>)> {
         // if we store edges in in μm, we run the risk of failing line up points
         // due to numerical imprecision. Instead we use integer coordinates,
@@ -221,7 +221,7 @@ impl PolygonBuilder {
 
                             // Might be a nicer way, but I'm just going to handle
                             // each case exhaustively here.
-                            if voxels.contains(&Cube::new(k, v.0, v.1)) {
+                            if voxels.contains(&Voxel::new(k, v.0, v.1)) {
                                 if δi == -1 {
                                     w = (v.0, v.1 - 1);
                                 } else if δi == 1 {
@@ -273,7 +273,7 @@ impl PolygonBuilder {
                         .iter()
                         .map(|v| {
                             let (x, y, _z) =
-                                layout.cube_corner_to_world_pos(Cube::new(v.0, v.1, 0));
+                                layout.voxel_corner_to_world_pos(Voxel::new(v.0, v.1, 0));
                             (x, y)
                         })
                         .collect();
