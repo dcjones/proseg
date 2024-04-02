@@ -1,6 +1,6 @@
 use csv;
 use flate2::read::GzDecoder;
-use kiddo::distance::squared_euclidean;
+use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
 use ndarray::Array2;
 use std::collections::HashMap;
@@ -443,7 +443,7 @@ pub fn filter_cellfree_transcripts(
 
     let mut mask = vec![false; transcripts.len()];
     for (i, t) in transcripts.iter().enumerate() {
-        let (d, _) = kdtree.nearest_one(&[t.x, t.y], &squared_euclidean);
+        let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
 
         if d <= max_distance_squared {
             mask[i] = true;

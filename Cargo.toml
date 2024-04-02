@@ -22,18 +22,18 @@ debug = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrow2 = { version = "0.17.4", features = ["io_csv", "io_parquet", "io_parquet_compression"] }
+arrow2 = { version = "0.18.0", features = ["io_csv", "io_parquet", "io_parquet_compression"] }
 clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
-geo = "0.26.0"
+geo = "0.28.0"
 indicatif = "0.17.5"
-itertools = "0.10.5"
+itertools = "0.12.1"
 json = "0.12.4"
-kiddo = "2.1.1"
+kiddo = "4.2.0"
 libm = "0.2.7"
-linfa = "0.6.1"
-linfa-clustering = "0.6.1"
+linfa = "0.7.0"
+linfa-clustering = "0.7.0"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 ndarray-conv = "0.2.0"
 num-traits = "0.2.17"
