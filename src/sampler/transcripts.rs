@@ -46,6 +46,7 @@ pub fn read_transcripts_csv(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
+    coordinate_scale: f32,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
 
@@ -67,6 +68,7 @@ pub fn read_transcripts_csv(
                 z_column,
                 min_qv,
                 ignore_z_column,
+                coordinate_scale,
             )
         }
         OutputFormat::CsvGz => {
@@ -86,6 +88,7 @@ pub fn read_transcripts_csv(
                 z_column,
                 min_qv,
                 ignore_z_column,
+                coordinate_scale,
             )
         }
         OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
@@ -160,6 +163,7 @@ fn read_transcripts_csv_xyz<T>(
     z_column: &str,
     min_qv: f32,
     ignore_z_column: bool,
+    coordinate_scale: f32,
 ) -> TranscriptDataset
 where
     T: std::io::Read,
@@ -232,8 +236,8 @@ where
             transcript_names.len() - 1
         };
 
-        let x = row[x_col].parse::<f32>().unwrap();
-        let y = row[y_col].parse::<f32>().unwrap();
+        let x = coordinate_scale * row[x_col].parse::<f32>().unwrap();
+        let y = coordinate_scale * row[y_col].parse::<f32>().unwrap();
         let z = row[z_col].parse::<f32>().unwrap();
         let transcript_id = if let Some(id_col) = id_col {
             row[id_col]

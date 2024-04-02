@@ -159,6 +159,10 @@ struct Args {
     #[arg(long, default_value_t = 5e-1_f32)]
     prior_seg_reassignment_prob: f32,
 
+    /// Scale transcript coordinates by this factor to arrive at microns
+    #[arg(long, default_value=None)]
+    coordinate_scale: Option<f32>,
+
     /// Initial size x/y size of voxels.
     #[arg(long, default_value_t = 4.0_f32)]
     initial_voxel_size: f32,
@@ -323,7 +327,9 @@ fn set_cosmx_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
 
-    // CosmX coordinates are in pixels. (TODO: Where can I find the px per micron)
+    // CosMx reports values in pixels and pixel size appears to always be 0.12 microns.
+    args.coordinate_scale.get_or_insert(0.12);
+
     args.initial_voxel_size = 4.0;
 }
 
@@ -436,6 +442,10 @@ fn main() {
         &expect_arg(args.z_column, "z-column"),
         args.min_qv,
         args.ignore_z_coord,
+        match args.coordinate_scale {
+            Some(scale) => scale,
+            None => 1.0,
+        },
     );
 
     /* let transcripts = &mut transcript_dataset.transcripts;
