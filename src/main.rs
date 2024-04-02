@@ -111,19 +111,17 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    // TODO: This should really be called like "background layers" or something
     /// Number of z-axis layers used to model background expression
     #[arg(long, default_value_t = 4)]
-    nlayers: usize,
+    nbglayers: usize,
 
     /// Detect the number of z-layers from the data when it's discrete
     #[arg(long, default_value_t = false)]
     detect_layers: bool,
 
-    // TODO: make this `voxel_layers``
     /// Number of layers of voxels in the z-axis used for segmentation
     #[arg(long, default_value_t = 4)]
-    voxellayers: usize,
+    voxel_layers: usize,
 
     /// Sampler schedule, indicating the number of iterations between doubling resolution.
     #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
@@ -209,7 +207,6 @@ struct Args {
     #[arg(long, default_value = None)]
     output_counts: Option<String>,
 
-    // TODO: make all these fmt arguments enum based
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_counts_fmt: OutputFormat,
 
@@ -495,7 +492,7 @@ fn main() {
 
         filter_sparse_cells(
             args.initial_voxel_size,
-            args.voxellayers,
+            args.voxel_layers,
             &dataset.transcripts,
             &mut dataset.nucleus_assignments,
             &mut dataset.cell_assignments,
@@ -530,12 +527,12 @@ fn main() {
         }
 
         if !undetectable && zlayers.len() <= MAX_ZLAYERS {
-            args.nlayers = zlayers.len();
-            println!("Detected {} z-layers", args.nlayers);
+            args.nbglayers = zlayers.len();
+            println!("Detected {} z-layers", args.nbglayers);
         }
     }
 
-    let mut layer_depth = 1.01 * (zmax - zmin) / (args.nlayers as f32);
+    let mut layer_depth = 1.01 * (zmax - zmin) / (args.nbglayers as f32);
     if layer_depth == 0.0 {
         layer_depth = 1.0;
     }
@@ -554,7 +551,7 @@ fn main() {
     println!("Estimated full area: {}", full_area);
     let full_volume = full_area * zspan;
 
-    let full_layer_volume = full_volume / (args.nlayers as f32);
+    let full_layer_volume = full_volume / (args.nbglayers as f32);
     println!("Full volume: {}", full_volume);
 
     // Find a reasonable grid size to use to chunk the data
@@ -640,7 +637,7 @@ fn main() {
         &dataset.nucleus_population,
         &dataset.cell_assignments,
         args.ncomponents,
-        args.nlayers,
+        args.nbglayers,
         ncells,
         ngenes,
     );
@@ -660,8 +657,8 @@ fn main() {
         &mut params,
         &dataset.transcripts,
         ngenes,
-        args.voxellayers,
-        args.nlayers,
+        args.voxel_layers,
+        args.nbglayers,
         zmin,
         layer_depth,
         args.initial_voxel_size,
