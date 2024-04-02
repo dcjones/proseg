@@ -8,7 +8,7 @@ mod sampler;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::cubebinsampler::{filter_sparse_cells, VoxelSampler};
+use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,

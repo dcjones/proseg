@@ -1,4 +1,4 @@
-use super::cubebinsampler::{Voxel, VoxelLayout};
+use super::voxelsampler::{Voxel, VoxelLayout};
 use std::collections::HashSet;
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};

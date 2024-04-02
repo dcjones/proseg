@@ -1,4 +1,4 @@
-use super::cubebinsampler::Voxel;
+use super::voxelsampler::Voxel;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::Undirected;
 use std::collections::{HashMap, HashSet};

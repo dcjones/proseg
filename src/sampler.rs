@@ -1,5 +1,5 @@
 mod connectivity;
-pub mod cubebinsampler;
+pub mod voxelsampler;
 pub mod hull;
 mod math;
 pub mod polyagamma;

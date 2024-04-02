@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
-use super::sampler::cubebinsampler::VoxelSampler;
+use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::transcripts::Transcript;
 use super::sampler::{ModelParams, TranscriptState};
 
