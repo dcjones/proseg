@@ -70,7 +70,7 @@ proseg-to-baysor \
 `xeniumranger` can then be run to import these into a format useable with Xenium Explorer:
 
 ```shell
-xeniumranger \
+xeniumranger import-segmentation \
     --id project-id \
     --xeinum-bundle /path/to/original/xenium/output \
     --viz-polygons baysor-cell-polygons.geojson \
