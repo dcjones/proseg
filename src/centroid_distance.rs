@@ -5,9 +5,9 @@ use sampler::transcripts::{
     estimate_cell_centroids, read_transcripts_csv, Transcript, CellIndex};
 
 mod output;
-use output::write_table;
+use output::{write_table, OutputFormat};
 
-use kiddo::distance::squared_euclidean;
+use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
 use rayon::prelude::*;
 use rayon::current_num_threads;
@@ -37,7 +37,7 @@ struct Args {
     merfish: bool,
 
     #[arg(long, default_value = None)]
-    transcript_column: Option<String>,
+    gene_column: Option<String>,
 
     #[arg(long, default_value = None)]
     transcript_id_column: Option<String>,
@@ -69,8 +69,8 @@ struct Args {
     #[arg(short, long, default_value = None)]
     z_column: Option<String>,
 
-    #[arg(long, default_value = None)]
-    output_fmt: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_fmt: OutputFormat,
 
     #[arg(long, default_value_t)]
     ignore_z_coord: bool,
@@ -80,7 +80,7 @@ struct Args {
 }
 
 fn set_xenium_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("feature_name"));
+    args.gene_column.get_or_insert(String::from("feature_name"));
     args.transcript_id_column.get_or_insert(String::from("transcript_id"));
     args.x_column.get_or_insert(String::from("x_location"));
     args.y_column.get_or_insert(String::from("y_location"));
@@ -94,7 +94,7 @@ fn set_xenium_presets(args: &mut Args) {
 
 
 fn set_cosmx_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("target"));
+    args.gene_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x_global_px"));
     args.y_column.get_or_insert(String::from("y_global_px"));
     args.z_column.get_or_insert(String::from("z"));
@@ -107,7 +107,7 @@ fn set_cosmx_presets(args: &mut Args) {
 
 
 fn set_cosmx_micron_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("target"));
+    args.gene_column.get_or_insert(String::from("target"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
@@ -119,7 +119,7 @@ fn set_cosmx_micron_presets(args: &mut Args) {
 }
 
 fn set_merfish_presets(args: &mut Args) {
-    args.transcript_column.get_or_insert(String::from("gene"));
+    args.gene_column.get_or_insert(String::from("gene"));
     args.x_column.get_or_insert(String::from("x"));
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
@@ -164,41 +164,58 @@ fn main() {
     }
 
     println!("Reading transcripts...");
-    let (transcript_names,
-         transcripts,
-         nucleus_assignments,
-         cell_assignments,
-         nucleus_population) =
-        read_transcripts_csv(
-            &args.transcript_csv,
-            &expect_arg(args.transcript_column, "transcript-column"),
-            args.transcript_id_column,
-            args.compartment_column,
-            args.compartment_nuclear,
-            args.fov_column,
-            &expect_arg(args.cell_id_column, "cell-id-column"),
-            &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
-            args.qv_column,
-            &expect_arg(args.x_column, "x-column"),
-            &expect_arg(args.y_column, "y-column"),
-            &expect_arg(args.z_column, "z-column"),
-            f32::NEG_INFINITY,
-            args.ignore_z_coord,
-        );
+    // let (transcript_names,
+    //      transcripts,
+    //      nucleus_assignments,
+    //      cell_assignments,
+    //      nucleus_population) =
+    //     read_transcripts_csv(
+    //         &args.transcript_csv,
+    //         &expect_arg(args.transcript_column, "transcript-column"),
+    //         args.transcript_id_column,
+    //         args.compartment_column,
+    //         args.compartment_nuclear,
+    //         args.fov_column,
+    //         &expect_arg(args.cell_id_column, "cell-id-column"),
+    //         &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
+    //         args.qv_column,
+    //         &expect_arg(args.x_column, "x-column"),
+    //         &expect_arg(args.y_column, "y-column"),
+    //         &expect_arg(args.z_column, "z-column"),
+    //         f32::NEG_INFINITY,
+    //         args.ignore_z_coord,
+    //     );
+    let mut dataset = read_transcripts_csv(
+        &args.transcript_csv,
+        &expect_arg(args.gene_column, "transcript-column"),
+        args.transcript_id_column,
+        args.compartment_column,
+        args.compartment_nuclear,
+        args.fov_column,
+        &expect_arg(args.cell_id_column, "cell-id-column"),
+        &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
+        args.qv_column,
+        &expect_arg(args.x_column, "x-column"),
+        &expect_arg(args.y_column, "y-column"),
+        &expect_arg(args.z_column, "z-column"),
+        f32::NEG_INFINITY,
+        args.ignore_z_coord,
+        1.0
+    );
 
-    let ncells = nucleus_population.len();
+    let ncells = dataset.nucleus_population.len();
 
     println!("Computing distances...");
     let distances = transcript_centroid_distance(
-        &transcripts, &nucleus_assignments, ncells);
+        &dataset.transcripts, &dataset.nucleus_assignments, ncells);
 
     println!("Writing output...");
     write_transcript_centroid_distances(
         &args.output,
-        &args.output_fmt,
-        &transcripts,
-        &transcript_names,
-        &cell_assignments,
+        args.output_fmt,
+        &dataset.transcripts,
+        &dataset.transcript_names,
+        &dataset.cell_assignments,
         &distances);
 }
 
@@ -218,7 +235,7 @@ fn transcript_centroid_distance(
 
     return transcripts.par_iter()
         .map(|t| {
-            let (d, _) = kdtree.nearest_one(&[t.x, t.y], &squared_euclidean);
+            let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
             return d;
         })
         .collect();
@@ -226,7 +243,7 @@ fn transcript_centroid_distance(
 
 pub fn write_transcript_centroid_distances(
     output: &String,
-    output_fmt: &Option<String>,
+    output_fmt: OutputFormat,
     transcripts: &Vec<Transcript>,
     transcript_names: &Vec<String>,
     cell_assignments: &Vec<CellIndex>,
@@ -272,7 +289,7 @@ pub fn write_transcript_centroid_distances(
 
     write_table(
         &output,
-        &output_fmt,
+        output_fmt,
         schema,
         chunk,
     );
