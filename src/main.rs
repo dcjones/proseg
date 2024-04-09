@@ -355,8 +355,8 @@ fn set_merfish_presets(args: &mut Args) {
     args.y_column.get_or_insert(String::from("y"));
     args.z_column.get_or_insert(String::from("z"));
     args.cell_id_column.get_or_insert(String::from("cell"));
-    // args.cell_id_unassigned.get_or_insert(String::from("NA"));
-    args.cell_id_unassigned.get_or_insert(String::from("0"));
+    args.cell_id_unassigned.get_or_insert(String::from("NA"));
+    // args.cell_id_unassigned.get_or_insert(String::from("0"));
     args.initial_voxel_size = 4.0;
 }
 
