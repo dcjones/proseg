@@ -448,6 +448,14 @@ fn main() {
         },
     );
 
+    // Warn if any nucleus has extremely high population, which is likely
+    // an error interpreting the file.
+    dataset.nucleus_population.iter().for_each(|&p| {
+        if p > 10000 {
+            eprintln!("Warning: nucleus with population {}", p);
+        }
+    });
+
     /* let transcripts = &mut transcript_dataset.transcripts;
     let transcript_names = &transcript_dataset.transcript_names;
     let cell_assignments = &mut transcript_dataset.cell_assignments;
