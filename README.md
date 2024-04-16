@@ -6,46 +6,73 @@ situ spatial transcriptomics. Xenium, CosMx, and MERSCOPE platforms are
 currently supported.
 
 
-## Installing
+# Installing
 
-Proseg can be built and installed with cargo.
+Proseg can be built and installed with cargo. Clone this repository, then run
 
 ```shell
 cargo install --path /path/to/proseg
 ```
 
-## Running on Xenium
+# General usage
 
-A minimum invocation to run on Xenium data is simply:
+Proseg is run on a table of transcript positions which in some form must include
+preliminary assignments of transcripts to nuclei. Xenium, CosMx, and MERSCOPE
+all provide this out of the box in some form.
+
+Proseg is invoked, at minimum like:
 
 ```shell
-proseg --xenium /path/to/transcripts.csv.gz
+proseg /path/to/transcripts.csv.gz
 ```
-There are numerous arguments tat can be passed to the program that tweak the
-behiavior of the algorithm. Because the method is still under development, some
-of these arguments will do nothing at all, others might have dramatic effects.
-Ideally one should not have to tinker with these, but a few might be useful to know:
 
-  * `--nthreads N`: Number of CPU threads to use. By default this is set to the number of (virtual) cores available on the system.
-  * `--no-diffusion`: By default Proseg models cells as leaky, under the assumption that some amount of RNA leaks from cells and diffuses elsewhere. This seems to be the case in much of the Xenium data we've seen, but could be a harmfully incorrect assumption in some data. This argument disables that part of the model.
-  * `--min-qv 0`: Filter transcripts by quality value. There are relatively few low-quality transcripts included in Xenium output, so this doesn't seem to have much effect.
-  * `--ncomponents 5`: Cell gene expression is a modeled as a mixture of negative binomial distributions. This parameter controls the number of mixture components. More components will tend to nudge the cells into more distinct types, but setting it too high risks manifesting cell types that are not real.
+There are command line arguments to tell it which columns in the csv file to use,
+but typically one of the presets `--xenium`, `--cosmx`, or `--merfish` are used.
 
-Proseg has a number of arguments to output various count matrices and metadata.
-Most output files can be either `.csv.gz` files or `.parquet` files.
+Proseg is a sampling method, and in its current form in non-deterministic. From
+run to run, results will vary slightly.
 
-Most importantly:
+## General options
+
+By default proseg will use all available CPU cores. To change this use `--nthreads N`.
+
+## Output options
+
+Output is in the form of a number of tables, which can be either gzipped csv files
+or parquet files, and [GeoJSON](https://geojson.org/) files giving cell boundaries.
 
   * `--output-expected-counts expected-counts.csv.gz`: Cell-by-gene count matrix. Proseg is a sampling method, so these are posterior expectations that will generally not be integers but fractional counts.
   * `--output-cell-metadata cell-metadata.csv.gz`: Cell centroids, volume, and other information.
-  * `--output-cell-polygons cell-polygons.geojson.gz`: 2D polygons for each cell in GeoJSON format. These are flattened from 3D, so will overlap.
-  * `--output-cell-polygon-layers cell-polygons-layers.geojson.gz`: 2D polygons for each cell in GeoJSON format. These are flattened from 3D, so will overlap.
-
-Addition output options that may be useful:
-  * `--output-transcript-metadata transcript-metadata.csv.gz`: Transcript position, repositioned location, cell assignemnet, etc.
-  * `--output-counts counts.csv.gz`: Cell-by-gene count matrix point estimate. This is integer values, unlike expected-counts. Expected counts is somewhat more reliable in our experience.
+  * `--output-transcript-metadata transcript-metadata.csv.gz`: Transcript ids, genes, revised positions, assignment probability, etc.
+  * `--output-gene-metadata`: Per-gene summary statistics
   * `--output-rates rates.csv.gz`: Cell-by-gene Poisson rate parameters. These are essentially expected relative expression values, but may be too overly-smoothed for use in downstream analysis.
 
+
+Cell boundaries can be output a number of ways:
+
+  * `--output-cell-polygons cell-polygons.geojson.gz`: 2D polygons for each cell in GeoJSON format. These are flattened from 3D, so will overlap.
+  * `--output-cell-polygon-layers cell-polygons-layers.geojson.gz`: Output a separate, non-overlapping cell polygon for each z-layer, preserving 3D segmentation.
+  * `--output-cell-hulls cell-hulls.geojson.gz`: Instead of inferred cell polygons, output convex hulls around assigned transcripts.
+  * `--output-cell-voxels cell-voxels.csv.gz`: Output a (very large) table giving the coordinates and cell assignment of every assigned voxel.
+
+
+## Modeling assumptions
+
+A number of options can alter assumptions made by the model, which generally should
+not need
+
+  * `--ncomponents 5`: Cell gene expression is a modeled as a mixture of negative binomial distributions. This parameter controls the number of mixture components. More components will tend to nudge the cells into more distinct types, but setting it too high risks manifesting cell types that are not real.
+  * `--no-diffusion`: By default Proseg models cells as leaky, under the assumption that some amount of RNA leaks from cells and diffuses elsewhere. This seems to be the case in much of the Xenium data we've seen, but could be a harmfully incorrect assumption in some data. This argument disables that part of the model.
+  * `--diffusion-probability`: Prior probability of a transcript is diffused and should be repositioned.
+  * `--diffusion-sigma-far`: Prior standard deviation on transcript repositioning distance.
+  * `--voxel-layers 4`: Number of layers of voxels on the z-axis to use. Essentially how 3D the segmentation should be.
+  * `--initial-voxel-size 4`: Initial side length of voxels on the xy-axis.
+  * `--schedule 150,150,300`: A comma separated list of numbers giving the sampling schedule. The sampler runs for a given number of iterations, halves the voxel size, then runs for the next number of iterations.
+
+
+# Running on Xenium datasets
+
+Xenium data should be run with the `--xenium` argument.
 
 ## Using Xenium Explorer with `proseg-to-baysor`
 
@@ -67,7 +94,9 @@ proseg-to-baysor \
     --output-cell-polygons baysor-cell-polygons.geojson
 ```
 
-`xeniumranger` can then be run to import these into a format useable with Xenium Explorer:
+[Xenium
+Ranger](https://www.10xgenomics.com/support/software/xenium-ranger/latest) can
+then be run to import these into a format useable with Xenium Explorer:
 
 ```shell
 xeniumranger import-segmentation \
@@ -79,4 +108,42 @@ xeniumranger import-segmentation \
 ```
 
 This will output a new Xenium bundle under the `project-id` directory
+
+
+Xenium Explorer currently has issues displaying Proseg polygons. It appears to
+perform some sort of naive polygon simplification that results in profoundly
+distorted polygons. There's not any known workaround for this issue for now.
+
+
+# Running on CosMx datasets
+
+Current version of CosMx provide output that is shambolic and more difficult to
+deal with than other platforms. The recommended way of running proseg on CosMx datasets
+is to download the flat files from AtoMx and manually "stitch" and scale the FOV-level data
+using the provided Julia program provided in `extra/stitch-cosmx.jl`:
+
+Some dependencies are required, which can be installed with
+```shell
+julia -e 'import Pkg; Pkg.add(["Glob", "CSV", "DataFrames", "CodecZlib", "ArgParse"])'
+```
+
+Then the program can be run with like
+```shell
+julia stitch-cosmx.jl /path/to/cosmx-flatfiles transcripts.csv.gz
+```
+to output a complete transcripts table to `transcripts.csv.gz`.
+
+From here proseg can be run with
+```shell
+proseg --cosmx-micron transcripts.csv.gz
+```
+
+Alternatively, the `--cosmx` can used with CosMx data that is in pixel coordinates.
+It will automatically scale the data to micrometers.
+
+
+# Running on MERSCOPE datasets
+
+No special considerations are needed for MERSCOPE data. Simply use the `--merfish` argument.
+
 
