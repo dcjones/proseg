@@ -68,6 +68,8 @@ not need
   * `--voxel-layers 4`: Number of layers of voxels on the z-axis to use. Essentially how 3D the segmentation should be.
   * `--initial-voxel-size 4`: Initial side length of voxels on the xy-axis.
   * `--schedule 150,150,300`: A comma separated list of numbers giving the sampling schedule. The sampler runs for a given number of iterations, halves the voxel size, then runs for the next number of iterations.
+  * `--nuclear-reassignment_prob 0.2`: Prior probability that the initial nuclear assignment (if any) is incorrect.
+  * `--perimeter-bound 1.3`: Larger numbers allow less spherical cells.
 
 
 # Running on Xenium datasets
