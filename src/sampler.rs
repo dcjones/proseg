@@ -247,6 +247,7 @@ impl ModelParams {
         full_layer_volume: f32,
         z0: f32,
         layer_depth: f32,
+        initial_perturbation_sd: f32,
         transcripts: &[Transcript],
         init_cell_assignments: &[u32],
         init_cell_population: &[usize],
@@ -256,10 +257,19 @@ impl ModelParams {
         ncells: usize,
         ngenes: usize,
     ) -> Self {
-        let transcript_positions = transcripts
+        let mut transcript_positions = transcripts
             .iter()
             .map(|t| (t.x, t.y, t.z))
             .collect::<Vec<_>>();
+
+        if initial_perturbation_sd > 0.0 {
+            let mut rng = rand::thread_rng();
+            for pos in &mut transcript_positions {
+                pos.0 += rng.sample::<f32, StandardNormal>(StandardNormal) * initial_perturbation_sd;
+                pos.1 += rng.sample::<f32, StandardNormal>(StandardNormal) * initial_perturbation_sd;
+                pos.2 += rng.sample::<f32, StandardNormal>(StandardNormal) * initial_perturbation_sd;
+            }
+        }
 
         let proposed_transcript_positions = transcript_positions.clone();
         let accept_proposed_transcript_positions = vec![false; transcripts.len()];
