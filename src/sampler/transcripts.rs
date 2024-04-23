@@ -1,18 +1,17 @@
+use arrow;
 use csv;
 use flate2::read::MultiGzDecoder;
-use kiddo::SquaredEuclidean;
+use itertools::izip;
 use kiddo::float::kdtree::KdTree;
+use kiddo::SquaredEuclidean;
 use ndarray::Array2;
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use std::collections::HashMap;
 use std::fs::File;
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReaderBuilder, ParquetRecordBatchReader};
-use arrow;
-use itertools::izip;
 use std::str;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
-
 
 // Should probably rearrange this...
 use super::super::output::infer_format_from_filename;
@@ -56,7 +55,7 @@ pub fn read_transcripts_csv(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    ignore_z_column: bool,
+    no_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
@@ -80,7 +79,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                ignore_z_column,
+                no_z_column,
                 coordinate_scale,
             )
         }
@@ -102,7 +101,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                ignore_z_column,
+                no_z_column,
                 coordinate_scale,
             )
         }
@@ -120,8 +119,9 @@ pub fn read_transcripts_csv(
             y_column,
             z_column,
             min_qv,
-            ignore_z_column,
-            coordinate_scale),
+            no_z_column,
+            coordinate_scale,
+        ),
         OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
     }
 }
@@ -203,7 +203,7 @@ fn read_transcripts_csv_xyz<T>(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    ignore_z_column: bool,
+    no_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset
 where
@@ -211,10 +211,15 @@ where
 {
     // Find the column we need
     let headers = rdr.headers().unwrap();
+    let ncolumns = headers.len();
     let transcript_col = find_column(headers, transcript_column);
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
-    let z_col = find_column(headers, z_column);
+    let z_col = if no_z_column {
+        ncolumns
+    } else {
+        find_column(headers, z_column)
+    };
     let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     let cell_id_col = find_column(headers, cell_id_column);
@@ -282,7 +287,11 @@ where
 
         let x = coordinate_scale * row[x_col].parse::<f32>().unwrap();
         let y = coordinate_scale * row[y_col].parse::<f32>().unwrap();
-        let z = row[z_col].parse::<f32>().unwrap();
+        let z = if z_col == ncolumns {
+            0.0
+        } else {
+            row[z_col].parse::<f32>().unwrap()
+        };
         let transcript_id = if let Some(id_col) = id_col {
             row[id_col]
                 .parse::<u64>()
@@ -295,7 +304,7 @@ where
             transcript_id,
             x,
             y,
-            z: if ignore_z_column { 0.0 } else { z },
+            z,
             gene: gene as u32,
             fov,
         });
@@ -376,7 +385,6 @@ where
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn read_xenium_transcripts_parquet(
     filename: &str,
@@ -394,14 +402,14 @@ fn read_xenium_transcripts_parquet(
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
-) -> TranscriptDataset
-{
+) -> TranscriptDataset {
     let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
-    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)
-        .unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
     let schema = builder.schema().as_ref().clone();
-    let rdr = builder.build()
-        .expect(&format!("Unable to read parquet data from frobm {}", filename));
+    let rdr = builder.build().expect(&format!(
+        "Unable to read parquet data from frobm {}",
+        filename
+    ));
 
     // Xenium parquet files can use i32 or i64 indexes in their string arrays,
     // so we have to dynamically dispatch here.
@@ -409,22 +417,49 @@ fn read_xenium_transcripts_parquet(
     let string_type = transcript_field.data_type();
 
     match string_type {
-        arrow::datatypes::DataType::Utf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::StringArray>(
-            rdr, schema,
-            transcript_col_name, id_col_name, compartment_col_name,
-            compartment_nuclear, fov_col_name, cell_id_col_name,
-            cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
-            min_qv, ignore_z_column, coordinate_scale),
-        arrow::datatypes::DataType::LargeUtf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
-            rdr, schema,
-            transcript_col_name, id_col_name, compartment_col_name,
-            compartment_nuclear, fov_col_name, cell_id_col_name,
-            cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
-            min_qv, ignore_z_column, coordinate_scale),
-        _ => panic!("Unexpected string array type in Xenium parquet file")
+        arrow::datatypes::DataType::Utf8 => {
+            read_xenium_transcripts_parquet_str_type::<arrow::array::StringArray>(
+                rdr,
+                schema,
+                transcript_col_name,
+                id_col_name,
+                compartment_col_name,
+                compartment_nuclear,
+                fov_col_name,
+                cell_id_col_name,
+                cell_id_unassigned,
+                qv_col_name,
+                x_col_name,
+                y_col_name,
+                z_col_name,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+            )
+        }
+        arrow::datatypes::DataType::LargeUtf8 => {
+            read_xenium_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
+                rdr,
+                schema,
+                transcript_col_name,
+                id_col_name,
+                compartment_col_name,
+                compartment_nuclear,
+                fov_col_name,
+                cell_id_col_name,
+                cell_id_unassigned,
+                qv_col_name,
+                x_col_name,
+                y_col_name,
+                z_col_name,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+            )
+        }
+        _ => panic!("Unexpected string array type in Xenium parquet file"),
     }
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn read_xenium_transcripts_parquet_str_type<T>(
@@ -447,7 +482,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
 ) -> TranscriptDataset
 where
     T: 'static,
-    for <'a> &'a T: IntoIterator<Item=Option<&'a str>>,
+    for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
 {
     let transcript_col_idx = schema.index_of(transcript_col_name).unwrap();
     let id_col_idx = schema.index_of(id_col_name).unwrap();
@@ -527,9 +562,17 @@ where
             .downcast_ref::<arrow::array::Float32Array>()
             .unwrap();
 
-        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in
-            izip!(transcript_col, id_col, compartment_col, cell_id_col, fov_col, x_col, y_col, z_col, qv_col)
-        {
+        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in izip!(
+            transcript_col,
+            id_col,
+            compartment_col,
+            cell_id_col,
+            fov_col,
+            x_col,
+            y_col,
+            z_col,
+            qv_col
+        ) {
             let transcript = transcript.unwrap();
             let transcript_id = id.unwrap();
             let compartment = compartment.unwrap();
@@ -748,8 +791,8 @@ pub fn filter_cellfree_transcripts(
 ) {
     let max_distance_squared = max_distance * max_distance;
 
-    let centroids = estimate_cell_centroids(
-        &dataset.transcripts, &dataset.nucleus_assignments, ncells);
+    let centroids =
+        estimate_cell_centroids(&dataset.transcripts, &dataset.nucleus_assignments, ncells);
 
     let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
     for (i, (x, y)) in centroids.iter().enumerate() {
@@ -769,47 +812,57 @@ pub fn filter_cellfree_transcripts(
     }
 
     dataset.transcripts.clone_from(
-        &dataset.transcripts
+        &dataset
+            .transcripts
             .iter()
             .zip(mask.iter())
             .filter(|(_, &m)| m)
             .map(|(t, _)| t)
             .cloned()
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>(),
+    );
 
     dataset.nucleus_assignments.clone_from(
-        &dataset.nucleus_assignments
+        &dataset
+            .nucleus_assignments
             .iter()
             .zip(mask.iter())
             .filter(|(_, &m)| m)
             .map(|(t, _)| t)
             .cloned()
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>(),
+    );
 
     dataset.cell_assignments.clone_from(
-        &dataset.cell_assignments
+        &dataset
+            .cell_assignments
             .iter()
             .zip(mask.iter())
             .filter(|(_, &m)| m)
             .map(|(t, _)| t)
             .cloned()
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>(),
+    );
 
     dataset.fovs.clone_from(
-        &dataset.fovs
+        &dataset
+            .fovs
             .iter()
             .zip(mask.iter())
             .filter(|(_, &m)| m)
             .map(|(t, _)| t)
             .cloned()
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>(),
+    );
 
     dataset.qvs.clone_from(
-        &dataset.qvs
+        &dataset
+            .qvs
             .iter()
             .zip(mask.iter())
             .filter(|(_, &m)| m)
             .map(|(t, _)| t)
             .cloned()
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>(),
+    );
 }

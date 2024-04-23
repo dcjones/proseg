@@ -65,6 +65,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     use_cell_initialization: bool,
 
+    /// Preset for Visium HD
+    #[arg(long, default_value_t = false)]
+    visiumhd: bool,
+
     /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
     gene_column: Option<String>,
@@ -117,9 +121,9 @@ struct Args {
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
-    /// Ignore the z coordinate, flattening the data to 2D
+    /// Ignore the z coordinate if any, treating the data as 2D
     #[arg(long, default_value_t = false)]
-    ignore_z_coord: bool,
+    no_z_coord: bool,
 
     /// Filter out transcripts with quality values below this threshold
     #[arg(long, default_value_t = 0.0_f32)]
@@ -226,6 +230,10 @@ struct Args {
     /// Fixed dispersion parameter throughout sampling
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
+
+    /// Perturb initial transcript positions with this standard deviation
+    #[arg(long, default_value = None)]
+    initial_perturbation_sd: Option<f32>,
 
     /// Run time consuming checks to make sure data structures are in a consistent state
     #[arg(long, default_value_t = false)]
@@ -391,6 +399,23 @@ fn set_merscope_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("-1"));
 }
 
+fn set_visiumhd_presets(args: &mut Args) {
+    args.gene_column.get_or_insert(String::from("gene_id"));
+    args.x_column.get_or_insert(String::from("x"));
+    args.y_column.get_or_insert(String::from("y"));
+    args.z_column.get_or_insert(String::from("z")); // ignored
+    args.cell_id_column.get_or_insert(String::from("cell"));
+    args.cell_id_unassigned.get_or_insert(String::from("0"));
+    args.initial_voxel_size = Some(4.0);
+    args.voxel_layers = 1;
+    args.no_z_coord = true;
+
+    // TODO: This is the resolution on the one dataset I have. It probably
+    // doesn't generalize.
+    args.coordinate_scale.get_or_insert(1.0 / 3.08);
+    args.initial_perturbation_sd.get_or_insert(1.0);
+}
+
 fn main() {
     // // TODO: Just testing PG sampling
     // {
@@ -425,11 +450,10 @@ fn main() {
         + (args.cosmx_micron as u8)
         + (args.merfish as u8)
         + (args.merscope as u8)
+        + (args.visiumhd as u8)
         > 1
     {
-        panic!(
-            "At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope can be set"
-        );
+        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope, --visiumhd can be set");
     }
 
     if args.xenium {
@@ -451,6 +475,10 @@ fn main() {
 
     if args.merscope {
         set_merscope_presets(&mut args);
+    }
+
+    if args.visiumhd {
+        set_visiumhd_presets(&mut args);
     }
 
     if args.recorded_samples > *args.schedule.last().unwrap() {
@@ -494,7 +522,7 @@ fn main() {
         &expect_arg(args.y_column, "y-column"),
         &expect_arg(args.z_column, "z-column"),
         args.min_qv,
-        args.ignore_z_coord,
+        args.no_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
     );
 
@@ -675,6 +703,7 @@ fn main() {
         full_layer_volume,
         zmin,
         layer_depth,
+        args.initial_perturbation_sd.unwrap_or(0.0),
         &dataset.transcripts,
         &dataset.nucleus_assignments,
         &dataset.nucleus_population,
