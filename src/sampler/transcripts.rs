@@ -55,7 +55,7 @@ pub fn read_transcripts_csv(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    ignore_z_column: bool,
+    no_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
@@ -79,7 +79,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                ignore_z_column,
+                no_z_column,
                 coordinate_scale,
             )
         }
@@ -101,7 +101,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                ignore_z_column,
+                no_z_column,
                 coordinate_scale,
             )
         }
@@ -202,7 +202,7 @@ fn read_transcripts_csv_xyz<T>(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    ignore_z_column: bool,
+    no_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset
 where
@@ -210,10 +210,15 @@ where
 {
     // Find the column we need
     let headers = rdr.headers().unwrap();
+    let ncolumns = headers.len();
     let transcript_col = find_column(headers, transcript_column);
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
-    let z_col = find_column(headers, z_column);
+    let z_col = if no_z_column {
+        ncolumns
+    } else {
+        find_column(headers, z_column)
+    };
     let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     let cell_id_col = find_column(headers, cell_id_column);
@@ -281,7 +286,11 @@ where
 
         let x = coordinate_scale * row[x_col].parse::<f32>().unwrap();
         let y = coordinate_scale * row[y_col].parse::<f32>().unwrap();
-        let z = row[z_col].parse::<f32>().unwrap();
+        let z = if z_col == ncolumns {
+            0.0
+        } else {
+            row[z_col].parse::<f32>().unwrap()
+        };
         let transcript_id = if let Some(id_col) = id_col {
             row[id_col]
                 .parse::<u64>()
@@ -294,7 +303,7 @@ where
             transcript_id,
             x,
             y,
-            z: if ignore_z_column { 0.0 } else { z },
+            z,
             gene: gene as u32,
             fov,
         });
