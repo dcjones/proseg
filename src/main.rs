@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use output::*;
 
 #[derive(Parser)]
+#[command(version)]
 #[command(name = "proseg")]
 #[command(author = "Daniel C. Jones")]
 #[command(
