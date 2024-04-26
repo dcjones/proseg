@@ -5,6 +5,8 @@ Proseg (**pro**babilistic **seg**mentation) is a cell segmentation method for in
 situ spatial transcriptomics. Xenium, CosMx, and MERSCOPE platforms are
 currently supported.
 
+![](https://github.com/dcjones/proseg/blob/main/figure.png)
+
 
 # Installing
 
