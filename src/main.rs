@@ -208,12 +208,12 @@ struct Args {
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 
-    /// Output a point estimate of 
+    /// Output a point estimate of transcript counts per cell
     #[arg(long, default_value = None)]
-    output_counts: Option<String>,
+    output_maxpost_counts: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
-    output_counts_fmt: OutputFormat,
+    output_maxpost_counts_fmt: OutputFormat,
 
     /// Output a matrix of expected transcript counts per cell
     #[arg(long, default_value = "expected-counts.csv.gz")]
@@ -443,10 +443,7 @@ fn main() {
         &expect_arg(args.z_column, "z-column"),
         args.min_qv,
         args.ignore_z_coord,
-        match args.coordinate_scale {
-            Some(scale) => scale,
-            None => 1.0,
-        },
+        args.coordinate_scale.unwrap_or(1.0),
     );
 
     // Warn if any nucleus has extremely high population, which is likely
@@ -792,8 +789,8 @@ fn main() {
         &ecounts,
     );
     write_counts(
-        &args.output_counts,
-        args.output_counts_fmt,
+        &args.output_maxpost_counts,
+        args.output_maxpost_counts_fmt,
         &dataset.transcript_names,
         &counts,
     );
