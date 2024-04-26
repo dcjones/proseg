@@ -1,7 +1,12 @@
 [package]
 name = "proseg"
-version = "0.0.22"
+version = "1.0.0"
 edition = "2021"
+authors = ["Daniel C. Jones <djones3@fredhutch.org>"]
+repository = "https://github.com/dcjones/proseg"
+readme = "README.md"
+license-file = "LICENSE.md"
+
 
 [[bin]]
 name = "proseg"
