@@ -13,7 +13,7 @@ currently supported.
 Proseg can be built and installed with cargo. Clone this repository, then run
 
 ```shell
-cargo install --path /path/to/proseg
+cargo install proseg
 ```
 
 # General usage
