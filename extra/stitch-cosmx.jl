@@ -70,7 +70,11 @@ end
 
 function read_fov_positions(fov_filename::String)
     fovs_df = CSV.read(fov_filename, DataFrame, header=false)
-    rename!(fovs_df, ["slide", "x", "y", "z", "zoffset", "ROI", "FOV"])
+    col_names = ["slide", "x", "y", "z", "zoffset", "ROI", "FOV"]
+    if size(fovs_df, 2) == 8
+        push!(col_names, "acqOrder")
+    end
+    rename!(fovs_df, col_names)
     fovs = Dict{Int, Tuple{Float64, Float64, Float64}}()
     for fov in eachrow(fovs_df)
         fovs[fov.FOV] = (fov.x * 1e3, fov.y * 1e3, fov.z * 1e3)
