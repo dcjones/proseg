@@ -246,7 +246,7 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
         Arc::new(arrow2::array::UInt64Array::from_values(
             metadata.transcript_id.iter().cloned(),
         )),
-        Arc::new(arrow2::array::Utf8Array::<i32>::from_iter_values(
+        Arc::new(arrow2::array::Utf8Array::<i64>::from_iter_values(
             metadata.cell.iter().map(|cell|
                 if *cell == u32::MAX {
                    String::new()
