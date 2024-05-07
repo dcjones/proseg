@@ -1737,7 +1737,7 @@ where
                 params.component_population[z as usize] += 1;
             });
 
-        dbg!(&params.component_population);
+        // dbg!(&params.component_population);
 
         // Sampling is parallelizable, but unually number of components is low,
         // so it's dominated by overhead.
