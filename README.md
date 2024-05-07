@@ -114,9 +114,13 @@ xeniumranger import-segmentation \
 This will output a new Xenium bundle under the `project-id` directory
 
 
-Xenium Explorer currently has issues displaying Proseg polygons. It appears to
+~~Xenium Explorer currently has issues displaying Proseg polygons. It appears to
 perform some sort of naive polygon simplification that results in profoundly
-distorted polygons. There's not any known workaround for this issue for now.
+distorted polygons. There's not any known workaround for this issue for now.~~
+
+Issues displaying proseg polygons in Xenium Explorer are resolved with more
+recent versions of Xenium Ranger (starting with 2.0).
+
 
 
 # Running on CosMx datasets
