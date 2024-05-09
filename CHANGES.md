@@ -1,3 +1,7 @@
+# 1.0.3
+
+  - Include a `--merscope` preset to work with MERSCOPE `detected_transcripts.csv.gz`
+    files. Mark the `--merfish` preset as deprecated. (Issue #5)
 
 # 1.0.2
 
