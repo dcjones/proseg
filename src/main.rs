@@ -424,7 +424,7 @@ fn main() {
     }
 
     if args.merfish {
-        println!("WARNING: --merfish is deprecated, use --merscope instead")
+        println!("WARNING: --merfish is deprecated, use --merscope instead");
         set_merfish_presets(&mut args);
     }
 
