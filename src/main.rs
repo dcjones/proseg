@@ -48,6 +48,10 @@ struct Args {
 
     /// Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
+    merscope: bool,
+
+    /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
+    #[arg(long, default_value_t = false)]
     merfish: bool,
 
     /// Name of column containing the feature/gene name
@@ -361,6 +365,17 @@ fn set_merfish_presets(args: &mut Args) {
     args.initial_voxel_size = 4.0;
 }
 
+fn set_merscope_presets(args: &mut Args) {
+    args.gene_column.get_or_insert(String::from("gene"));
+    args.x_column.get_or_insert(String::from("global_x"));
+    args.y_column.get_or_insert(String::from("global_y"));
+    args.z_column.get_or_insert(String::from("global_z"));
+    args.fov_column.get_or_insert(String::from("fov"));
+    args.cell_id_column.get_or_insert(String::from("cell_id"));
+    args.cell_id_unassigned.get_or_insert(String::from("-1"));
+    args.initial_voxel_size = 4.0;
+}
+
 fn main() {
     // // TODO: Just testing PG sampling
     // {
@@ -390,10 +405,10 @@ fn main() {
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
 
-    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8)
+    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8) + (args.merscope as u8)
         > 1
     {
-        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish can be set");
+        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope can be set");
     }
 
     if args.xenium {
@@ -409,7 +424,12 @@ fn main() {
     }
 
     if args.merfish {
+        println!("WARNING: --merfish is deprecated, use --merscope instead")
         set_merfish_presets(&mut args);
+    }
+
+    if args.merscope {
+        set_merscope_presets(&mut args);
     }
 
     if args.recorded_samples > *args.schedule.last().unwrap() {

@@ -152,6 +152,7 @@ It will automatically scale the data to micrometers.
 
 # Running on MERSCOPE datasets
 
-No special considerations are needed for MERSCOPE data. Simply use the `--merfish` argument.
+No special considerations are needed for MERSCOPE data. Simply use the
+`--merscope` argument with the `detected_transcripts.csv.gz` file.
 
 
