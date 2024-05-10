@@ -25,9 +25,15 @@ pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
 // use std::time::Instant;
 
+fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
+    return MultiPolygon::from_iter(
+        multipoly
+            .iter()
+            .map(|poly| Polygon::new(poly.exterior().clone(), vec![])));
+}
+
 // taken from: https://github.com/a-b-street/abstreet
-fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32> {
-    // TODO Not sure why this happened, or if this is really valid to construct...
+fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>, no_interiors: bool) -> MultiPolygon<f32> {
     if list.is_empty() {
         return MultiPolygon(Vec::new());
     }
@@ -35,6 +41,10 @@ fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>) -> MultiPolygon<f32>
     let mut result = geo::MultiPolygon(vec![list.pop().unwrap()]);
     for p in list {
         result = result.union(&p.into());
+
+        if no_interiors {
+            result = drop_interiors(result);
+        }
     }
     result
 }
@@ -841,8 +851,7 @@ impl VoxelSampler {
                 for (_k, poly) in polys {
                     flat_polys.extend(poly.iter().cloned());
                 }
-
-                union_all_into_multipolygon(flat_polys)
+                union_all_into_multipolygon(flat_polys, true);
             })
             .collect();
 
