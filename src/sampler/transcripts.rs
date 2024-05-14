@@ -28,6 +28,8 @@ pub struct TranscriptDataset {
     pub nucleus_assignments: Vec<CellIndex>,
     pub cell_assignments: Vec<CellIndex>,
     pub nucleus_population: Vec<usize>,
+    pub fovs: Vec<u32>,
+    pub fov_names: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -101,6 +103,14 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     match col {
         Some(col) => col,
         None => panic!("Column '{}' not found in CSV file", column),
+    }
+}
+
+fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) -> Option<usize> {
+    if let Some(column) = column {
+        headers.iter().position(|x| x == column)
+    } else {
+        None
     }
 }
 
@@ -187,8 +197,8 @@ where
         String::new()
     };
 
-    let qv_col = qv_column.map(|qv_column| find_column(headers, &qv_column));
-    let fov_col = fov_column.map(|fov_column| find_column(headers, &fov_column));
+    let qv_col = find_optional_column(headers, &qv_column);
+    let fov_col = find_optional_column(headers, &fov_column);
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
@@ -299,6 +309,15 @@ where
     // let transcripts = ord.iter().map(|&i| transcripts[i]).collect::<Vec<_>>();
     // let mut cell_assignments = ord.iter().map(|&i| cell_assignments[i]).collect::<Vec<_>>();
 
+    let mut fov_names = vec![String::new(); fov_map.len().max(1)];
+    if fov_map.is_empty() {
+        fov_names[0] = String::from("0");
+    } else {
+        for (fov_name, fov) in fov_map {
+            fov_names[fov as usize] = fov_name;
+        }
+    }
+
     let nucleus_population =
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
@@ -308,6 +327,8 @@ where
         nucleus_assignments,
         cell_assignments,
         nucleus_population,
+        fovs,
+        fov_names,
     }
 }
 
@@ -429,15 +450,17 @@ pub fn estimate_cell_centroids(
 }
 
 pub fn filter_cellfree_transcripts(
-    transcripts: &[Transcript],
-    nucleus_assignments: &[CellIndex],
-    cell_assignments: &[CellIndex],
+    // transcripts: &[Transcript],
+    // nucleus_assignments: &[CellIndex],
+    // cell_assignments: &[CellIndex],
+    dataset: &mut TranscriptDataset,
     ncells: usize,
     max_distance: f32,
-) -> (Vec<Transcript>, Vec<CellIndex>, Vec<CellIndex>) {
+) {
     let max_distance_squared = max_distance * max_distance;
 
-    let centroids = estimate_cell_centroids(transcripts, nucleus_assignments, ncells);
+    let centroids = estimate_cell_centroids(
+        &dataset.transcripts, &dataset.nucleus_assignments, ncells);
     let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
     for (i, (x, y)) in centroids.iter().enumerate() {
         if !x.is_finite() || !y.is_finite() {
@@ -446,8 +469,8 @@ pub fn filter_cellfree_transcripts(
         kdtree.add(&[*x, *y], i as u32);
     }
 
-    let mut mask = vec![false; transcripts.len()];
-    for (i, t) in transcripts.iter().enumerate() {
+    let mut mask = vec![false; dataset.transcripts.len()];
+    for (i, t) in dataset.transcripts.iter().enumerate() {
         let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
 
         if d <= max_distance_squared {
@@ -455,31 +478,39 @@ pub fn filter_cellfree_transcripts(
         }
     }
 
-    let filtered_transcripts = transcripts
-        .iter()
-        .zip(mask.iter())
-        .filter(|(_, &m)| m)
-        .map(|(t, _)| t)
-        .cloned()
-        .collect::<Vec<_>>();
-    let filtered_nucleus_assignments = nucleus_assignments
-        .iter()
-        .zip(mask.iter())
-        .filter(|(_, &m)| m)
-        .map(|(t, _)| t)
-        .cloned()
-        .collect::<Vec<_>>();
-    let filtered_cell_assignments = cell_assignments
-        .iter()
-        .zip(mask.iter())
-        .filter(|(_, &m)| m)
-        .map(|(t, _)| t)
-        .cloned()
-        .collect::<Vec<_>>();
+    dataset.transcripts.clone_from(
+        &dataset.transcripts
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &m)| m)
+            .map(|(t, _)| t)
+            .cloned()
+            .collect::<Vec<_>>());
 
-    (
-        filtered_transcripts,
-        filtered_nucleus_assignments,
-        filtered_cell_assignments,
-    )
+    dataset.nucleus_assignments.clone_from(
+        &dataset.nucleus_assignments
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &m)| m)
+            .map(|(t, _)| t)
+            .cloned()
+            .collect::<Vec<_>>());
+
+    dataset.cell_assignments.clone_from(
+        &dataset.cell_assignments
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &m)| m)
+            .map(|(t, _)| t)
+            .cloned()
+            .collect::<Vec<_>>());
+
+    dataset.fovs.clone_from(
+        &dataset.fovs
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &m)| m)
+            .map(|(t, _)| t)
+            .cloned()
+            .collect::<Vec<_>>());
 }

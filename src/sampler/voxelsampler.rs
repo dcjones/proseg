@@ -851,7 +851,7 @@ impl VoxelSampler {
                 for (_k, poly) in polys {
                     flat_polys.extend(poly.iter().cloned());
                 }
-                union_all_into_multipolygon(flat_polys, true);
+                union_all_into_multipolygon(flat_polys, true)
             })
             .collect();
 

@@ -1,3 +1,10 @@
+
+# 1.0.4
+
+  - Include fov in transcript metadata and cell metadata (Issue #6)
+  - Read fov column from more recent Xenium data
+  - Remove polygon interiors that form when flattening polygons into 2D.
+
 # 1.0.3
 
   - Include a `--merscope` preset to work with MERSCOPE `detected_transcripts.csv.gz`

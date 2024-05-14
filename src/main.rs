@@ -309,14 +309,10 @@ fn set_xenium_presets(args: &mut Args) {
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
 
-    // Xenium coordinates are in microns.
-    args.initial_voxel_size = 4.0;
+    // newer xenium data does have a fov column
+    args.fov_column.get_or_insert(String::from("fov_name"));
 
-    // TODO: This is not a good thing to be doing, but I'm finding that I need
-    // to force the dispersion up to get good results on some of the data.
-    // args.dispersion.get_or_insert(40.0);
-    // args.dispersion.get_or_insert(20.0);
-    // args.dispersion.get_or_insert(10.0);
+    args.initial_voxel_size = 4.0;
 }
 
 fn set_cosmx_presets(args: &mut Args) {
@@ -497,30 +493,12 @@ fn main() {
         t.z = t.z.max(zmin).min(zmax);
     }
 
-    // // TODO: debugging
-    // for t in &mut transcripts {
-    //     let rng = &mut rand::thread_rng();
-    //     // if rng.gen::<f64>() < 0.95 {
-    //         t.z = 0.0;
-    //     // }
-    // }
-
     let mut ncells = dataset.nucleus_population.len();
-    let (filtered_transcripts, filtered_nucleus_assignments, filtered_cell_assignments) =
-        filter_cellfree_transcripts(
-            &dataset.transcripts,
-            &dataset.nucleus_assignments,
-            &dataset.cell_assignments,
-            ncells,
-            args.max_transcript_nucleus_distance,
-        );
-    dataset.transcripts.clone_from(&filtered_transcripts);
-    dataset
-        .nucleus_assignments
-        .clone_from(&filtered_nucleus_assignments);
-    dataset
-        .cell_assignments
-        .clone_from(&filtered_cell_assignments);
+    filter_cellfree_transcripts(
+        &mut dataset,
+        ncells,
+        args.max_transcript_nucleus_distance,
+    );
 
     // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
@@ -831,6 +809,9 @@ fn main() {
         args.output_cell_metadata_fmt,
         &params,
         &cell_centroids,
+        &cell_assignments,
+        &dataset.fovs,
+        &dataset.fov_names,
     );
     write_transcript_metadata(
         &args.output_transcript_metadata,
@@ -840,6 +821,8 @@ fn main() {
         &dataset.transcript_names,
         &cell_assignments,
         &params.transcript_state,
+        &dataset.fovs,
+        &dataset.fov_names,
     );
     write_gene_metadata(
         &args.output_gene_metadata,

@@ -10,6 +10,7 @@ use std::io::Write;
 use std::sync::Arc;
 use clap::ValueEnum;
 
+use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::transcripts::Transcript;
 use super::sampler::{ModelParams, TranscriptState};
@@ -273,18 +274,54 @@ pub fn write_component_params(
     }
 }
 
+
+// Assign cells to fovs by finding the most common transcript fov of the
+// assigned transcripts.
+fn cell_fov_vote(ncells: usize, nfovs: usize, cell_assignments: &[(u32, f32)], fovs: &[u32]) -> Vec<u32> {
+    let mut fov_votes = Array2::<u32>::zeros((ncells, nfovs));
+    for (fov, (cell, _)) in fovs.iter().zip(cell_assignments) {
+        if *cell != BACKGROUND_CELL {
+            fov_votes[[*cell as usize, *fov as usize]] += 1;
+        }
+    }
+
+    fov_votes
+        .outer_iter()
+        .map(|votes| {
+            let mut winner = u32::MAX;
+            let mut winner_count: u32 = 0;
+            for (fov, count) in votes.iter().enumerate() {
+                if *count > winner_count {
+                    winner_count = *count;
+                    winner = fov as u32;
+                }
+            }
+            winner
+        })
+        .collect::<Vec<u32>>()
+}
+
+
 pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: OutputFormat,
     params: &ModelParams,
     cell_centroids: &[(f32, f32, f32)],
+    cell_assignments: &[(u32, f32)],
+    fovs: &[u32],
+    fov_names: &[String],
 ) {
+    let ncells = cell_centroids.len();
+    let nfovs = fov_names.len();
+    let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
+
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::from(vec![
             Field::new("cell", DataType::UInt32, false),
             Field::new("centroid_x", DataType::Float32, false),
             Field::new("centroid_y", DataType::Float32, false),
             Field::new("centroid_z", DataType::Float32, false),
+            Field::new("fov", DataType::Utf8, true),
             Field::new("cluster", DataType::UInt16, false),
             Field::new("volume", DataType::Float32, false),
             Field::new("population", DataType::UInt64, false),
@@ -300,6 +337,15 @@ pub fn write_cell_metadata(
             )),
             Arc::new(array::Float32Array::from_values(
                 cell_centroids.iter().map(|(_, _, z)| *z),
+            )),
+            Arc::new(array::Utf8Array::<i32>::from_iter(
+                cell_fovs.iter().map(|fov|
+                    if *fov == u32::MAX {
+                        None
+                    } else {
+                        Some(fov_names[*fov as usize].clone())
+                    }
+                )
             )),
             Arc::new(array::UInt16Array::from_values(
                 params.z.iter().map(|&z| z as u16),
@@ -323,6 +369,7 @@ pub fn write_cell_metadata(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: OutputFormat,
@@ -331,7 +378,14 @@ pub fn write_transcript_metadata(
     transcript_names: &[String],
     cell_assignments: &[(u32, f32)],
     transcript_state: &Array1<TranscriptState>,
+    fovs: &[u32],
+    fov_names: &[String],
 ) {
+
+    dbg!(fovs.len());
+    dbg!(fov_names.len());
+    dbg!(transcripts.len());
+
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
             Field::new("transcript_id", DataType::UInt64, false),
@@ -342,6 +396,7 @@ pub fn write_transcript_metadata(
             Field::new("observed_y", DataType::Float32, false),
             Field::new("observed_z", DataType::Float32, false),
             Field::new("gene", DataType::Utf8, false),
+            Field::new("fov", DataType::Utf8, false),
             Field::new("assignment", DataType::UInt32, false),
             Field::new("probability", DataType::Float32, false),
             Field::new("background", DataType::UInt8, false),
@@ -374,6 +429,11 @@ pub fn write_transcript_metadata(
                 transcripts
                     .iter()
                     .map(|t| transcript_names[t.gene as usize].clone()),
+            )),
+            Arc::new(array::Utf8Array::<i32>::from_iter_values(
+                fovs
+                    .iter()
+                    .map(|fov| fov_names[*fov as usize].clone())
             )),
             Arc::new(array::UInt32Array::from_values(
                 cell_assignments.iter().map(|(cell, _)| *cell),
