@@ -28,18 +28,18 @@ function main()
 
     output_filename = args["output"]
 
-    config_filename = glob("$(path)/S0/*/RunSummary/*_ExptConfig.txt")[1]
+    config_filename = glob("S0/*/RunSummary/*_ExptConfig.txt", path)[1]
     println("Config filename: ", config_filename)
     width, height, pixel_size = read_image_size(config_filename)
     println("Image size: $(width)μm × $(height)μm")
     println("Pixel size: $(pixel_size)μm")
 
-    fov_filename = glob("$(path)/S0/*/RunSummary/latest.fovs.csv")[1]
+    fov_filename = glob("S0/*/RunSummary/latest.fovs.csv", path)[1]
     println("FOV filename: ", fov_filename)
     fovs = read_fov_positions(fov_filename)
     println("Coordinates found for $(length(fovs)) FOVs")
 
-    fov_paths = glob("$(path)/S0/*/AnalysisResults/*/FOV*")
+    fov_paths = glob("S0/*/AnalysisResults/*/FOV*", path)
     println("Transcript info found for $(length(fov_paths)) FOVs")
 
     println("Processing FOVs...")
@@ -83,10 +83,10 @@ function read_fov_positions(fov_filename::String)
 end
 
 function compute_global_positions(fov_path::String, fov::Int, pixel_size::Float64, fovs::Dict)
-    filename = glob("$(fov_path)/*_complete_code_cell_target_call_coord.csv")[1]
+    filename = glob("*_complete_code_cell_target_call_coord.csv", fov_path)[1]
     df = CSV.read(filename, DataFrame)
 
-    df = df[:,[:fov, :CellId, :x, :y, :z,  :target, :CellComp]]
+    df = df[:,[:fov, :CellId, :x, :y, :z, :target, :CellComp]]
     rename!(df, [:fov, :cell_ID, :x_local_px, :y_local_px, :z, :target, :CellComp])
     @assert all(df.fov .== fov)
 
@@ -94,7 +94,7 @@ function compute_global_positions(fov_path::String, fov::Int, pixel_size::Float6
     x_fov, y_fov, z_fov = fovs[fov]
 
     x = df.x_local_px * pixel_size .- x_fov
-    y = df.y_local_px * pixel_size .+ y_fov
+    y = .-df.y_local_px * pixel_size .- y_fov
 
     insertcols!(df, :x => x, :y => y)
 
