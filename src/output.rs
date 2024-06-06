@@ -1,6 +1,7 @@
 use arrow2::array;
 use arrow2::chunk::Chunk;
 use arrow2::datatypes::{DataType, Field, Schema};
+use clap::ValueEnum;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
@@ -8,11 +9,10 @@ use ndarray::{Array1, Array2, Axis, Zip};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
-use clap::ValueEnum;
 
+use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::voxelsampler::VoxelSampler;
-use super::sampler::transcripts::Transcript;
 use super::sampler::{ModelParams, TranscriptState};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -30,7 +30,6 @@ pub fn write_table(
     schema: Schema,
     chunk: Chunk<Arc<dyn arrow2::array::Array>>,
 ) {
-
     let fmt = match fmt {
         OutputFormat::Infer => infer_format_from_filename(filename),
         _ => fmt,
@@ -126,7 +125,6 @@ where
 
     Ok(())
 }
-
 
 pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
     if filename.ends_with(".csv.gz") {
@@ -274,10 +272,14 @@ pub fn write_component_params(
     }
 }
 
-
 // Assign cells to fovs by finding the most common transcript fov of the
 // assigned transcripts.
-fn cell_fov_vote(ncells: usize, nfovs: usize, cell_assignments: &[(u32, f32)], fovs: &[u32]) -> Vec<u32> {
+fn cell_fov_vote(
+    ncells: usize,
+    nfovs: usize,
+    cell_assignments: &[(u32, f32)],
+    fovs: &[u32],
+) -> Vec<u32> {
     let mut fov_votes = Array2::<u32>::zeros((ncells, nfovs));
     for (fov, (cell, _)) in fovs.iter().zip(cell_assignments) {
         if *cell != BACKGROUND_CELL {
@@ -300,7 +302,6 @@ fn cell_fov_vote(ncells: usize, nfovs: usize, cell_assignments: &[(u32, f32)], f
         })
         .collect::<Vec<u32>>()
 }
-
 
 pub fn write_cell_metadata(
     output_cell_metadata: &Option<String>,
@@ -338,15 +339,15 @@ pub fn write_cell_metadata(
             Arc::new(array::Float32Array::from_values(
                 cell_centroids.iter().map(|(_, _, z)| *z),
             )),
-            Arc::new(array::Utf8Array::<i32>::from_iter(
-                cell_fovs.iter().map(|fov|
+            Arc::new(array::Utf8Array::<i32>::from_iter(cell_fovs.iter().map(
+                |fov| {
                     if *fov == u32::MAX {
                         None
                     } else {
                         Some(fov_names[*fov as usize].clone())
                     }
-                )
-            )),
+                },
+            ))),
             Arc::new(array::UInt16Array::from_values(
                 params.z.iter().map(|&z| z as u16),
             )),
@@ -381,7 +382,6 @@ pub fn write_transcript_metadata(
     fovs: &[u32],
     fov_names: &[String],
 ) {
-
     dbg!(fovs.len());
     dbg!(fov_names.len());
     dbg!(transcripts.len());
@@ -425,15 +425,13 @@ pub fn write_transcript_metadata(
             Arc::new(array::Float32Array::from_values(
                 transcripts.iter().map(|t| t.z),
             )),
-            Arc::new(array::Utf8Array::<i32>::from_iter_values(
+            Arc::new(array::Utf8Array::<i64>::from_iter_values(
                 transcripts
                     .iter()
                     .map(|t| transcript_names[t.gene as usize].clone()),
             )),
-            Arc::new(array::Utf8Array::<i32>::from_iter_values(
-                fovs
-                    .iter()
-                    .map(|fov| fov_names[*fov as usize].clone())
+            Arc::new(array::Utf8Array::<i64>::from_iter_values(
+                fovs.iter().map(|fov| fov_names[*fov as usize].clone()),
             )),
             Arc::new(array::UInt32Array::from_values(
                 cell_assignments.iter().map(|(cell, _)| *cell),

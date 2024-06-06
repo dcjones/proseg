@@ -1,4 +1,9 @@
 
+# 1.0.5
+
+  - Fix overflow error generating transcript metadata table with large number
+    of transcripts. (Fixes #12)
+
 # 1.0.4
 
   - Include fov in transcript metadata and cell metadata (Issue #6)
