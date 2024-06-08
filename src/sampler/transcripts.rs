@@ -4,8 +4,9 @@ use flate2::read::MultiGzDecoder;
 use itertools::izip;
 use kiddo::float::kdtree::KdTree;
 use kiddo::SquaredEuclidean;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::str;
@@ -38,9 +39,36 @@ pub struct TranscriptDataset {
     pub fov_names: Vec<String>,
 }
 
+impl TranscriptDataset {
+    pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
+        // Current heuristic is just to select the highest expression genes.
+        let mut gene_counts = Array1::<u32>::zeros(self.transcript_names.len());
+        for transcript in self.transcripts.iter() {
+            gene_counts[transcript.gene as usize] += 1;
+        }
+
+        let mut ord = (0..self.transcript_names.len()).collect::<Vec<_>>();
+        ord.sort_unstable_by(|&i, &j| gene_counts[i].cmp(&gene_counts[j]).reverse());
+
+        let mut rev_ord = vec![0; ord.len()];
+        for (i, j) in ord.iter().enumerate() {
+            rev_ord[*j] = i;
+        }
+
+        self.transcript_names = ord
+            .iter()
+            .map(|&i| self.transcript_names[i].clone())
+            .collect();
+        for transcript in self.transcripts.iter_mut() {
+            transcript.gene = rev_ord[transcript.gene as usize] as u32;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_csv(
     path: &str,
+    excluded_genes: Option<Regex>,
     transcript_column: &str,
     id_column: Option<String>,
     compartment_column: Option<String>,
@@ -55,7 +83,7 @@ pub fn read_transcripts_csv(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    no_z_column: bool,
+    ignore_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
@@ -65,6 +93,7 @@ pub fn read_transcripts_csv(
             let mut rdr = csv::Reader::from_path(path).unwrap();
             read_transcripts_csv_xyz(
                 &mut rdr,
+                excluded_genes,
                 transcript_column,
                 id_column,
                 compartment_column,
@@ -79,7 +108,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                no_z_column,
+                ignore_z_column,
                 coordinate_scale,
             )
         }
@@ -87,6 +116,7 @@ pub fn read_transcripts_csv(
             let mut rdr = csv::Reader::from_reader(MultiGzDecoder::new(File::open(path).unwrap()));
             read_transcripts_csv_xyz(
                 &mut rdr,
+                excluded_genes,
                 transcript_column,
                 id_column,
                 compartment_column,
@@ -101,12 +131,13 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                no_z_column,
+                ignore_z_column,
                 coordinate_scale,
             )
         }
         OutputFormat::Parquet => read_xenium_transcripts_parquet(
             path,
+            excluded_genes,
             transcript_column,
             &id_column.unwrap(),
             &compartment_column.unwrap(),
@@ -119,7 +150,7 @@ pub fn read_transcripts_csv(
             y_column,
             z_column,
             min_qv,
-            no_z_column,
+            ignore_z_column,
             coordinate_scale,
         ),
         OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
@@ -188,7 +219,7 @@ fn postprocess_cell_assignments(
 #[allow(clippy::too_many_arguments)]
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
-
+    excluded_genes: Option<Regex>,
     transcript_column: &str,
     id_column: Option<String>,
     compartment_column: Option<String>,
@@ -276,6 +307,12 @@ where
         };
 
         let transcript_name = &row[transcript_col];
+
+        if let Some(excluded_genes) = &excluded_genes {
+            if excluded_genes.is_match(transcript_name) {
+                continue;
+            }
+        }
 
         let gene = if let Some(gene) = transcript_name_map.get(transcript_name) {
             *gene
@@ -388,6 +425,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn read_xenium_transcripts_parquet(
     filename: &str,
+    excluded_genes: Option<Regex>,
     transcript_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,
@@ -421,6 +459,7 @@ fn read_xenium_transcripts_parquet(
             read_xenium_transcripts_parquet_str_type::<arrow::array::StringArray>(
                 rdr,
                 schema,
+                excluded_genes,
                 transcript_col_name,
                 id_col_name,
                 compartment_col_name,
@@ -441,6 +480,7 @@ fn read_xenium_transcripts_parquet(
             read_xenium_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
                 rdr,
                 schema,
+                excluded_genes,
                 transcript_col_name,
                 id_col_name,
                 compartment_col_name,
@@ -465,6 +505,7 @@ fn read_xenium_transcripts_parquet(
 fn read_xenium_transcripts_parquet_str_type<T>(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
+    excluded_genes: Option<Regex>,
     transcript_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,
@@ -585,6 +626,12 @@ where
 
             if qv < min_qv {
                 continue;
+            }
+
+            if let Some(excluded_genes) = &excluded_genes {
+                if excluded_genes.is_match(transcript) {
+                    continue;
+                }
             }
 
             let fov = match fov_map.get(fov) {

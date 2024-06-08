@@ -9,7 +9,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 // use arrow;
 use geo::geometry::{MultiPolygon, Polygon};
 use itertools::Itertools;
-use ndarray::Array2;
+use ndarray::{Array2, Zip};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -500,8 +500,6 @@ impl VoxelSampler {
             }
         }
 
-        params.recompute_counts(transcripts);
-
         // for (transcript, &cell) in transcripts.iter().zip(params.cell_assignments.iter()) {
         //     // let position = clip_z_position(
         //     //     (transcript.x, transcript.y, transcript.z), zmin, zmax);
@@ -550,6 +548,7 @@ impl VoxelSampler {
         sampler.recompute_cell_population();
         sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
+        params.effective_cell_volume.assign(&params.cell_volume);
         sampler.populate_mismatches();
         sampler.update_transcript_positions(
             &vec![true; transcripts.len()],
@@ -705,6 +704,14 @@ impl VoxelSampler {
             assert!(*cell_volume > 0.0);
             *cell_volume = cell_volume.max(priors.min_cell_volume);
         }
+
+        Zip::from(&mut params.log_cell_volume)
+            .and(&params.cell_volume)
+            .into_par_iter()
+            .with_min_len(50)
+            .for_each(|(log_volume, &volume)| {
+                *log_volume = volume.ln();
+            });
     }
 
     fn recompute_cell_population(&mut self) {
@@ -1407,6 +1414,7 @@ impl Sampler<VoxelProposal> for VoxelSampler {
     }
 
     fn update_transcript_positions(&mut self, updated: &[bool], positions: &[(f32, f32, f32)]) {
+        // let t0 = Instant::now();
         self.transcript_voxels
             .par_iter_mut()
             .zip(positions)
@@ -1417,9 +1425,12 @@ impl Sampler<VoxelProposal> for VoxelSampler {
                     *voxel = self.chunkquad.layout.world_pos_to_voxel(position);
                 }
             });
+        // println!("    REPO: compute voxels {:?}", t0.elapsed());
 
+        // let t0 = Instant::now();
         self.transcript_voxel_ord
-            .par_sort_unstable_by_key(|&t| self.transcript_voxels[t]);
+            .par_sort_by_key(|&t| self.transcript_voxels[t]);
+        // println!("    REPO: sort on voxel assignment {:?}", t0.elapsed());
     }
 
     // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {

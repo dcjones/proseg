@@ -13,6 +13,7 @@ use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
+use regex::Regex;
 use sampler::transcripts::{
     coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
     CellIndex, Transcript, BACKGROUND_CELL,
@@ -60,6 +61,10 @@ struct Args {
     /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
+
+    /// Regex pattern matching names of genes/features to be excluded
+    #[arg(long, default_value = None)]
+    excluded_genes: Option<String>,
 
     /// Initialize with cell assignments rather than nucleus assignments
     #[arg(long, default_value_t = false)]
@@ -123,7 +128,7 @@ struct Args {
 
     /// Ignore the z coordinate if any, treating the data as 2D
     #[arg(long, default_value_t = false)]
-    no_z_coord: bool,
+    ignore_z_coord: bool,
 
     /// Filter out transcripts with quality values below this threshold
     #[arg(long, default_value_t = 0.0_f32)]
@@ -138,6 +143,10 @@ struct Args {
     /// Number of components in the mixture model of cellular gene expression
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
+
+    /// Dimenionality of the latent space
+    #[arg(long, default_value_t = 100)]
+    nhidden: usize,
 
     /// Number of z-axis layers used to model background expression
     #[arg(long, default_value_t = 4)]
@@ -257,10 +266,9 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_rates_fmt: OutputFormat,
 
-    /// Output per-component parameter values
-    #[arg(long, default_value = None)]
-    output_component_params: Option<String>,
-
+    // /// Output per-component parameter values
+    // #[arg(long, default_value = None)]
+    // output_component_params: Option<String>,
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_component_params_fmt: OutputFormat,
 
@@ -291,6 +299,20 @@ struct Args {
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_gene_metadata_fmt: OutputFormat,
+
+    /// Output cell metagene rates
+    #[arg(long, default_value=None)]
+    output_metagene_rates: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_metagene_rates_fmt: OutputFormat,
+
+    /// Output metagene loadings
+    #[arg(long, default_value=None)]
+    output_metagene_loadings: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_metagene_loadings_fmt: OutputFormat,
 
     /// Output a table of each voxel in each cell
     #[arg(long, default_value=None)]
@@ -323,6 +345,30 @@ struct Args {
     /// Use connectivity checks to prevent cells from having any disconnected voxels
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
+
+    #[arg(long, default_value_t = 300)]
+    nunfactored: usize,
+
+    /// Disable factorization model and use genes directly
+    #[arg(long, default_value_t = false)]
+    no_factorization: bool,
+
+    /// Disable cell scale factors
+    #[arg(long, default_value_t = false)]
+    no_cell_scales: bool,
+
+    // Hyperparameters
+    #[arg(long, default_value_t = 1.0)]
+    hyperparam_e_phi: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    hyperparam_f_phi: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    hyperparam_neg_mu_phi: f32,
+
+    #[arg(long, default_value_t = 0.1)]
+    hyperparam_tau_phi: f32,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -339,6 +385,9 @@ fn set_xenium_presets(args: &mut Args) {
     args.cell_id_unassigned
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
+    args.excluded_genes.get_or_insert(String::from(
+        "^(Deprecated|NegControl|Unassigned|Intergenic)",
+    ));
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
@@ -406,9 +455,10 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.z_column.get_or_insert(String::from("z")); // ignored
     args.cell_id_column.get_or_insert(String::from("cell"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.initial_voxel_size = Some(4.0);
+    args.initial_voxel_size = Some(1.0);
     args.voxel_layers = 1;
-    args.no_z_coord = true;
+    args.nbglayers = 1;
+    args.ignore_z_coord = true;
 
     // TODO: This is the resolution on the one dataset I have. It probably
     // doesn't generalize.
@@ -506,8 +556,11 @@ fn main() {
     mut cell_assignments,
     mut nucleus_population) = */
 
+    let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
+
     let mut dataset = read_transcripts_csv(
         &args.transcript_csv,
+        excluded_genes,
         &expect_arg(args.gene_column, "gene-column"),
         args.transcript_id_column,
         args.compartment_column,
@@ -522,9 +575,21 @@ fn main() {
         &expect_arg(args.y_column, "y-column"),
         &expect_arg(args.z_column, "z-column"),
         args.min_qv,
-        args.no_z_coord,
+        args.ignore_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
     );
+
+    if !args.no_factorization {
+        dataset.select_unfactored_genes(args.nunfactored);
+    }
+
+    // let cd3e_idx = dataset
+    //     .transcript_names
+    //     .iter()
+    //     .position(|gene| gene == "CXCL6")
+    //     .unwrap();
+    // dbg!(cd3e_idx);
+    // panic!();
 
     // Warn if any nucleus has extremely high population, which is likely
     // an error interpreting the file.
@@ -654,6 +719,8 @@ fn main() {
             Some(args.burnin_dispersion)
         },
 
+        use_cell_scales: !args.no_cell_scales,
+
         min_cell_volume,
 
         μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
@@ -661,12 +728,26 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
-        e_r: 1.0,
+        use_factorization: !args.no_factorization,
 
-        e_h: 1.0,
-        f_h: 1.0,
+        // TODO: mean/var ratio is always 1/fφ, but that doesn't seem like the whole
+        // story. Seems like it needs to change as a function of the dimensionality
+        // of the latent space.
 
-        γ: 1.0,
+        // I also don't know if this "severe prior" approach is going to work in
+        // the long run because we may have far more cells. Needs more testing.
+        // eφ: 1000.0,
+        // fφ: 1.0,
+
+        // μφ: -20.0,
+        // τφ: 0.1,
+        αθ: 1e-1,
+
+        eφ: args.hyperparam_e_phi,
+        fφ: args.hyperparam_f_phi,
+
+        μφ: -args.hyperparam_neg_mu_phi,
+        τφ: args.hyperparam_tau_phi,
 
         α_bg: 1.0,
         β_bg: 1.0,
@@ -692,6 +773,8 @@ fn main() {
         σ_z_diffusion_proposal: 0.2 * zspan,
         σ_z_diffusion: 0.2 * zspan,
 
+        τv: 10.0,
+
         zmin,
         zmax,
 
@@ -709,6 +792,8 @@ fn main() {
         &dataset.nucleus_population,
         &dataset.cell_assignments,
         args.ncomponents,
+        args.nhidden,
+        args.nunfactored,
         args.nbglayers,
         ncells,
         ngenes,
@@ -736,7 +821,9 @@ fn main() {
         initial_voxel_size,
         chunk_size,
     ));
-    sampler.borrow_mut().initialize(&priors, &mut params);
+    sampler
+        .borrow_mut()
+        .initialize(&priors, &mut params, &dataset.transcripts);
 
     let mut total_steps = 0;
 
@@ -856,12 +943,12 @@ fn main() {
         &params,
         &dataset.transcript_names,
     );
-    write_component_params(
-        &args.output_component_params,
-        args.output_component_params_fmt,
-        &params,
-        &dataset.transcript_names,
-    );
+    // write_component_params(
+    //     &args.output_component_params,
+    //     args.output_component_params_fmt,
+    //     &params,
+    //     &dataset.transcript_names,
+    // );
     write_cell_metadata(
         &args.output_cell_metadata,
         args.output_cell_metadata_fmt,
@@ -889,6 +976,17 @@ fn main() {
         &params,
         &dataset.transcript_names,
         &ecounts,
+    );
+    write_metagene_rates(
+        &args.output_metagene_rates,
+        args.output_metagene_rates_fmt,
+        &params.φ,
+    );
+    write_metagene_loadings(
+        &args.output_metagene_loadings,
+        args.output_metagene_loadings_fmt,
+        &dataset.transcript_names,
+        &params.θ,
     );
     write_voxels(
         &args.output_cell_voxels,
@@ -935,6 +1033,7 @@ fn run_hexbin_sampler(
     for _ in 0..niter {
         // sampler.check_perimeter_bounds(priors);
 
+        // let t0 = std::time::Instant::now();
         if sample_cell_regions {
             // let t0 = std::time::Instant::now();
             for _ in 0..local_steps_per_iter {
@@ -942,16 +1041,17 @@ fn run_hexbin_sampler(
                     priors,
                     params,
                     &mut proposal_stats,
-                    transcripts,
                     hillclimb,
                     &mut uncertainty,
                 );
             }
             // println!("Sample cell regions: {:?}", t0.elapsed());
         }
+        // println!("Sample cell regions: {:?}", t0.elapsed());
+
         // let t0 = std::time::Instant::now();
         sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
-        // println!("Sample parameters: {:?}", t0.elapsed());
+        // println!("Sample global parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();
         let nforeground = params.nforeground();
