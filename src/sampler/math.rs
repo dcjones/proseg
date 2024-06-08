@@ -2,6 +2,7 @@
 use libm::lgammaf;
 use rand::rngs::ThreadRng;
 use rand::Rng;
+use rand_distr::StandardNormal;
 
 // pub fn logit(p: f32) -> f32 {
 //     return p.ln() - (1.0 - p).ln();
@@ -80,6 +81,10 @@ pub fn negbin_logpmf_fast(
             // + (k as f32) * p.ln() + r * (1.0 - p).ln()
             + (k as f32) * p.ln() + r * (-p).ln_1p()
     }
+}
+
+pub fn randn(rng: &mut ThreadRng) -> f32 {
+    return rng.sample::<f32, StandardNormal>(StandardNormal);
 }
 
 pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {

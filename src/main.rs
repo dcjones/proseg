@@ -134,6 +134,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
+    /// Dimenionality of the latent space
+    #[arg(long, default_value_t = 10)]
+    nhidden: usize,
+
     /// Number of z-axis layers used to model background expression
     #[arg(long, default_value_t = 4)]
     nbglayers: usize,
@@ -668,6 +672,9 @@ fn main() {
         e_h: 1.0,
         f_h: 1.0,
 
+        e_γ: 1.0,
+        f_γ: 1.0,
+
         γ: 1.0,
 
         α_bg: 1.0,
@@ -711,6 +718,7 @@ fn main() {
         &dataset.nucleus_population,
         &dataset.cell_assignments,
         args.ncomponents,
+        args.nhidden,
         args.nbglayers,
         ncells,
         ngenes,
@@ -858,12 +866,12 @@ fn main() {
         &params,
         &dataset.transcript_names,
     );
-    write_component_params(
-        &args.output_component_params,
-        args.output_component_params_fmt,
-        &params,
-        &dataset.transcript_names,
-    );
+    // write_component_params(
+    //     &args.output_component_params,
+    //     args.output_component_params_fmt,
+    //     &params,
+    //     &dataset.transcript_names,
+    // );
     write_cell_metadata(
         &args.output_cell_metadata,
         args.output_cell_metadata_fmt,
