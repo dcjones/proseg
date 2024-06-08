@@ -37,7 +37,7 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-// use std::time::Instant;
+use std::time::Instant;
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -1399,7 +1399,7 @@ where
             .and(params.θ.rows())
             .par_for_each(|mut Σθ_g, θ_g| {
                 let θ_g = θ_g.insert_axis(Axis(1));
-                general_mat_mul(1.0, &θ_g.t(), &θ_g, 0.0, &mut Σθ_g);
+                general_mat_mul(1.0, &θ_g, &θ_g.t(), 0.0, &mut Σθ_g);
             });
 
         // compute Σφ and μφ then sample φ
@@ -1460,7 +1460,7 @@ where
             .for_each(|γ_k, θ_k| {
                 let dist = Gamma::new(
                     priors.e_γ + ngenes as f32 / 2.0,
-                    (priors.f_γ + θ_k.sum() / 2.0).recip(),
+                    (priors.f_γ + θ_k.iter().map(|&θ_gk| θ_gk * θ_gk).sum::<f32>() / 2.0).recip(),
                 )
                 .unwrap();
                 *γ_k = dist.sample(&mut rng);
@@ -1471,7 +1471,7 @@ where
             .and(params.φ.rows())
             .par_for_each(|mut Σφ_c, φ_c| {
                 let φ_c = φ_c.insert_axis(Axis(1));
-                general_mat_mul(1.0, &φ_c.t(), &φ_c, 0.0, &mut Σφ_c);
+                general_mat_mul(1.0, &φ_c, &φ_c.t(), 0.0, &mut Σφ_c);
             });
 
         // compute Σθ and μθ then sample θ
@@ -1528,6 +1528,14 @@ where
         // ψ = φ θ^T + log(v)
         Zip::from(params.ψ.columns_mut()).for_each(|mut ψ_g| ψ_g.assign(&params.cell_log_volume));
         general_mat_mul(1.0, &params.φ, &params.θ.t(), 1.0, &mut params.ψ);
+
+        let mut ω_min = std::f32::MAX;
+        let mut ω_max = std::f32::MIN;
+        for ω_cg in &params.ω {
+            ω_min = ω_min.min(*ω_cg);
+            ω_max = ω_max.max(*ω_cg);
+        }
+        dbg!(ω_min, ω_max);
     }
 
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
@@ -1553,10 +1561,20 @@ where
                         .sum::<u32>();
 
                     // summing log(1 - p_cg)
-                    let v = ψ_g
-                        .iter()
-                        .map(|ψ_cg| -ψ_cg - log1pf((-ψ_cg).exp()))
-                        .sum::<f32>();
+                    // let v = ψ_g
+                    //     .iter()
+                    //     .map(|ψ_cg| -ψ_cg - log1pf((-ψ_cg).exp()))
+                    //     .sum::<f32>();
+
+                    let mut v = 0.0;
+                    for ψ_cg in ψ_g {
+                        v += -ψ_cg - log1pf((-ψ_cg).exp());
+                        if !v.is_finite() {
+                            dbg!(v, ψ_cg);
+                        }
+                    }
+
+                    // TODO: error here when v going to negative infinity somehow
 
                     let dist = Gamma::new(priors.e_r + l_g as f32, (params.h - v).recip());
                     if dist.is_err() {
@@ -1567,15 +1585,37 @@ where
                     assert!(r_g.is_finite());
                     *r_g = r_g.max(2e-4);
                 });
+
+            let mut r_min = std::f32::MAX;
+            let mut r_max = std::f32::MIN;
+            for r_cg in &params.r {
+                r_min = r_min.min(*r_cg);
+                r_max = r_max.max(*r_cg);
+            }
+            dbg!(r_min, r_max);
         }
     }
 
     fn sample_nb_params(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
+        let t0 = Instant::now();
         self.sample_ω(params);
+        println!("  sample_ω: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         self.sample_φ(params);
+        println!("  sample_φ: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         self.sample_θ(priors, params);
+        println!("  sample_θ: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         self.compute_ψ(params);
+        println!("  compute_ψ: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         self.sample_r(priors, params, burnin);
+        println!("  sample_r: {:?}", t0.elapsed());
 
         // params.h = 0.1;
         params.h = Gamma::new(
