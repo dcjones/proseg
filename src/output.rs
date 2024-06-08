@@ -259,6 +259,7 @@ pub fn write_cell_metadata(
     fovs: &[u32],
     fov_names: &[String],
 ) {
+    // TODO: write factorization
     let ncells = cell_centroids.len();
     let nfovs = fov_names.len();
     let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
@@ -450,6 +451,7 @@ pub fn write_gene_metadata(
     transcript_names: &[String],
     expected_counts: &Array2<f32>,
 ) {
+    // TODO: write factorization
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),
