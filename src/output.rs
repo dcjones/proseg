@@ -488,21 +488,14 @@ pub fn write_gene_metadata(
         ];
 
         // cell type dispersions
-        for i in 0..params.ncomponents() {
-            schema_fields.push(Field::new(
-                &format!("dispersion_{}", i),
-                DataType::Float32,
-                false,
-            ));
-            columns.push(Arc::new(
-                params
-                    .r
-                    .row(i)
-                    .iter()
-                    .cloned()
-                    .collect::<arrow::array::Float32Array>(),
-            ));
-        }
+        schema_fields.push(Field::new("dispersion", DataType::Float32, false));
+        columns.push(Arc::new(
+            params
+                .r
+                .iter()
+                .cloned()
+                .collect::<arrow::array::Float32Array>(),
+        ));
 
         // cell type rates
         for i in 0..params.ncomponents() {
