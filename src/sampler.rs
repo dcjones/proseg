@@ -12,7 +12,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::{lgammaf, log1pf};
+use libm::{lgammaf, log1p, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
@@ -205,7 +205,7 @@ pub struct ModelParams {
     ω: Array2<f32>,
 
     // [ncells, nhidden]: cell ψ parameter in the latent space
-    φ: Array2<f32>,
+    pub φ: Array2<f32>,
 
     // [ncells, nhidden, hidden]: φ posterior covariance matrices (and temporary space to compute φφ^T products)
     Σφ: Array3<f32>,
@@ -214,7 +214,7 @@ pub struct ModelParams {
     μφ: Array2<f32>,
 
     // [ngenes, nhidden]: gene loadings in the latent space
-    θ: Array2<f32>,
+    pub θ: Array2<f32>,
 
     // [ngenes, nhidden, nhidden]: θ posterior covariance matrices (and temporary space to compute θθ^T products)
     Σθ: Array3<f32>,
@@ -1056,7 +1056,8 @@ where
             });
 
         // get to a reasonably high probability assignment
-        for _ in 0..40 {
+        // for _ in 0..40 {
+        for _ in 0..2 {
             self.sample_nb_params(priors, params, true);
         }
     }
@@ -1441,6 +1442,9 @@ where
                 // μφ_c = Σφ_c * μφ_c
                 general_mat_vec_mul(1.0, &Σφ_c, &μφ_c, 0.0, &mut φ_c);
                 μφ_c.assign(&φ_c);
+                // dbg!(x_c.sum(), &μφ_c);
+                //
+                // dbg!(x_c.sum(), &Σφ_c);
 
                 // Sample φ_c ~ N(μφ_c, Σφ_c)
                 Σφ_c.cholesky_inplace(UPLO::Lower).unwrap();
@@ -1485,6 +1489,8 @@ where
                 Σθ_g.fill(0.0);
                 Σθ_g.diag_mut().assign(&params.γ);
 
+                // dbg!(Σθ_g.diag());
+
                 Zip::from(ω_g) // for every cell
                     .and(params.Σφ.outer_iter())
                     .for_each(|ω, Σφ_c| {
@@ -1499,6 +1505,8 @@ where
                 // space for this?
                 Σθ_g.assign(&Σθ_g.inv().unwrap());
 
+                // dbg!(&Σθ_g);
+
                 // compute mean parameters
                 μθ_g.fill(0.0);
                 Zip::from(params.φ.outer_iter())
@@ -1512,6 +1520,8 @@ where
                 // μθ_g = Σθ_g * μθ_g
                 general_mat_vec_mul(1.0, &Σθ_g, &μθ_g, 0.0, &mut θ_g);
                 μθ_g.assign(&θ_g);
+
+                // dbg!(&μθ_g);
 
                 // sample θ_g ~ N(μθ_g, Σθ_g)
                 Σθ_g.cholesky_inplace(UPLO::Lower).unwrap();
@@ -1568,10 +1578,13 @@ where
 
                     let mut v = 0.0;
                     for ψ_cg in ψ_g {
-                        v += -ψ_cg - log1pf((-ψ_cg).exp());
-                        if !v.is_finite() {
-                            dbg!(v, ψ_cg);
-                        }
+                        // if !(v + -ψ_cg - log1pf((-ψ_cg).exp())).is_finite() {
+                        //     dbg!(v, ψ_cg, log1pf((-ψ_cg).exp()));
+                        // }
+                        // v += -ψ_cg - log1pf((-ψ_cg).exp());
+                        // v += -ψ_cg - log1pf((-ψ_cg).exp());
+                        v += -ψ_cg - log1p((-ψ_cg as f64).exp()) as f32;
+                        assert!(v.is_finite());
                     }
 
                     // TODO: error here when v going to negative infinity somehow
@@ -1644,6 +1657,11 @@ where
                     // and
                     // ψ_cg = log(v_c / β_cg)
                     //
+                    // let dist = Gamma::new(α, β.recip());
+                    // if dist.is_err() {
+                    //     dbg!(α, β, x_cg.sum(), ψ_cg);
+                    // }
+
                     *λ_cg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) / cell_volume;
                     assert!(λ_cg.is_finite());
                 }
