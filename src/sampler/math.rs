@@ -8,6 +8,10 @@ use rand_distr::StandardNormal;
 //     return p.ln() - (1.0 - p).ln();
 // }
 
+pub fn sq(x: f32) -> f32 {
+    x * x
+}
+
 pub fn logistic(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
