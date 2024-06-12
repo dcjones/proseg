@@ -16,17 +16,14 @@ use libm::log1p;
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use math::{
-    logistic, lognormal_logpdf, negbin_logpmf_fast, normal_pdf, normal_x2_logpdf, normal_x2_pdf,
-    rand_crt, randn, sq, LogFactorial, LogGammaPlus,
-};
+use math::{lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, sq};
 use ndarray::linalg::{general_mat_mul, general_mat_vec_mul};
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use ndarray_linalg::cholesky::*;
 use ndarray_linalg::solve::Inverse;
 use polyagamma::PolyaGamma;
 use rand::{thread_rng, Rng};
-use rand_distr::{Dirichlet, Distribution, Gamma, Normal, Poisson, StandardNormal};
+use rand_distr::{Dirichlet, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1197,8 +1194,6 @@ where
         uncertainty: &mut Option<&mut UncertaintyTracker>,
         burnin: bool,
     ) {
-        let mut rng = thread_rng();
-
         // let t0 = Instant::now();
         self.sample_volume_params(priors, params);
         // println!("  Sample volume params: {:?}", t0.elapsed());
@@ -1396,6 +1391,7 @@ where
                 μ_φ_z_c.scaled_add(1.0, &φ_c);
             });
         dbg!(&params.component_population);
+        dbg!(&params.π);
 
         // sample from posterion gaussian
         let mut rng = thread_rng();
@@ -1508,7 +1504,7 @@ where
     }
 
     #[allow(non_snake_case)]
-    fn sample_φ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_φ(&mut self, params: &mut ModelParams) {
         // precompute θ_g θ_g^T for every gene
         Zip::from(params.Σθ.outer_iter_mut()) // for every gene
             .and(params.θ.rows())
@@ -1518,17 +1514,27 @@ where
             });
 
         // compute Σφ and μφ then sample φ
-        Zip::from(params.Σφ.outer_iter_mut()) // for every cell
+        Zip::indexed(params.Σφ.outer_iter_mut()) // for every cell
             .and(params.μφ.outer_iter_mut())
             .and(params.φ.outer_iter_mut())
             .and(params.ω.outer_iter())
-            .and(&params.cell_log_volume)
             .and(params.foreground_counts.outer_iter())
-            .par_for_each(|mut Σφ_c, mut μφ_c, mut φ_c, ω_c, logv_c, x_c| {
+            .par_for_each(|c, mut Σφ_c, mut μφ_c, mut φ_c, ω_c, x_c| {
+                // can't zip with enough arguments, so we're resorting to indexing
+                let logv_c = params.cell_log_volume[c];
+                let z_c = params.z[c] as usize;
+
+                let μ_φ_z_c = params.μ_φ.row(z_c);
+                let σ_φ_z_c = params.σ_φ.row(z_c);
+
                 // Compute precision matrix
                 Σφ_c.fill(0.0);
-                Σφ_c.diag_mut().fill(1.0);
-                // TODO: Fill diagonal with prior precision corresponding to this cells component
+                // Σφ_c.diag_mut().fill(1.0);
+                Zip::from(Σφ_c.diag_mut())
+                    .and(σ_φ_z_c)
+                    .for_each(|Σφ_ch, σ_φ_z_ch| {
+                        *Σφ_ch = sq(*σ_φ_z_ch).recip();
+                    });
 
                 Zip::from(ω_c) // for every cell
                     .and(params.Σθ.outer_iter())
@@ -1554,14 +1560,17 @@ where
                         let a = (x_cg.sum() as f32 - r_g) / 2.0 - ω_cg * logv_c;
                         μφ_c.scaled_add(a, &θ_g);
                     });
-                // TODO: Add to μφ_c prior precision matrix times prior mean vector
+
+                // add scaled component mean
+                Zip::from(&mut μφ_c).and(μ_φ_z_c).and(σ_φ_z_c).for_each(
+                    |μφ_ch, μ_φ_z_ch, σ_φ_z_ch| {
+                        *μφ_ch += *μ_φ_z_ch * sq(*σ_φ_z_ch).recip();
+                    },
+                );
 
                 // μφ_c = Σφ_c * μφ_c
                 general_mat_vec_mul(1.0, &Σφ_c, &μφ_c, 0.0, &mut φ_c);
                 μφ_c.assign(&φ_c);
-                // dbg!(x_c.sum(), &μφ_c);
-                //
-                // dbg!(x_c.sum(), &Σφ_c);
 
                 // Sample φ_c ~ N(μφ_c, Σφ_c)
                 Σφ_c.cholesky_inplace(UPLO::Lower).unwrap();
@@ -1571,8 +1580,6 @@ where
                 φ_c.assign(&μφ_c); // general_mat_vec_mul writes to μφ_c
             });
     }
-
-    fn sample_z(&mut self, params: &mut ModelParams) {}
 
     #[allow(non_snake_case)]
     fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1738,7 +1745,7 @@ where
         println!("  sample_ω: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_φ(priors, params);
+        self.sample_φ(params);
         println!("  sample_φ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
