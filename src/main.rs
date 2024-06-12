@@ -683,6 +683,10 @@ fn main() {
         α_c: 1.0,
         β_c: 1.0,
 
+        σ_μ_φ: 1.0,
+        α_σ_φ: 1.0,
+        β_σ_φ: 1.0,
+
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
 

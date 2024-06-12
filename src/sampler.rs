@@ -12,13 +12,13 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::{lgammaf, log1p, log1pf};
+use libm::log1p;
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{
     logistic, lognormal_logpdf, negbin_logpmf_fast, normal_pdf, normal_x2_logpdf, normal_x2_pdf,
-    rand_crt, randn, LogFactorial, LogGammaPlus,
+    rand_crt, randn, sq, LogFactorial, LogGammaPlus,
 };
 use ndarray::linalg::{general_mat_mul, general_mat_vec_mul};
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
@@ -26,7 +26,7 @@ use ndarray_linalg::cholesky::*;
 use ndarray_linalg::solve::Inverse;
 use polyagamma::PolyaGamma;
 use rand::{thread_rng, Rng};
-use rand_distr::{Dirichlet, Distribution, Gamma, Normal, StandardNormal};
+use rand_distr::{Dirichlet, Distribution, Gamma, Normal, Poisson, StandardNormal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -111,6 +111,12 @@ pub struct ModelPriors {
     pub α_c: f32,
     pub β_c: f32,
 
+    // gaussian prior on μ_φ
+    pub σ_μ_φ: f32,
+
+    pub α_σ_φ: f32,
+    pub β_σ_φ: f32,
+
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
     pub perimeter_bound: f32,
@@ -140,6 +146,7 @@ pub struct ModelPriors {
 }
 
 // Model global parameters.
+#[allow(non_snake_case)]
 pub struct ModelParams {
     pub transcript_positions: Vec<(f32, f32, f32)>,
     proposed_transcript_positions: Vec<(f32, f32, f32)>,
@@ -183,18 +190,18 @@ pub struct ModelParams {
     // [ngenes, nlayers] total gene occourance counts
     pub total_gene_counts: Array2<u32>,
 
-    // Not parameters, but needed for sampling global params
-    logfactorial: LogFactorial,
-
-    // TODO: This needs to be an matrix I guess!
-    loggammaplus: Array2<LogGammaPlus>,
-
     pub z: Array1<u32>, // assignment of cells to components
 
     component_population: Array1<u32>, // number of cells assigned to each component
 
     // thread-local space used for sampling z
     z_probs: ThreadLocal<RefCell<Vec<f64>>>,
+
+    // [ncomponents, nhidden]: mixture mean parameter
+    μ_φ: Array2<f32>,
+
+    // [ncomponents, nhidden]: mixture stddev parameters
+    σ_φ: Array2<f32>,
 
     π: Vec<f32>, // mixing proportions over components
 
@@ -231,18 +238,8 @@ pub struct ModelParams {
     // [ncells, ngenes] NB logit(p) parameters
     pub ψ: Array2<f32>,
 
-    // [ncomponents, ngenes] Parameters for sampling φ
-    μ_ψ: Array2<f32>,
-    σ_ψ: Array2<f32>,
-
     // [ngenes] NB r parameters.
     pub r: Array1<f32>,
-
-    // [ncomponents, ngenes] gamama parameters for sampling r
-    uv: Array2<(u32, f32)>,
-
-    // Precomputing lgamma(r)
-    lgamma_r: Array2<f32>,
 
     // // [ncomponents, ngenes] NB p parameters.
     // θ: Array2<f32>,
@@ -271,6 +268,7 @@ impl ModelParams {
     // initialize model parameters, with random cell assignments
     // and other parameterz unninitialized.
     #[allow(clippy::too_many_arguments)]
+    #[allow(non_snake_case)]
     pub fn new(
         priors: &ModelPriors,
         full_layer_volume: f32,
@@ -364,10 +362,6 @@ impl ModelParams {
         //     .collect::<Vec<_>>()
         //     .into();
 
-        let uv = Array2::<(u32, f32)>::from_elem((ncomponents, ngenes), (0_u32, 0_f32));
-        let lgamma_r = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
-        let loggammaplus =
-            Array2::<LogGammaPlus>::from_elem((ncomponents, ngenes), LogGammaPlus::default());
         let ω = Array2::<f32>::from_elem((ncells, ngenes), 0.0);
 
         let mut rng = rand::thread_rng();
@@ -383,13 +377,17 @@ impl ModelParams {
 
         let ψ = Array2::<f32>::from_elem((ncells, ngenes), 0.0);
 
-        let μ_ψ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
-        let σ_ψ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
+        // let μ_ψ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
+        // let σ_ψ = Array2::<f32>::from_elem((ncomponents, ngenes), 0.0);
 
         let transcript_state =
             Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
         let prev_transcript_state =
             Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
+
+        let z_probs = ThreadLocal::new();
+        let μ_φ = Array2::<f32>::from_elem((ncomponents, nhidden), 0.0);
+        let σ_φ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
 
         ModelParams {
             transcript_positions,
@@ -413,11 +411,11 @@ impl ModelParams {
             confusion_counts: Array1::<u32>::from_elem(ngenes, 0),
             background_counts: Array2::<u32>::from_elem((ngenes, nlayers), 0),
             total_gene_counts,
-            logfactorial: LogFactorial::new(),
-            loggammaplus,
             z,
             component_population: Array1::<u32>::from_elem(ncomponents, 0),
-            z_probs: ThreadLocal::new(),
+            z_probs,
+            μ_φ,
+            σ_φ,
             π: vec![1_f32 / (ncomponents as f32); ncomponents],
             μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
@@ -431,11 +429,7 @@ impl ModelParams {
             μθ,
             γ,
             ψ,
-            μ_ψ,
-            σ_ψ,
             r,
-            uv,
-            lgamma_r,
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ngenes, ncells), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
@@ -1052,7 +1046,7 @@ where
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // get to a reasonably high probability assignment
         // for _ in 0..40 {
-        for _ in 0..2 {
+        for _ in 0..10 {
             self.sample_nb_params(priors, params, true);
         }
     }
@@ -1222,33 +1216,14 @@ where
         self.sample_nb_params(priors, params, burnin);
         // println!("  Sample nb params: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
+        self.sample_component_params(priors, params);
+        println!("  compute_component_params: {:?}", t0.elapsed());
+
         // Sample λ
         // let t0 = Instant::now();
         self.sample_rates(priors, params);
         // println!("  Sample λ: {:?}", t0.elapsed());
-
-        // TODO:
-        // This is the most expensive part. We could sample this less frequently,
-        // but we should try to optimize as much as possible.
-        // Ideas:
-        //   - Main bottlneck is computing log(p) and log(1-p). I don't see
-        //     anything obvious to do about that.
-
-        // sample π
-        let mut α = vec![1_f32; params.ncomponents()];
-        for z_i in params.z.iter() {
-            α[*z_i as usize] += 1.0;
-        }
-
-        if α.len() == 1 {
-            params.π.clear();
-            params.π.push(1.0);
-        } else {
-            params.π.clear();
-            params
-                .π
-                .extend(Dirichlet::new(&α).unwrap().sample(&mut rng).iter());
-        }
 
         // let t0 = Instant::now();
         self.sample_background_rates(priors, params);
@@ -1370,6 +1345,23 @@ where
 
         // dbg!(params.background_counts.sum());
         // dbg!(params.confusion_counts.sum());
+
+        // // TODO: trying to debug factorization by inserting some artificial counts
+        // // What's the simplest version of this? Separate cells into to odd and even
+        // let mut rng = thread_rng();
+        // let nlayers = params.foreground_counts.shape()[2];
+        // params.foreground_counts.fill(0);
+        // for (i, mut x_i) in params.foreground_counts.outer_iter_mut().enumerate() {
+        //     for (j, mut x_ij) in x_i.outer_iter_mut().enumerate() {
+        //         if (i % 3) == (j % 3) {
+        //             // choose a random layer
+        //             let z = rng.gen_range(0..nlayers);
+        //             x_ij[z] = Poisson::new(1.0).unwrap().sample(&mut rng) as u16;
+        //         }
+        //     }
+        // }
+
+        //
     }
 
     fn sample_ω(&mut self, params: &mut ModelParams) {
@@ -1389,7 +1381,134 @@ where
             });
     }
 
-    fn sample_φ(&mut self, params: &mut ModelParams) {
+    fn sample_component_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // sample component mean parameters
+
+        // component populations and sums
+        params.component_population.fill(0);
+        params.μ_φ.fill(0.0);
+        Zip::from(&params.z) // for every cell
+            .and(params.φ.outer_iter())
+            .for_each(|&z_c, φ_c| {
+                let z_c = z_c as usize;
+                params.component_population[z_c] += 1;
+                let mut μ_φ_z_c = params.μ_φ.row_mut(z_c);
+                μ_φ_z_c.scaled_add(1.0, &φ_c);
+            });
+        dbg!(&params.component_population);
+
+        // sample from posterion gaussian
+        let mut rng = thread_rng();
+        Zip::from(params.μ_φ.outer_iter_mut())
+            .and(params.σ_φ.outer_iter())
+            .and(&params.component_population)
+            .for_each(|μ_φ_h, σ_φ_h, &n_h| {
+                Zip::from(μ_φ_h).and(σ_φ_h).for_each(|μ_φ_hk, σ_φ_hk| {
+                    let σ = (n_h as f32 / sq(*σ_φ_hk) + 1.0 / sq(priors.σ_μ_φ)).recip();
+                    let μ = σ * (*μ_φ_hk / sq(*σ_φ_hk));
+                    *μ_φ_hk = Normal::new(μ, σ).unwrap().sample(&mut rng);
+                });
+            });
+
+        // sample component std dev parameters
+
+        // accomulate sums of squares
+        params.σ_φ.fill(0.0);
+        Zip::from(&params.z) // for every cell
+            .and(params.φ.outer_iter())
+            .for_each(|&z_c, φ_c| {
+                let z_c = z_c as usize;
+                let μ_φ_z_c = params.μ_φ.row(z_c);
+                let σ_φ_z_c = params.σ_φ.row_mut(z_c);
+                Zip::from(μ_φ_z_c)
+                    .and(σ_φ_z_c)
+                    .and(φ_c)
+                    .for_each(|μ_φ_z_ch, σ_φ_z_ch, φ_ch| {
+                        *σ_φ_z_ch += sq(*φ_ch - *μ_φ_z_ch);
+                    });
+            });
+
+        // sample from posterior gamma
+        Zip::from(params.σ_φ.outer_iter_mut())
+            .and(&params.component_population)
+            .for_each(|σ_φ_h, &n_h| {
+                Zip::from(σ_φ_h).for_each(|σ_φ_hk| {
+                    let α = priors.α_σ_φ + n_h as f32 / 2.0;
+                    let β = priors.β_σ_φ + *σ_φ_hk / 2.0;
+                    // dbg!(α, β);
+                    *σ_φ_hk = Gamma::new(α, β.recip())
+                        .unwrap()
+                        .sample(&mut rng)
+                        .recip()
+                        .sqrt();
+                });
+            });
+
+        dbg!(&params.μ_φ);
+        dbg!(&params.σ_φ);
+
+        // sample component assignments
+        let ncomponents = params.ncomponents();
+        Zip::from(&mut params.z) // for every cell
+            .and(params.φ.outer_iter())
+            .par_for_each(|z_c, φ_c| {
+                let mut z_probs = params
+                    .z_probs
+                    .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
+                    .borrow_mut();
+
+                // compute probabilities for each component
+                for (μ_φ_k, σ_φ_k, z_probs_ck, π_c) in izip!(
+                    params.μ_φ.outer_iter(),
+                    params.σ_φ.outer_iter(),
+                    z_probs.iter_mut(),
+                    &params.π
+                ) {
+                    *z_probs_ck = *π_c as f64;
+
+                    Zip::from(φ_c)
+                        .and(μ_φ_k)
+                        .and(σ_φ_k)
+                        .for_each(|φ_ch, μ_φ_kh, σ_φ_kh| {
+                            *z_probs_ck *= ((-sq(φ_ch - *μ_φ_kh) / (2.0 * sq(*σ_φ_kh))) as f64)
+                                .exp()
+                                / *σ_φ_kh as f64;
+                        });
+                }
+
+                let z_probs_sum = z_probs.iter().sum::<f64>();
+
+                // cumulative probabilities in-place
+                z_probs.iter_mut().fold(0.0, |mut acc, x| {
+                    acc += *x / z_probs_sum;
+                    *x = acc;
+                    acc
+                });
+
+                let rng = &mut thread_rng();
+                let u = rng.gen::<f64>();
+                *z_c = z_probs.partition_point(|x| *x < u) as u32;
+            });
+
+        // sample π
+        let mut α = vec![1_f32; params.ncomponents()];
+        for z_i in params.z.iter() {
+            α[*z_i as usize] += 1.0;
+        }
+
+        if α.len() == 1 {
+            params.π.clear();
+            params.π.push(1.0);
+        } else {
+            params.π.clear();
+            params
+                .π
+                .extend(Dirichlet::new(&α).unwrap().sample(&mut rng).iter());
+        }
+    }
+
+    #[allow(non_snake_case)]
+    fn sample_φ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // precompute θ_g θ_g^T for every gene
         Zip::from(params.Σθ.outer_iter_mut()) // for every gene
             .and(params.θ.rows())
@@ -1409,6 +1528,7 @@ where
                 // Compute precision matrix
                 Σφ_c.fill(0.0);
                 Σφ_c.diag_mut().fill(1.0);
+                // TODO: Fill diagonal with prior precision corresponding to this cells component
 
                 Zip::from(ω_c) // for every cell
                     .and(params.Σθ.outer_iter())
@@ -1434,6 +1554,8 @@ where
                         let a = (x_cg.sum() as f32 - r_g) / 2.0 - ω_cg * logv_c;
                         μφ_c.scaled_add(a, &θ_g);
                     });
+                // TODO: Add to μφ_c prior precision matrix times prior mean vector
+
                 // μφ_c = Σφ_c * μφ_c
                 general_mat_vec_mul(1.0, &Σφ_c, &μφ_c, 0.0, &mut φ_c);
                 μφ_c.assign(&φ_c);
@@ -1450,6 +1572,9 @@ where
             });
     }
 
+    fn sample_z(&mut self, params: &mut ModelParams) {}
+
+    #[allow(non_snake_case)]
     fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // sample γ
         let ngenes = params.θ.shape()[0];
@@ -1464,6 +1589,8 @@ where
                 .unwrap();
                 *γ_k = dist.sample(&mut rng);
             });
+
+        dbg!(&params.γ);
 
         // precompute φ_c φ_c^T for every cell
         Zip::from(params.Σφ.outer_iter_mut())
@@ -1540,7 +1667,7 @@ where
             ω_min = ω_min.min(*ω_cg);
             ω_max = ω_max.max(*ω_cg);
         }
-        dbg!(ω_min, ω_max);
+        // dbg!(ω_min, ω_max);
     }
 
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams, burnin: bool) {
@@ -1572,6 +1699,7 @@ where
                     //     .sum::<f32>();
 
                     let mut v = 0.0;
+                    // TODO: can I avoid having to do f64 math here?
                     for ψ_cg in ψ_g {
                         // if !(v + -ψ_cg - log1pf((-ψ_cg).exp())).is_finite() {
                         //     dbg!(v, ψ_cg, log1pf((-ψ_cg).exp()));
@@ -1600,7 +1728,7 @@ where
                 r_min = r_min.min(*r_cg);
                 r_max = r_max.max(*r_cg);
             }
-            dbg!(r_min, r_max);
+            // dbg!(r_min, r_max);
         }
     }
 
@@ -1610,7 +1738,7 @@ where
         println!("  sample_ω: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_φ(params);
+        self.sample_φ(priors, params);
         println!("  sample_φ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
