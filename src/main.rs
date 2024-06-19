@@ -125,7 +125,7 @@ struct Args {
     detect_layers: bool,
 
     /// Number of layers of voxels in the z-axis used for segmentation
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 1)]
     voxel_layers: usize,
 
     /// Sampler schedule, indicating the number of iterations between doubling resolution.
@@ -133,7 +133,7 @@ struct Args {
     schedule: Vec<usize>,
 
     /// Whether to double the z-layers when doubling resolution
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     double_z_layers: bool,
 
     /// Number of samples at the end of the schedule used to compute
