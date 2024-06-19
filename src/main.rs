@@ -8,11 +8,11 @@ mod sampler;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
     coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv, Transcript
 };
+use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use core::f32;
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use output::*;
 #[command(name = "proseg")]
 #[command(author = "Daniel C. Jones")]
 #[command(
-    about = "High-speed cell segmentation of transcript-resolution spatial transcriptomics data.",
+    about = "High-speed cell segmentation of transcript-resolution spatial transcriptomics data."
 )]
 struct Args {
     /// CSV with transcript information. How this is interpreted is determined
@@ -288,6 +288,9 @@ struct Args {
     #[arg(long, default_value = "cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
 
+    #[arg(long, default_value = "consensus-cell-polygons.geojson.gz")]
+    output_consensus_cell_polygons: Option<String>,
+
     /// Output separate cell polygons for each layer of voxels along the z-axis
     #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
     output_cell_polygon_layers: Option<String>,
@@ -306,8 +309,7 @@ struct Args {
 }
 
 fn set_xenium_presets(args: &mut Args) {
-    args.gene_column
-        .get_or_insert(String::from("feature_name"));
+    args.gene_column.get_or_insert(String::from("feature_name"));
     args.transcript_id_column
         .get_or_insert(String::from("transcript_id"));
     args.x_column.get_or_insert(String::from("x_location"));
@@ -415,10 +417,16 @@ fn main() {
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
 
-    if (args.xenium as u8) + (args.cosmx as u8) + (args.cosmx_micron as u8) + (args.merfish as u8) + (args.merscope as u8)
+    if (args.xenium as u8)
+        + (args.cosmx as u8)
+        + (args.cosmx_micron as u8)
+        + (args.merfish as u8)
+        + (args.merscope as u8)
         > 1
     {
-        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope can be set");
+        panic!(
+            "At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope can be set"
+        );
     }
 
     if args.xenium {
@@ -515,11 +523,7 @@ fn main() {
     }
 
     let mut ncells = dataset.nucleus_population.len();
-    filter_cellfree_transcripts(
-        &mut dataset,
-        ncells,
-        args.max_transcript_nucleus_distance,
-    );
+    filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
 
     // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
@@ -858,10 +862,20 @@ fn main() {
         &sampler.borrow(),
     );
 
+    // TODO: If consensus polygons look good, we should just make that the output of
+    // `output_cell_polygons` and add a --output-flattened-polygons argument.
     if args.output_cell_polygon_layers.is_some() || args.output_cell_polygons.is_some() {
         let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
         write_cell_multipolygons(&args.output_cell_polygons, cell_flattened_polygons);
         write_cell_layered_multipolygons(&args.output_cell_polygon_layers, cell_polygons);
+    }
+
+    if args.output_consensus_cell_polygons.is_some() {
+        let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
+        write_cell_multipolygons(
+            &args.output_consensus_cell_polygons,
+            consensus_cell_polygons,
+        );
     }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {

@@ -23,17 +23,21 @@ use thread_local::ThreadLocal;
 pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
-// use std::time::Instant;
+use std::time::Instant;
 
 fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
     return MultiPolygon::from_iter(
         multipoly
             .iter()
-            .map(|poly| Polygon::new(poly.exterior().clone(), vec![])));
+            .map(|poly| Polygon::new(poly.exterior().clone(), vec![])),
+    );
 }
 
 // taken from: https://github.com/a-b-street/abstreet
-fn union_all_into_multipolygon(mut list: Vec<Polygon<f32>>, no_interiors: bool) -> MultiPolygon<f32> {
+fn union_all_into_multipolygon(
+    mut list: Vec<Polygon<f32>>,
+    no_interiors: bool,
+) -> MultiPolygon<f32> {
     if list.is_empty() {
         return MultiPolygon(Vec::new());
     }
@@ -209,22 +213,14 @@ impl VoxelLayout {
     fn double_resolution(&self) -> VoxelLayout {
         VoxelLayout {
             origin: (self.origin.0, self.origin.1, self.origin.2),
-            size: (
-                self.size.0 / 2.0,
-                self.size.1 / 2.0,
-                self.size.2,
-            ),
+            size: (self.size.0 / 2.0, self.size.1 / 2.0, self.size.2),
         }
     }
 
     fn double_resolution_and_layers(&self) -> VoxelLayout {
         VoxelLayout {
             origin: (self.origin.0, self.origin.1, self.origin.2),
-            size: (
-                self.size.0 / 2.0,
-                self.size.1 / 2.0,
-                self.size.2 / 2.0,
-            ),
+            size: (self.size.0 / 2.0, self.size.1 / 2.0, self.size.2 / 2.0),
         }
     }
 
@@ -858,6 +854,94 @@ impl VoxelSampler {
         (cell_polygons, cell_flattened_polygons)
     }
 
+    pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
+        let t0 = Instant::now();
+        let mut voxel_votes = HashMap::new();
+        for (voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            // count transcripts in this voxel
+            let transcript_range_start = self
+                .transcript_voxel_ord
+                .partition_point(|&t| self.transcript_voxels[t] < *voxel);
+
+            let mut transcript_range_end = transcript_range_start;
+            for &t in self.transcript_voxel_ord[transcript_range_start..].iter() {
+                if self.transcript_voxels[t] != *voxel {
+                    break;
+                }
+                transcript_range_end += 1;
+            }
+
+            let transcript_count = transcript_range_end - transcript_range_start;
+
+            voxel_votes
+                .entry((voxel.i, voxel.j))
+                .or_insert_with(|| Vec::with_capacity(self.voxel_layers))
+                .push((cell, transcript_count));
+        }
+        println!("index voxels: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        let mut cell_voxels = vec![HashSet::new(); self.ncells()];
+        for ((voxel_i, voxel_j), mut votes) in voxel_votes {
+            votes.sort();
+
+            let mut winner = BACKGROUND_CELL;
+            let mut winner_count = 0;
+
+            let mut i = 0;
+            while i < votes.len() {
+                let mut count = 0;
+                let mut j = i;
+                while j < votes.len() && votes[j].0 == votes[i].0 {
+                    count += votes[j].1;
+                    j += 1;
+                }
+
+                if count > winner_count || winner == BACKGROUND_CELL {
+                    winner = votes[i].0;
+                    winner_count = count;
+                }
+                i = j;
+            }
+
+            assert!(winner != BACKGROUND_CELL);
+            cell_voxels[winner as usize].insert(Voxel {
+                i: voxel_i,
+                j: voxel_j,
+                k: 0,
+            });
+        }
+        println!("tally votes: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        let polygon_builder = ThreadLocal::new();
+        let cell_polygons: Vec<CellPolygon> = cell_voxels
+            .par_iter()
+            .map(|voxels| {
+                let mut polygon_builder = polygon_builder
+                    .get_or(|| RefCell::new(PolygonBuilder::new()))
+                    .borrow_mut();
+
+                let polygons =
+                    polygon_builder.cell_voxels_to_polygons(&self.chunkquad.layout, voxels);
+                if polygons.is_empty() {
+                    CellPolygon::new(vec![])
+                } else {
+                    assert!(polygons.len() == 1);
+                    let (_k, polygon) = polygons.first().unwrap();
+                    polygon.clone()
+                }
+            })
+            .collect();
+        println!("build polygons: {:?}", t0.elapsed());
+
+        return cell_polygons;
+    }
+
     // pub fn mismatch_edge_stats(&self) -> (usize, usize) {
     //     let mut num_cell_cell_edges = 0;
     //     let mut num_cell_bg_edges = 0;
@@ -1055,7 +1139,9 @@ impl Sampler<VoxelProposal> for VoxelSampler {
                 let num_new_state_neighbors = i
                     .von_neumann_neighborhood()
                     .iter()
-                    .filter(|&&j| j.inbounds(self.voxel_layers) && self.voxel_cells.get(j) == cell_to)
+                    .filter(|&&j| {
+                        j.inbounds(self.voxel_layers) && self.voxel_cells.get(j) == cell_to
+                    })
                     .count();
 
                 let num_prev_state_neighbors = i
