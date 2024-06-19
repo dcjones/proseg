@@ -113,6 +113,20 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
+    // pub fn moore_neighborhood_xy(&self) -> [Voxel; 8] {
+    //     [
+    //         (-1, 0, 0),
+    //         (1, 0, 0),
+    //         (-1, 1, 0),
+    //         (0, 1, 0),
+    //         (1, 1, 0),
+    //         (-1, -1, 0),
+    //         (0, -1, 0),
+    //         (1, -1, 0),
+    //     ]
+    //     .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
+    // }
+
     pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         [
             (-1, 0, 0),
@@ -854,6 +868,57 @@ impl VoxelSampler {
         (cell_polygons, cell_flattened_polygons)
     }
 
+    // Go through and reassign voxels that are surrounded by
+    fn pop_bubbles(&self, cell_voxels: &mut Vec<HashSet<Voxel>>, rounds: usize) {
+        // build a reverse index
+        let mut voxel_cells: HashMap<Voxel, CellIndex> = HashMap::new();
+        for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
+            for voxel in voxels.iter() {
+                voxel_cells.insert(*voxel, cell as u32);
+            }
+        }
+
+        let mut reassignments = Vec::new();
+        for _round in 0..rounds {
+            reassignments.clear();
+
+            for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
+                let cell = cell as u32;
+                for voxel in voxels.iter() {
+                    let mut neighbor_cell: CellIndex = BACKGROUND_CELL;
+                    let mut neighbor_cell_count = 0;
+
+                    for neighbor in voxel.von_neumann_neighborhood_xy() {
+                        let c = match voxel_cells.get(&neighbor) {
+                            Some(cell) => *cell,
+                            None => BACKGROUND_CELL,
+                        };
+                        if c != cell {
+                            if neighbor_cell == BACKGROUND_CELL {
+                                neighbor_cell = c;
+                                neighbor_cell_count = 1;
+                            } else if neighbor_cell == c {
+                                neighbor_cell_count += 1;
+                            }
+                        }
+                    }
+
+                    if neighbor_cell_count >= 3 {
+                        reassignments.push((*voxel, cell, neighbor_cell));
+                    }
+                }
+            }
+
+            dbg!(reassignments.len());
+
+            for (voxel, from_cell, to_cell) in reassignments.iter() {
+                cell_voxels[*from_cell as usize].remove(&voxel);
+                cell_voxels[*to_cell as usize].insert(*voxel);
+                voxel_cells.insert(*voxel, *to_cell);
+            }
+        }
+    }
+
     pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
         let t0 = Instant::now();
         let mut voxel_votes = HashMap::new();
@@ -916,6 +981,10 @@ impl VoxelSampler {
             });
         }
         println!("tally votes: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        self.pop_bubbles(&mut cell_voxels, 3);
+        println!("pop bubbles: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         let polygon_builder = ThreadLocal::new();
