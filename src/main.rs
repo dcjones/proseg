@@ -530,6 +530,14 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
+    // let cd3e_idx = dataset
+    //     .transcript_names
+    //     .iter()
+    //     .position(|gene| gene == "CD3E")
+    //     .unwrap();
+    // dbg!(cd3e_idx);
+    // panic!();
+
     // Warn if any nucleus has extremely high population, which is likely
     // an error interpreting the file.
     dataset.nucleus_population.iter().for_each(|&p| {
@@ -681,9 +689,9 @@ fn main() {
         α_c: 1.0,
         β_c: 1.0,
 
-        σ_μ_φ: 1.0,
-        α_σ_φ: 1.0,
-        β_σ_φ: 1.0,
+        σ_μ_φ: 10.0,
+        α_σ_φ: 0.01,
+        β_σ_φ: 1.0 / 0.01,
 
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
