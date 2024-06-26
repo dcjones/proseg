@@ -18,7 +18,7 @@ use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, sq};
 use ndarray::linalg::{general_mat_mul, general_mat_vec_mul};
-use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use ndarray::{s, Array1, Array2, Array3, Axis, Zip};
 use ndarray_linalg::cholesky::*;
 use ndarray_linalg::solve::Inverse;
 use polyagamma::PolyaGamma;
@@ -366,11 +366,25 @@ impl ModelParams {
         let η = Array1::<f32>::from_elem(ngenes, 0.0);
 
         let mut rng = rand::thread_rng();
-        let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng));
+        let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || 1e-2 * randn(&mut rng));
         let Σφ = Array3::<f32>::from_elem((ncells, nhidden, nhidden), 0.0);
         let μφ = Array2::<f32>::from_elem((ncells, nhidden), 0.0);
 
-        let θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng));
+        let mut θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng));
+
+        // {
+        //     // TODO: debug attempt
+        //     //   find a special CD3e
+        //     //   make one component identity for that gene
+        //     //   zero it out for everything else
+        //     //   don't sample θ
+        //
+        //     let cd3e_pos = 290;
+        //     θ.row_mut(cd3e_pos).fill(0.0);
+        //     θ.column_mut(0).fill(0.0);
+        //     θ[[cd3e_pos, 0]] = 1.0;
+        // }
+
         let Σθ = Array3::<f32>::from_elem((ngenes, nhidden, nhidden), 0.0);
         let μθ = Array2::<f32>::from_elem((ngenes, nhidden), 0.0);
 
@@ -1445,6 +1459,9 @@ where
                 });
             });
 
+        dbg!(&params.σ_φ);
+        // params.σ_φ.fill(1e-1);
+
         // sample component assignments
         let ncomponents = params.ncomponents();
         Zip::from(&mut params.z) // for every cell
@@ -1503,6 +1520,8 @@ where
                 .π
                 .extend(Dirichlet::new(&α).unwrap().sample(&mut rng).iter());
         }
+
+        // dbg!(&params.σ_φ);
     }
 
     #[allow(non_snake_case)]
@@ -1538,19 +1557,30 @@ where
                         *Σφ_ch = sq(*σ_φ_z_ch).recip();
                     });
 
-                Zip::from(ω_c) // for every cell
+                Zip::from(ω_c) // for every gene
                     .and(params.Σθ.outer_iter())
-                    .for_each(|ω, Σθ_g| {
+                    .for_each(|ω_cg, Σθ_g| {
                         // elementwise sum across [nhidden, nhidden] matrices
                         Zip::from(&mut Σφ_c)
                             .and(Σθ_g)
-                            .for_each(|Σφ_cij, Σθ_gij| *Σφ_cij += ω * Σθ_gij);
+                            .for_each(|Σφ_cij, Σθ_gij| *Σφ_cij += ω_cg * Σθ_gij);
                     });
+
+                let Λφ_c0 = Σφ_c.row(0).into_owned();
 
                 // Invert to get covariance matrix
                 // TODO: I'm afraid this allocates, but that may be unavoidable. Can I pre-allocate
                 // space for this?
-                Σφ_c.assign(&Σφ_c.inv().unwrap());
+                let Σφ_c_inv = Σφ_c.inv().unwrap();
+                // if c == 2000 {
+                //     // dbg!(c);
+                //     // dbg!(&Σφ_c.diag());
+                //     dbg!(&Σφ_c);
+                //     dbg!(&Σφ_c_inv);
+                // }
+                Σφ_c.assign(&Σφ_c_inv);
+
+                // Σφ_c.assign(&Σφ_c.inv().unwrap());
 
                 // compute mean parameters
                 μφ_c.fill(0.0);
@@ -1571,16 +1601,74 @@ where
                     },
                 );
 
+                // // TODO: CD3e expression should induce high φ for component 0
+                // We do get high ψ when we have high count, but we also sometimes get high count
+                // when count is 0
+                {
+                    let cd3e_count = x_c.slice(s![290, ..]).sum();
+                    // if cd3e_count > 1 || cd3e_count == 0 {
+                    // if cd3e_count > 4 {
+                    //     dbg!((cd3e_count, μφ_c[0]));
+                    // }
+
+                    // Ok this doesn't really happen.
+                    // I want to understand these cases. How do we end up with a high weight
+                    // in this dimension despine zero observed counts.
+                    // if cd3e_count == 0 && μφ_c[0] > 1.0 {
+                    //     dbg!((cd3e_count, μφ_c[0], ω_c[290]));
+                    // }
+                }
+
                 // μφ_c = Σφ_c * μφ_c
                 general_mat_vec_mul(1.0, &Σφ_c, &μφ_c, 0.0, &mut φ_c);
                 μφ_c.assign(&φ_c);
+
+                // TODO: This is so weird. The observed coviance so closely resembles the prior.
+                // Just seems wrong to me.
+
+                // if c == 2000 || c == 2001 || c == 2002 {
+                //     dbg!(c);
+                //     dbg!(&Σφ_c.diag());
+                //     dbg!(&μφ_c);
+                // }
+
+                // TODO: Ok, we should be sampling from as traight up standardized normal here.
+                // Σφ_c.fill(0.0);
+                // Σφ_c.diag_mut().fill(1.0);
+                // μφ_c.fill(0.0);
 
                 // Sample φ_c ~ N(μφ_c, Σφ_c)
                 Σφ_c.cholesky_inplace(UPLO::Lower).unwrap();
                 let mut rng = rand::thread_rng();
                 φ_c.iter_mut().for_each(|φ_ck| *φ_ck = randn(&mut rng));
+                let μφ_c0 = μφ_c[0];
                 general_mat_vec_mul(1.0, &Σφ_c, &φ_c, 1.0, &mut μφ_c);
                 φ_c.assign(&μφ_c); // general_mat_vec_mul writes to μφ_c
+
+                {
+                    // TODO: I guess the question is why covariance is so high (precision so low) for this
+                    //
+                    // In this scenario, there are only twe terms to the precision:
+                    //   1. the prior precision
+                    //   2. ω[0,290]
+                    //
+                    //  (2) is pretty much always pretty small unless there is a very large count.
+                    //
+                    let cd3e_count = x_c.slice(s![290, ..]).sum();
+                    if cd3e_count > 2 && φ_c[0] < 0.0 {
+                        dbg!((
+                            cd3e_count,
+                            μφ_c0,
+                            φ_c[0],
+                            ω_c[290],
+                            params.ψ[[c, 290]],
+                            params.r[290],
+                            σ_φ_z_c[0],
+                        ));
+                        // dbg!(&Λφ_c0);
+                        dbg!(Σφ_c.row(0));
+                    }
+                }
             });
     }
 
@@ -1622,6 +1710,7 @@ where
 
                 Σθ_g.fill(0.0);
                 Σθ_g.diag_mut().assign(&params.γ);
+                // Σθ_g.diag_mut().fill(1.0);
 
                 // dbg!(Σθ_g.diag());
 
@@ -1655,7 +1744,8 @@ where
                 general_mat_vec_mul(1.0, &Σθ_g, &μθ_g, 0.0, &mut θ_g);
                 μθ_g.assign(&θ_g);
 
-                // dbg!(&μθ_g);
+                // avoid pottential numerical issues
+                Σθ_g.diag_mut().iter_mut().for_each(|v| *v += 1e-6);
 
                 // sample θ_g ~ N(μθ_g, Σθ_g)
                 Σθ_g.cholesky_inplace(UPLO::Lower).unwrap();
@@ -1695,8 +1785,11 @@ where
                     });
                 μ_g *= σ2_g;
 
+                // dbg!(μ_g, σ2_g);
+
                 let mut rng = rand::thread_rng();
                 *η_g = μ_g + σ2_g.sqrt() * randn(&mut rng);
+                // dbg!(*η_g);
             });
     }
 
@@ -1800,6 +1893,7 @@ where
         let t0 = Instant::now();
         self.compute_ψ(params);
         println!("  compute_ψ: {:?}", t0.elapsed());
+        dbg!(params.ψ.mean());
 
         let t0 = Instant::now();
         self.sample_r(priors, params, burnin);
@@ -1820,12 +1914,16 @@ where
             .and(params.ψ.outer_iter())
             .and(params.foreground_counts.outer_iter())
             .and(&params.cell_volume)
-            .par_for_each(|mut λ_c, ψ_c, x_c, cell_volume| {
+            // .par_for_each(|mut λ_c, ψ_c, x_c, cell_volume| {
+            .for_each(|mut λ_c, ψ_c, x_c, cell_volume| {
                 let mut rng = thread_rng();
                 for (λ_cg, &ψ_cg, x_cg, r_g) in izip!(&mut λ_c, ψ_c, x_c.outer_iter(), &params.r)
                 {
                     let α = r_g + x_cg.sum() as f32;
                     let β = (-ψ_cg).exp() + 1.0;
+
+                    // let α = 0.1 + x_cg.sum() as f32;
+                    // let β: f32 = 1.0;
 
                     // From:
                     // (v_c τ_cg | -) ~ Gamma(α_g + x_cg, β_cg / v_c + 1)
@@ -1838,6 +1936,12 @@ where
                     // }
 
                     *λ_cg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) / cell_volume;
+
+                    // if x_cg.sum() == 1 {
+                    //     let raw_est = x_cg.sum() as f32 / cell_volume;
+                    //     dbg!(*λ_cg, r_g, ψ_cg, raw_est);
+                    // }
+
                     assert!(λ_cg.is_finite());
                 }
             });
