@@ -672,8 +672,16 @@ fn main() {
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
 
+        // TODO: probably would benifit from being < 1
         α_θ: 1.0,
-        β_θ: 1.0,
+
+        // TODO: what are reasonable values for this
+        ε_p: 0.5,
+        c_p: 1.0,
+
+        // TODO: what are reasonable values?
+        c_r: 1.0,
+        r_r: 1.0,
 
         e_r: 1.0,
 
