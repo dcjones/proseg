@@ -7,9 +7,9 @@ use rand_distr::StandardNormal;
 //     return p.ln() - (1.0 - p).ln();
 // }
 
-pub fn sq(x: f32) -> f32 {
-    x * x
-}
+// pub fn sq(x: f32) -> f32 {
+//     x * x
+// }
 
 pub fn relerr(a: f32, b: f32) -> f32 {
     ((a - b) / a).abs()
@@ -50,10 +50,4 @@ pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
 
 pub fn randn(rng: &mut ThreadRng) -> f32 {
     return rng.sample::<f32, StandardNormal>(StandardNormal);
-}
-
-pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
-    (0..n)
-        .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
-        .sum()
 }
