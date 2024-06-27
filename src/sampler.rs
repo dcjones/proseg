@@ -11,13 +11,13 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::log1pf;
+use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use math::{lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, randn};
+use math::{gamma_logpdf, lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, randn};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use ndarray::{Array1, Array2, Array3, ArrayView1, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
@@ -1406,7 +1406,6 @@ where
     }
 
     fn sample_p(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // TODO: I wonder if `ncells` here should be total cellular volume?
         let mut rng = thread_rng();
         let ncells = params.foreground_counts.shape()[0];
         Zip::from(&mut params.p)
@@ -1422,24 +1421,77 @@ where
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut rng = thread_rng();
         let ncells = params.foreground_counts.shape()[0];
-        Zip::from(&mut params.r)
+        const MCMC_STEPS: usize = 10;
+        const PROPOSAL_SD: f32 = 1e-2;
+        // TODO: This can be done in parallel
+        Zip::indexed(&mut params.r)
             .and(&params.p)
             .and(&params.latent_counts)
-            .for_each(|r_k, p_k, x_k| {
-                // if *x_k == 0 {
-                //     let shape = priors.c_r * priors.r_r;
-                //     let scale = (priors.c_r - (ncells as f32) * log1pf(-*p_k)).recip();
-                //     *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
-                // } else {
-                    // TODO: oof, we've got to do full on metropolis hastings here
-                    // *r_k = 1e-1;
-                    *r_k = 1.0;
-                // }
+            .for_each(|k, r_k, p_k, x_k| {
+                if *x_k == 0 {
+                    // this case will basically never get hit
+                    let shape = priors.c_r * priors.r_r;
+                    let scale = (priors.c_r - (ncells as f32) * log1pf(-*p_k)).recip();
+                    *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+                } else {
+                    // let r_0 = *r_k;
+                    let mut rng = rand::thread_rng();
+                    let cell_latent_counts_k = params.cell_latent_counts.column(k);
+                    let mut lp0 = self.sample_r_logprob(priors, cell_latent_counts_k, *p_k, *r_k);
+
+                    for _ in 0..MCMC_STEPS {
+                        let r_proposal = *r_k + PROPOSAL_SD * randn(&mut rng);
+                        let lp_proposal = self.sample_r_logprob(priors, cell_latent_counts_k, *p_k, r_proposal);
+
+                        let u = rng.gen::<f32>().ln();
+                        if u < lp_proposal - lp0 {
+                            // accept
+                            *r_k = r_proposal;
+                            lp0 = lp_proposal;
+                        }
+                    }
+
+                    // if *r_k != r_0 {
+                    //     dbg!((r_0, *r_k));
+                    // }
+                }
             });
+    }
+
+    // log-probability function for taking metropolis-hastings steps in `sample_r`
+    fn sample_r_logprob(&self, priors: &ModelPriors, x_k: ArrayView1<u32>, p_k: f32, r_k: f32) -> f32 {
+        let mut lp = gamma_logpdf(priors.c_r * priors.r_r, priors.c_r.recip(), r_k);
+
+        let log_p_k = p_k.ln();
+        let log_1mp_k = (-p_k).ln_1p();
+        let lgamma_r = lgammaf(r_k);
+
+        for &x_ck in x_k {
+            // NB(x_ck; r_k, p_k) log pdf
+
+            if x_ck == 0 {
+                lp += r_k * log_1mp_k;
+            } else {
+                lp +=
+                    lgammaf(r_k + x_ck as f32)
+                    - lgamma_r
+                    - lgammaf(x_ck as f32 + 1.0)
+                    + (x_ck as f32) * log_p_k + r_k * log_1mp_k;
+            }
+        }
+
+        return lp;
     }
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
         general_mat_mul(1.0, &params.φ, &params.θ.t(), 0.0, &mut params.λ);
+
+        // // TODO: I think we just divide λ by volume here right, and everything else works it self out.
+        // for λ_c in params.λ.rows_mut() {
+        //     for (λ_cg, v_c) in izip!(λ_c, &params.cell_volume) {
+        //         *λ_cg /= v_c;
+        //     }
+        // }
     }
 
     fn sample_φ(&mut self, params: &mut ModelParams) {
@@ -1447,15 +1499,15 @@ where
             .and(params.cell_latent_counts.outer_iter())
             .and(&params.cell_volume)
             .par_for_each(|φ_c, x_c, v_c| {
-            // .for_each(|φ_c, x_c, v_c| {
                 let mut rng = thread_rng();
                 Zip::from(φ_c) // for each latent dim
                     .and(x_c)
                     .and(&params.r)
                     .and(&params.p)
                     .for_each(|φ_ck, x_ck, r_k, p_k| {
-                        let shape=  *r_k + *x_ck as f32;
+                        let shape = *r_k + *x_ck as f32;
                         let scale = *p_k / (1.0 + (*v_c - 1.0) * *p_k);
+                        // let scale = *p_k;
                         *φ_ck = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
             });
