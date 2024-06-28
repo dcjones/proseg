@@ -1007,7 +1007,7 @@ where
     Self: Sync,
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
-    fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
         Zip::from(&mut params.cell_log_volume)
             .and(&params.cell_volume)
             .into_par_iter()
@@ -1017,9 +1017,12 @@ where
             });
 
         // get to a reasonably high probability assignment
-        // for _ in 0..40 {
         for _ in 0..10 {
+            self.sample_transcript_state(priors, params, transcripts, &mut Option::None);
+            self.compute_counts(priors, params, transcripts);
             self.sample_factor_model(priors, params);
+            self.sample_background_rates(priors, params);
+            self.sample_confusion_rates(priors, params);
         }
     }
 
@@ -1348,16 +1351,18 @@ where
                                 let mut s = x_cg as u32;
                                 for (p, x) in izip!(multinomial_rates.iter(), multinomial_sample.iter_mut()) {
                                     if ρ > 0.0 {
-                                        *x = Binomial::new(s as u64, (*p/ρ) as f64).unwrap().sample(&mut rng) as u32;
+                                        *x = Binomial::new(s as u64, ((*p/ρ) as f64).min(1.0)).unwrap().sample(&mut rng) as u32;
                                     }
                                     s -= *x;
-                                    ρ = (ρ - *p).max(1.0);
+                                    ρ = ρ - *p;
 
                                     if s == 0 {
                                         break;
                                     }
                                 }
                             }
+
+                            // assert!(multinomial_sample.sum() <= x_cg as u32);
                         }
 
                         // add to cell marginal
