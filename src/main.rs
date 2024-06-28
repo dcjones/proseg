@@ -532,7 +532,7 @@ fn main() {
     // let cd3e_idx = dataset
     //     .transcript_names
     //     .iter()
-    //     .position(|gene| gene == "CD3E")
+    //     .position(|gene| gene == "CXCL6")
     //     .unwrap();
     // dbg!(cd3e_idx);
     // panic!();
@@ -673,7 +673,7 @@ fn main() {
         β_σ_volume: 0.1,
 
         // TODO: probably would benifit from being < 1
-        α_θ: 1.0,
+        α_θ: 1e-1,
 
         // TODO: what are reasonable values for this
         ε_p: 0.5,
@@ -766,7 +766,7 @@ fn main() {
         args.initial_voxel_size,
         chunk_size,
     ));
-    sampler.borrow_mut().initialize(&priors, &mut params);
+    sampler.borrow_mut().initialize(&priors, &mut params, &dataset.transcripts);
 
     let mut total_steps = 0;
 
