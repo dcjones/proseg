@@ -691,11 +691,6 @@ fn main() {
         e_γ: 1.0,
         f_γ: 1.0,
 
-        // TODO: what should this be?
-        r0: 1e-2,
-        k0: 1e-2,
-        p0: 0.9,
-
         γ: 1.0,
 
         α_bg: 1.0,

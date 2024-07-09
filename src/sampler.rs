@@ -98,11 +98,6 @@ pub struct ModelPriors {
     pub e_γ: f32,
     pub f_γ: f32,
 
-    // Gamma prior for φ0
-    pub r0: f32,
-    pub k0: f32,
-    pub p0: f32,
-
     // TODO: probably should rename this to not collide with precios params for θ
     // normal precision parameter for β
     pub γ: f32,
@@ -206,12 +201,6 @@ pub struct ModelParams {
     // [nhidden]
     pub latent_counts: Array1<u32>,
 
-    // [ncells, nhidden]: intermediate laten count for sampling p_φ, r_φ
-    pub latent_counts_φ: Array2<u32>,
-
-    // [ncells, nhidden] intermediate cell count for sampling p_φ, r_φ
-    pub ncells_φ: Array2<usize>,
-
     // [nhidden] thread local storage for sampling latent counts
     pub multinomial_rates: ThreadLocal<RefCell<Array1<f32>>>,
     pub multinomial_sample: ThreadLocal<RefCell<Array1<u32>>>,
@@ -223,13 +212,7 @@ pub struct ModelParams {
     μ_volume: Array1<f32>, // volume dist mean param by component
     σ_volume: Array1<f32>, // volume dist std param by component
 
-    // [ncells, nhidden]: cell φ parameter in the latent space (first component)
-    pub φ0: Array2<f32>,
-
-    // [ncells, nhidden]: cell φ parameter in the latent space (second component)
-    pub φ1: Array2<f32>,
-
-    // φ0 + φ1
+    // [ncells, nhidden]: cell ψ parameter in the latent space
     pub φ: Array2<f32>,
 
     // [ngenes, nhidden]: gene loadings in the latent space
@@ -364,8 +347,6 @@ impl ModelParams {
 
         let mut rng = rand::thread_rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || 1e-2 * randn(&mut rng).exp());
-        let φ0 = Array2::<f32>::from_elem((ncells, nhidden), 1e-4);
-        let φ1 = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || 1e-2 * randn(&mut rng).exp());
         let θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
 
         let transcript_state =
@@ -380,9 +361,6 @@ impl ModelParams {
         let gene_latent_counts = Array2::<u32>::from_elem((ngenes, nhidden), 0);
         let gene_latent_counts_tl = ThreadLocal::new();
         let latent_counts = Array1::<u32>::from_elem(nhidden, 0);
-
-        let latent_counts_φ = Array2::<u32>::zeros((ncells, nhidden));
-        let ncells_φ = Array2::<usize>::zeros((ncells, nhidden));
 
         ModelParams {
             transcript_positions,
@@ -409,8 +387,6 @@ impl ModelParams {
             cell_latent_counts,
             gene_latent_counts,
             gene_latent_counts_tl,
-            latent_counts_φ,
-            ncells_φ,
             latent_counts,
             multinomial_rates: ThreadLocal::new(),
             multinomial_sample: ThreadLocal::new(),
@@ -419,8 +395,6 @@ impl ModelParams {
             μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             φ,
-            φ0,
-            φ1,
             θ,
             p,
             r,
@@ -1332,9 +1306,6 @@ where
         let ngenes = params.foreground_counts.shape()[1];
         let nhidden = params.cell_latent_counts.shape()[1];
 
-        // TODO: Main change we need for the sparsity inducement to work is to only
-        // count stuff assigned to the "used" component.
-
         Zip::from(params.cell_latent_counts.outer_iter_mut()) // for every cell
             .and(params.φ.outer_iter())
             .and(params.foreground_counts.outer_iter())
@@ -1431,7 +1402,7 @@ where
         println!("  sample_r: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_φ(priors, params);
+        self.sample_φ(params);
         println!("  sample_φ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -1442,39 +1413,27 @@ where
     fn sample_p(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut rng = thread_rng();
         let ncells = params.foreground_counts.shape()[0];
-
-        Zip::from(&mut params.p) // for each hidden dim
+        Zip::from(&mut params.p)
             .and(&params.r)
             .and(&params.latent_counts)
-            .and(params.latent_counts_φ.axis_iter(Axis(1)))
-            .and(params.ncells_φ.axis_iter(Axis(1)))
-            .for_each(|p_k, r_k, x_k, latent_counts_φk, ncells_φk| {
-                // let a = priors.c_p * priors.ε_p + *x_k as f32;
-                // let b = priors.c_p * (1.0 - priors.ε_p) + (ncells as f32) * *r_k;
-
-                let a = priors.c_p * priors.ε_p + latent_counts_φk.sum() as f32;
-                let b = priors.c_p * (1.0 - priors.ε_p) + (ncells_φk.sum() as f32) * *r_k;
-
+            .for_each(|p_k, r_k, x_k| {
+                let a = priors.c_p * priors.ε_p + *x_k as f32;
+                let b = priors.c_p * (1.0 - priors.ε_p) + (ncells as f32) * *r_k;
                 *p_k = Beta::new(a, b).unwrap().sample(&mut rng);
             });
     }
 
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut rng = thread_rng();
-        // let ncells = params.foreground_counts.shape()[0];
+        let ncells = params.foreground_counts.shape()[0];
         const MCMC_STEPS: usize = 10;
         const PROPOSAL_SD: f32 = 1e-2;
         // TODO: This can be done in parallel
         Zip::indexed(&mut params.r)
             .and(&params.p)
-            .and(params.latent_counts_φ.axis_iter(Axis(1)))
-            .and(params.ncells_φ.axis_iter(Axis(1)))
-            .for_each(|k, r_k, p_k, x_k, ncells| {
-
-                let x_k = x_k.sum();
-                let ncells = ncells.sum();
-                // *r_k = 0.5;
-                if x_k == 0 {
+            .and(&params.latent_counts)
+            .for_each(|k, r_k, p_k, x_k| {
+                if *x_k == 0 {
                     // this case will basically never get hit
                     let shape = priors.c_r * priors.r_r;
                     let scale = (priors.c_r - (ncells as f32) * log1pf(-*p_k)).recip();
@@ -1540,60 +1499,23 @@ where
         // }
     }
 
-    fn sample_φ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        params.latent_counts_φ.fill(0);
-        params.ncells_φ.fill(0);
-
+    fn sample_φ(&mut self, params: &mut ModelParams) {
         Zip::from(params.φ.outer_iter_mut()) // for each cell
-            .and(params.latent_counts_φ.outer_iter_mut())
-            .and(params.ncells_φ.outer_iter_mut())
             .and(params.cell_latent_counts.outer_iter())
             .and(&params.cell_volume)
-            .par_for_each(|φ_c, latent_counts_φ_c, ncells_φ_c, x_c, v_c| {
+            .par_for_each(|φ_c, x_c, v_c| {
                 let mut rng = thread_rng();
-                Zip::from(φ_c) // for each component
-                    .and(latent_counts_φ_c)
-                    .and(ncells_φ_c)
+                Zip::from(φ_c) // for each latent dim
                     .and(x_c)
                     .and(&params.r)
                     .and(&params.p)
-                    .for_each(|φ_ck, latent_counts_φ_ck, ncells_φ_ck, x_ck, r_k, p_k| {
-                        let shape0 = priors.r0 + *x_ck as f32;
-                        let scale0 = priors.k0 * v_c;
-                        let logprob0 = priors.p0.ln() + gamma_logpdf(shape0, scale0, *φ_ck);
-
-                        let shape1 = *r_k + *x_ck as f32;
-                        let scale1 = *p_k / (1.0 + (*v_c - 1.0) * *p_k);
-                        let logprob1 = (-priors.p0).ln_1p() + gamma_logpdf(shape1, scale1, *φ_ck);
-
-                        let prob0 = logprob0.exp();
-                        let prob1 = logprob1.exp();
-
-                        let dist = if rng.gen::<f32>() < prob0 / (prob0 + prob1) {
-                            let shape = priors.r0 + *x_ck as f32;
-                            let scale = priors.k0 * v_c;
-                            Gamma::new(shape, scale).unwrap()
-                        } else {
-                            *latent_counts_φ_ck += *x_ck;
-                            *ncells_φ_ck = 1;
-                            let shape = *r_k + *x_ck as f32;
-                            let scale = *p_k / (1.0 + (*v_c - 1.0) * *p_k);
-                            Gamma::new(shape, scale).unwrap()
-                        };
-
-                        *φ_ck = dist.sample(&mut rng);
-
-                        // TODO: Ok, but this is going to fuck up sampling of p and r, right...?
-                        // I think we need to recompute 
-                        // per computent counts and compute number of cells for each
-
-                        // Fuck, we are doing this is parallel, so it's not so simple.
+                    .for_each(|φ_ck, x_ck, r_k, p_k| {
+                        let shape = *r_k + *x_ck as f32;
+                        let scale = *p_k / (1.0 + (*v_c - 1.0) * *p_k);
+                        // let scale = *p_k;
+                        *φ_ck = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
             });
-
-        dbg!(params.latent_counts_φ.sum(), params.latent_counts.sum());
-        let ncells = params.foreground_counts.shape()[0];
-        dbg!(params.ncells_φ.sum_axis(Axis(0)), params.ncells_φ.sum_axis(Axis(1)).mean(), ncells);
     }
 
     fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
