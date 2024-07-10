@@ -11,6 +11,7 @@ use rand_distr::StandardNormal;
 //     x * x
 // }
 
+
 pub fn relerr(a: f32, b: f32) -> f32 {
     ((a - b) / a).abs()
 }
