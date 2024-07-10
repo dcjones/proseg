@@ -677,8 +677,8 @@ fn main() {
         α_θ: 1e-1,
 
         // TODO: what are reasonable values for this
-        ε_p: 0.5,
-        c_p: 1.0,
+        α_p: 1.0,
+        β_p: 10.0,
 
         // TODO: what are reasonable values?
         c_r: 1.0,
