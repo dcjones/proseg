@@ -82,8 +82,8 @@ pub struct ModelPriors {
     // dirichlet prior for θ
     pub α_θ: f32,
 
-    pub ε_p: f32,
-    pub c_p: f32,
+    pub α_p: f32,
+    pub β_p: f32,
 
     pub c_r: f32,
     pub r_r: f32,
@@ -1464,10 +1464,7 @@ where
     fn sample_z(&mut self, params: &mut ModelParams) {
         let ncomponents = params.π.shape()[0];
         let nhidden = params.cell_latent_counts.shape()[1];
-        // let max_prob =  (f64::MAX / (nhidden as f64)).ln();
-        let max_prob = 100.0;
-        // dbg!(max_prob);
-        // panic!();
+        let max_prob = 20.0;
 
         let mut total_log_prob = 0.0;
 
@@ -1487,10 +1484,7 @@ where
                 // for every component
                 let mut z_probs_sum = 0.0;
                 for (z_probs_t, π_t, r_t, p_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.r.rows(), params.p.rows()) {
-
-                    // TODO: excluding this until we understand what's going on
                     *z_probs_t = π_t.ln() as f64;
-                    // *z_probs_t = 0.0;
 
                     // for every hidden dim
                     Zip::from(r_t)
@@ -1508,6 +1502,10 @@ where
                             if !p.exp().is_finite() {
                                 dbg!((p, *x_ck, *φ_ck, *v_c, shape, scale));
                             }
+
+                            // if rng.gen::<f64>() < 1e-3 && p > 10.0 {
+                            //     dbg!((p, *x_ck, *φ_ck, *v_c, shape, scale));
+                            // }
 
                             // TODO: This can run into problems because we can get φ = 0
                             // in which case the probability density is infinite.
@@ -1527,9 +1525,19 @@ where
 
                 let z_log_probs_t = Array1::<f64>::from_iter(z_probs.iter().cloned());
 
+                // if rng.gen::<f64>() < 1e-3 {
+                //     dbg!(φ_c);
+                //     dbg!(&z_probs);
+                // }
+
                 for z_probs_t in z_probs.iter_mut() {
                     *z_probs_t = z_probs_t.exp();
                     z_probs_sum += *z_probs_t;
+                }
+
+
+                if !z_probs_sum.is_finite() {
+                    dbg!(&z_probs, &φ_c, z_probs_sum);
                 }
 
                 assert!(z_probs_sum.is_finite());
@@ -1554,19 +1562,12 @@ where
                     acc
                 });
 
-                // if rng.gen::<f64>() < 1e-3 {
-                //     dbg!(φ_c);
-                //     dbg!(&z_probs);
-                // }
-
                 let u = rng.gen::<f64>();
                 *z_c = z_probs.partition_point(|x| *x < u) as u32;
 
                 total_log_prob += z_log_probs_t[*z_c as usize];
             });
 
-        dbg!(params.component_population.sum());
-        dbg!(params.ncells());
         dbg!(total_log_prob);
 
         // sample π
@@ -1592,10 +1593,8 @@ where
     }
 
     fn sample_p(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // TODO: Shouldn't we be considering cell volume when sampling this?
         Zip::from(params.p.rows_mut()) // for each component
             .and(params.r.rows())
-            // .and(&params.component_population)
             .and(&params.component_volume)
             .and(params.component_latent_counts.rows())
             .par_for_each(|p_t, r_t, v_t, x_t| {
@@ -1604,18 +1603,16 @@ where
                     .and(r_t)
                     .and(x_t)
                     .for_each(|p_tk, r_tk, x_tk| {
-                        let a = priors.c_p * priors.ε_p + *x_tk as f32;
-                        // let b = priors.c_p * (1.0 - priors.ε_p) + (*pop_t as f32) * *r_tk;
-                        let b = priors.c_p * (1.0 - priors.ε_p) + *v_t * *r_tk;
+                        let a = priors.α_p + *x_tk as f32;
+                        let b = priors.β_p + *v_t * *r_tk;
                         *p_tk = Beta::new(a, b).unwrap().sample(&mut rng);
                     });
             });
     }
 
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // TODO: Shouldn't we be considering cell volume when sampling this?
         const MCMC_STEPS: usize = 10;
-        const PROPOSAL_SD: f32 = 1e-2; // TODO: boost this when we know it's working
+        const PROPOSAL_SD: f32 = 1e-2;
         Zip::indexed(params.r.rows_mut()) // for each component
             .and(params.p.rows())
             .and(&params.component_population)
@@ -1647,21 +1644,16 @@ where
                                     lp0 = lp_proposal;
                                 }
                             }
-                            dbg!(*r_tk);
                         }
-                        // *r_tk = 1.0;
                     });
             });
+            // dbg!(&params.r);
+            // dbg!(&params.p);
     }
 
     // log-probability function for taking metropolis-hastings steps in `sample_r`
     fn sample_r_logprob(&self, priors: &ModelPriors, x_k: ArrayView1<u32>, z: &Array1<u32>, cell_volume: &Array1<f32>, p_k: f32, r_k: f32, component: u32) -> f32 {
         let mut lp = gamma_logpdf(priors.c_r * priors.r_r, priors.c_r.recip(), r_k);
-
-        // TODO: have to do some special scaling of log_p_k to get volume
-
-        let log_p_k = p_k.ln();
-        let log_1mp_k = (-p_k).ln_1p();
         let lgamma_r = lgammaf(r_k);
 
         // for each cell
@@ -1675,8 +1667,6 @@ where
             let log_1mp_k = (-p_k).ln_1p();
 
             // NB(x_ck; r_k, p_k) log pdf
-
-            // TODO: How do we scale NB using volume???
 
             if x_ck == 0 {
                 lp += r_k * log_1mp_k;
