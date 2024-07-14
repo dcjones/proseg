@@ -675,6 +675,11 @@ fn main() {
         // TODO: probably would benifit from being < 1
         α_θ: 1e-1,
 
+        eφ: 1.0,
+        fφ: 1.0,
+        eθ: 1.0,
+        fθ: 1.0,
+
         e_r: 1.0,
 
         e_h: 1.0,
