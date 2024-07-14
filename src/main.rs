@@ -676,6 +676,7 @@ fn main() {
         // TODO: probably would benifit from being < 1
         α_θ: 1e-1,
 
+        // TODO: Probably want to nudge dispersion parameters to be larger
         eφ: 1.0,
         fφ: 1.0,
         eθ: 1.0,
