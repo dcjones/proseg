@@ -40,6 +40,12 @@ pub fn gamma_logpdf(shape: f32, scale: f32, x: f32) -> f32 {
         - x / scale;
 }
 
+pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
+    (0..n)
+        .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
+        .sum()
+}
+
 // pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
 //     let k_ln_factorial = lgammaf(k as f32 + 1.0);
 //     let lgamma_rpk = lgammaf(r + k as f32);

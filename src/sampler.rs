@@ -15,7 +15,7 @@ use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use math::{gamma_logpdf, lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, randn};
+use math::{gamma_logpdf, lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, randn, rand_crt};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Array3, ArrayView1, Axis, Zip, s};
 use rand::{thread_rng, Rng};
@@ -78,6 +78,14 @@ pub struct ModelPriors {
     // params for inverse-gamma prior
     pub α_σ_volume: f32,
     pub β_σ_volume: f32,
+
+    // gamma prior on rφ
+    pub eφ: f32,
+    pub fφ: f32,
+
+    // gamma prior on rθ
+    pub eθ: f32,
+    pub fθ: f32,
 
     // dirichlet prior for θ
     pub α_θ: f32,
@@ -226,6 +234,13 @@ pub struct ModelParams {
     // [ncells, nhidden]: cell ψ parameter in the latent space
     pub φ: Array2<f32>,
 
+    // For components as well???
+    // [ncells, nhidden] aux CRT variables for sampling rφ
+    // pub lφ: Array2<f32>,
+
+    // [ncells, nhidden] aux CRT variables for sampling rφ
+    pub lφ: Array2<u32>,
+
     // [ncomponents, nhidden] φ gamma shape parameters
     pub rφ: Array2<f32>,
 
@@ -234,6 +249,9 @@ pub struct ModelParams {
 
     // [ngenes, nhidden]: gene loadings in the latent space
     pub θ: Array2<f32>,
+
+    // [ngenes, nhidden] aux CRT variables for sampling rθ
+    pub lθ: Array2<u32>,
 
     // [nhidden] φ gamma shape parameters
     pub rθ: Array1<f32>,
@@ -306,8 +324,10 @@ impl ModelParams {
         let accept_proposed_transcript_positions = vec![false; transcripts.len()];
         let transcript_position_updates = vec![(0, 0, 0, 0); transcripts.len()];
 
+        let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
+        let lθ = Array2::<u32>::zeros((ngenes, nhidden));
         let rθ= Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
@@ -423,8 +443,10 @@ impl ModelParams {
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             φ,
             θ,
+            lφ,
             sφ,
             rφ,
+            lθ,
             sθ,
             rθ,
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -1456,6 +1478,10 @@ where
         self.sample_θ(priors, params);
         println!("  sample_θ: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
+        self.sample_rθ(priors, params);
+        println!("  sample_rθ: {:?}", t0.elapsed());
+
         // let t0 = Instant::now();
         // self.sample_p(priors, params);
         // println!("  sample_p: {:?}", t0.elapsed());
@@ -1467,6 +1493,10 @@ where
         let t0 = Instant::now();
         self.sample_φ(params);
         println!("  sample_φ: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        self.sample_rφ(priors, params);
+        println!("  sample_rφ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         self.compute_rates(params);
@@ -1730,7 +1760,7 @@ where
             });
     }
 
-    fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_θ(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
         Zip::from(params.θ.outer_iter_mut()) // for every gene
             .and(params.gene_latent_counts.outer_iter())
             .par_for_each(|θ_g, x_g| {
@@ -1745,6 +1775,79 @@ where
                         let scale = s_k / (1.0 + s_k * φ_k.dot(&params.cell_volume));
                         *θ_gk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
+            });
+    }
+
+    fn sample_rφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        Zip::from(params.lφ.outer_iter_mut()) // for every cell
+            .and(&params.z)
+            .and(params.cell_latent_counts.outer_iter())
+            .par_for_each(|l_c, z_c, x_c| {
+                let mut rng = thread_rng();
+                Zip::from(l_c) // for each hidden dim
+                    .and(x_c)
+                    .and(&params.rφ.row(*z_c as usize))
+                    .for_each(|l_ck, x_ck, r_k| {
+                        *l_ck = rand_crt(&mut rng, *x_ck, *r_k);
+                    });
+            });
+
+        Zip::indexed(params.rφ.outer_iter_mut()) // for each component
+            .and(params.sφ.outer_iter())
+            .par_for_each(|t, r_t, s_t| {
+                let mut rng = thread_rng();
+                Zip::from(r_t) // each hidden dim
+                    .and(s_t)
+                    .and(params.lφ.axis_iter(Axis(1)))
+                    .and(params.θ.axis_iter(Axis(1)))
+                    .for_each(|r_tk, s_tk, l_k, θ_k| {
+                        // summing elements of lφ in component t
+                        let lsum = l_k.iter()
+                            .zip(&params.z)
+                            .filter(|(_l_ck, z_c)| **z_c as usize == t)
+                            .map(|(l_ck, _z_c)| *l_ck)
+                            .sum::<u32>();
+
+                        let shape = priors.eφ + lsum as f32;
+
+                        // TODO: could same some time be precomputing θsum outside the outer loop
+                        let θsum = θ_k.sum();
+                        let scale_inv = (1.0/priors.fφ) + params.z.iter()
+                            .zip(&params.cell_volume)
+                            .filter(|(z_c, _v_c)| **z_c as usize == t)
+                            .map(|(_z_c, v_c)| (*s_tk * v_c * θsum).ln_1p())
+                            .sum::<f32>();
+                        let scale = scale_inv.recip();
+
+                        // let scale = priors.
+                        *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+                    });
+            });
+    }
+
+    fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        Zip::from(params.lθ.outer_iter_mut()) // for every gene
+            .and(params.gene_latent_counts.outer_iter())
+            .par_for_each(|l_g, x_g| {
+                let mut rng = thread_rng();
+                Zip::from(l_g) // for each hidden dim
+                    .and(x_g)
+                    .and(&params.rθ)
+                    .for_each(|l_gk, x_gk, r_k| {
+                        *l_gk = rand_crt(&mut rng, *x_gk, *r_k);
+                    });
+            });
+
+        let ngenes = params.lθ.shape()[0];
+        let mut rng = thread_rng();
+        Zip::from(&mut params.rθ) // for each hidden dim
+            .and(&params.sθ)
+            .and(params.lθ.axis_iter(Axis(1)))
+            .and(params.φ.axis_iter(Axis(1)))
+            .for_each(|r_k, s_k, l_k, φ_k| {
+                let shape = priors.eθ + l_k.sum() as f32;
+                let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * φ_k.dot(&params.cell_volume)).ln_1p()).recip();
+                *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
             });
     }
 
