@@ -1498,14 +1498,6 @@ where
         self.sample_sθ(priors, params);
         println!("  sample_sθ: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
-        // self.sample_p(priors, params);
-        // println!("  sample_p: {:?}", t0.elapsed());
-
-        // let t0 = Instant::now();
-        // self.sample_r(priors, params);
-        // println!("  sample_r: {:?}", t0.elapsed());
-
         let t0 = Instant::now();
         self.sample_φ(params);
         println!("  sample_φ: {:?}", t0.elapsed());
@@ -1585,7 +1577,6 @@ where
                 let z_log_probs_t = Array1::<f64>::from_iter(z_probs.iter().cloned());
 
                 // if rng.gen::<f64>() < 1e-3 {
-                //     dbg!(φ_c);
                 //     dbg!(&z_probs);
                 // }
 
@@ -1594,6 +1585,9 @@ where
                     z_probs_sum += *z_probs_t;
                 }
 
+                // if rng.gen::<f64>() < 1e-3 {
+                //     dbg!(&z_probs);
+                // }
 
                 if !z_probs_sum.is_finite() {
                     dbg!(&z_probs, &φ_c, z_probs_sum);
@@ -1620,6 +1614,10 @@ where
                     *x = acc;
                     acc
                 });
+
+                // if rng.gen::<f64>() < 1e-3 {
+                //     dbg!(&z_probs);
+                // }
 
                 let u = rng.gen::<f64>();
                 *z_c = z_probs.partition_point(|x| *x < u) as u32;
@@ -1650,110 +1648,6 @@ where
         // dbg!(&params.component_latent_counts);
         // dbg!(&params.p);
     }
-
-    fn sample_p(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-
-        // Zip::from(params.pφ.rows_mut()) // for each component
-        //     .and(params.rφ.rows())
-        //     .and(&params.component_volume)
-        //     .and(params.component_latent_counts.rows())
-        //     .par_for_each(|p_t, r_t, v_t, x_t| {
-        //         let mut rng = thread_rng();
-        //         Zip::from(p_t) // for each latent dim
-        //             .and(r_t)
-        //             .and(x_t)
-        //             .for_each(|p_tk, r_tk, x_tk| {
-        //                 let a = priors.α_pφ + *x_tk as f32;
-        //                 let b = priors.β_pφ + *v_t * *r_tk;
-        //                 *p_tk = Beta::new(a, b).unwrap().sample(&mut rng);
-        //             });
-        //     });
-
-        // Sample pθ
-        // Zip::from(&mut params.pθ) // for each latent dim
-        //     .and(&params.rθ)
-        //     .and(&params.latent_counts)
-        //     .for_each(|p_k, r_k, x_k| {
-        //         let mut rng = thread_rng();
-        //         let a = priors.α_pθ + *x_k as f32;
-        //         let b = priors.β_pθ + 
-        //         // TODO: have to work this out
-        //         *p_k = Beta::new().unwrap(a, b).sample(&mut rng);
-        //     });
-    }
-
-    fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        const MCMC_STEPS: usize = 10;
-        const PROPOSAL_SD: f32 = 1e-2;
-        // Zip::indexed(params.r.rows_mut()) // for each component
-        //     .and(params.p.rows())
-        //     .and(&params.component_population)
-        //     .and(params.component_latent_counts.rows())
-        //     .par_for_each(|t, r_t, p_t, pop_t, x_t| {
-        //         let mut rng = thread_rng();
-        //         Zip::indexed(r_t) // for each hidden dim
-        //             .and(p_t)
-        //             .and(x_t)
-        //             .for_each(|k, r_tk, p_tk, x_tk| {
-        //                 if *x_tk == 0 {
-        //                     let shape = priors.c_r * priors.r_r;
-        //                     let scale = (priors.c_r - (*pop_t as f32) * log1pf(-*p_tk)).recip();
-        //                     *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
-        //                 } else {
-        //                     let cell_latent_counts_k = params.cell_latent_counts.column(k);
-        //                     let mut lp0 = self.sample_r_logprob(
-        //                         priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, *r_tk, t as u32);
-
-        //                     for _ in 0..MCMC_STEPS {
-        //                         let r_proposal = *r_tk + PROPOSAL_SD * randn(&mut rng);
-        //                         let lp_proposal = self.sample_r_logprob(
-        //                             priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, r_proposal, t as u32);
-
-        //                         let u = rng.gen::<f32>().ln();
-        //                         if u < lp_proposal - lp0 {
-        //                             // accept
-        //                             *r_tk = r_proposal;
-        //                             lp0 = lp_proposal;
-        //                         }
-        //                     }
-        //                 }
-        //             });
-        //     });
-            // dbg!(&params.r);
-            // dbg!(&params.p);
-    }
-
-    // TODO: This will hopefully be removed and replaced by Polya-Gamma trick
-    // log-probability function for taking metropolis-hastings steps in `sample_r`
-    // fn sample_r_logprob(&self, priors: &ModelPriors, x_k: ArrayView1<u32>, z: &Array1<u32>, cell_volume: &Array1<f32>, p_k: f32, r_k: f32, component: u32) -> f32 {
-    //     let mut lp = gamma_logpdf(priors.c_r * priors.r_r, priors.c_r.recip(), r_k);
-    //     let lgamma_r = lgammaf(r_k);
-
-    //     // for each cell
-    //     for (&x_ck, z_c, v_c) in izip!(x_k, z, cell_volume) {
-    //         if *z_c != component {
-    //             continue;
-    //         }
-
-    //         let p_k = (p_k * v_c) / (1.0 + p_k * (v_c - 1.0));
-    //         let log_p_k = p_k.ln();
-    //         let log_1mp_k = (-p_k).ln_1p();
-
-    //         // NB(x_ck; r_k, p_k) log pdf
-// 
-    //         if x_ck == 0 {
-    //             lp += r_k * log_1mp_k;
-    //         } else {
-    //             lp +=
-    //                 lgammaf(r_k + x_ck as f32)
-    //                 - lgamma_r
-    //                 - lgammaf(x_ck as f32 + 1.0)
-    //                 + (x_ck as f32) * log_p_k + r_k * log_1mp_k;
-    //         }
-    //     }
-
-    // return lp;
-    // }
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
         general_mat_mul(1.0, &params.φ, &params.θ.t(), 0.0, &mut params.λ);
@@ -1838,13 +1732,11 @@ where
                             .map(|(_z_c, v_c)| (*s_tk * v_c * θsum).ln_1p())
                             .sum::<f32>();
                         let scale = scale_inv.recip();
-
-                        // let scale = priors.
                         *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                         *r_tk = r_tk.max(2e-4);
                     });
             });
-        dbg!(&params.rφ);
+        // dbg!(&params.rφ);
     }
 
     fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1917,11 +1809,11 @@ where
                             .map(|(ω_ck, _z_c)| *ω_ck)
                             .sum::<f32>();
                         let σ = τ.recip();
-                        let μ = σ * Zip::indexed(x_k)
+                        let μ = σ * Zip::from(x_k) // for every cell
                             .and(&params.z)
                             .and(ω_k)
                             .and(&params.cell_volume)
-                            .fold(0.0, |acc, t, x_ck, z_c, ω_ck, v_c| {
+                            .fold(0.0, |acc, x_ck, z_c, ω_ck, v_c| {
                                 if *z_c as usize == t {
                                     acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * θ_k.sum()).ln()
                                 } else {
@@ -1932,10 +1824,8 @@ where
                     });
             });
         println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
-
-        dbg!(&params.sφ);
-        // panic!();
-
+        // dbg!(&params.sφ);
+        dbg!(&params.sφ * &params.rφ);
     }
 
     fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1981,6 +1871,7 @@ where
                 *s_k = (μ + σ * randn(&mut rng)).exp();
             });
         println!("  sample_sθ/LogNormal: {:?}", t0.elapsed());
+        // dbg!(&params.sθ);
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
