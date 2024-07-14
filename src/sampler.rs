@@ -1514,9 +1514,9 @@ where
         self.sample_rφ(priors, params);
         println!("  sample_rφ: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
-        // self.sample_sφ(priors, params);
-        // println!("  sample_sφ: {:?}", t0.elapsed());
+        let t0 = Instant::now();
+        self.sample_sφ(priors, params);
+        println!("  sample_sφ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         self.compute_rates(params);
@@ -1841,8 +1841,10 @@ where
 
                         // let scale = priors.
                         *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+                        *r_tk = r_tk.max(2e-4);
                     });
             });
+        dbg!(&params.rφ);
     }
 
     fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1868,12 +1870,72 @@ where
                 let shape = priors.eθ + l_k.sum() as f32;
                 let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * φ_k.dot(&params.cell_volume)).ln_1p()).recip();
                 *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+                *r_k = r_k.max(2e-4);
             });
     }
 
     fn sample_sφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // TODO
-        unimplemented!();
+        // sample ω ~ PolyaGamma
+        let t0 = Instant::now();
+        Zip::from(params.ωφ.outer_iter_mut()) // for every cell
+            .and(&params.z)
+            .and(params.cell_latent_counts.outer_iter())
+            .and(&params.cell_volume)
+            .par_for_each(|ω_c, z_c, x_c, v_c| {
+            // .for_each(|ω_c, z_c, x_c, v_c| {
+                let mut rng = thread_rng();
+                Zip::from(ω_c)
+                    .and(x_c)
+                    .and(params.rφ.row(*z_c as usize))
+                    .and(params.sφ.row(*z_c as usize))
+                    .and(params.θ.axis_iter(Axis(1)))
+                    .for_each(|ω_ck, x_ck, r_k, s_k, θ_k| {
+                        let ε = (*s_k * *v_c * θ_k.sum()).ln();
+                        *ω_ck = PolyaGamma::new(
+                            *x_ck as f32 + *r_k,
+                            ε
+                        ).sample(&mut rng);
+                    });
+            });
+        println!("  sample_sφ/PolyaGamma: {:?}", t0.elapsed());
+
+        // sample s ~ LogNormal
+        let t0 = Instant::now();
+        Zip::indexed(params.sφ.outer_iter_mut()) // for every component
+            .and(params.rφ.outer_iter())
+            .par_for_each(|t, s_t, r_t| {
+                let mut rng = thread_rng();
+                Zip::from(s_t) // for every hidden dim
+                    .and(r_t)
+                    .and(params.θ.axis_iter(Axis(1)))
+                    .and(params.ωφ.axis_iter(Axis(1)))
+                    .and(params.cell_latent_counts.axis_iter(Axis(1)))
+                    .for_each(|s_tk, r_tk, θ_k, ω_k, x_k| {
+                        let τ = priors.τφ + ω_k.iter()
+                            .zip(&params.z)
+                            .filter(|(_ω_ck, z_c)| **z_c as usize == t)
+                            .map(|(ω_ck, _z_c)| *ω_ck)
+                            .sum::<f32>();
+                        let σ = τ.recip();
+                        let μ = σ * Zip::indexed(x_k)
+                            .and(&params.z)
+                            .and(ω_k)
+                            .and(&params.cell_volume)
+                            .fold(0.0, |acc, t, x_ck, z_c, ω_ck, v_c| {
+                                if *z_c as usize == t {
+                                    acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * θ_k.sum()).ln()
+                                } else {
+                                    acc
+                                }
+                            });
+                        *s_tk = (μ + σ * randn(&mut rng)).exp();
+                    });
+            });
+        println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
+
+        dbg!(&params.sφ);
+        // panic!();
+
     }
 
     fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1882,6 +1944,7 @@ where
         Zip::from(params.ωθ.outer_iter_mut()) // for every gene
             .and(params.gene_latent_counts.outer_iter())
             .par_for_each(|ω_g, x_g| {
+            // .for_each(|ω_g, x_g| {
                 let mut rng = thread_rng();
                 Zip::from(ω_g) // for every hidden dim
                     .and(x_g)
@@ -1899,6 +1962,7 @@ where
         println!("  sample_sθ/PolyaGamma: {:?}", t0.elapsed());
 
         // TODO: This is slow part, probably from computing the sums for μ
+        // Could probably try to do that in parallel.
         // sample s ~ LogNormal
         let t0 = Instant::now();
         Zip::from(&mut params.sθ) // for every hidden dim
