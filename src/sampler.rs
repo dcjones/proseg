@@ -82,12 +82,6 @@ pub struct ModelPriors {
     // dirichlet prior for θ
     pub α_θ: f32,
 
-    pub α_p: f32,
-    pub β_p: f32,
-
-    pub c_r: f32,
-    pub r_r: f32,
-
     // gamma rate prior
     pub e_r: f32,
 
@@ -232,14 +226,20 @@ pub struct ModelParams {
     // [ncells, nhidden]: cell ψ parameter in the latent space
     pub φ: Array2<f32>,
 
+    // [ncomponents, nhidden] φ gamma shape parameters
+    pub rφ: Array2<f32>,
+
+    // [ncomponents, nhidden] φ gamma scale parameters
+    pub sφ: Array2<f32>,
+
     // [ngenes, nhidden]: gene loadings in the latent space
     pub θ: Array2<f32>,
 
-    // [ncomponents, nhidden] φ gamma scale parameters
-    pub p: Array2<f32>,
+    // [nhidden] φ gamma shape parameters
+    pub rθ: Array1<f32>,
 
-    // [ncomponents, nhidden] φ gamma shape parameters
-    pub r: Array2<f32>,
+    // [nhidden] φ gamma scale parameters
+    pub sθ: Array1<f32>,
 
     // // [ncomponents, ngenes] NB p parameters.
     // θ: Array2<f32>,
@@ -306,8 +306,10 @@ impl ModelParams {
         let accept_proposed_transcript_positions = vec![false; transcripts.len()];
         let transcript_position_updates = vec![(0, 0, 0, 0); transcripts.len()];
 
-        let r = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
-        let p = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
+        let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
+        let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
+        let rθ= Array1::<f32>::from_elem(nhidden, 1.0_f32);
+        let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
         let cell_log_volume = Array1::<f32>::zeros(ncells);
 
@@ -366,7 +368,7 @@ impl ModelParams {
         //     .into();
 
         let mut rng = rand::thread_rng();
-        let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || 1e-2 * randn(&mut rng).exp());
+        let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
         let θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
 
         let transcript_state =
@@ -421,8 +423,10 @@ impl ModelParams {
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             φ,
             θ,
-            p,
-            r,
+            sφ,
+            rφ,
+            sθ,
+            rθ,
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ncells, ngenes), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
@@ -1452,13 +1456,13 @@ where
         self.sample_θ(priors, params);
         println!("  sample_θ: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
-        self.sample_p(priors, params);
-        println!("  sample_p: {:?}", t0.elapsed());
+        // let t0 = Instant::now();
+        // self.sample_p(priors, params);
+        // println!("  sample_p: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
-        self.sample_r(priors, params);
-        println!("  sample_r: {:?}", t0.elapsed());
+        // let t0 = Instant::now();
+        // self.sample_r(priors, params);
+        // println!("  sample_r: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         self.sample_φ(params);
@@ -1491,24 +1495,21 @@ where
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, π_t, r_t, p_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.r.rows(), params.p.rows()) {
+                for (z_probs_t, π_t, r_t, s_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.rφ.rows(), params.sφ.rows()) {
                     *z_probs_t = π_t.ln() as f64;
 
                     // for every hidden dim
                     Zip::from(r_t)
-                        .and(p_t)
+                        .and(s_t)
                         .and(φ_c)
                         .and(x_c)
-                        .for_each(|r_tk, p_tk, φ_ck, x_ck| {
-                            let shape = *r_tk;
-                            let scale = *p_tk / (1.0 - *p_tk);
-
-                            let p = gamma_logpdf(shape, scale, *φ_ck) as f64;
+                        .for_each(|r_tk, s_tk, φ_ck, x_ck| {
+                            let p = gamma_logpdf(*r_tk, *s_tk, *φ_ck) as f64;
                             let p = p.min(max_prob);
 
                             *z_probs_t += p;
                             if !p.exp().is_finite() {
-                                dbg!((p, *x_ck, *φ_ck, *v_c, shape, scale));
+                                dbg!((p, *x_ck, *φ_ck, *v_c, *r_tk, *s_tk));
                             }
 
                             // if rng.gen::<f64>() < 1e-3 && p > 10.0 {
@@ -1548,7 +1549,7 @@ where
                     dbg!(&z_probs, &φ_c, z_probs_sum);
                 }
 
-                assert!(z_probs_sum.is_finite());
+                // assert!(z_probs_sum.is_finite());
 
                 // TODO: If I just coose the maximum probability does it work?
                 // No, everything just ends up in one component.
@@ -1601,104 +1602,111 @@ where
     }
 
     fn sample_p(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        Zip::from(params.p.rows_mut()) // for each component
-            .and(params.r.rows())
-            .and(&params.component_volume)
-            .and(params.component_latent_counts.rows())
-            .par_for_each(|p_t, r_t, v_t, x_t| {
-                let mut rng = thread_rng();
-                Zip::from(p_t) // for each latent dim
-                    .and(r_t)
-                    .and(x_t)
-                    .for_each(|p_tk, r_tk, x_tk| {
-                        let a = priors.α_p + *x_tk as f32;
-                        let b = priors.β_p + *v_t * *r_tk;
-                        *p_tk = Beta::new(a, b).unwrap().sample(&mut rng);
-                    });
-            });
+
+        // Zip::from(params.pφ.rows_mut()) // for each component
+        //     .and(params.rφ.rows())
+        //     .and(&params.component_volume)
+        //     .and(params.component_latent_counts.rows())
+        //     .par_for_each(|p_t, r_t, v_t, x_t| {
+        //         let mut rng = thread_rng();
+        //         Zip::from(p_t) // for each latent dim
+        //             .and(r_t)
+        //             .and(x_t)
+        //             .for_each(|p_tk, r_tk, x_tk| {
+        //                 let a = priors.α_pφ + *x_tk as f32;
+        //                 let b = priors.β_pφ + *v_t * *r_tk;
+        //                 *p_tk = Beta::new(a, b).unwrap().sample(&mut rng);
+        //             });
+        //     });
+
+        // Sample pθ
+        // Zip::from(&mut params.pθ) // for each latent dim
+        //     .and(&params.rθ)
+        //     .and(&params.latent_counts)
+        //     .for_each(|p_k, r_k, x_k| {
+        //         let mut rng = thread_rng();
+        //         let a = priors.α_pθ + *x_k as f32;
+        //         let b = priors.β_pθ + 
+        //         // TODO: have to work this out
+        //         *p_k = Beta::new().unwrap(a, b).sample(&mut rng);
+        //     });
     }
 
     fn sample_r(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         const MCMC_STEPS: usize = 10;
         const PROPOSAL_SD: f32 = 1e-2;
-        Zip::indexed(params.r.rows_mut()) // for each component
-            .and(params.p.rows())
-            .and(&params.component_population)
-            .and(params.component_latent_counts.rows())
-            .par_for_each(|t, r_t, p_t, pop_t, x_t| {
-                let mut rng = thread_rng();
-                Zip::indexed(r_t) // for each hidden dim
-                    .and(p_t)
-                    .and(x_t)
-                    .for_each(|k, r_tk, p_tk, x_tk| {
-                        if *x_tk == 0 {
-                            let shape = priors.c_r * priors.r_r;
-                            let scale = (priors.c_r - (*pop_t as f32) * log1pf(-*p_tk)).recip();
-                            *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
-                        } else {
-                            let cell_latent_counts_k = params.cell_latent_counts.column(k);
-                            let mut lp0 = self.sample_r_logprob(
-                                priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, *r_tk, t as u32);
+        // Zip::indexed(params.r.rows_mut()) // for each component
+        //     .and(params.p.rows())
+        //     .and(&params.component_population)
+        //     .and(params.component_latent_counts.rows())
+        //     .par_for_each(|t, r_t, p_t, pop_t, x_t| {
+        //         let mut rng = thread_rng();
+        //         Zip::indexed(r_t) // for each hidden dim
+        //             .and(p_t)
+        //             .and(x_t)
+        //             .for_each(|k, r_tk, p_tk, x_tk| {
+        //                 if *x_tk == 0 {
+        //                     let shape = priors.c_r * priors.r_r;
+        //                     let scale = (priors.c_r - (*pop_t as f32) * log1pf(-*p_tk)).recip();
+        //                     *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+        //                 } else {
+        //                     let cell_latent_counts_k = params.cell_latent_counts.column(k);
+        //                     let mut lp0 = self.sample_r_logprob(
+        //                         priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, *r_tk, t as u32);
 
-                            for _ in 0..MCMC_STEPS {
-                                let r_proposal = *r_tk + PROPOSAL_SD * randn(&mut rng);
-                                let lp_proposal = self.sample_r_logprob(
-                                    priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, r_proposal, t as u32);
+        //                     for _ in 0..MCMC_STEPS {
+        //                         let r_proposal = *r_tk + PROPOSAL_SD * randn(&mut rng);
+        //                         let lp_proposal = self.sample_r_logprob(
+        //                             priors, cell_latent_counts_k, &params.z, &params.cell_volume, *p_tk, r_proposal, t as u32);
 
-                                let u = rng.gen::<f32>().ln();
-                                if u < lp_proposal - lp0 {
-                                    // accept
-                                    *r_tk = r_proposal;
-                                    lp0 = lp_proposal;
-                                }
-                            }
-                        }
-                    });
-            });
+        //                         let u = rng.gen::<f32>().ln();
+        //                         if u < lp_proposal - lp0 {
+        //                             // accept
+        //                             *r_tk = r_proposal;
+        //                             lp0 = lp_proposal;
+        //                         }
+        //                     }
+        //                 }
+        //             });
+        //     });
             // dbg!(&params.r);
             // dbg!(&params.p);
     }
 
+    // TODO: This will hopefully be removed and replaced by Polya-Gamma trick
     // log-probability function for taking metropolis-hastings steps in `sample_r`
-    fn sample_r_logprob(&self, priors: &ModelPriors, x_k: ArrayView1<u32>, z: &Array1<u32>, cell_volume: &Array1<f32>, p_k: f32, r_k: f32, component: u32) -> f32 {
-        let mut lp = gamma_logpdf(priors.c_r * priors.r_r, priors.c_r.recip(), r_k);
-        let lgamma_r = lgammaf(r_k);
+    // fn sample_r_logprob(&self, priors: &ModelPriors, x_k: ArrayView1<u32>, z: &Array1<u32>, cell_volume: &Array1<f32>, p_k: f32, r_k: f32, component: u32) -> f32 {
+    //     let mut lp = gamma_logpdf(priors.c_r * priors.r_r, priors.c_r.recip(), r_k);
+    //     let lgamma_r = lgammaf(r_k);
 
-        // for each cell
-        for (&x_ck, z_c, v_c) in izip!(x_k, z, cell_volume) {
-            if *z_c != component {
-                continue;
-            }
+    //     // for each cell
+    //     for (&x_ck, z_c, v_c) in izip!(x_k, z, cell_volume) {
+    //         if *z_c != component {
+    //             continue;
+    //         }
 
-            let p_k = (p_k * v_c) / (1.0 + p_k * (v_c - 1.0));
-            let log_p_k = p_k.ln();
-            let log_1mp_k = (-p_k).ln_1p();
+    //         let p_k = (p_k * v_c) / (1.0 + p_k * (v_c - 1.0));
+    //         let log_p_k = p_k.ln();
+    //         let log_1mp_k = (-p_k).ln_1p();
 
-            // NB(x_ck; r_k, p_k) log pdf
+    //         // NB(x_ck; r_k, p_k) log pdf
+// 
+    //         if x_ck == 0 {
+    //             lp += r_k * log_1mp_k;
+    //         } else {
+    //             lp +=
+    //                 lgammaf(r_k + x_ck as f32)
+    //                 - lgamma_r
+    //                 - lgammaf(x_ck as f32 + 1.0)
+    //                 + (x_ck as f32) * log_p_k + r_k * log_1mp_k;
+    //         }
+    //     }
 
-            if x_ck == 0 {
-                lp += r_k * log_1mp_k;
-            } else {
-                lp +=
-                    lgammaf(r_k + x_ck as f32)
-                    - lgamma_r
-                    - lgammaf(x_ck as f32 + 1.0)
-                    + (x_ck as f32) * log_p_k + r_k * log_1mp_k;
-            }
-        }
-
-        return lp;
-    }
+    // return lp;
+    // }
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
         general_mat_mul(1.0, &params.φ, &params.θ.t(), 0.0, &mut params.λ);
-
-        // // TODO: I think we just divide λ by volume here right, and everything else works it self out.
-        // for λ_c in params.λ.rows_mut() {
-        //     for (λ_cg, v_c) in izip!(λ_c, &params.cell_volume) {
-        //         *λ_cg /= v_c;
-        //     }
-        // }
     }
 
     fn sample_φ(&mut self, params: &mut ModelParams) {
@@ -1710,32 +1718,34 @@ where
                 let z_c = *z_c as usize;
                 let mut rng = thread_rng();
                 Zip::from(φ_c) // for each latent dim
+                    .and(params.θ.columns())
                     .and(x_c)
-                    .and(&params.r.row(z_c))
-                    .and(&params.p.row(z_c))
-                    .for_each(|φ_ck, x_ck, r_k, p_k| {
+                    .and(&params.rφ.row(z_c))
+                    .and(&params.sφ.row(z_c))
+                    .for_each(|φ_ck, θ_k, x_ck, r_k, s_k| {
                         let shape = *r_k + *x_ck as f32;
-                        let scale = *p_k / (1.0 + (*v_c - 1.0) * *p_k);
-                        // let scale = *p_k;
+                        let scale = s_k / (1.0 + s_k * v_c * θ_k.sum());
                         *φ_ck = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
             });
     }
 
     fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        Zip::from(&mut params.θ)
-            .and(&params.gene_latent_counts)
-            .par_for_each(|θ_gk, x_gk| {
+        Zip::from(params.θ.outer_iter_mut()) // for every gene
+            .and(params.gene_latent_counts.outer_iter())
+            .par_for_each(|θ_g, x_g| {
                 let mut rng = thread_rng();
-                let a = *x_gk as f32 + priors.α_θ;
-                *θ_gk = Gamma::new(a, 1.0).unwrap().sample(&mut rng);
+                Zip::from(θ_g) // for each latent dim
+                    .and(params.φ.columns())
+                    .and(x_g)
+                    .and(&params.rθ)
+                    .and(&params.sθ)
+                    .for_each(|θ_gk, φ_k, x_gk, r_k, s_k| {
+                        let shape = *r_k + *x_gk as f32;
+                        let scale = s_k / (1.0 + s_k * φ_k.dot(&params.cell_volume));
+                        *θ_gk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+                    });
             });
-
-        // normalize to get Dirichlet samples
-        for mut θ_k in params.θ.columns_mut() {
-            let θ_k_norm = θ_k.sum();
-            θ_k /= θ_k_norm;
-        }
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
