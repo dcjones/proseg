@@ -677,16 +677,16 @@ fn main() {
         α_θ: 1e-1,
 
         // TODO: Probably want to nudge dispersion parameters to be larger
-        eφ: 1.0,
-        fφ: 1.0,
-        eθ: 1.0,
-        fθ: 1.0,
+        eφ: 1.2,
+        fφ: 2.0,
+        eθ: 1.2,
+        fθ: 2.0,
 
-        μφ: 0.0,
-        τφ: 0.1,
+        μφ: 1.0,
+        τφ: 0.5,
 
-        μθ: 0.0,
-        τθ: 0.1,
+        μθ: 1.0,
+        τθ: 0.5,
 
         e_r: 1.0,
 
