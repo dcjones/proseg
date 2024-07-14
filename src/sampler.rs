@@ -1,6 +1,7 @@
 mod connectivity;
 pub mod hull;
 mod math;
+mod polyagamma;
 mod polygons;
 mod sampleset;
 pub mod transcripts;
@@ -20,6 +21,7 @@ use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Array3, ArrayView1, Axis, Zip, s};
 use rand::{thread_rng, Rng};
 use rand_distr::{Beta, Binomial, Distribution, Gamma, Normal, StandardNormal};
+use polyagamma::PolyaGamma;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -86,6 +88,14 @@ pub struct ModelPriors {
     // gamma prior on rθ
     pub eθ: f32,
     pub fθ: f32,
+
+    // log-normal prior on sφ
+    pub μφ: f32,
+    pub τφ: f32,
+
+    // log-normal prior on sθ
+    pub μθ: f32,
+    pub τθ: f32,
 
     // dirichlet prior for θ
     pub α_θ: f32,
@@ -241,6 +251,9 @@ pub struct ModelParams {
     // [ncells, nhidden] aux CRT variables for sampling rφ
     pub lφ: Array2<u32>,
 
+    // [ncells, nhidden] aux PolyaGamma variables for sampling sφ
+    pub ωφ: Array2<f32>,
+
     // [ncomponents, nhidden] φ gamma shape parameters
     pub rφ: Array2<f32>,
 
@@ -252,6 +265,9 @@ pub struct ModelParams {
 
     // [ngenes, nhidden] aux CRT variables for sampling rθ
     pub lθ: Array2<u32>,
+
+    // [ngenes, nhidden] aux PolyaGamma variables for sampling sφ
+    pub ωθ: Array2<f32>,
 
     // [nhidden] φ gamma shape parameters
     pub rθ: Array1<f32>,
@@ -325,9 +341,11 @@ impl ModelParams {
         let transcript_position_updates = vec![(0, 0, 0, 0); transcripts.len()];
 
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
+        let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let lθ = Array2::<u32>::zeros((ngenes, nhidden));
+        let ωθ = Array2::<f32>::zeros((ngenes, nhidden));
         let rθ= Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
@@ -444,9 +462,11 @@ impl ModelParams {
             φ,
             θ,
             lφ,
+            ωφ,
             sφ,
             rφ,
             lθ,
+            ωθ,
             sθ,
             rθ,
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
@@ -1474,6 +1494,10 @@ where
         self.sample_rθ(priors, params);
         println!("  sample_rθ: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
+        self.sample_sθ(priors, params);
+        println!("  sample_sθ: {:?}", t0.elapsed());
+
         // let t0 = Instant::now();
         // self.sample_p(priors, params);
         // println!("  sample_p: {:?}", t0.elapsed());
@@ -1489,6 +1513,10 @@ where
         let t0 = Instant::now();
         self.sample_rφ(priors, params);
         println!("  sample_rφ: {:?}", t0.elapsed());
+
+        // let t0 = Instant::now();
+        // self.sample_sφ(priors, params);
+        // println!("  sample_sφ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         self.compute_rates(params);
@@ -1841,6 +1869,54 @@ where
                 let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * φ_k.dot(&params.cell_volume)).ln_1p()).recip();
                 *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
             });
+    }
+
+    fn sample_sφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // TODO
+        unimplemented!();
+    }
+
+    fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // sample ω ~ PolyaGamma
+        let t0 = Instant::now();
+        Zip::from(params.ωθ.outer_iter_mut()) // for every gene
+            .and(params.gene_latent_counts.outer_iter())
+            .par_for_each(|ω_g, x_g| {
+                let mut rng = thread_rng();
+                Zip::from(ω_g) // for every hidden dim
+                    .and(x_g)
+                    .and(&params.rθ)
+                    .and(&params.sθ)
+                    .and(params.φ.axis_iter(Axis(1)))
+                    .for_each(|ω_gk, x_gk, r_k, s_k, φ_k| {
+                        let ε = (*s_k * params.cell_volume.dot(&φ_k)).ln();
+                        *ω_gk = PolyaGamma::new(
+                            *x_gk as f32 + *r_k,
+                            ε
+                        ).sample(&mut rng);
+                    });
+            });
+        println!("  sample_sθ/PolyaGamma: {:?}", t0.elapsed());
+
+        // TODO: This is slow part, probably from computing the sums for μ
+        // sample s ~ LogNormal
+        let t0 = Instant::now();
+        Zip::from(&mut params.sθ) // for every hidden dim
+            .and(&params.rθ)
+            .and(params.φ.axis_iter(Axis(1)))
+            .and(params.ωθ.axis_iter(Axis(1)))
+            .and(params.gene_latent_counts.axis_iter(Axis(1)))
+            .for_each(|s_k, r_k, φ_k, ω_k, x_k| {
+                let mut rng = thread_rng();
+                let σ = (priors.τθ + ω_k.sum()).recip();
+                let μ = σ * Zip::from(x_k)
+                    .and(ω_k)
+                    .fold(0.0, |acc, x_gk, ω_gk| {
+                        acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * params.cell_volume.dot(&φ_k).ln()
+                    });
+                *s_k = (μ + σ * randn(&mut rng)).exp();
+            });
+        println!("  sample_sθ/LogNormal: {:?}", t0.elapsed());
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
