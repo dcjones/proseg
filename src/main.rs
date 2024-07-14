@@ -675,14 +675,6 @@ fn main() {
         // TODO: probably would benifit from being < 1
         α_θ: 1e-1,
 
-        // TODO: what are reasonable values for this
-        α_p: 1.0,
-        β_p: 10.0,
-
-        // TODO: what are reasonable values?
-        c_r: 1.0,
-        r_r: 1.0,
-
         e_r: 1.0,
 
         e_h: 1.0,
