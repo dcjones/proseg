@@ -323,6 +323,9 @@ struct Args {
     /// Use connectivity checks to prevent cells from having any disconnected voxels
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
+
+    #[arg(long, default_value_t = false)]
+    no_factorization: bool,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -672,6 +675,8 @@ fn main() {
         σ_μ_volume: 3.0_f32,
         α_σ_volume: 0.1,
         β_σ_volume: 0.1,
+
+        use_factorization: !args.no_factorization,
 
         // TODO: probably would benifit from being < 1
         α_θ: 1e-1,

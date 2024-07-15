@@ -81,6 +81,8 @@ pub struct ModelPriors {
     pub α_σ_volume: f32,
     pub β_σ_volume: f32,
 
+    pub use_factorization: bool,
+
     // gamma prior on rφ
     pub eφ: f32,
     pub fφ: f32,
@@ -340,6 +342,13 @@ impl ModelParams {
         let accept_proposed_transcript_positions = vec![false; transcripts.len()];
         let transcript_position_updates = vec![(0, 0, 0, 0); transcripts.len()];
 
+        let nhidden = if priors.use_factorization {
+            nhidden
+        } else {
+            ngenes
+        };
+
+        // TODO: save some space when not using factorization
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
@@ -407,7 +416,12 @@ impl ModelParams {
 
         let mut rng = rand::thread_rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
-        let θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
+        let mut θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
+
+        if !priors.use_factorization {
+            θ.fill(0.0);
+            θ.diag_mut().fill(1.0);
+        }
 
         let transcript_state =
             Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
@@ -1091,7 +1105,7 @@ where
         for _ in 0..20 {
             self.sample_transcript_state(priors, params, transcripts, &mut Option::None);
             self.compute_counts(priors, params, transcripts);
-            self.sample_factor_model(priors, params);
+            self.sample_factor_model(priors, params, false);
             self.sample_background_rates(priors, params);
             self.sample_confusion_rates(priors, params);
         }
@@ -1256,7 +1270,7 @@ where
 
         self.compute_counts(priors, params, transcripts);
 
-        self.sample_factor_model(priors, params);
+        self.sample_factor_model(priors, params, true);
 
         // let t0 = Instant::now();
         // self.sample_z(params);
@@ -1500,27 +1514,34 @@ where
         // dbg!(&params.r);
     }
 
-    fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams, sample_z: bool) {
+
         let t0 = Instant::now();
         self.sample_latent_counts(params);
         println!("  sample_latent_counts: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
-        self.sample_z(params);
-        println!("  sample_z: {:?}", t0.elapsed());
+        if sample_z {
+            let t0 = Instant::now();
+            self.sample_z(params);
+            println!("  sample_z: {:?}", t0.elapsed());
+        }
         self.sample_π(params);
 
-        let t0 = Instant::now();
-        self.sample_θ(priors, params);
-        println!("  sample_θ: {:?}", t0.elapsed());
+        // TODO: Okay, so the very first sample_z zeros everything out.
 
-        let t0 = Instant::now();
-        self.sample_rθ(priors, params);
-        println!("  sample_rθ: {:?}", t0.elapsed());
+        if priors.use_factorization {
+            let t0 = Instant::now();
+            self.sample_θ(priors, params);
+            println!("  sample_θ: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
-        self.sample_sθ(priors, params);
-        println!("  sample_sθ: {:?}", t0.elapsed());
+            let t0 = Instant::now();
+            self.sample_rθ(priors, params);
+            println!("  sample_rθ: {:?}", t0.elapsed());
+
+            let t0 = Instant::now();
+            self.sample_sθ(priors, params);
+            println!("  sample_sθ: {:?}", t0.elapsed());
+        }
 
         let t0 = Instant::now();
         self.sample_φ(params);
@@ -1755,7 +1776,7 @@ where
             .and(&params.cell_volume)
             .par_for_each(|ω_c, z_c, x_c, v_c| {
                 let mut rng = thread_rng();
-                Zip::from(ω_c)
+                Zip::from(ω_c) // for every hidden dim
                     .and(x_c)
                     .and(params.rφ.row(*z_c as usize))
                     .and(params.sφ.row(*z_c as usize))
