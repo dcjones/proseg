@@ -1715,6 +1715,8 @@ where
                         *r_tk = r_tk.max(2e-4);
                     });
             });
+
+        // dbg!(&params.rφ);
     }
 
     fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1787,8 +1789,8 @@ where
                             .filter(|(_ω_ck, z_c)| **z_c as usize == t)
                             .map(|(ω_ck, _z_c)| *ω_ck)
                             .sum::<f32>();
-                        let σ = τ.recip();
-                        let μ = σ * Zip::from(x_k) // for every cell
+                        let σ2 = τ.recip();
+                        let μ = σ2 * Zip::from(x_k) // for every cell
                             .and(&params.z)
                             .and(ω_k)
                             .and(&params.cell_volume)
@@ -1800,7 +1802,7 @@ where
                                     acc
                                 }
                             });
-                        *s_tk = (μ + σ * randn(&mut rng)).exp();
+                        *s_tk = (μ + σ2.sqrt() * randn(&mut rng)).exp();
                     });
             });
         println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
@@ -1839,14 +1841,14 @@ where
             .and(params.gene_latent_counts.axis_iter(Axis(1)))
             .for_each(|s_k, r_k, φ_k, ω_k, x_k| {
                 let mut rng = thread_rng();
-                let σ = (priors.τθ + ω_k.sum()).recip();
+                let σ2 = (priors.τθ + ω_k.sum()).recip();
                 let log_v_φ_k = params.cell_volume.dot(&φ_k).ln();
-                let μ = σ * Zip::from(x_k)
+                let μ = σ2 * Zip::from(x_k)
                     .and(ω_k)
                     .fold(0.0, |acc, x_gk, ω_gk| {
                         acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * log_v_φ_k
                     });
-                *s_k = (μ + σ * randn(&mut rng)).exp();
+                *s_k = (μ + σ2.sqrt() * randn(&mut rng)).exp();
             });
         println!("  sample_sθ/LogNormal: {:?}", t0.elapsed());
         // dbg!(&params.sθ);
