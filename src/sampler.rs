@@ -12,15 +12,15 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
-use libm::{lgammaf, log1pf};
+use libm::lgammaf;
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use math::{gamma_logpdf, lognormal_logpdf, normal_x2_logpdf, normal_x2_pdf, randn, rand_crt};
+use math::{lognormal_logpdf, negbin_logpmf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, ArrayView1, Axis, Zip, s};
+use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
-use rand_distr::{Beta, Binomial, Distribution, Gamma, Normal, StandardNormal};
+use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
 use polyagamma::PolyaGamma;
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -1250,9 +1250,9 @@ where
 
         self.sample_factor_model(priors, params);
 
-        let t0 = Instant::now();
-        self.sample_z(params);
-        println!("  sample_z: {:?}", t0.elapsed());
+        // let t0 = Instant::now();
+        // self.sample_z(params);
+        // println!("  sample_z: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
         self.sample_background_rates(priors, params);
@@ -1382,6 +1382,7 @@ where
 
         let ngenes = params.foreground_counts.shape()[1];
         let nhidden = params.cell_latent_counts.shape()[1];
+        let ncomponents = params.π.shape()[0];
 
         Zip::from(params.cell_latent_counts.outer_iter_mut()) // for every cell
             .and(params.φ.outer_iter())
@@ -1399,6 +1400,16 @@ where
                 let mut gene_latent_counts_tl = params.gene_latent_counts_tl
                     .get_or(|| RefCell::new(Array2::zeros((ngenes, nhidden))))
                     .borrow_mut();
+
+                let mut z_probs = params.z_probs
+                    .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
+                    .borrow_mut();
+
+                z_probs.iter_mut()
+                    .zip(&params.π)
+                    .for_each(|(z_prob, π_t)| {
+                        *z_prob = π_t.ln() as f64;
+                    });
 
                 Zip::indexed(x_c.outer_iter()) // for every gene
                     .and(params.θ.outer_iter())
@@ -1487,6 +1498,11 @@ where
         println!("  sample_latent_counts: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
+        self.sample_z(params);
+        println!("  sample_z: {:?}", t0.elapsed());
+        self.sample_π(params);
+
+        let t0 = Instant::now();
         self.sample_θ(priors, params);
         println!("  sample_θ: {:?}", t0.elapsed());
 
@@ -1515,19 +1531,34 @@ where
         println!("  compute_rates: {:?}", t0.elapsed());
     }
 
+    // // sample the component assignment of a single cell
+    // fn accum_z_logprob(&self, rφ: &Array2<f32>, sφ: &Array2<f32>, θ: &Array2<f32>, z_probs: &mut RefMut<Vec<f64>>, x_cg: &RefMut<Array1<u32>>, v_c: f32) {
+    //     z_probs.iter_mut() // for every component.
+    //         .zip(rφ.outer_iter())
+    //         .zip(sφ.outer_iter())
+    //         .for_each(|((z_prob, r_t), s_t)| {
+    //             x_cg.iter() // for every hidden dim
+    //                 .zip(r_t)
+    //                 .zip(s_t)
+    //                 .zip(θ.axis_iter(Axis(1)))
+    //                 .for_each(|(((x_cgk, r_tk), s_tk), θ_k)| {
+    //                     let lgamma_r_tk = lgammaf(*r_tk);
+    //                     let p = odds_to_prob(*s_tk * v_c * θ_k.sum());
+    //                     *z_prob += negbin_logpmf(*r_tk, lgamma_r_tk, p, *x_cgk) as f64;
+    //                 })
+    //         });
+    // }
+
+
     fn sample_z(&mut self, params: &mut ModelParams) {
         let ncomponents = params.π.shape()[0];
-        let nhidden = params.cell_latent_counts.shape()[1];
-        let max_prob = 20.0;
-
-        let mut total_log_prob = 0.0;
 
         Zip::from(&mut params.z) // for each cell
             .and(params.φ.rows())
             .and(params.cell_latent_counts.rows())
             .and(&params.cell_volume)
-            // .par_for_each(|z_c, φ_c, x_c, v_c| {
-            .for_each(|z_c, φ_c, x_c, v_c| {
+            .par_for_each(|z_c, φ_c, x_c, v_c| {
+            // .for_each(|z_c, φ_c, x_c, v_c| {
                 let mut rng = rand::thread_rng();
                 let mut z_probs = params.z_probs
                     .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
@@ -1543,70 +1574,25 @@ where
                     // for every hidden dim
                     Zip::from(r_t)
                         .and(s_t)
-                        .and(φ_c)
+                        .and(params.θ.axis_iter(Axis(1)))
                         .and(x_c)
-                        .for_each(|r_tk, s_tk, φ_ck, x_ck| {
-                            let p = gamma_logpdf(*r_tk, *s_tk, *φ_ck) as f64;
-                            let p = p.min(max_prob);
-
-                            *z_probs_t += p;
-                            if !p.exp().is_finite() {
-                                dbg!((p, *x_ck, *φ_ck, *v_c, *r_tk, *s_tk));
-                            }
-
-                            // if rng.gen::<f64>() < 1e-3 && p > 10.0 {
-                            //     dbg!((p, *x_ck, *φ_ck, *v_c, shape, scale));
-                            // }
-
-                            // TODO: This can run into problems because we can get φ = 0
-                            // in which case the probability density is infinite.
-                            // and just fucks everything.
-                            //
-                            // Not sure if that's the only problem.
-
-                            // *z_probs_t += gamma_logpdf(shape, scale, *φ_ck) as f64;
+                        .for_each(|r_tk, s_tk, θ_k, x_ck| {
+                            // TODO: precompute gamma(r), and θ sums
+                            let lgamma_r_tk = lgammaf(*r_tk);
+                            let p = odds_to_prob(*s_tk * *v_c * θ_k.sum());
+                            let lp = negbin_logpmf(*r_tk, lgamma_r_tk, p, *x_ck) as f64;
+                            *z_probs_t += lp;
                         });
-
-                    // *z_probs_t = z_probs_t.exp();
-                    // z_probs_sum += *z_probs_t;
-                    // if !z_probs_sum.is_finite() {
-                    //     dbg!((z_probs_sum, *z_probs_t));
-                    // }
-                }
-
-                let z_log_probs_t = Array1::<f64>::from_iter(z_probs.iter().cloned());
-
-                // if rng.gen::<f64>() < 1e-3 {
-                //     dbg!(&z_probs);
-                // }
+                    }
 
                 for z_probs_t in z_probs.iter_mut() {
                     *z_probs_t = z_probs_t.exp();
                     z_probs_sum += *z_probs_t;
                 }
 
-                // if rng.gen::<f64>() < 1e-3 {
-                //     dbg!(&z_probs);
-                // }
-
                 if !z_probs_sum.is_finite() {
                     dbg!(&z_probs, &φ_c, z_probs_sum);
                 }
-
-                // assert!(z_probs_sum.is_finite());
-
-                // TODO: If I just coose the maximum probability does it work?
-                // No, everything just ends up in one component.
-                // let mut z_prob_max = f64::NEG_INFINITY;
-                // for (t, p) in z_probs.iter().enumerate() {
-                //     if *p > z_prob_max {
-                //         z_prob_max = *p;
-                //         *z_c = t as u32;
-                //     }
-                // }
-
-                // dbg!(z_probs_sum);
-                // dbg!(&z_probs);
 
                 // cumulative probabilities in-place
                 z_probs.iter_mut().fold(0.0, |mut acc, x| {
@@ -1615,19 +1601,12 @@ where
                     acc
                 });
 
-                // if rng.gen::<f64>() < 1e-3 {
-                //     dbg!(&z_probs);
-                // }
-
                 let u = rng.gen::<f64>();
                 *z_c = z_probs.partition_point(|x| *x < u) as u32;
-
-                total_log_prob += z_log_probs_t[*z_c as usize];
             });
+    }
 
-        dbg!(total_log_prob);
-
-        // sample π
+    fn sample_π(&mut self, params: &mut ModelParams) {
         let mut rng = rand::thread_rng();
         let mut π_sum = 0.0;
         Zip::from(&mut params.π)
@@ -1639,14 +1618,6 @@ where
 
         // normalize to get dirichlet posterior
         params.π.iter_mut().for_each(|π_t| *π_t /= π_sum);
-
-        // dbg!(&params.component_population);
-        // dbg!(&params.π);
-        // // dbg!(&params.r);
-        // // dbg!(&params.p.mean_axis(Axis(0)));
-        // // dbg!(&params.p.mean_axis(Axis(1)));
-        // dbg!(&params.component_latent_counts);
-        // dbg!(&params.p);
     }
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
@@ -1736,7 +1707,6 @@ where
                         *r_tk = r_tk.max(2e-4);
                     });
             });
-        // dbg!(&params.rφ);
     }
 
     fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1774,7 +1744,6 @@ where
             .and(params.cell_latent_counts.outer_iter())
             .and(&params.cell_volume)
             .par_for_each(|ω_c, z_c, x_c, v_c| {
-            // .for_each(|ω_c, z_c, x_c, v_c| {
                 let mut rng = thread_rng();
                 Zip::from(ω_c)
                     .and(x_c)
@@ -1803,6 +1772,8 @@ where
                     .and(params.ωφ.axis_iter(Axis(1)))
                     .and(params.cell_latent_counts.axis_iter(Axis(1)))
                     .for_each(|s_tk, r_tk, θ_k, ω_k, x_k| {
+                        // TODO: This would be fatser if we went pre-computing μ, σ [ncomponets, nhidden] matrices
+                        // by processing cells, rather than doing this filtering thing.
                         let τ = priors.τφ + ω_k.iter()
                             .zip(&params.z)
                             .filter(|(_ω_ck, z_c)| **z_c as usize == t)
@@ -1815,6 +1786,7 @@ where
                             .and(&params.cell_volume)
                             .fold(0.0, |acc, x_ck, z_c, ω_ck, v_c| {
                                 if *z_c as usize == t {
+                                    // TODO: precompute θ_k.sum()
                                     acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * θ_k.sum()).ln()
                                 } else {
                                     acc
@@ -1825,7 +1797,7 @@ where
             });
         println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
         // dbg!(&params.sφ);
-        dbg!(&params.sφ * &params.rφ);
+        // dbg!(&params.sφ * &params.rφ);
     }
 
     fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1834,7 +1806,6 @@ where
         Zip::from(params.ωθ.outer_iter_mut()) // for every gene
             .and(params.gene_latent_counts.outer_iter())
             .par_for_each(|ω_g, x_g| {
-            // .for_each(|ω_g, x_g| {
                 let mut rng = thread_rng();
                 Zip::from(ω_g) // for every hidden dim
                     .and(x_g)
@@ -1851,8 +1822,6 @@ where
             });
         println!("  sample_sθ/PolyaGamma: {:?}", t0.elapsed());
 
-        // TODO: This is slow part, probably from computing the sums for μ
-        // Could probably try to do that in parallel.
         // sample s ~ LogNormal
         let t0 = Instant::now();
         Zip::from(&mut params.sθ) // for every hidden dim
@@ -1863,10 +1832,11 @@ where
             .for_each(|s_k, r_k, φ_k, ω_k, x_k| {
                 let mut rng = thread_rng();
                 let σ = (priors.τθ + ω_k.sum()).recip();
+                let log_v_φ_k = params.cell_volume.dot(&φ_k).ln();
                 let μ = σ * Zip::from(x_k)
                     .and(ω_k)
                     .fold(0.0, |acc, x_gk, ω_gk| {
-                        acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * params.cell_volume.dot(&φ_k).ln()
+                        acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * log_v_φ_k
                     });
                 *s_k = (μ + σ * randn(&mut rng)).exp();
             });
