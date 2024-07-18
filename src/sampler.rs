@@ -567,11 +567,6 @@ impl ModelParams {
                             })
                             - λ * cell_volume
                     });
-                // if part < -57983890000.0 {
-                //     dbg!(part, cell_volume, cs.sum());
-                //     dbg!(λ);
-                //     panic!();
-                // }
                 accum + part
             });
 
@@ -1503,7 +1498,7 @@ where
         // dbg!(&params.r);
     }
 
-    // This is just for debugging
+    // This is indended just for debugging
     fn write_cell_latent_counts(&self, params: &ModelParams, filename: &str) {
         let file = File::create(filename).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
@@ -1541,8 +1536,6 @@ where
         }
         self.sample_π(params);
 
-        // TODO: Okay, so the very first sample_z zeros everything out.
-
         if priors.use_factorization {
             let t0 = Instant::now();
             self.sample_θ(priors, params);
@@ -1574,25 +1567,6 @@ where
         println!("  compute_rates: {:?}", t0.elapsed());
     }
 
-    // // sample the component assignment of a single cell
-    // fn accum_z_logprob(&self, rφ: &Array2<f32>, sφ: &Array2<f32>, θ: &Array2<f32>, z_probs: &mut RefMut<Vec<f64>>, x_cg: &RefMut<Array1<u32>>, v_c: f32) {
-    //     z_probs.iter_mut() // for every component.
-    //         .zip(rφ.outer_iter())
-    //         .zip(sφ.outer_iter())
-    //         .for_each(|((z_prob, r_t), s_t)| {
-    //             x_cg.iter() // for every hidden dim
-    //                 .zip(r_t)
-    //                 .zip(s_t)
-    //                 .zip(θ.axis_iter(Axis(1)))
-    //                 .for_each(|(((x_cgk, r_tk), s_tk), θ_k)| {
-    //                     let lgamma_r_tk = lgammaf(*r_tk);
-    //                     let p = odds_to_prob(*s_tk * v_c * θ_k.sum());
-    //                     *z_prob += negbin_logpmf(*r_tk, lgamma_r_tk, p, *x_cgk) as f64;
-    //                 })
-    //         });
-    // }
-
-
     fn sample_z(&mut self, params: &mut ModelParams) {
         let ncomponents = params.π.shape()[0];
 
@@ -1601,7 +1575,6 @@ where
             .and(params.cell_latent_counts.rows())
             .and(&params.cell_volume)
             .par_for_each(|z_c, φ_c, x_c, v_c| {
-            // .for_each(|z_c, φ_c, x_c, v_c| {
                 let mut rng = rand::thread_rng();
                 let mut z_probs = params.z_probs
                     .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
@@ -1689,13 +1662,6 @@ where
     }
 
     fn sample_θ(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
-
-        // TODO: I think this whole endevour is hopeless unless we figure out
-        // a scheme for inducing sparsity. Dirichlet with super small prior
-        // doesn't do the trick.
-        //
-        // So what would?
-
         Zip::from(params.θ.outer_iter_mut()) // for every gene
             .and(params.gene_latent_counts.outer_iter())
             .par_for_each(|θ_g, x_g| {
@@ -1712,7 +1678,8 @@ where
                     });
             });
 
-        // // Sampling with Dirichlet prior on θ
+        // Sampling with Dirichlet prior on θ (I think Gamma makes more
+        // sense, but this is an alternative to consider)
         // let α0 = 1e-1;
         // Zip::from(params.θ.axis_iter_mut(Axis(1)))
         //     .and(params.gene_latent_counts.axis_iter(Axis(1)))
@@ -1729,48 +1696,6 @@ where
         //         let θsum = θ_k.sum();
         //         θ_k *= θsum.recip();
         //     });
-
-        // // DIAGNOSTICS
-
-        // let mut θmax = f32::NEG_INFINITY;
-        // for &θ in &params.θ {
-        //     θmax = θmax.max(θ);
-        // }
-        // let mut rθmax = f32::NEG_INFINITY;
-        // for &rθ in &params.rθ {
-        //     rθmax = rθmax.max(rθ);
-        // }
-        // let mut sθmax = f32::NEG_INFINITY;
-        // for &sθ in &params.sθ {
-        //     sθmax = sθmax.max(sθ);
-        // }
-        // dbg!(θmax, rθmax, sθmax);
-
-        // let θmean = params.θ.mean().unwrap();
-        // let rθmean = params.rθ.mean().unwrap();
-        // let sθmean = params.sθ.mean().unwrap();
-        // dbg!(θmean, rθmean, sθmean);
-
-
-        // let mut φmax = f32::NEG_INFINITY;
-        // for &φ in &params.φ {
-        //     φmax = φmax.max(φ);
-        // }
-        // let mut rφmax = f32::NEG_INFINITY;
-        // for &rφ in &params.rφ {
-        //     rφmax = rφmax.max(rφ);
-        // }
-        // let mut sφmax = f32::NEG_INFINITY;
-        // for &sφ in &params.sφ {
-        //     sφmax = sφmax.max(sφ);
-        // }
-        // dbg!(φmax, rφmax, sφmax);
-
-        // let φmean = params.φ.mean().unwrap();
-        // let rφmean = params.rφ.mean().unwrap();
-        // let sφmean = params.sφ.mean().unwrap();
-        // dbg!(φmean, rφmean, sφmean);
-
     }
 
     fn sample_rφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1904,20 +1829,19 @@ where
                                     acc
                                 }
                             }));
-                        // *s_tk = (μ + σ2.sqrt() * randn(&mut rng)).exp();
-                        *s_tk = 0.1;
+                        *s_tk = (μ + σ2.sqrt() * randn(&mut rng)).exp();
                     });
             });
         println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
 
-        dbg!(&params.rφ.mean().unwrap());
-        dbg!(&params.sφ.mean().unwrap());
+        // dbg!(&params.rφ.mean().unwrap());
+        // dbg!(&params.sφ.mean().unwrap());
 
-        let mean = &params.sφ * &params.rφ;
-        dbg!(mean.mean().unwrap());
+        // let mean = &params.sφ * &params.rφ;
+        // dbg!(mean.mean().unwrap());
 
-        let var = &params.rφ * &params.sφ * &params.sφ;
-        dbg!(var.mean().unwrap());
+        // let var = &params.rφ * &params.sφ * &params.sφ;
+        // dbg!(var.mean().unwrap());
 
     }
 
@@ -1960,10 +1884,8 @@ where
                         acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * log_v_φ_k
                     }));
                 *s_k = (μ + σ2.sqrt() * randn(&mut rng)).exp();
-                // *s_k = 1.0;
             });
         println!("  sample_sθ/LogNormal: {:?}", t0.elapsed());
-        // dbg!(&params.sθ);
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
