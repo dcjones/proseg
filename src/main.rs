@@ -678,17 +678,25 @@ fn main() {
 
         use_factorization: !args.no_factorization,
 
-        // TODO: probably would benifit from being < 1
-        α_θ: 1e-1,
+        // TODO: My thinking is that we want to nudge component φ distributions
+        // to be low variance so we get separation between cell types. That would
+        // mean making s small, since gamma variance is rs^2. That means r should
+        // probably be large to compensate.
+        //
+        // Figure out a prior combo that induces s to be small and r large while
+        // still allowing "zeros", and test that this actually does something
+        //
+        // Though it seems like the scale of θ could just shift to compensate
+        // any change we make here. Should θ should or scale be fixed?
 
-        // TODO: Probably want to nudge dispersion parameters to be larger
         eφ: 1.0,
         fφ: 1.0,
+
+        μφ: -10.0,
+        τφ: 16.0,
+
         eθ: 1.0,
         fθ: 1.0,
-
-        μφ: 1.0,
-        τφ: 0.1,
 
         μθ: 1.0,
         τθ: 0.1,
@@ -877,6 +885,9 @@ fn main() {
 
     let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
     let cell_centroids = sampler.borrow().cell_centroids();
+
+    // TODO: for debugging
+    sampler.borrow().write_cell_latent_counts(&params, "cell-latent-counts.csv.gz");
 
     write_expected_counts(
         &args.output_expected_counts,
