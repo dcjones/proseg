@@ -678,10 +678,16 @@ fn main() {
 
         use_factorization: !args.no_factorization,
 
-        eφ: 1000.0,
-        fφ: 10.0,
+        // TODO: mean/var ratio is always 1/fφ, but that doesn't seem like the whole
+        // story. Seems like it needs to change as a function of the dimensionality
+        // of the latent space.
 
-        μφ: -10.0,
+        // I also don't know if this "severe prior" approach is going to work in
+        // the long run because we may have far more cells. Needs more testing.
+        eφ: 1000.0,
+        fφ: 1.0,
+
+        μφ: -20.0,
         τφ: 1.0,
 
         eθ: 1.0,
