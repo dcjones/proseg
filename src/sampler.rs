@@ -243,6 +243,9 @@ pub struct ModelParams {
     // [ncells, nhidden]: cell ψ parameter in the latent space
     pub φ: Array2<f32>,
 
+    // [nhidden]: precompute φ_k.dot(cell_volume)
+    φ_v_dot: Array1<f32>,
+
     // For components as well???
     // [ncells, nhidden] aux CRT variables for sampling rφ
     // pub lφ: Array2<f32>,
@@ -256,11 +259,17 @@ pub struct ModelParams {
     // [ncomponents, nhidden] φ gamma shape parameters
     pub rφ: Array2<f32>,
 
+    // for precomputing lgamma(rφ)
+    lgamma_rφ: Array2<f32>,
+
     // [ncomponents, nhidden] φ gamma scale parameters
     pub sφ: Array2<f32>,
 
     // [ngenes, nhidden]: gene loadings in the latent space
     pub θ: Array2<f32>,
+
+    // [nhidden]: Sums across the first axis of θ
+    pub θksum: Array1<f32>,
 
     // [ngenes, nhidden] aux CRT variables for sampling rθ
     pub lθ: Array2<u32>,
@@ -349,6 +358,7 @@ impl ModelParams {
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
+        let lgamma_rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let lθ = Array2::<u32>::zeros((ngenes, nhidden));
         let ωθ = Array2::<f32>::zeros((ngenes, nhidden));
@@ -413,7 +423,9 @@ impl ModelParams {
 
         let mut rng = rand::thread_rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
+        let φ_v_dot = Array1::<f32>::zeros(nhidden);
         let mut θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
+        let θksum = Array1::<f32>::zeros(nhidden);
 
         if !priors.use_factorization {
             θ.fill(0.0);
@@ -471,11 +483,14 @@ impl ModelParams {
             μ_volume: Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume),
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             φ,
+            φ_v_dot,
             θ,
+            θksum,
             lφ,
             ωφ,
             sφ,
             rφ,
+            lgamma_rφ,
             lθ,
             ωθ,
             sθ,
@@ -1093,6 +1108,18 @@ where
                 *log_volume = volume.ln();
             });
 
+        Zip::from(&mut params.φ_v_dot)
+            .and(params.φ.axis_iter(Axis(1)))
+            .for_each(|φ_v_dot_k, φ_k| {
+                *φ_v_dot_k = φ_k.dot(&params.cell_volume);
+            });
+
+        Zip::from(&mut params.θksum)
+            .and(params.θ.axis_iter(Axis(1)))
+            .for_each(|θksum, θ_k| {
+                *θksum = θ_k.sum();
+            });
+
         // get to a reasonably high probability assignment
         for _ in 0..20 {
             self.sample_transcript_state(priors, params, transcripts, &mut Option::None);
@@ -1578,6 +1605,13 @@ where
     fn sample_z(&mut self, params: &mut ModelParams) {
         let ncomponents = params.π.shape()[0];
 
+        // precompute lgamma(rφ)
+        Zip::from(&mut params.lgamma_rφ)
+            .and(&params.rφ)
+            .par_for_each(|lgamma_r_tk, r_tk| {
+                *lgamma_r_tk = lgammaf(*r_tk);
+            });
+
         Zip::from(&mut params.z) // for each cell
             .and(params.φ.rows())
             .and(params.cell_latent_counts.rows())
@@ -1592,19 +1626,18 @@ where
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, π_t, r_t, s_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.rφ.rows(), params.sφ.rows()) {
+                for (z_probs_t, π_t, r_t, lgamma_r_t, s_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.rφ.rows(), params.lgamma_rφ.rows(), params.sφ.rows()) {
                     *z_probs_t = π_t.ln() as f64;
 
                     // for every hidden dim
                     Zip::from(r_t)
+                        .and(lgamma_r_t)
                         .and(s_t)
-                        .and(params.θ.axis_iter(Axis(1)))
+                        .and(&params.θksum)
                         .and(x_c)
-                        .for_each(|r_tk, s_tk, θ_k, x_ck| {
-                            // TODO: precompute gamma(r), and θ sums
-                            let lgamma_r_tk = lgammaf(*r_tk);
-                            let p = odds_to_prob(*s_tk * *v_c * θ_k.sum());
-                            let lp = negbin_logpmf(*r_tk, lgamma_r_tk, p, *x_ck) as f64;
+                        .for_each(|r_tk, lgamma_r_tk, s_tk, θ_k_sum, x_ck| {
+                            let p = odds_to_prob(*s_tk * *v_c * *θ_k_sum);
+                            let lp = negbin_logpmf(*r_tk, *lgamma_r_tk, p, *x_ck) as f64;
                             *z_probs_t += lp;
                         });
                     }
@@ -1657,15 +1690,21 @@ where
                 let z_c = *z_c as usize;
                 let mut rng = thread_rng();
                 Zip::from(φ_c) // for each latent dim
-                    .and(params.θ.columns())
+                    .and(&params.θksum)
                     .and(x_c)
                     .and(&params.rφ.row(z_c))
                     .and(&params.sφ.row(z_c))
-                    .for_each(|φ_ck, θ_k, x_ck, r_k, s_k| {
+                    .for_each(|φ_ck, θ_k_sum, x_ck, r_k, s_k| {
                         let shape = *r_k + *x_ck as f32;
-                        let scale = s_k / (1.0 + s_k * v_c * θ_k.sum());
+                        let scale = s_k / (1.0 + s_k * v_c * *θ_k_sum);
                         *φ_ck = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
+            });
+
+        Zip::from(&mut params.φ_v_dot)
+            .and(params.φ.axis_iter(Axis(1)))
+            .for_each(|φ_v_dot_k, φ_k| {
+                *φ_v_dot_k = φ_k.dot(&params.cell_volume);
             });
     }
 
@@ -1675,15 +1714,21 @@ where
             .par_for_each(|θ_g, x_g| {
                 let mut rng = thread_rng();
                 Zip::from(θ_g) // for each latent dim
-                    .and(params.φ.columns())
+                    .and(&params.φ_v_dot)
                     .and(x_g)
                     .and(&params.rθ)
                     .and(&params.sθ)
-                    .for_each(|θ_gk, φ_k, x_gk, r_k, s_k| {
+                    .for_each(|θ_gk, φ_v_dot_k, x_gk, r_k, s_k| {
                         let shape = *r_k + *x_gk as f32;
-                        let scale = s_k / (1.0 + s_k * φ_k.dot(&params.cell_volume));
+                        let scale = s_k / (1.0 + s_k * *φ_v_dot_k);
                         *θ_gk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                     });
+            });
+
+        Zip::from(&mut params.θksum)
+            .and(params.θ.axis_iter(Axis(1)))
+            .for_each(|θksum, θ_k| {
+                *θksum = θ_k.sum();
             });
 
         // Sampling with Dirichlet prior on θ (I think Gamma makes more
@@ -1727,8 +1772,8 @@ where
                 Zip::from(r_t) // each hidden dim
                     .and(s_t)
                     .and(params.lφ.axis_iter(Axis(1)))
-                    .and(params.θ.axis_iter(Axis(1)))
-                    .for_each(|r_tk, s_tk, l_k, θ_k| {
+                    .and(&params.θksum)
+                    .for_each(|r_tk, s_tk, l_k, θ_k_sum| {
                         // summing elements of lφ in component t
                         let lsum = l_k.iter()
                             .zip(&params.z)
@@ -1738,12 +1783,10 @@ where
 
                         let shape = priors.eφ + lsum as f32;
 
-                        // TODO: could same some time be precomputing θsum outside the outer loop
-                        let θsum = θ_k.sum();
                         let scale_inv = (1.0/priors.fφ) + params.z.iter()
                             .zip(&params.cell_volume)
                             .filter(|(z_c, _v_c)| **z_c as usize == t)
-                            .map(|(_z_c, v_c)| (*s_tk * v_c * θsum).ln_1p())
+                            .map(|(_z_c, v_c)| (*s_tk * v_c * *θ_k_sum).ln_1p())
                             .sum::<f32>();
                         let scale = scale_inv.recip();
                         *r_tk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
@@ -1772,10 +1815,10 @@ where
         Zip::from(&mut params.rθ) // for each hidden dim
             .and(&params.sθ)
             .and(params.lθ.axis_iter(Axis(1)))
-            .and(params.φ.axis_iter(Axis(1)))
-            .for_each(|r_k, s_k, l_k, φ_k| {
+            .and(&params.φ_v_dot)
+            .for_each(|r_k, s_k, l_k, φ_v_dot_k| {
                 let shape = priors.eθ + l_k.sum() as f32;
-                let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * φ_k.dot(&params.cell_volume)).ln_1p()).recip();
+                let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * *φ_v_dot_k).ln_1p()).recip();
                 *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
                 *r_k = r_k.max(2e-4);
             });
@@ -1794,9 +1837,9 @@ where
                     .and(x_c)
                     .and(params.rφ.row(*z_c as usize))
                     .and(params.sφ.row(*z_c as usize))
-                    .and(params.θ.axis_iter(Axis(1)))
-                    .for_each(|ω_ck, x_ck, r_k, s_k, θ_k| {
-                        let ε = (*s_k * *v_c * θ_k.sum()).ln();
+                    .and(&params.θksum)
+                    .for_each(|ω_ck, x_ck, r_k, s_k, θ_k_sum| {
+                        let ε = (*s_k * *v_c * θ_k_sum).ln();
                         *ω_ck = PolyaGamma::new(
                             *x_ck as f32 + *r_k,
                             ε
@@ -1813,10 +1856,10 @@ where
                 let mut rng = thread_rng();
                 Zip::from(s_t) // for every hidden dim
                     .and(r_t)
-                    .and(params.θ.axis_iter(Axis(1)))
+                    .and(&params.θksum)
                     .and(params.ωφ.axis_iter(Axis(1)))
                     .and(params.cell_latent_counts.axis_iter(Axis(1)))
-                    .for_each(|s_tk, r_tk, θ_k, ω_k, x_k| {
+                    .for_each(|s_tk, r_tk, θ_k_sum, ω_k, x_k| {
                         // TODO: This would be fatser if we went pre-computing μ, σ [ncomponets, nhidden] matrices
                         // by processing cells, rather than doing this filtering thing.
                         let τ = priors.τφ + ω_k.iter()
@@ -1831,8 +1874,7 @@ where
                             .and(&params.cell_volume)
                             .fold(0.0, |acc, x_ck, z_c, ω_ck, v_c| {
                                 if *z_c as usize == t {
-                                    // TODO: precompute θ_k.sum()
-                                    acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * θ_k.sum()).ln()
+                                    acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * *θ_k_sum).ln()
                                 } else {
                                     acc
                                 }
@@ -1864,9 +1906,9 @@ where
                     .and(x_g)
                     .and(&params.rθ)
                     .and(&params.sθ)
-                    .and(params.φ.axis_iter(Axis(1)))
-                    .for_each(|ω_gk, x_gk, r_k, s_k, φ_k| {
-                        let ε = (*s_k * params.cell_volume.dot(&φ_k)).ln();
+                    .and(&params.φ_v_dot)
+                    .for_each(|ω_gk, x_gk, r_k, s_k, φ_v_dot_k| {
+                        let ε = (*s_k * *φ_v_dot_k).ln();
                         *ω_gk = PolyaGamma::new(
                             *x_gk as f32 + *r_k,
                             ε
@@ -1879,13 +1921,13 @@ where
         let t0 = Instant::now();
         Zip::from(&mut params.sθ) // for every hidden dim
             .and(&params.rθ)
-            .and(params.φ.axis_iter(Axis(1)))
+            .and(&params.φ_v_dot)
             .and(params.ωθ.axis_iter(Axis(1)))
             .and(params.gene_latent_counts.axis_iter(Axis(1)))
-            .for_each(|s_k, r_k, φ_k, ω_k, x_k| {
+            .for_each(|s_k, r_k, φ_v_dot_k, ω_k, x_k| {
                 let mut rng = thread_rng();
                 let σ2 = (priors.τθ + ω_k.sum()).recip();
-                let log_v_φ_k = params.cell_volume.dot(&φ_k).ln();
+                let log_v_φ_k = φ_v_dot_k.ln();
                 let μ = σ2 * (priors.μθ * priors.τθ + Zip::from(x_k)
                     .and(ω_k)
                     .fold(0.0, |acc, x_gk, ω_gk| {
