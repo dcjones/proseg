@@ -54,6 +54,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     merfish: bool,
 
+    /// Initialize with cell assignments rather than nucleus assignments
+    #[arg(long, default_value_t = false)]
+    use_cell_initialization: bool,
+
     /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
     gene_column: Option<String>,
@@ -440,6 +444,11 @@ fn main() {
 
     if args.recorded_samples > *args.schedule.last().unwrap() {
         panic!("recorded-samples must be <= the last entry in the schedule");
+    }
+
+    if args.use_cell_initialization {
+        args.compartment_column = None;
+        args.compartment_nuclear = None;
     }
 
     assert!(args.ncomponents > 0);

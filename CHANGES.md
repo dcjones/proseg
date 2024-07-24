@@ -1,6 +1,8 @@
 
 # 1.0.6
 
+  - Add a option `--use-cell-initialization` to ignore compartment information
+    and initialize with cell assignment.
   - Change the behavior of the `--cosmx` preset to support newer CosMx
     transcript tables.
 
