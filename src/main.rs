@@ -11,10 +11,10 @@ use rayon::current_num_threads;
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::hull::compute_cell_areas;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
-    Transcript,
+    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv, Transcript
 };
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
+use core::f32;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -85,6 +85,14 @@ struct Args {
     /// Name of column containing the field of view
     #[arg(long, default_value = None)]
     fov_column: Option<String>,
+
+    /// Column indicating whether a transcript is assigned to a cell
+    #[arg(long, default_value = None)]
+    cell_assignment_column: Option<String>,
+
+    /// Value in the cell assignment column indicating an unassigned transcript
+    #[arg(long, default_value = None)]
+    cell_assignment_unassigned: Option<String>,
 
     /// Name of column containing the cell ID
     #[arg(long, default_value = None)]
@@ -317,16 +325,18 @@ fn set_xenium_presets(args: &mut Args) {
 
 fn set_cosmx_presets(args: &mut Args) {
     args.gene_column.get_or_insert(String::from("target"));
-    args.x_column.get_or_insert(String::from("x"));
-    args.y_column.get_or_insert(String::from("y"));
+    args.x_column.get_or_insert(String::from("x_global_px"));
+    args.y_column.get_or_insert(String::from("y_global_px"));
     args.z_column.get_or_insert(String::from("z"));
     args.compartment_column
         .get_or_insert(String::from("CellComp"));
     args.compartment_nuclear
         .get_or_insert(String::from("Nuclear"));
     args.fov_column.get_or_insert(String::from("fov"));
-    args.cell_id_column.get_or_insert(String::from("cell_ID"));
-    args.cell_id_unassigned.get_or_insert(String::from("0"));
+    args.cell_id_column.get_or_insert(String::from("cell"));
+    args.cell_id_unassigned.get_or_insert(String::from(""));
+    args.cell_assignment_column.get_or_insert(String::from("cell_ID"));
+    args.cell_assignment_unassigned.get_or_insert(String::from("0"));
 
     // CosMx reports values in pixels and pixel size appears to always be 0.12 microns.
     args.coordinate_scale.get_or_insert(0.12);
@@ -451,6 +461,8 @@ fn main() {
         args.compartment_column,
         args.compartment_nuclear,
         args.fov_column,
+        args.cell_assignment_column,
+        args.cell_assignment_unassigned,
         &expect_arg(args.cell_id_column, "cell-id-column"),
         &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
         args.qv_column,

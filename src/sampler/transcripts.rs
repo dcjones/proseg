@@ -12,7 +12,7 @@ pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 // Should probably rearrange this...
 use super::super::output::{infer_format_from_filename, OutputFormat};
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {
     pub transcript_id: u64,
     pub x: f32,
@@ -40,6 +40,8 @@ pub fn read_transcripts_csv(
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
     fov_column: Option<String>,
+    cell_assignment_column: Option<String>,
+    cell_assignment_unassigned: Option<String>,
     cell_id_column: &str,
     cell_id_unassigned: &str,
     qv_column: Option<String>,
@@ -62,6 +64,8 @@ pub fn read_transcripts_csv(
                 compartment_column,
                 compartment_nuclear,
                 fov_column,
+                cell_assignment_column,
+                cell_assignment_unassigned,
                 cell_id_column,
                 cell_id_unassigned,
                 qv_column,
@@ -82,6 +86,8 @@ pub fn read_transcripts_csv(
                 compartment_column,
                 compartment_nuclear,
                 fov_column,
+                cell_assignment_column,
+                cell_assignment_unassigned,
                 cell_id_column,
                 cell_id_unassigned,
                 qv_column,
@@ -165,6 +171,8 @@ fn read_transcripts_csv_xyz<T>(
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
     fov_column: Option<String>,
+    cell_assignment_column: Option<String>,
+    cell_assignment_unassigned: Option<String>,
     cell_id_column: &str,
     cell_id_unassigned: &str,
     qv_column: Option<String>,
@@ -199,6 +207,8 @@ where
 
     let qv_col = find_optional_column(headers, &qv_column);
     let fov_col = find_optional_column(headers, &fov_column);
+    let cell_assignment_col = find_optional_column(headers, &cell_assignment_column);
+    let cell_assignment_unassigned = cell_assignment_unassigned.unwrap_or(String::from(""));
 
     let mut transcripts = Vec::new();
     let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
@@ -267,6 +277,14 @@ where
         });
 
         fovs.push(fov);
+
+        if let Some(cell_assignment_col) = cell_assignment_col {
+            if row[cell_assignment_col] == cell_assignment_unassigned {
+                nucleus_assignments.push(BACKGROUND_CELL);
+                cell_assignments.push(BACKGROUND_CELL);
+                continue;
+            }
+        };
 
         let cell_id_str = &row[cell_id_col];
         // let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
@@ -461,6 +479,7 @@ pub fn filter_cellfree_transcripts(
 
     let centroids = estimate_cell_centroids(
         &dataset.transcripts, &dataset.nucleus_assignments, ncells);
+
     let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
     for (i, (x, y)) in centroids.iter().enumerate() {
         if !x.is_finite() || !y.is_finite() {

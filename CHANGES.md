@@ -1,4 +1,9 @@
 
+# 1.0.6
+
+  - Change the behavior of the `--cosmx` preset to support newer CosMx
+    transcript tables.
+
 # 1.0.5
 
   - Fix overflow error generating transcript metadata table with large number
