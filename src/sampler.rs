@@ -1457,33 +1457,33 @@ where
                     .for_each(|g, x_cg, θ_g| {
                         let x_cg = x_cg.sum();
 
+                        if x_cg == 0 {
+                            return;
+                        }
+
                         multinomial_sample.fill(0);
 
-                        if x_cg > 0 {
-                            // rates: normalized element-wise product
-                            multinomial_rates.assign(&φ_c);
-                            *multinomial_rates *= &θ_g;
-                            let rate_norm = multinomial_rates.sum();
-                            *multinomial_rates /= rate_norm;
+                        // rates: normalized element-wise product
+                        multinomial_rates.assign(&φ_c);
+                        *multinomial_rates *= &θ_g;
+                        let rate_norm = multinomial_rates.sum();
+                        *multinomial_rates /= rate_norm;
 
-                            // multinomial sampling
-                            {
-                                let mut ρ = 1.0;
-                                let mut s = x_cg as u32;
-                                for (p, x) in izip!(multinomial_rates.iter(), multinomial_sample.iter_mut()) {
-                                    if ρ > 0.0 {
-                                        *x = Binomial::new(s as u64, ((*p/ρ) as f64).min(1.0)).unwrap().sample(&mut rng) as u32;
-                                    }
-                                    s -= *x;
-                                    ρ = ρ - *p;
+                        // multinomial sampling
+                        {
+                            let mut ρ = 1.0;
+                            let mut s = x_cg as u32;
+                            for (p, x) in izip!(multinomial_rates.iter(), multinomial_sample.iter_mut()) {
+                                if ρ > 0.0 {
+                                    *x = Binomial::new(s as u64, ((*p/ρ) as f64).min(1.0)).unwrap().sample(&mut rng) as u32;
+                                }
+                                s -= *x;
+                                ρ = ρ - *p;
 
-                                    if s == 0 {
-                                        break;
-                                    }
+                                if s == 0 {
+                                    break;
                                 }
                             }
-
-                            // assert!(multinomial_sample.sum() <= x_cg as u32);
                         }
 
                         // add to cell marginal
