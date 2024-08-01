@@ -379,6 +379,7 @@ pub fn write_transcript_metadata(
     transcript_names: &[String],
     cell_assignments: &[(u32, f32)],
     transcript_state: &Array1<TranscriptState>,
+    qvs: &[f32],
     fovs: &[u32],
     fov_names: &[String],
 ) {
@@ -396,6 +397,7 @@ pub fn write_transcript_metadata(
             Field::new("observed_y", DataType::Float32, false),
             Field::new("observed_z", DataType::Float32, false),
             Field::new("gene", DataType::Utf8, false),
+            Field::new("qv", DataType::Float32, false),
             Field::new("fov", DataType::Utf8, false),
             Field::new("assignment", DataType::UInt32, false),
             Field::new("probability", DataType::Float32, false),
@@ -429,6 +431,9 @@ pub fn write_transcript_metadata(
                 transcripts
                     .iter()
                     .map(|t| transcript_names[t.gene as usize].clone()),
+            )),
+            Arc::new(array::Float32Array::from_values(
+                qvs.iter().cloned()
             )),
             Arc::new(array::Utf8Array::<i64>::from_iter_values(
                 fovs.iter().map(|fov| fov_names[*fov as usize].clone()),

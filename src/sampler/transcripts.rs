@@ -29,6 +29,7 @@ pub struct TranscriptDataset {
     pub cell_assignments: Vec<CellIndex>,
     pub nucleus_population: Vec<usize>,
     pub fovs: Vec<u32>,
+    pub qvs: Vec<f32>,
     pub fov_names: Vec<String>,
 }
 
@@ -215,6 +216,7 @@ where
     let mut transcript_names = Vec::new();
     let mut nucleus_assignments = Vec::new();
     let mut cell_assignments = Vec::new();
+    let mut qvs = Vec::new();
     let mut fovs = Vec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
@@ -276,6 +278,7 @@ where
             fov,
         });
 
+        qvs.push(qv);
         fovs.push(fov);
 
         if let Some(cell_assignment_col) = cell_assignment_col {
@@ -345,6 +348,7 @@ where
         nucleus_assignments,
         cell_assignments,
         nucleus_population,
+        qvs,
         fovs,
         fov_names,
     }

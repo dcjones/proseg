@@ -848,6 +848,7 @@ fn main() {
         &dataset.transcript_names,
         &cell_assignments,
         &params.transcript_state,
+        &dataset.qvs,
         &dataset.fovs,
         &dataset.fov_names,
     );
