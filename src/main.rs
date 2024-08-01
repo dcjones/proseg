@@ -325,6 +325,20 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     no_factorization: bool,
+
+    // Hyperparameters
+
+    #[arg(long, default_value_t=1000.0)]
+    hyperparam_e_phi: f32,
+
+    #[arg(long, default_value_t=1.0)]
+    hyperparam_f_phi: f32,
+
+    #[arg(long, default_value_t=20.0)]
+    hyperparam_neg_mu_phi: f32,
+
+    #[arg(long, default_value_t=0.1)]
+    hyperparam_tau_phi: f32,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -416,8 +430,9 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.z_column.get_or_insert(String::from("z")); // ignored
     args.cell_id_column.get_or_insert(String::from("cell"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.initial_voxel_size = 4.0;
+    args.initial_voxel_size = 1.0;
     args.voxel_layers = 1;
+    args.nbglayers = 1;
     args.no_z_coord = true;
 
     // TODO: This is the resolution on the one dataset I have. It probably
@@ -683,11 +698,17 @@ fn main() {
 
         // I also don't know if this "severe prior" approach is going to work in
         // the long run because we may have far more cells. Needs more testing.
-        eφ: 1000.0,
-        fφ: 1.0,
+        // eφ: 1000.0,
+        // fφ: 1.0,
 
-        μφ: -20.0,
-        τφ: 1.0,
+        // μφ: -20.0,
+        // τφ: 0.1,
+
+        eφ: args.hyperparam_e_phi,
+        fφ: args.hyperparam_f_phi,
+
+        μφ: -args.hyperparam_neg_mu_phi,
+        τφ: args.hyperparam_tau_phi,
 
         eθ: 1.0,
         fθ: 1.0,
@@ -754,6 +775,7 @@ fn main() {
         args.nbglayers,
         ncells,
         ngenes,
+        &dataset.transcript_names,
     );
 
     let total_iterations = args.schedule.iter().sum::<usize>();

@@ -7,6 +7,7 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;
 
+use super::output::{OutputFormat, write_expected_counts};
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -216,9 +217,6 @@ pub struct ModelParams {
     pub multinomial_rates: ThreadLocal<RefCell<Array1<f32>>>,
     pub multinomial_sample: ThreadLocal<RefCell<Array1<u32>>>,
 
-    // [ncomponents, nhidden] space for precomputing some terms
-    pub z_probs_consts: Array2<f32>,
-
     // [ncells, ncomponents] space for sampling component assignments
     pub z_probs: ThreadLocal<RefCell<Vec<f64>>>,
 
@@ -326,6 +324,7 @@ impl ModelParams {
         nlayers: usize,
         ncells: usize,
         ngenes: usize,
+        transcript_names: &Vec<String>,
     ) -> Self {
         let mut transcript_positions = transcripts
             .iter()
@@ -385,6 +384,16 @@ impl ModelParams {
             .sum_axis(Axis(2))
             .map(|&x| (x as f32))
             .reversed_axes();
+        // // DEBUG: dumping initial counts to see if they make any sense at all.
+        // {
+        //     // let transcript_names: Vec<String> = (0..ngenes).map(|i| format!("gene-{}", i)).collect();
+        //     write_expected_counts(
+        //         &Some(String::from("initial-counts.csv.gz")),
+        //         OutputFormat::CsvGz,
+        //         &transcript_names,
+        //         &init_samples.clone().reversed_axes());
+        // }
+
         init_samples.rows_mut().into_iter().for_each(|mut row| {
             let rowsum = row.sum();
             row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
@@ -401,10 +410,19 @@ impl ModelParams {
             .fit(&init_samples)
             .expect("kmeans failed to converge");
 
-        let z_probs_consts = Array2::<f32>::zeros((ncomponents, nhidden));
         let z_probs = ThreadLocal::new();
         let z = model.predict(&init_samples).map(|&x| x as u32);
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
+
+        // // DEBUG: Initial component populations
+        // {
+        //     let mut component_population = Array1::<u32>::from_elem(ncomponents, 0);
+        //     for z_c in &z {
+        //         component_population[*z_c as usize] += 1;
+        //     }
+
+        //     dbg!(&component_population);
+        // }
 
         // let rng = rand::thread_rng();
         // let model = GaussianMixtureModel::params_with_rng(ncomponents, rng)
@@ -473,7 +491,6 @@ impl ModelParams {
             latent_counts,
             multinomial_rates: ThreadLocal::new(),
             multinomial_sample: ThreadLocal::new(),
-            z_probs_consts,
             z_probs,
             z,
             π,
@@ -1415,7 +1432,6 @@ where
 
         let ngenes = params.foreground_counts.shape()[1];
         let nhidden = params.cell_latent_counts.shape()[1];
-        let ncomponents = params.π.shape()[0];
 
         Zip::from(params.cell_latent_counts.outer_iter_mut()) // for every cell
             .and(params.φ.outer_iter())
@@ -1433,16 +1449,6 @@ where
                 let mut gene_latent_counts_tl = params.gene_latent_counts_tl
                     .get_or(|| RefCell::new(Array2::zeros((ngenes, nhidden))))
                     .borrow_mut();
-
-                let mut z_probs = params.z_probs
-                    .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
-                    .borrow_mut();
-
-                z_probs.iter_mut()
-                    .zip(&params.π)
-                    .for_each(|(z_prob, π_t)| {
-                        *z_prob = π_t.ln() as f64;
-                    });
 
                 Zip::indexed(x_c.outer_iter()) // for every gene
                     .and(params.θ.outer_iter())
