@@ -284,12 +284,14 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_cell_voxels_fmt: OutputFormat,
 
-    /// Output cell polygons flattened to 2D
+    /// Output consensus non-overlapping 2D polygons, formed by taking the
+    /// dominant cell at each x/y location.
     #[arg(long, default_value = "cell-polygons.geojson.gz")]
     output_cell_polygons: Option<String>,
 
-    #[arg(long, default_value = "consensus-cell-polygons.geojson.gz")]
-    output_consensus_cell_polygons: Option<String>,
+    /// Output cell polygons flattened (unioned) to 2D
+    #[arg(long, default_value = "union-cell-polygons.geojson.gz")]
+    output_union_cell_polygons: Option<String>,
 
     /// Output separate cell polygons for each layer of voxels along the z-axis
     #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
@@ -862,18 +864,16 @@ fn main() {
         &sampler.borrow(),
     );
 
-    // TODO: If consensus polygons look good, we should just make that the output of
-    // `output_cell_polygons` and add a --output-flattened-polygons argument.
-    if args.output_cell_polygon_layers.is_some() || args.output_cell_polygons.is_some() {
+    if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
         let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
-        write_cell_multipolygons(&args.output_cell_polygons, cell_flattened_polygons);
+        write_cell_multipolygons(&args.output_union_cell_polygons, cell_flattened_polygons);
         write_cell_layered_multipolygons(&args.output_cell_polygon_layers, cell_polygons);
     }
 
-    if args.output_consensus_cell_polygons.is_some() {
+    if args.output_cell_polygons.is_some() {
         let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
         write_cell_multipolygons(
-            &args.output_consensus_cell_polygons,
+            &args.output_cell_polygons,
             consensus_cell_polygons,
         );
     }

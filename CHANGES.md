@@ -1,7 +1,16 @@
 
+# 1.0.7
+
+  - `--output-cell-polygons` will now generate non-overlapping "consensus"
+    polygons formed by taking the dominant cell assignment at each x/y location.
+    The old behavior, taking the union along the z-axis, can be generated now with
+    `--output-union-cell-polygons`.
+  - Default behavior is now to initialize voxels in 1D and double z-resolution twice,
+    which seems to lead to less spurious overlap between cells.
+
 # 1.0.6
 
-  - Add a option `--use-cell-initialization` to ignore compartment information
+  - Add an option `--use-cell-initialization` to ignore compartment information
     and initialize with cell assignment.
   - Change the behavior of the `--cosmx` preset to support newer CosMx
     transcript tables.

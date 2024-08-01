@@ -909,7 +909,7 @@ impl VoxelSampler {
                 }
             }
 
-            dbg!(reassignments.len());
+            // dbg!(reassignments.len());
 
             for (voxel, from_cell, to_cell) in reassignments.iter() {
                 cell_voxels[*from_cell as usize].remove(&voxel);
@@ -982,11 +982,11 @@ impl VoxelSampler {
         }
         println!("tally votes: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.pop_bubbles(&mut cell_voxels, 3);
-        println!("pop bubbles: {:?}", t0.elapsed());
+        // println!("pop bubbles: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         let polygon_builder = ThreadLocal::new();
         let cell_polygons: Vec<CellPolygon> = cell_voxels
             .par_iter()
@@ -1006,7 +1006,7 @@ impl VoxelSampler {
                 }
             })
             .collect();
-        println!("build polygons: {:?}", t0.elapsed());
+        // println!("build polygons: {:?}", t0.elapsed());
 
         return cell_polygons;
     }
