@@ -1,5 +1,5 @@
 
-# 1.0.7
+# 1.1.0
 
   - `--output-cell-polygons` will now generate non-overlapping "consensus"
     polygons formed by taking the dominant cell assignment at each x/y location.
@@ -7,6 +7,8 @@
     `--output-union-cell-polygons`.
   - Default behavior is now to initialize voxels in 1D and double z-resolution twice,
     which seems to lead to less spurious overlap between cells.
+  - `proseg-to-baysor` now filter out empty cells that were causing issues with
+    Xenium Ranger.
 
 # 1.0.6
 
