@@ -536,4 +536,13 @@ pub fn filter_cellfree_transcripts(
             .map(|(t, _)| t)
             .cloned()
             .collect::<Vec<_>>());
+
+    dataset.qvs.clone_from(
+        &dataset.qvs
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &m)| m)
+            .map(|(t, _)| t)
+            .cloned()
+            .collect::<Vec<_>>());
 }

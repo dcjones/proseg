@@ -383,10 +383,6 @@ pub fn write_transcript_metadata(
     fovs: &[u32],
     fov_names: &[String],
 ) {
-    dbg!(fovs.len());
-    dbg!(fov_names.len());
-    dbg!(transcripts.len());
-
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         let schema = Schema::from(vec![
             Field::new("transcript_id", DataType::UInt64, false),

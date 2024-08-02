@@ -14,6 +14,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
+pub const BACKGROUND_CELL: u32 = std::u32::MAX;
+
 #[derive(Parser, Debug)]
 #[command(name = "proseg-to-baysor")]
 #[command(author = "Daniel C. Jones")]
@@ -31,17 +33,34 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-
     let metadata = read_proseg_transcript_metadata(args.transcript_metadata);
-    write_baysor_transcript_metadata(args.output_transcript_metadata, metadata);
+    let (polygon_data, polygons) = read_cell_polygons_geojson(args.cell_polygons);
 
-    rerwrite_cell_polygon_geojson(args.cell_polygons, args.output_cell_polygons);
+    let ncells = polygons.len();
+    let pops = cell_populations(&metadata, ncells, 20.0);
+
+    let mask: Vec<bool> = pops.iter().zip(&polygons).map(|(&pop, polygon)| {
+        pop > 0 && !polygon["coordinates"].is_null()
+    }).collect();
+
+    write_baysor_transcript_metadata(args.output_transcript_metadata, metadata);
+    write_cell_polygon_geojson(polygon_data, polygons, args.output_cell_polygons, &mask);
 }
 
 enum OutputFormat {
     Csv,
     CsvGz,
     Parquet,
+}
+
+fn cell_populations(metadata: &TranscriptMetadata, ncells: usize, min_qv: f32) -> Vec<u32> {
+    let mut cell_population: Vec<u32> = vec![0; ncells];
+    for (&cell, &qv) in metadata.cell.iter().zip(&metadata.qv) {
+        if qv >= min_qv && cell != BACKGROUND_CELL {
+            cell_population[cell as usize] += 1;
+        }
+    }
+    return cell_population;
 }
 
 fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
@@ -90,6 +109,7 @@ struct TranscriptMetadata {
     x: Vec<f32>,
     y: Vec<f32>,
     z: Vec<f32>,
+    qv: Vec<f32>,
 }
 
 fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
@@ -114,6 +134,7 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
                 x: Vec::new(),
                 y: Vec::new(),
                 z: Vec::new(),
+                qv: Vec::new(),
             };
 
             let mut file = File::open(filename).expect("Unable to open parquet file.");
@@ -128,6 +149,7 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
                     || field.name == "x"
                     || field.name == "y"
                     || field.name == "z"
+                    || field.name == "qv"
             });
 
             let transcript_id_col = find_parquet_column(&schema, "transcript_id");
@@ -135,6 +157,7 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
             let x_col = find_parquet_column(&schema, "x");
             let y_col = find_parquet_column(&schema, "y");
             let z_col = find_parquet_column(&schema, "z");
+            let qv_col = find_parquet_column(&schema, "qv");
 
             let chunks = parquet::read::FileReader::new(
                 file,
@@ -193,6 +216,15 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
                 {
                     metadata.z.push(*z.unwrap());
                 }
+
+                for qv in columns[qv_col]
+                    .as_any()
+                    .downcast_ref::<arrow2::array::Float32Array>()
+                    .unwrap()
+                    .iter()
+                {
+                    metadata.qv.push(*qv.unwrap());
+                }
             }
 
             metadata
@@ -212,6 +244,7 @@ where
         x: Vec::new(),
         y: Vec::new(),
         z: Vec::new(),
+        qv: Vec::new(),
     };
 
     let transcript_id_col = find_csv_column(headers, "transcript_id");
@@ -219,6 +252,7 @@ where
     let x_col = find_csv_column(headers, "x");
     let y_col = find_csv_column(headers, "y");
     let z_col = find_csv_column(headers, "z");
+    let qv_col = find_csv_column(headers, "qv");
 
     for result in rdr.records() {
         let row = result.expect("Unable to read CSV record.");
@@ -232,9 +266,18 @@ where
         metadata.x.push(row[x_col].parse::<f32>().unwrap());
         metadata.y.push(row[y_col].parse::<f32>().unwrap());
         metadata.z.push(row[z_col].parse::<f32>().unwrap());
+        metadata.qv.push(row[qv_col].parse::<f32>().unwrap());
     }
 
     metadata
+}
+
+fn filter_option<T>(value: T, mask: bool) -> Option<T> {
+    if mask {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetadata) {
@@ -345,12 +388,7 @@ fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
     area
 }
 
-// We need to rename
-//   "features" -> "geometries"
-//   "FeatureCollection" -> "GeometryCollection"
-//
-// We also need to reduce the MultiPolygons to a single polygon. We just take the largest one.
-fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String) {
+fn read_cell_polygons_geojson(input_filename: String) -> (JsonValue, Vec<JsonValue>) {
     let input =
         File::open(input_filename).expect("Unable to open input cell polygon geojson file.");
     let mut input = GzDecoder::new(input);
@@ -363,7 +401,7 @@ fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String
 
     let features = data.remove("features");
 
-    let geometries = features.members().map(|feature| {
+    let geometries: Vec<JsonValue> = features.members().map(|feature| {
         let polygons = &feature["geometry"]["coordinates"];
 
         let mut largest_poygon = 0;
@@ -387,7 +425,6 @@ fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String
 
         // let mut coordinates = JsonValue::new_array();
         let coordinates = polygons[largest_poygon].clone();
-        assert!(!coordinates.is_null());
 
         let mut geometry = JsonValue::new_object();
         geometry.insert("type", "Polygon").unwrap();
@@ -397,9 +434,24 @@ fn rerwrite_cell_polygon_geojson(input_filename: String, output_filename: String
             .unwrap();
 
         geometry
-    });
+    }).collect();
 
-    let geometries = JsonValue::from(geometries.collect::<Vec<JsonValue>>());
+    return (data, geometries);
+}
+
+// We need to rename
+//   "features" -> "geometries"
+//   "FeatureCollection" -> "GeometryCollection"
+//
+// We also need to reduce the MultiPolygons to a single polygon. We just take the largest one.
+fn write_cell_polygon_geojson(mut data: JsonValue, geometries: Vec<JsonValue>, output_filename: String, mask: &[bool]) {
+    let geometries = JsonValue::from(geometries
+        .iter()
+        .zip(mask)
+        .filter_map(|(v, &m)| filter_option(v, m))
+        .cloned()
+        .collect::<Vec<JsonValue>>());
+
     data.insert("geometries", geometries).unwrap();
     data.insert("type", JsonValue::from("GeometryCollection"))
         .unwrap();
