@@ -55,7 +55,7 @@ pub fn read_transcripts_csv(
     y_column: &str,
     z_column: &str,
     min_qv: f32,
-    no_z_column: bool,
+    ignore_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
@@ -79,7 +79,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                no_z_column,
+                ignore_z_column,
                 coordinate_scale,
             )
         }
@@ -101,7 +101,7 @@ pub fn read_transcripts_csv(
                 y_column,
                 z_column,
                 min_qv,
-                no_z_column,
+                ignore_z_column,
                 coordinate_scale,
             )
         }
