@@ -113,7 +113,7 @@ pub fn read_transcripts_csv(
             compartment_nuclear.unwrap().parse::<u8>().unwrap(),
             &fov_column.unwrap(),
             cell_id_column,
-            -1,
+            cell_id_unassigned,
             &qv_column.unwrap(),
             x_column,
             y_column,
@@ -385,7 +385,7 @@ fn read_xenium_transcripts_parquet(
     compartment_nuclear: u8,
     fov_col_name: &str,
     cell_id_col_name: &str,
-    cell_id_unassigned: i32,
+    cell_id_unassigned: &str,
     qv_col_name: &str,
     x_col_name: &str,
     y_col_name: &str,
@@ -421,7 +421,7 @@ fn read_xenium_transcripts_parquet(
     let mut fovs = Vec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
-    let mut cell_id_map: HashMap<(u32, i32), CellIndex> = HashMap::new();
+    let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
 
     for rec_batch in rdr {
         let rec_batch = rec_batch.expect("Unable to read record batch.");
@@ -429,7 +429,7 @@ fn read_xenium_transcripts_parquet(
         let transcript_col = rec_batch
             .column(transcript_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
+            .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
         let id_col = rec_batch
@@ -447,13 +447,13 @@ fn read_xenium_transcripts_parquet(
         let cell_id_col = rec_batch
             .column(cell_id_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::Int32Array>()
+            .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
         let fov_col = rec_batch
             .column(fov_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
+            .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
         let x_col = rec_batch
@@ -483,11 +483,11 @@ fn read_xenium_transcripts_parquet(
         for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in
             izip!(transcript_col, id_col, compartment_col, cell_id_col, fov_col, x_col, y_col, z_col, qv_col)
         {
-            let transcript = str::from_utf8(transcript.unwrap()).unwrap();
+            let transcript = transcript.unwrap();
             let transcript_id = id.unwrap();
             let compartment = compartment.unwrap();
             let cell_id = cell_id.unwrap();
-            let fov = str::from_utf8(fov.unwrap()).unwrap();
+            let fov = fov.unwrap();
             let x = x.unwrap();
             let y = y.unwrap();
             let z = z.unwrap();
@@ -535,7 +535,7 @@ fn read_xenium_transcripts_parquet(
             } else {
                 let next_cell_id = cell_id_map.len() as CellIndex;
                 let cell_id = *cell_id_map
-                    .entry((fov, cell_id))
+                    .entry((fov, cell_id.to_string()))
                     .or_insert_with(|| next_cell_id);
 
                 let is_nuclear = compartment == compartment_nuclear;
