@@ -167,7 +167,7 @@ where
     let qv_col = find_column_index(schema, "qv");
 
     for rec_batch in rdr {
-        let rec_batch = rec_batch.expect("Unable to read CSV record batch.");
+        let rec_batch = rec_batch.expect("Unable to read record batch.");
 
         for transcript_id in rec_batch.column(transcript_id_col)
             .as_any()

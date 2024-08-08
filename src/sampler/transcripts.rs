@@ -5,9 +5,14 @@ use kiddo::float::kdtree::KdTree;
 use ndarray::Array2;
 use std::collections::HashMap;
 use std::fs::File;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use arrow;
+use itertools::izip;
+use std::str;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
+
 
 // Should probably rearrange this...
 use super::super::output::{infer_format_from_filename, OutputFormat};
@@ -100,7 +105,22 @@ pub fn read_transcripts_csv(
                 coordinate_scale,
             )
         }
-        OutputFormat::Parquet => unimplemented!("Parquet input not supported yet"),
+        OutputFormat::Parquet => read_xenium_transcripts_parquet(
+            path,
+            transcript_column,
+            &id_column.unwrap(),
+            &compartment_column.unwrap(),
+            compartment_nuclear.unwrap().parse::<u8>().unwrap(),
+            &fov_column.unwrap(),
+            cell_id_column,
+            -1,
+            &qv_column.unwrap(),
+            x_column,
+            y_column,
+            z_column,
+            min_qv,
+            ignore_z_column,
+            coordinate_scale),
         OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
     }
 }
@@ -167,6 +187,7 @@ fn postprocess_cell_assignments(
 #[allow(clippy::too_many_arguments)]
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
+
     transcript_column: &str,
     id_column: Option<String>,
     compartment_column: Option<String>,
@@ -355,11 +376,203 @@ where
 }
 
 
-// #[allow(clippy::too_many_arguments)]
-// fn read_transcripts_parquet<T>() -> TranscriptDataset
-// {
+#[allow(clippy::too_many_arguments)]
+fn read_xenium_transcripts_parquet(
+    filename: &str,
+    transcript_col_name: &str,
+    id_col_name: &str,
+    compartment_col_name: &str,
+    compartment_nuclear: u8,
+    fov_col_name: &str,
+    cell_id_col_name: &str,
+    cell_id_unassigned: i32,
+    qv_col_name: &str,
+    x_col_name: &str,
+    y_col_name: &str,
+    z_col_name: &str,
+    min_qv: f32,
+    ignore_z_column: bool,
+    coordinate_scale: f32,
+) -> TranscriptDataset
+{
+    let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)
+        .unwrap();
+    let schema = builder.schema().as_ref().clone();
+    let rdr = builder.build()
+        .expect(&format!("Unable to read parquet data from frobm {}", filename));
 
-// }
+    let transcript_col_idx = schema.index_of(transcript_col_name).unwrap();
+    let id_col_idx = schema.index_of(id_col_name).unwrap();
+    let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
+    let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
+    let fov_col_idx = schema.index_of(fov_col_name).unwrap();
+    let x_col_idx = schema.index_of(x_col_name).unwrap();
+    let y_col_idx = schema.index_of(y_col_name).unwrap();
+    let z_col_idx = schema.index_of(z_col_name).unwrap();
+    let qv_col_idx = schema.index_of(qv_col_name).unwrap();
+
+    let mut transcripts = Vec::new();
+    let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
+    let mut transcript_names = Vec::new();
+    let mut nucleus_assignments = Vec::new();
+    let mut cell_assignments = Vec::new();
+    let mut qvs = Vec::new();
+    let mut fovs = Vec::new();
+
+    let mut fov_map: HashMap<String, u32> = HashMap::new();
+    let mut cell_id_map: HashMap<(u32, i32), CellIndex> = HashMap::new();
+
+    for rec_batch in rdr {
+        let rec_batch = rec_batch.expect("Unable to read record batch.");
+
+        let transcript_col = rec_batch
+            .column(transcript_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::BinaryArray>()
+            .unwrap();
+
+        let id_col = rec_batch
+            .column(id_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+
+        let compartment_col = rec_batch
+            .column(compartment_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt8Array>()
+            .unwrap();
+
+        let cell_id_col = rec_batch
+            .column(cell_id_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .unwrap();
+
+        let fov_col = rec_batch
+            .column(fov_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::BinaryArray>()
+            .unwrap();
+
+        let x_col = rec_batch
+            .column(x_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap();
+
+        let y_col = rec_batch
+            .column(y_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap();
+
+        let z_col = rec_batch
+            .column(z_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap();
+
+        let qv_col = rec_batch
+            .column(qv_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap();
+
+        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in
+            izip!(transcript_col, id_col, compartment_col, cell_id_col, fov_col, x_col, y_col, z_col, qv_col)
+        {
+            let transcript = str::from_utf8(transcript.unwrap()).unwrap();
+            let transcript_id = id.unwrap();
+            let compartment = compartment.unwrap();
+            let cell_id = cell_id.unwrap();
+            let fov = str::from_utf8(fov.unwrap()).unwrap();
+            let x = x.unwrap();
+            let y = y.unwrap();
+            let z = z.unwrap();
+            let qv = qv.unwrap();
+
+            if qv < min_qv {
+                continue;
+            }
+
+            let fov = match fov_map.get(fov) {
+                Some(fov) => *fov,
+                None => {
+                    let next_fov = fov_map.len();
+                    fov_map.insert(fov.to_string(), next_fov as u32);
+                    next_fov as u32
+                }
+            };
+
+            let gene = if let Some(gene) = transcript_name_map.get(transcript) {
+                *gene
+            } else {
+                transcript_names.push(transcript.to_string());
+                transcript_name_map.insert(transcript.to_string(), transcript_names.len() - 1);
+                transcript_names.len() - 1
+            };
+
+            let x = coordinate_scale * x;
+            let y = coordinate_scale * y;
+
+            transcripts.push(Transcript {
+                transcript_id,
+                x,
+                y,
+                z: if ignore_z_column { 0.0 } else { z },
+                gene: gene as u32,
+                fov,
+            });
+
+            qvs.push(qv);
+            fovs.push(fov);
+
+            if cell_id == cell_id_unassigned {
+                nucleus_assignments.push(BACKGROUND_CELL);
+                cell_assignments.push(BACKGROUND_CELL);
+            } else {
+                let next_cell_id = cell_id_map.len() as CellIndex;
+                let cell_id = *cell_id_map
+                    .entry((fov, cell_id))
+                    .or_insert_with(|| next_cell_id);
+
+                let is_nuclear = compartment == compartment_nuclear;
+
+                if is_nuclear {
+                    nucleus_assignments.push(cell_id);
+                } else {
+                    nucleus_assignments.push(BACKGROUND_CELL);
+                }
+                cell_assignments.push(cell_id);
+            }
+        }
+    }
+
+    let mut fov_names = vec![String::new(); fov_map.len().max(1)];
+    if fov_map.is_empty() {
+        fov_names[0] = String::from("0");
+    } else {
+        for (fov_name, fov) in fov_map {
+            fov_names[fov as usize] = fov_name;
+        }
+    }
+
+    let nucleus_population =
+        postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
+
+    TranscriptDataset {
+        transcript_names,
+        transcripts,
+        nucleus_assignments,
+        cell_assignments,
+        nucleus_population,
+        qvs,
+        fovs,
+        fov_names,
+    }
+}
 
 // pub fn normalize_z_coord(transcripts: &mut Vec<Transcript>, fovs: Vec<u32>) {
 //     let nfovs = (*fovs.iter().max().unwrap() + 1) as usize;
