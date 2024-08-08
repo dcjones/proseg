@@ -1,4 +1,7 @@
 
+# 1.1.2
+  - Use newer Xenium parquet format.
+
 # 1.1.1
   - Support for running on Xenium parquet files.
   - Switch from unmaintained arrow2 crate to maintained arrow/parquet crates.
