@@ -1,6 +1,11 @@
-use arrow2::array;
-use arrow2::chunk::Chunk;
-use arrow2::datatypes::{DataType, Field, Schema};
+use arrow::array::RecordBatch;
+use arrow::datatypes::{Schema, Field, DataType};
+use arrow::error::ArrowError;
+use arrow::csv;
+use parquet::errors::ParquetError;
+use parquet::arrow::ArrowWriter;
+use parquet::file::properties::WriterProperties;
+use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use clap::ValueEnum;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -10,6 +15,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
+use crate::schemas::transcript_metadata_schema;
 use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::voxelsampler::VoxelSampler;
@@ -17,7 +23,6 @@ use super::sampler::{ModelParams, TranscriptState};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum OutputFormat {
-    /// Blah
     Infer,
     Csv,
     CsvGz,
@@ -27,8 +32,7 @@ pub enum OutputFormat {
 pub fn write_table(
     filename: &str,
     fmt: OutputFormat,
-    schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
+    batch: &RecordBatch,
 ) {
     let fmt = match fmt {
         OutputFormat::Infer => infer_format_from_filename(filename),
@@ -39,18 +43,18 @@ pub fn write_table(
 
     match fmt {
         OutputFormat::Csv => {
-            if write_table_csv(&mut file, schema, chunk).is_err() {
+            if write_table_csv(&mut file, batch).is_err() {
                 panic!("Error writing csv file: {}", filename);
             }
         }
         OutputFormat::CsvGz => {
             let mut encoder = GzEncoder::new(file, Compression::default());
-            if write_table_csv(&mut encoder, schema, chunk).is_err() {
+            if write_table_csv(&mut encoder, batch).is_err() {
                 panic!("Error writing csv.gz file: {}", filename);
             }
         }
         OutputFormat::Parquet => {
-            if write_table_parquet(&mut file, schema, chunk).is_err() {
+            if write_table_parquet(&mut file, batch).is_err() {
                 panic!("Error writing parquet file: {}", filename);
             }
         }
@@ -62,66 +66,32 @@ pub fn write_table(
 
 fn write_table_csv<W>(
     output: &mut W,
-    schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
-) -> arrow2::error::Result<()>
+    batch: &RecordBatch,
+) -> Result<(), ArrowError>
 where
     W: std::io::Write,
 {
-    let options = arrow2::io::csv::write::SerializeOptions::default();
-    let names = schema
-        .fields
-        .iter()
-        .map(|f| f.name.clone())
-        .collect::<Vec<_>>();
-    arrow2::io::csv::write::write_header(output, &names, &options)?;
-    arrow2::io::csv::write::write_chunk(output, &chunk, &options)?;
-    Ok(())
+    let mut writer = csv::WriterBuilder::new()
+        .with_header(true)
+        .build(output);
+    writer.write(batch)
 }
 
 fn write_table_parquet<W>(
     output: &mut W,
-    schema: Schema,
-    chunk: Chunk<Arc<dyn arrow2::array::Array>>,
-) -> arrow2::error::Result<()>
+    batch: &RecordBatch,
+) -> Result<(), ParquetError>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send,
 {
-    let options = arrow2::io::parquet::write::WriteOptions {
-        write_statistics: true,
-        version: arrow2::io::parquet::write::Version::V2,
-        compression: arrow2::io::parquet::write::CompressionOptions::Zstd(Some(
-            arrow2::io::parquet::write::ZstdLevel::default(),
-        )),
-        data_pagesize_limit: None,
-    };
+    // TODO: Any non-defaults?
+    let props = WriterProperties::builder()
+        .set_compression(ZSTD(ZstdLevel::try_new(3).unwrap()))
+        .build();
 
-    let encodings = schema
-        .fields
-        .iter()
-        // .map(|f| arrow2::io::parquet::write::Encoding::Plain)
-        .map(|f| {
-            arrow2::io::parquet::write::transverse(&f.data_type, |_| {
-                arrow2::io::parquet::write::Encoding::Plain
-            })
-        })
-        .collect();
-
-    let chunk_iter = vec![Ok(chunk)];
-    let row_groups = arrow2::io::parquet::write::RowGroupIterator::try_new(
-        chunk_iter.into_iter(),
-        &schema,
-        options,
-        encodings,
-    )?;
-
-    let mut writer = arrow2::io::parquet::write::FileWriter::try_new(output, schema, options)?;
-
-    for group in row_groups {
-        writer.write(group?)?;
-    }
-
-    writer.end(None)?;
+    let mut writer = ArrowWriter::try_new(output, batch.schema(), Some(props)).unwrap();
+    writer.write(batch)?;
+    writer.close()?;
 
     Ok(())
 }
@@ -145,24 +115,27 @@ pub fn write_counts(
     counts: &Array2<u32>,
 ) {
     if let Some(output_counts) = output_counts {
-        let schema = arrow2::datatypes::Schema::from(
+        let schema = Schema::new(
             transcript_names
                 .iter()
                 .map(|name| {
-                    arrow2::datatypes::Field::new(name, arrow2::datatypes::DataType::UInt32, false)
-                })
-                .collect::<Vec<_>>(),
+                    Field::new(name, DataType::UInt32, false)
+                }).collect::<Vec<Field>>()
         );
 
-        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
         for row in counts.rows() {
-            columns.push(Arc::new(arrow2::array::UInt32Array::from_values(
-                row.iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                row.iter().cloned().collect::<arrow::array::UInt32Array>(),
+            ));
         }
-        let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(output_counts, output_counts_fmt, schema, chunk);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
+
+        write_table(output_counts, output_counts_fmt, &batch);
     }
 }
 
@@ -173,28 +146,30 @@ pub fn write_expected_counts(
     ecounts: &Array2<f32>,
 ) {
     if let Some(output_expected_counts) = output_expected_counts {
-        let schema = arrow2::datatypes::Schema::from(
+        let schema = Schema::new(
             transcript_names
                 .iter()
                 .map(|name| {
-                    arrow2::datatypes::Field::new(name, arrow2::datatypes::DataType::Float32, false)
-                })
-                .collect::<Vec<_>>(),
+                    Field::new(name, DataType::Float32, false)
+                }).collect::<Vec<Field>>()
         );
 
-        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
         for row in ecounts.rows() {
-            columns.push(Arc::new(arrow2::array::Float32Array::from_values(
-                row.iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                row.iter().cloned().collect::<arrow::array::Float32Array>(),
+            ));
         }
-        let chunk = arrow2::chunk::Chunk::new(columns);
+
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
 
         write_table(
             output_expected_counts,
             output_expected_counts_fmt,
-            schema,
-            chunk,
+            &batch,
         );
     }
 }
@@ -206,24 +181,27 @@ pub fn write_rates(
     transcript_names: &[String],
 ) {
     if let Some(output_rates) = output_rates {
-        let schema = arrow2::datatypes::Schema::from(
+        let schema = Schema::new(
             transcript_names
                 .iter()
                 .map(|name| {
-                    arrow2::datatypes::Field::new(name, arrow2::datatypes::DataType::Float32, false)
-                })
-                .collect::<Vec<_>>(),
+                    Field::new(name, DataType::Float32, false)
+                }).collect::<Vec<Field>>()
         );
 
-        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
         for row in params.λ.rows() {
-            columns.push(Arc::new(arrow2::array::Float32Array::from_values(
-                row.iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                row.iter().cloned().collect::<arrow::array::Float32Array>(),
+            ));
         }
-        let chunk = arrow2::chunk::Chunk::new(columns);
 
-        write_table(output_rates, output_rates_fmt, schema, chunk);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
+
+        write_table(output_rates, output_rates_fmt, &batch);
     }
 }
 
@@ -247,27 +225,25 @@ pub fn write_component_params(
             fields.push(Field::new(&format!("α_{}", i), DataType::Float32, false));
             fields.push(Field::new(&format!("β_{}", i), DataType::Float32, false));
         }
-        let schema = Schema::from(fields);
+        let schema = Schema::new(fields);
 
-        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = Vec::new();
-        columns.push(Arc::new(array::Utf8Array::<i32>::from_iter_values(
-            transcript_names.iter().cloned(),
-        )));
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+        columns.push(Arc::new(arrow::array::StringArray::from(transcript_names.iter().cloned().collect::<Vec<String>>())));
+
         Zip::from(α.rows()).and(β.rows()).for_each(|α, β| {
-            columns.push(Arc::new(array::Float32Array::from_values(
-                α.iter().cloned(),
-            )));
-            columns.push(Arc::new(array::Float32Array::from_values(
-                β.iter().cloned(),
-            )));
+            columns.push(Arc::new(α.iter().cloned().collect::<arrow::array::Float32Array>()));
+            columns.push(Arc::new(β.iter().cloned().collect::<arrow::array::Float32Array>()));
         });
 
-        let chunk = arrow2::chunk::Chunk::new(columns);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
+
         write_table(
             output_component_params,
             output_component_params_fmt,
-            schema,
-            chunk,
+            &batch,
         );
     }
 }
@@ -317,7 +293,7 @@ pub fn write_cell_metadata(
     let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
 
     if let Some(output_cell_metadata) = output_cell_metadata {
-        let schema = Schema::from(vec![
+        let schema = Schema::new(vec![
             Field::new("cell", DataType::UInt32, false),
             Field::new("centroid_x", DataType::Float32, false),
             Field::new("centroid_y", DataType::Float32, false),
@@ -328,44 +304,36 @@ pub fn write_cell_metadata(
             Field::new("population", DataType::UInt64, false),
         ]);
 
-        let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::UInt32Array::from_values(0..params.ncells() as u32)),
-            Arc::new(array::Float32Array::from_values(
-                cell_centroids.iter().map(|(x, _, _)| *x),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                cell_centroids.iter().map(|(_, y, _)| *y),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                cell_centroids.iter().map(|(_, _, z)| *z),
-            )),
-            Arc::new(array::Utf8Array::<i32>::from_iter(cell_fovs.iter().map(
-                |fov| {
-                    if *fov == u32::MAX {
-                        None
-                    } else {
-                        Some(fov_names[*fov as usize].clone())
-                    }
-                },
-            ))),
-            Arc::new(array::UInt16Array::from_values(
-                params.z.iter().map(|&z| z as u16),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                params.cell_volume.iter().cloned(),
-            )),
-            Arc::new(array::UInt64Array::from_values(
-                params.cell_population.iter().map(|&p| p as u64),
-            )),
+        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+
+            Arc::new((0..params.ncells() as u32).collect::<arrow::array::UInt32Array>()),
+            Arc::new(cell_centroids.iter().map(|(x, _, _)| *x).collect::<arrow::array::Float32Array>()),
+            Arc::new(cell_centroids.iter().map(|(_, y, _)| *y).collect::<arrow::array::Float32Array>()),
+            Arc::new(cell_centroids.iter().map(|(_, _, z)| *z).collect::<arrow::array::Float32Array>()),
+            Arc::new(
+                cell_fovs.iter().map(
+                    |fov| {
+                        if *fov == u32::MAX {
+                            None
+                        } else {
+                            Some(fov_names[*fov as usize].clone())
+                        }
+                    },
+                ).collect::<arrow::array::StringArray>()),
+            Arc::new(params.z.iter().map(|&z| z as u16).collect::<arrow::array::UInt16Array>()),
+            Arc::new(params.cell_volume.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(params.cell_population.iter().map(|&p| p as u64).collect::<arrow::array::UInt64Array>())
         ];
 
-        let chunk = arrow2::chunk::Chunk::new(columns);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
 
         write_table(
             output_cell_metadata,
             output_cell_metadata_fmt,
-            schema,
-            chunk,
+            &batch,
         );
     }
 }
@@ -384,81 +352,73 @@ pub fn write_transcript_metadata(
     fov_names: &[String],
 ) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
-        let schema = Schema::from(vec![
-            Field::new("transcript_id", DataType::UInt64, false),
-            Field::new("x", DataType::Float32, false),
-            Field::new("y", DataType::Float32, false),
-            Field::new("z", DataType::Float32, false),
-            Field::new("observed_x", DataType::Float32, false),
-            Field::new("observed_y", DataType::Float32, false),
-            Field::new("observed_z", DataType::Float32, false),
-            Field::new("gene", DataType::Utf8, false),
-            Field::new("qv", DataType::Float32, false),
-            Field::new("fov", DataType::Utf8, false),
-            Field::new("assignment", DataType::UInt32, false),
-            Field::new("probability", DataType::Float32, false),
-            Field::new("background", DataType::UInt8, false),
-            Field::new("confusion", DataType::UInt8, false),
-        ]);
+        let schema = transcript_metadata_schema();
 
-        let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::UInt64Array::from_values(
-                transcripts.iter().map(|t| t.transcript_id),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcript_positions.iter().map(|(x, _, _)| *x),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcript_positions.iter().map(|(_, y, _)| *y),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcript_positions.iter().map(|(_, _, z)| *z),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcripts.iter().map(|t| t.x),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcripts.iter().map(|t| t.y),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                transcripts.iter().map(|t| t.z),
-            )),
-            Arc::new(array::Utf8Array::<i64>::from_iter_values(
+        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(
+                transcripts.iter().map(|t| t.transcript_id).collect::<arrow::array::UInt64Array>()
+            ),
+            Arc::new(
+                transcript_positions.iter().map(|(x, _, _)| *x).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                transcript_positions.iter().map(|(_, y, _)| *y).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                transcript_positions.iter().map(|(_, _, z)| *z).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                transcripts.iter().map(|t| t.x).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                transcripts.iter().map(|t| t.y).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                transcripts.iter().map(|t| t.z).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
                 transcripts
                     .iter()
-                    .map(|t| transcript_names[t.gene as usize].clone()),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                qvs.iter().cloned()
-            )),
-            Arc::new(array::Utf8Array::<i64>::from_iter_values(
-                fovs.iter().map(|fov| fov_names[*fov as usize].clone()),
-            )),
-            Arc::new(array::UInt32Array::from_values(
-                cell_assignments.iter().map(|(cell, _)| *cell),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                cell_assignments.iter().map(|(_, pr)| *pr),
-            )),
-            Arc::new(array::UInt8Array::from_values(
+                    .map(|t| Some(transcript_names[t.gene as usize].clone()))
+                    .collect::<arrow::array::LargeStringArray>()
+            ),
+            Arc::new(
+                qvs.iter().cloned().collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
+                fovs.iter()
+                    .map(|fov| Some(fov_names[*fov as usize].clone()))
+                    .collect::<arrow::array::LargeStringArray>()
+            ),
+            Arc::new(
+                cell_assignments.iter().map(|(cell, _)| *cell).collect::<arrow::array::UInt32Array>()
+            ),
+            Arc::new(
+                cell_assignments.iter().map(|(_, pr)| *pr).collect::<arrow::array::Float32Array>()
+            ),
+            Arc::new(
                 transcript_state
                     .iter()
-                    .map(|&s| (s == TranscriptState::Background) as u8),
-            )),
-            Arc::new(array::UInt8Array::from_values(
+                    .map(|&s| (s == TranscriptState::Background) as u8)
+                    .collect::<arrow::array::UInt8Array>()
+            ),
+            Arc::new(
                 transcript_state
                     .iter()
-                    .map(|&s| (s == TranscriptState::Confusion) as u8),
-            )),
+                    .map(|&s| (s == TranscriptState::Confusion) as u8)
+                    .collect::<arrow::array::UInt8Array>()
+            ),
         ];
 
-        let chunk = arrow2::chunk::Chunk::new(columns);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
 
         write_table(
             output_transcript_metadata,
             output_transcript_metadata_fmt,
-            schema,
-            chunk,
+            &batch,
         );
     }
 }
@@ -478,20 +438,24 @@ pub fn write_gene_metadata(
             // Field::new("dispersion", DataType::Float32, false),
         ];
 
-        let mut columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::Utf8Array::<i32>::from_iter_values(
-                transcript_names.iter().cloned(),
-            )),
-            Arc::new(array::UInt64Array::from_values(
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(
+                transcript_names.iter().map(|s| Some(s.clone())).collect::<arrow::array::StringArray>()
+            ),
+            Arc::new(
                 params
                     .total_gene_counts
                     .sum_axis(Axis(1))
                     .iter()
-                    .map(|x| *x as u64),
-            )),
-            Arc::new(array::Float32Array::from_values(
-                expected_counts.sum_axis(Axis(1)).iter().cloned(),
-            )),
+                    .map(|x| *x as u64)
+                    .collect::<arrow::array::UInt64Array>()
+            ),
+            Arc::new(
+                expected_counts
+                    .sum_axis(Axis(1))
+                    .iter().cloned()
+                    .collect::<arrow::array::Float32Array>()
+            ),
             // Arc::new(array::Float32Array::from_values(
             //     params.r.iter().cloned(),
             // ))
@@ -504,9 +468,9 @@ pub fn write_gene_metadata(
                 DataType::Float32,
                 false,
             ));
-            columns.push(Arc::new(array::Float32Array::from_values(
-                params.r.row(i).iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                params.r.row(i).iter().cloned().collect::<arrow::array::Float32Array>()
+            ));
         }
 
         // cell type rates
@@ -525,27 +489,29 @@ pub fn write_gene_metadata(
                 });
             λ_component /= count as f32;
 
-            columns.push(Arc::new(array::Float32Array::from_values(
-                λ_component.iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                λ_component.iter().cloned().collect::<arrow::array::Float32Array>()
+            ));
         }
 
         // background rates
         for i in 0..params.nlayers() {
             schema_fields.push(Field::new(format!("λ_bg_{}", i), DataType::Float32, false));
-            columns.push(Arc::new(array::Float32Array::from_values(
-                params.λ_bg.column(i).iter().cloned(),
-            )));
+            columns.push(Arc::new(
+                params.λ_bg.column(i).iter().cloned().collect::<arrow::array::Float32Array>()
+            ));
         }
 
-        let schema = Schema::from(schema_fields);
-        let chunk = arrow2::chunk::Chunk::new(columns);
+        let schema = Schema::new(schema_fields);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
 
         write_table(
             output_gene_metadata,
             output_gene_metadata_fmt,
-            schema,
-            chunk,
+            &batch,
         );
     }
 }
@@ -576,7 +542,7 @@ pub fn write_voxels(
             z1s.push(z1);
         }
 
-        let schema = Schema::from(vec![
+        let schema = Schema::new(vec![
             Field::new("cell", DataType::UInt32, false),
             Field::new("x0", DataType::Float32, false),
             Field::new("y0", DataType::Float32, false),
@@ -586,19 +552,22 @@ pub fn write_voxels(
             Field::new("z1", DataType::Float32, false),
         ]);
 
-        let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-            Arc::new(array::UInt32Array::from_vec(cells)),
-            Arc::new(array::Float32Array::from_vec(x0s)),
-            Arc::new(array::Float32Array::from_vec(y0s)),
-            Arc::new(array::Float32Array::from_vec(z0s)),
-            Arc::new(array::Float32Array::from_vec(x1s)),
-            Arc::new(array::Float32Array::from_vec(y1s)),
-            Arc::new(array::Float32Array::from_vec(z1s)),
+        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(cells.iter().cloned().collect::<arrow::array::UInt32Array>()),
+            Arc::new(x0s.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(y0s.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(z0s.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(x1s.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(y1s.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(z1s.iter().cloned().collect::<arrow::array::Float32Array>()),
         ];
 
-        let chunk = arrow2::chunk::Chunk::new(columns);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            columns
+        ).unwrap();
 
-        write_table(output_voxels, output_voxels_fmt, schema, chunk);
+        write_table(output_voxels, output_voxels_fmt, &batch);
     }
 }
 

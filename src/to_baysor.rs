@@ -3,10 +3,20 @@ use clap::Parser;
 // mod sampler;
 // mod output;
 // use output::{OutputFormat, determine_format};
-use arrow2::datatypes::Schema;
-use arrow2::io::csv as arrow_csv;
-use arrow2::io::parquet;
-use csv::StringRecord;
+// use arrow2::datatypes::Schema;
+// use arrow2::io::csv as arrow_csv;
+// use arrow2::io::parquet;
+// use csv::StringRecord;
+
+mod schemas;
+use crate::schemas::transcript_metadata_schema;
+
+use arrow::array::RecordBatch;
+use arrow::datatypes::{Schema, Field, DataType};
+use arrow::error::ArrowError;
+use arrow::csv;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
 use flate2::read::GzDecoder;
 use json::JsonValue;
 use std::cmp::Ordering;
@@ -87,19 +97,11 @@ fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
     }
 }
 
-fn find_csv_column(headers: &StringRecord, column: &str) -> usize {
-    let col = headers.iter().position(|x| x == column);
+fn find_column_index(schema: &Schema, column: &str) -> usize {
+    let col = schema.index_of(column);
     match col {
-        Some(col) => col,
-        None => panic!("Column '{}' not found in CSV file", column),
-    }
-}
-
-fn find_parquet_column(schema: &Schema, column: &str) -> usize {
-    let col = schema.fields.iter().position(|field| field.name == column);
-    match col {
-        Some(col) => col,
-        None => panic!("Column '{}' not found in CSV file", column),
+        Ok(col) => col,
+        _ => panic!("Column '{}' not found in CSV file", column),
     }
 }
 
@@ -115,129 +117,39 @@ struct TranscriptMetadata {
 fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
     let fmt = determine_format(&filename, &None);
 
+    let schema = transcript_metadata_schema();
+    let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
+
     match fmt {
         OutputFormat::Csv => {
-            let rdr =
-                arrow_csv::read::Reader::from_path(filename).expect("Unable to open csv file.");
-            read_proseg_transcript_metadata_csv(rdr)
+            let rdr = csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                .build(input_file)
+                .expect(&format!("Unable to construct CSV reader for '{}'", filename));
+            read_proseg_transcript_metadata_from_reader(rdr, &schema)
         }
         OutputFormat::CsvGz => {
-            let rdr = arrow_csv::read::Reader::from_reader(GzDecoder::new(
-                File::open(filename).expect("Unable to open csv.gz file."),
-            ));
-            read_proseg_transcript_metadata_csv(rdr)
+            let input_decoder = GzDecoder::new(input_file);
+            let rdr = csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                .build(input_decoder)
+                .expect(&format!("Unable to construct CSV reader for '{}'", filename));
+            read_proseg_transcript_metadata_from_reader(rdr, &schema)
         }
         OutputFormat::Parquet => {
-            let mut metadata = TranscriptMetadata {
-                transcript_id: Vec::new(),
-                cell: Vec::new(),
-                x: Vec::new(),
-                y: Vec::new(),
-                z: Vec::new(),
-                qv: Vec::new(),
-            };
+            let rdr = ParquetRecordBatchReaderBuilder::try_new(input_file)
+                .unwrap()
+                .build()
+                .expect(&format!("Unable to read parquet data from frobm {}", filename));
 
-            let mut file = File::open(filename).expect("Unable to open parquet file.");
-
-            let file_metadata =
-                parquet::read::read_metadata(&mut file).expect("Unable to read parquet metadata.");
-            let schema = parquet::read::infer_schema(&file_metadata)
-                .expect("Unable to infer parquet schema.");
-            let schema = schema.filter(|_idx, field| {
-                field.name == "transcript_id"
-                    || field.name == "assignment"
-                    || field.name == "x"
-                    || field.name == "y"
-                    || field.name == "z"
-                    || field.name == "qv"
-            });
-
-            let transcript_id_col = find_parquet_column(&schema, "transcript_id");
-            let assignment_col = find_parquet_column(&schema, "assignment");
-            let x_col = find_parquet_column(&schema, "x");
-            let y_col = find_parquet_column(&schema, "y");
-            let z_col = find_parquet_column(&schema, "z");
-            let qv_col = find_parquet_column(&schema, "qv");
-
-            let chunks = parquet::read::FileReader::new(
-                file,
-                file_metadata.row_groups,
-                schema,
-                Some(1024 * 8 * 8),
-                None,
-                None,
-            );
-
-            for chunk in chunks {
-                let chunk = chunk.expect("Unable to read parquet chunk.");
-                let columns = chunk.columns();
-
-                for transcript_id in columns[transcript_id_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::UInt64Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.transcript_id.push(*transcript_id.unwrap());
-                }
-
-                for assignment in columns[assignment_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::UInt32Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.cell.push(*assignment.unwrap());
-                }
-
-                for x in columns[x_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::Float32Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.x.push(*x.unwrap());
-                }
-
-                for y in columns[y_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::Float32Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.y.push(*y.unwrap());
-                }
-
-                for z in columns[z_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::Float32Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.z.push(*z.unwrap());
-                }
-
-                for qv in columns[qv_col]
-                    .as_any()
-                    .downcast_ref::<arrow2::array::Float32Array>()
-                    .unwrap()
-                    .iter()
-                {
-                    metadata.qv.push(*qv.unwrap());
-                }
-            }
-
-            metadata
+            read_proseg_transcript_metadata_from_reader(rdr, &schema)
         }
     }
 }
 
-fn read_proseg_transcript_metadata_csv<T>(mut rdr: arrow_csv::read::Reader<T>) -> TranscriptMetadata
+fn read_proseg_transcript_metadata_from_reader<T>(
+    rdr: T, schema: &Schema) -> TranscriptMetadata
 where
-    T: Read,
+    T: Iterator<Item = Result<RecordBatch, ArrowError>>
 {
-    let headers = rdr.headers().expect("Unable to read CSV headers.");
-
     let mut metadata = TranscriptMetadata {
         transcript_id: Vec::new(),
         cell: Vec::new(),
@@ -247,26 +159,69 @@ where
         qv: Vec::new(),
     };
 
-    let transcript_id_col = find_csv_column(headers, "transcript_id");
-    let assignment_col = find_csv_column(headers, "assignment");
-    let x_col = find_csv_column(headers, "x");
-    let y_col = find_csv_column(headers, "y");
-    let z_col = find_csv_column(headers, "z");
-    let qv_col = find_csv_column(headers, "qv");
+    let transcript_id_col = find_column_index(schema, "transcript_id");
+    let assignment_col = find_column_index(schema, "assignment");
+    let x_col = find_column_index(schema, "x");
+    let y_col = find_column_index(schema, "y");
+    let z_col = find_column_index(schema, "z");
+    let qv_col = find_column_index(schema, "qv");
 
-    for result in rdr.records() {
-        let row = result.expect("Unable to read CSV record.");
+    for rec_batch in rdr {
+        let rec_batch = rec_batch.expect("Unable to read CSV record batch.");
 
-        metadata
-            .transcript_id
-            .push(row[transcript_id_col].parse::<u64>().unwrap());
-        metadata
-            .cell
-            .push(row[assignment_col].parse::<u32>().unwrap());
-        metadata.x.push(row[x_col].parse::<f32>().unwrap());
-        metadata.y.push(row[y_col].parse::<f32>().unwrap());
-        metadata.z.push(row[z_col].parse::<f32>().unwrap());
-        metadata.qv.push(row[qv_col].parse::<f32>().unwrap());
+        for transcript_id in rec_batch.column(transcript_id_col)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.transcript_id.push(transcript_id.unwrap());
+        }
+
+        for assignment in rec_batch.column(assignment_col)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.cell.push(assignment.unwrap());
+        }
+
+        for x in rec_batch.column(x_col)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.x.push(x.unwrap());
+        }
+
+        for y in rec_batch.column(y_col)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.y.push(y.unwrap());
+        }
+
+        for z in rec_batch.column(z_col)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.z.push(z.unwrap());
+        }
+
+        for qv in rec_batch.column(qv_col)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.qv.push(qv.unwrap());
+        }
     }
 
     metadata
@@ -281,44 +236,57 @@ fn filter_option<T>(value: T, mask: bool) -> Option<T> {
 }
 
 fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetadata) {
-    let mut output =
+    let output =
         File::create(filename).expect("Unable to create output transcript metadata file.");
 
-    let names = ["transcript_id", "cell", "is_noise", "x", "y", "z"];
-    let columns: Vec<Arc<dyn arrow2::array::Array>> = vec![
-        Arc::new(arrow2::array::UInt64Array::from_values(
-            metadata.transcript_id.iter().cloned(),
-        )),
-        Arc::new(arrow2::array::Utf8Array::<i64>::from_iter_values(
+    let schema = Schema::new(vec![
+        Field::new("transcript_id", DataType::UInt64, false),
+        Field::new("cell", DataType::LargeUtf8, false),
+        Field::new("is_noise", DataType::Boolean, false),
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+        Field::new("z", DataType::Float32, false),
+    ]);
+
+    let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+        Arc::new(
+            metadata.transcript_id.iter().cloned().collect::<arrow::array::UInt64Array>()
+        ),
+        Arc::new(
             metadata.cell.iter().map(|cell|
                 if *cell == u32::MAX {
-                   String::new()
+                   Some(String::new())
                 } else {
-                    format!("cell-{}", cell)
+                    Some(format!("cell-{}", cell))
                 }
-            ),
-        )),
-        Arc::new(arrow2::array::BooleanArray::from_iter(
-            metadata.cell.iter().map(|x| Some(*x == u32::MAX)),
-        )),
-        Arc::new(arrow2::array::Float32Array::from_values(
-            metadata.x.iter().cloned(),
-        )),
-        Arc::new(arrow2::array::Float32Array::from_values(
-            metadata.y.iter().cloned(),
-        )),
-        Arc::new(arrow2::array::Float32Array::from_values(
-            metadata.z.iter().cloned(),
-        )),
+            )
+            .collect::<arrow::array::LargeStringArray>()
+        ),
+        Arc::new(
+            metadata.cell
+                .iter().map(|x| Some(*x == u32::MAX))
+                .collect::<arrow::array::BooleanArray>()
+        ),
+        Arc::new(
+            metadata.x.iter().cloned().collect::<arrow::array::Float32Array>()
+        ),
+        Arc::new(
+            metadata.y.iter().cloned().collect::<arrow::array::Float32Array>()
+        ),
+        Arc::new(
+            metadata.z.iter().cloned().collect::<arrow::array::Float32Array>()
+        ),
     ];
 
-    let chunk = arrow2::chunk::Chunk::new(columns);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        columns
+    ).unwrap();
 
-    let options = arrow2::io::csv::write::SerializeOptions::default();
-    arrow2::io::csv::write::write_header(&mut output, &names, &options)
-        .expect("Unable to write CSV header.");
-    arrow2::io::csv::write::write_chunk(&mut output, &chunk, &options)
-        .expect("Unable to write CSV chunk.")
+    let mut writer = csv::WriterBuilder::new()
+        .with_header(true)
+        .build(output);
+    writer.write(&batch).expect("Unable to write CSV file");
 }
 
 fn center(vertices: &[(f32, f32)]) -> (f32, f32) {

@@ -4,6 +4,7 @@ use clap::Parser;
 
 mod output;
 mod sampler;
+mod schemas;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
