@@ -23,7 +23,7 @@ use thread_local::ThreadLocal;
 pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
-use std::time::Instant;
+// use std::time::Instant;
 
 fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
     return MultiPolygon::from_iter(
@@ -920,7 +920,7 @@ impl VoxelSampler {
     }
 
     pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         let mut voxel_votes = HashMap::new();
         for (voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
@@ -947,9 +947,9 @@ impl VoxelSampler {
                 .or_insert_with(|| Vec::with_capacity(self.voxel_layers))
                 .push((cell, transcript_count));
         }
-        println!("index voxels: {:?}", t0.elapsed());
+        // println!("index voxels: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         let mut cell_voxels = vec![HashSet::new(); self.ncells()];
         for ((voxel_i, voxel_j), mut votes) in voxel_votes {
             votes.sort();
@@ -980,7 +980,7 @@ impl VoxelSampler {
                 k: 0,
             });
         }
-        println!("tally votes: {:?}", t0.elapsed());
+        // println!("tally votes: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
         self.pop_bubbles(&mut cell_voxels, 3);

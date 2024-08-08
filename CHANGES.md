@@ -1,4 +1,8 @@
 
+# 1.1.1
+  - Support for running on Xenium parquet files.
+  - Switch from unmaintained arrow2 crate to maintained arrow/parquet crates.
+
 # 1.1.0
 
   - `--output-cell-polygons` will now generate non-overlapping "consensus"
