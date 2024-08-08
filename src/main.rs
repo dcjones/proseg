@@ -119,7 +119,7 @@ struct Args {
 
     /// Ignore the z coordinate if any, treating the data as 2D
     #[arg(long, default_value_t = false)]
-    no_z_coord: bool,
+    ignore_z_coord: bool,
 
     /// Filter out transcripts with quality values below this threshold
     #[arg(long, default_value_t = 0.0_f32)]
@@ -434,7 +434,7 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.initial_voxel_size = 1.0;
     args.voxel_layers = 1;
     args.nbglayers = 1;
-    args.no_z_coord = true;
+    args.ignore_z_coord = true;
 
     // TODO: This is the resolution on the one dataset I have. It probably
     // doesn't generalize.
@@ -544,7 +544,7 @@ fn main() {
         &expect_arg(args.y_column, "y-column"),
         &expect_arg(args.z_column, "z-column"),
         args.min_qv,
-        args.no_z_coord,
+        args.ignore_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
     );
 
