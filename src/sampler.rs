@@ -19,7 +19,7 @@ use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{lognormal_logpdf, negbin_logpmf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, Axis, Zip};
+use ndarray::{Array1, Array2, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
 use polyagamma::PolyaGamma;
@@ -186,8 +186,8 @@ pub struct ModelParams {
     pub transcript_state: Array1<TranscriptState>,
     pub prev_transcript_state: Array1<TranscriptState>,
 
-    // [ngenes, ncells, nlayers] transcripts counts
-    pub counts: Array3<u16>,
+    // // [ngenes, ncells, nlayers] transcripts counts
+    // pub counts: Array3<u16>,
 
     // [ncells, ngenes] foreground transcripts counts
     foreground_counts: Array2<u16>,
@@ -367,23 +367,21 @@ impl ModelParams {
         let cell_log_volume = Array1::<f32>::zeros(ncells);
 
         // compute initial counts
-        let mut counts = Array3::<u16>::from_elem((ngenes, ncells, nlayers), 0);
+        let mut counts = Array2::<f32>::zeros((ncells, ngenes));
         let mut total_gene_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
             let layer = ((transcripts[i].z - z0) / layer_depth) as usize;
             if j != BACKGROUND_CELL {
-                counts[[gene, j as usize, layer]] += 1;
+                counts[[j as usize, gene]] += 1.0;
             }
             total_gene_counts[[gene, layer]] += 1;
         }
 
         // initial component assignments
-        let norm_constant = 1e4;
-        let mut init_samples = counts
-            .sum_axis(Axis(2))
-            .map(|&x| (x as f32))
-            .reversed_axes();
+        // let mut init_samples = counts
+        //     .map(|&x| (x as f32))
+        //     .reversed_axes();
         // // DEBUG: dumping initial counts to see if they make any sense at all.
         // {
         //     // let transcript_names: Vec<String> = (0..ngenes).map(|i| format!("gene-{}", i)).collect();
@@ -394,11 +392,12 @@ impl ModelParams {
         //         &init_samples.clone().reversed_axes());
         // }
 
-        init_samples.rows_mut().into_iter().for_each(|mut row| {
+        let norm_constant = 1e4;
+        counts.rows_mut().into_iter().for_each(|mut row| {
             let rowsum = row.sum();
             row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
         });
-        let init_samples = DatasetBase::from(init_samples);
+        let init_samples = DatasetBase::from(counts);
 
         // log1p transformed counts
         // let init_samples =
@@ -480,7 +479,6 @@ impl ModelParams {
             layer_depth,
             transcript_state,
             prev_transcript_state,
-            counts,
             foreground_counts,
             confusion_counts,
             background_counts,
@@ -523,30 +521,6 @@ impl ModelParams {
     fn zlayer(&self, z: f32) -> usize {
         let layer = ((z - self.z0) / self.layer_depth).max(0.0) as usize;
         layer.min(self.nlayers() - 1)
-    }
-
-    fn recompute_counts(&mut self, transcripts: &[Transcript]) {
-        self.counts.fill(0);
-        for (i, &j) in self.cell_assignments.iter().enumerate() {
-            let gene = transcripts[i].gene as usize;
-            if j != BACKGROUND_CELL {
-                let layer = self.zlayer(self.transcript_positions[i].2);
-                self.counts[[gene, j as usize, layer]] += 1;
-            }
-        }
-
-        self.check_counts(transcripts);
-    }
-
-    fn check_counts(&self, transcripts: &[Transcript]) {
-        for (i, (transcript, &assignment)) in
-            transcripts.iter().zip(&self.cell_assignments).enumerate()
-        {
-            let layer = self.zlayer(self.transcript_positions[i].2);
-            if assignment != BACKGROUND_CELL {
-                assert!(self.counts[[transcript.gene as usize, assignment as usize, layer]] > 0);
-            }
-        }
     }
 
     pub fn nforeground(&self) -> usize {
@@ -1254,15 +1228,6 @@ where
                 cell_volume += proposal.old_cell_volume_delta();
                 cell_volume = cell_volume.max(priors.min_cell_volume);
                 params.cell_volume[old_cell as usize] = cell_volume;
-
-                for &i in proposal.transcripts() {
-                    let gene = transcripts[i].gene;
-                    let layer = ((params.transcript_positions[i].2 - params.z0)
-                        / params.layer_depth)
-                        .max(0.0) as usize;
-                    let layer = layer.min(params.nlayers() - 1);
-                    params.counts[[gene as usize, old_cell as usize, layer]] -= 1;
-                }
             }
 
             if new_cell != BACKGROUND_CELL {
@@ -1272,15 +1237,6 @@ where
                 cell_volume += proposal.new_cell_volume_delta();
                 cell_volume = cell_volume.max(priors.min_cell_volume);
                 params.cell_volume[new_cell as usize] = cell_volume;
-
-                for &i in proposal.transcripts() {
-                    let gene = transcripts[i].gene;
-                    let layer = ((params.transcript_positions[i].2 - params.z0)
-                        / params.layer_depth)
-                        .max(0.0) as usize;
-                    let layer = layer.min(params.nlayers() - 1);
-                    params.counts[[gene as usize, new_cell as usize, layer]] += 1;
-                }
             }
         }
 
@@ -2259,7 +2215,6 @@ where
         params
             .transcript_position_updates
             .iter()
-            .zip(transcripts)
             .zip(&params.accept_proposed_transcript_positions)
             .zip(&mut params.cell_assignments)
             .zip(&mut params.cell_assignment_time)
@@ -2267,21 +2222,15 @@ where
             .for_each(
                 |(
                     i,
-                    ((((update, transcript), &accept), cell_assignment), cell_assignment_time),
+                    (((update, &accept), cell_assignment), cell_assignment_time),
                 )| {
-                    let (cell_prev, cell_new, layer_prev, layer_new) = *update;
+                    let (cell_prev, cell_new, _layer_prev, _layer_new) = *update;
                     if accept {
-                        let gene = transcript.gene as usize;
                         if cell_prev != BACKGROUND_CELL {
-                            assert!(
-                                params.counts[[gene, cell_prev as usize, layer_prev as usize]] > 0
-                            );
-                            params.counts[[gene, cell_prev as usize, layer_prev as usize]] -= 1;
                             assert!(params.cell_population[cell_prev as usize] > 0);
                             params.cell_population[cell_prev as usize] -= 1;
                         }
                         if cell_new != BACKGROUND_CELL {
-                            params.counts[[gene, cell_new as usize, layer_new as usize]] += 1;
                             params.cell_population[cell_new as usize] += 1;
                         }
 
