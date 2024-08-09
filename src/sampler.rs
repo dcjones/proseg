@@ -1287,34 +1287,34 @@ where
         uncertainty: &mut Option<&mut UncertaintyTracker>,
         burnin: bool,
     ) {
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_volume_params(priors, params);
-        println!("  Sample volume params: {:?}", t0.elapsed());
+        // println!("  Sample volume params: {:?}", t0.elapsed());
 
         // Sample background/foreground counts
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_transcript_state(priors, params, transcripts, uncertainty);
-        println!("  Sample transcript states: {:?}", t0.elapsed());
+        // println!("  Sample transcript states: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.compute_counts(priors, params, transcripts);
-        println!("  Compute counts: {:?}", t0.elapsed());
+        // println!("  Compute counts: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_factor_model(priors, params, true);
-        println!("  Sample factor model: {:?}", t0.elapsed());
+        // println!("  Sample factor model: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         // self.sample_z(params);
-        println!("  sample_z: {:?}", t0.elapsed());
+        // println!("  sample_z: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_background_rates(priors, params);
-        println!("  Sample background rates: {:?}", t0.elapsed());
+        // println!("  Sample background rates: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_confusion_rates(priors, params);
-        println!("  Sample confusion rates: {:?}", t0.elapsed());
+        // println!("  Sample confusion rates: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         if !burnin && priors.use_diffusion_model {
@@ -2213,9 +2213,12 @@ where
         transcripts: &Vec<Transcript>,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
+        let t0 = Instant::now();
         self.propose_eval_transcript_positions(priors, params, transcripts);
+        println!("  REPO: proposals {:?}", t0.elapsed());
 
         // Update position and compute cell and layer changes for updates
+        let t0 = Instant::now();
         params
             .transcript_position_updates
             .par_iter_mut()
@@ -2241,8 +2244,10 @@ where
                     }
                 },
             );
+        println!("  REPO: update positions {:?}", t0.elapsed());
 
         // Update counts and cell_population
+        let t0 = Instant::now();
         params
             .transcript_position_updates
             .iter()
@@ -2289,10 +2294,13 @@ where
                     }
                 },
             );
+        println!("  REPO: update counts {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.update_transcript_positions(
             &params.accept_proposed_transcript_positions,
             &params.transcript_positions,
         );
+        println!("  REPO: voxel sampler update positions {:?}", t0.elapsed());
     }
 }

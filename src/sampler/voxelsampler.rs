@@ -23,7 +23,7 @@ use thread_local::ThreadLocal;
 pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
-// use std::time::Instant;
+use std::time::Instant;
 
 fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
     return MultiPolygon::from_iter(
@@ -1470,6 +1470,7 @@ impl Sampler<VoxelProposal> for VoxelSampler {
     }
 
     fn update_transcript_positions(&mut self, updated: &[bool], positions: &[(f32, f32, f32)]) {
+        let t0 = Instant::now();
         self.transcript_voxels
             .par_iter_mut()
             .zip(positions)
@@ -1480,9 +1481,12 @@ impl Sampler<VoxelProposal> for VoxelSampler {
                     *voxel = self.chunkquad.layout.world_pos_to_voxel(position);
                 }
             });
+        println!("    REPO: compute voxels {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.transcript_voxel_ord
-            .par_sort_unstable_by_key(|&t| self.transcript_voxels[t]);
+            .par_sort_by_key(|&t| self.transcript_voxels[t]);
+        println!("    REPO: sort on voxel assignment {:?}", t0.elapsed());
     }
 
     // fn update_transcript_position(&mut self, i: usize, prev_pos: (f32, f32, f32), new_pos: (f32, f32, f32)) {
