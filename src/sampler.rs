@@ -189,8 +189,8 @@ pub struct ModelParams {
     // [ngenes, ncells, nlayers] transcripts counts
     pub counts: Array3<u16>,
 
-    // [ncells, ngenes, nlayers] foreground transcripts counts
-    foreground_counts: Array3<u16>,
+    // [ncells, ngenes] foreground transcripts counts
+    foreground_counts: Array2<u16>,
 
     // [ngenes] background transcripts counts
     confusion_counts: Array1<u32>,
@@ -455,7 +455,7 @@ impl ModelParams {
         let prev_transcript_state =
             Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
-        let foreground_counts = Array3::<u16>::from_elem((ncells, ngenes, nlayers), 0);
+        let foreground_counts = Array2::<u16>::from_elem((ncells, ngenes), 0);
         let confusion_counts = Array1::<u32>::from_elem(ngenes, 0);
         let background_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         let cell_latent_counts = Array2::<u32>::from_elem((ncells, nhidden), 0);
@@ -1287,36 +1287,40 @@ where
         uncertainty: &mut Option<&mut UncertaintyTracker>,
         burnin: bool,
     ) {
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_volume_params(priors, params);
-        // println!("  Sample volume params: {:?}", t0.elapsed());
+        println!("  Sample volume params: {:?}", t0.elapsed());
 
-        // // Sample background/foreground counts
-        // let t0 = Instant::now();
+        // Sample background/foreground counts
+        let t0 = Instant::now();
         self.sample_transcript_state(priors, params, transcripts, uncertainty);
-        // println!("  Sample transcript states: {:?}", t0.elapsed());
+        println!("  Sample transcript states: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.compute_counts(priors, params, transcripts);
+        println!("  Compute counts: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.sample_factor_model(priors, params, true);
+        println!("  Sample factor model: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         // self.sample_z(params);
-        // println!("  sample_z: {:?}", t0.elapsed());
+        println!("  sample_z: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_background_rates(priors, params);
-        // println!("  Sample background rates: {:?}", t0.elapsed());
+        println!("  Sample background rates: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         self.sample_confusion_rates(priors, params);
-        // println!("  Sample confusion rates: {:?}", t0.elapsed());
+        println!("  Sample confusion rates: {:?}", t0.elapsed());
 
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
-        // println!("  Sample transcript positions: {:?}", t0.elapsed());
+        println!("  Sample transcript positions: {:?}", t0.elapsed());
     }
 
     fn sample_transcript_state(
@@ -1394,6 +1398,15 @@ where
         params: &mut ModelParams,
         transcripts: &Vec<Transcript>,
     ) {
+        // TODO: Ok, this is the bottleneck now. It can't be trivially parallelized
+        // because we are accumulating these big matrices.
+
+        // These matrices are also problematic because they use so much memory.
+        // Ideally we'd find a solution where we can both accumulate in parallel
+        // and be sparse.
+
+        // I think the thing to do is
+
         let nlayers = params.nlayers();
         params.confusion_counts.fill(0_u32);
         params.background_counts.fill(0_u32);
@@ -1416,7 +1429,7 @@ where
                         params.confusion_counts[gene] += 1;
                     }
                     TranscriptState::Foreground => {
-                        params.foreground_counts[[cell as usize, gene, layer]] += 1;
+                        params.foreground_counts[[cell as usize, gene]] += 1;
                     }
                 }
             });
@@ -1450,11 +1463,9 @@ where
                     .get_or(|| RefCell::new(Array2::zeros((ngenes, nhidden))))
                     .borrow_mut();
 
-                Zip::indexed(x_c.outer_iter()) // for every gene
+                Zip::indexed(x_c) // for every gene
                     .and(params.θ.outer_iter())
-                    .for_each(|g, x_cg, θ_g| {
-                        let x_cg = x_cg.sum();
-
+                    .for_each(|g, &x_cg, θ_g| {
                         if x_cg == 0 {
                             return;
                         }
@@ -1558,9 +1569,9 @@ where
 
     fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams, sample_z: bool) {
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_latent_counts(params);
-        println!("  sample_latent_counts: {:?}", t0.elapsed());
+        // println!("  sample_latent_counts: {:?}", t0.elapsed());
 
         if sample_z {
             let t0 = Instant::now();
@@ -1570,34 +1581,34 @@ where
         self.sample_π(params);
 
         if priors.use_factorization {
-            let t0 = Instant::now();
+            // let t0 = Instant::now();
             self.sample_θ(priors, params);
-            println!("  sample_θ: {:?}", t0.elapsed());
+            // println!("  sample_θ: {:?}", t0.elapsed());
 
-            let t0 = Instant::now();
+            // let t0 = Instant::now();
             self.sample_rθ(priors, params);
-            println!("  sample_rθ: {:?}", t0.elapsed());
+            // println!("  sample_rθ: {:?}", t0.elapsed());
 
-            let t0 = Instant::now();
+            // let t0 = Instant::now();
             self.sample_sθ(priors, params);
-            println!("  sample_sθ: {:?}", t0.elapsed());
+            // println!("  sample_sθ: {:?}", t0.elapsed());
         }
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_φ(params);
-        println!("  sample_φ: {:?}", t0.elapsed());
+        // println!("  sample_φ: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_rφ(priors, params);
-        println!("  sample_rφ: {:?}", t0.elapsed());
+        // println!("  sample_rφ: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.sample_sφ(priors, params);
-        println!("  sample_sφ: {:?}", t0.elapsed());
+        // println!("  sample_sφ: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.compute_rates(params);
-        println!("  compute_rates: {:?}", t0.elapsed());
+        // println!("  compute_rates: {:?}", t0.elapsed());
     }
 
     fn sample_z(&mut self, params: &mut ModelParams) {
