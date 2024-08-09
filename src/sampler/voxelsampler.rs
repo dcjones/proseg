@@ -529,8 +529,6 @@ impl VoxelSampler {
             }
         }
 
-        params.recompute_counts(transcripts);
-
         // for (transcript, &cell) in transcripts.iter().zip(params.cell_assignments.iter()) {
         //     // let position = clip_z_position(
         //     //     (transcript.x, transcript.y, transcript.z), zmin, zmax);
