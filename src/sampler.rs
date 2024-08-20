@@ -75,9 +75,6 @@ pub enum TranscriptState {
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
-    pub dispersion: Option<f32>,
-    pub burnin_dispersion: Option<f32>,
-
     pub min_cell_volume: f32,
 
     // params for normal prior
@@ -106,20 +103,6 @@ pub struct ModelPriors {
     pub μθ: f32,
     pub τθ: f32,
 
-    // gamma rate prior
-    pub e_r: f32,
-
-    pub e_h: f32,
-    pub f_h: f32,
-
-    // gamma prior on γ
-    pub e_γ: f32,
-    pub f_γ: f32,
-
-    // TODO: probably should rename this to not collide with precios params for θ
-    // normal precision parameter for β
-    pub γ: f32,
-
     // gamma prior for background rates
     pub α_bg: f32,
     pub β_bg: f32,
@@ -127,12 +110,6 @@ pub struct ModelPriors {
     // gamma prior for confusion rates
     pub α_c: f32,
     pub β_c: f32,
-
-    // gaussian prior on μ_φ
-    pub σ_μ_φ: f32,
-
-    pub α_σ_φ: f32,
-    pub β_σ_φ: f32,
 
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
@@ -327,7 +304,6 @@ impl ModelParams {
         nlayers: usize,
         ncells: usize,
         ngenes: usize,
-        transcript_names: &Vec<String>,
     ) -> Self {
         let mut transcript_positions = transcripts
             .iter()
@@ -413,41 +389,7 @@ impl ModelParams {
 
         let (_, _sigma, embedding) = result.values_vectors();
 
-        dbg!(embedding.shape());
-
         let embedding_db = DatasetBase::from(embedding.t());
-
-        // let nsamples = norm_counts_db.nsamples();
-        // let nfeatures = norm_counts_db.nfeatures();
-        // dbg!((nsamples, nfeatures));
-
-
-        // // TODO: This PCA implementation seems straight up broken.
-        // // Instead let's try to use the svd implementation in ndarray_linalg.
-
-        // // let pca_emedding = Pca::params(nhidden)
-        // let pca_emedding = Pca::params(10)
-        //     .fit(&norm_counts_db)
-        //     .unwrap();
-
-        // dbg!(pca_emedding.components().shape());
-
-        // let norm_counts_pca_db = pca_emedding.predict(norm_counts_db);
-
-        // dbg!(norm_counts_pca_db.records().row(1000).mean());
-
-        // // dbg!(&pca_emedding);
-
-        // let nsamples = norm_counts_pca_db.nsamples();
-        // let nfeatures = norm_counts_pca_db.nfeatures();
-        // dbg!((nsamples, nfeatures));
-
-
-        // log1p transformed counts
-        // let init_samples =
-        //     DatasetBase::from(counts.sum_axis(Axis(2)).map(|&x| (x as f32).ln_1p()).reversed_axes());
-
-        // TODO: I think we have to off the start do PCA
 
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
@@ -455,36 +397,10 @@ impl ModelParams {
             .fit(&embedding_db)
             .expect("kmeans failed to converge");
 
-
         let z_probs = ThreadLocal::new();
         let z = model.predict(&embedding_db).map(|&x| x as u32);
 
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
-
-        // // DEBUG: Initial component populations
-        // {
-        //     let mut component_population = Array1::<u32>::from_elem(ncomponents, 0);
-        //     for z_c in &z {
-        //         component_population[*z_c as usize] += 1;
-        //     }
-
-        //     dbg!(&component_population);
-        // }
-
-        // let rng = rand::thread_rng();
-        // let model = GaussianMixtureModel::params_with_rng(ncomponents, rng)
-        //     .tolerance(1e-1)
-        //     .fit(&init_samples)
-        //     .expect("gmm failed to converge");
-
-        // let z = model.predict(&init_samples).map(|&x| x as u32);
-
-        // // initial component assignments
-        // let mut rng = rand::thread_rng();
-        // let z = (0..ncells)
-        //     .map(|_| rng.gen_range(0..ncomponents) as u32)
-        //     .collect::<Vec<_>>()
-        //     .into();
 
         let mut rng = rand::thread_rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
@@ -566,10 +482,10 @@ impl ModelParams {
         }
     }
 
-    fn zlayer(&self, z: f32) -> usize {
-        let layer = ((z - self.z0) / self.layer_depth).max(0.0) as usize;
-        layer.min(self.nlayers() - 1)
-    }
+    // fn zlayer(&self, z: f32) -> usize {
+    //     let layer = ((z - self.z0) / self.layer_depth).max(0.0) as usize;
+    //     layer.min(self.nlayers() - 1)
+    // }
 
     pub fn nforeground(&self) -> usize {
         self.foreground_counts.iter().map(|x| *x as usize).sum()
@@ -1187,7 +1103,6 @@ where
         priors: &ModelPriors,
         params: &mut ModelParams,
         stats: &mut ProposalStats,
-        transcripts: &[Transcript],
         hillclimb: bool,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
@@ -1199,13 +1114,12 @@ where
         self.proposals_mut()
             .par_iter_mut()
             .for_each(|p| p.evaluate(priors, params, hillclimb));
-        self.apply_accepted_proposals(stats, transcripts, priors, params, uncertainty);
+        self.apply_accepted_proposals(stats, priors, params, uncertainty);
     }
 
     fn apply_accepted_proposals(
         &mut self,
         stats: &mut ProposalStats,
-        transcripts: &[Transcript],
         priors: &ModelPriors,
         params: &mut ModelParams,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
@@ -1547,29 +1461,29 @@ where
     }
 
     // This is indended just for debugging
-    fn write_cell_latent_counts(&self, params: &ModelParams, filename: &str) {
-        let file = File::create(filename).unwrap();
-        let mut encoder = GzEncoder::new(file, Compression::default());
+    // fn write_cell_latent_counts(&self, params: &ModelParams, filename: &str) {
+    //     let file = File::create(filename).unwrap();
+    //     let mut encoder = GzEncoder::new(file, Compression::default());
 
-        // header
-        for i in 0..params.cell_latent_counts.shape()[1] {
-            if i != 0 {
-                write!(encoder, ",").unwrap();
-            }
-            write!(encoder, "metagene{}", i).unwrap();
-        }
-        writeln!(encoder).unwrap();
+    //     // header
+    //     for i in 0..params.cell_latent_counts.shape()[1] {
+    //         if i != 0 {
+    //             write!(encoder, ",").unwrap();
+    //         }
+    //         write!(encoder, "metagene{}", i).unwrap();
+    //     }
+    //     writeln!(encoder).unwrap();
 
-        for x_c in params.cell_latent_counts.rows() {
-            for (k, x_ck) in x_c.iter().enumerate() {
-                if k != 0 {
-                    write!(encoder, ",").unwrap();
-                }
-            write!(encoder, "{}", *x_ck).unwrap();
-            }
-            writeln!(encoder).unwrap();
-        }
-    }
+    //     for x_c in params.cell_latent_counts.rows() {
+    //         for (k, x_ck) in x_c.iter().enumerate() {
+    //             if k != 0 {
+    //                 write!(encoder, ",").unwrap();
+    //             }
+    //         write!(encoder, "{}", *x_ck).unwrap();
+    //         }
+    //         writeln!(encoder).unwrap();
+    //     }
+    // }
 
     fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams, sample_z: bool) {
 
@@ -1985,8 +1899,8 @@ where
         Zip::from(&mut params.λ_c)
             .and(&params.confusion_counts)
             .for_each(|λ, c| {
-                let α = priors.α_bg + *c as f32;
-                let β = priors.β_bg + total_cell_volume;
+                let α = priors.α_c + *c as f32;
+                let β = priors.β_c + total_cell_volume;
                 *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
             });
     }
