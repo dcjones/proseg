@@ -219,18 +219,6 @@ struct Args {
     #[arg(long, default_value_t = 4.0)]
     diffusion_sigma_far: f32,
 
-    /// Allow dispersion parameter to vary during burn-in
-    #[arg(long, default_value_t = false)]
-    variable_burnin_dispersion: bool,
-
-    /// Fixed dispersion parameter value during burn-in
-    #[arg(long, default_value_t = 1.0)]
-    burnin_dispersion: f32,
-
-    /// Fixed dispersion parameter throughout sampling
-    #[arg(long, default_value = None)]
-    dispersion: Option<f32>,
-
     /// Perturb initial transcript positions with this standard deviation
     #[arg(long, default_value = None)]
     initial_perturbation_sd: Option<f32>,
@@ -677,13 +665,6 @@ fn main() {
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
-        dispersion: args.dispersion,
-        burnin_dispersion: if args.variable_burnin_dispersion {
-            None
-        } else {
-            Some(args.burnin_dispersion)
-        },
-
         min_cell_volume,
 
         μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
@@ -717,25 +698,11 @@ fn main() {
         μθ: 1.0,
         τθ: 0.1,
 
-        e_r: 1.0,
-
-        e_h: 1.0,
-        f_h: 1.0,
-
-        e_γ: 1.0,
-        f_γ: 1.0,
-
-        γ: 1.0,
-
         α_bg: 1.0,
         β_bg: 1.0,
 
         α_c: 1.0,
         β_c: 1.0,
-
-        σ_μ_φ: 10.0,
-        α_σ_φ: 0.01,
-        β_σ_φ: 1.0 / 0.01,
 
         perimeter_eta: 5.3,
         perimeter_bound: args.perimeter_bound,
@@ -776,7 +743,6 @@ fn main() {
         args.nbglayers,
         ncells,
         ngenes,
-        &dataset.transcript_names,
     );
 
     let total_iterations = args.schedule.iter().sum::<usize>();
@@ -1008,7 +974,6 @@ fn run_hexbin_sampler(
                     priors,
                     params,
                     &mut proposal_stats,
-                    transcripts,
                     hillclimb,
                     &mut uncertainty,
                 );

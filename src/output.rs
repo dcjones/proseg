@@ -11,7 +11,7 @@ use clap::ValueEnum;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
-use ndarray::{Array1, Array2, Axis, Zip};
+use ndarray::{Array1, Array2, Axis};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::errors::ParquetError;
