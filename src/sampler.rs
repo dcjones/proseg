@@ -7,7 +7,7 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;
 
-use super::output::{OutputFormat, write_expected_counts};
+// use super::output::{OutputFormat, write_expected_counts};
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -20,6 +20,7 @@ use linfa_clustering::KMeans;
 use math::{lognormal_logpdf, negbin_logpmf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Axis, Zip};
+use ndarray_linalg::{TruncatedSvd, TruncatedOrder};
 use rand::{thread_rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
 use polyagamma::PolyaGamma;
@@ -34,6 +35,11 @@ use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
 use std::time::Instant;
+
+// use std::any::type_name;
+// fn print_type_of<T>(_: &T) {
+//     println!("{}", std::any::type_name::<T>())
+// }
 
 // Bounding perimeter as some multiple of the perimiter of a sphere with the
 // same volume. This of course is all on a lattice, so it's approximate.
@@ -185,9 +191,6 @@ pub struct ModelParams {
     // [ntranscripts] current assignment of transcripts to background
     pub transcript_state: Array1<TranscriptState>,
     pub prev_transcript_state: Array1<TranscriptState>,
-
-    // // [ngenes, ncells, nlayers] transcripts counts
-    // pub counts: Array3<u16>,
 
     // [ncells, ngenes] foreground transcripts counts
     foreground_counts: Array2<u16>,
@@ -367,13 +370,13 @@ impl ModelParams {
         let cell_log_volume = Array1::<f32>::zeros(ncells);
 
         // compute initial counts
-        let mut counts = Array2::<f32>::zeros((ncells, ngenes));
+        let mut counts = Array2::<f32>::zeros((ngenes, ncells));
         let mut total_gene_counts = Array2::<u32>::from_elem((ngenes, nlayers), 0);
         for (i, &j) in init_cell_assignments.iter().enumerate() {
             let gene = transcripts[i].gene as usize;
             let layer = ((transcripts[i].z - z0) / layer_depth) as usize;
             if j != BACKGROUND_CELL {
-                counts[[j as usize, gene]] += 1.0;
+                counts[[gene, j as usize]] += 1.0;
             }
             total_gene_counts[[gene, layer]] += 1;
         }
@@ -393,24 +396,69 @@ impl ModelParams {
         // }
 
         let norm_constant = 1e4;
-        counts.rows_mut().into_iter().for_each(|mut row| {
-            let rowsum = row.sum();
-            row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
+        counts.columns_mut().into_iter().for_each(|mut col| {
+            let colsum = col.sum();
+            col.mapv_inplace(|x| (norm_constant * (x / colsum)).ln_1p());
         });
-        let init_samples = DatasetBase::from(counts);
+
+        // subtract mean
+        for mut counts_i in counts.rows_mut() {
+            let mean = counts_i.mean().unwrap();
+            counts_i -= mean;
+        }
+
+        let result = TruncatedSvd::new(counts, TruncatedOrder::Largest)
+            .decompose(nhidden)
+            .unwrap();
+
+        let (_, _sigma, embedding) = result.values_vectors();
+
+        dbg!(embedding.shape());
+
+        let embedding_db = DatasetBase::from(embedding.t());
+
+        // let nsamples = norm_counts_db.nsamples();
+        // let nfeatures = norm_counts_db.nfeatures();
+        // dbg!((nsamples, nfeatures));
+
+
+        // // TODO: This PCA implementation seems straight up broken.
+        // // Instead let's try to use the svd implementation in ndarray_linalg.
+
+        // // let pca_emedding = Pca::params(nhidden)
+        // let pca_emedding = Pca::params(10)
+        //     .fit(&norm_counts_db)
+        //     .unwrap();
+
+        // dbg!(pca_emedding.components().shape());
+
+        // let norm_counts_pca_db = pca_emedding.predict(norm_counts_db);
+
+        // dbg!(norm_counts_pca_db.records().row(1000).mean());
+
+        // // dbg!(&pca_emedding);
+
+        // let nsamples = norm_counts_pca_db.nsamples();
+        // let nfeatures = norm_counts_pca_db.nfeatures();
+        // dbg!((nsamples, nfeatures));
+
 
         // log1p transformed counts
         // let init_samples =
         //     DatasetBase::from(counts.sum_axis(Axis(2)).map(|&x| (x as f32).ln_1p()).reversed_axes());
 
+        // TODO: I think we have to off the start do PCA
+
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
             .tolerance(1e-1)
-            .fit(&init_samples)
+            .fit(&embedding_db)
             .expect("kmeans failed to converge");
 
+
         let z_probs = ThreadLocal::new();
-        let z = model.predict(&init_samples).map(|&x| x as u32);
+        let z = model.predict(&embedding_db).map(|&x| x as u32);
+
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
 
         // // DEBUG: Initial component populations
