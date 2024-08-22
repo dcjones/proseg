@@ -1,7 +1,9 @@
 use super::voxelsampler::{Voxel, VoxelLayout};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
+use geo::BooleanOps;
 // use geo::algorithm::simplify::Simplify;
 // use geo::SimplifyVw;
 use itertools::Itertools;
@@ -15,6 +17,34 @@ use itertools::Itertools;
 //
 // Edge simplification:
 //   To reduce the jagged edges:
+
+fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
+    return MultiPolygon::from_iter(
+        multipoly
+            .iter()
+            .map(|poly| Polygon::new(poly.exterior().clone(), vec![])),
+    );
+}
+
+// taken from: https://github.com/a-b-street/abstreet
+pub fn union_all_into_multipolygon(
+    mut list: Vec<Polygon<f32>>,
+    no_interiors: bool,
+) -> MultiPolygon<f32> {
+    if list.is_empty() {
+        return MultiPolygon(Vec::new());
+    }
+
+    let mut result = geo::MultiPolygon(vec![list.pop().unwrap()]);
+    for p in list {
+        result = result.union(&p.into());
+
+        if no_interiors {
+            result = drop_interiors(result);
+        }
+    }
+    result
+}
 
 type VoxelIJ = (i32, i32);
 type VoxelK = i32;
@@ -111,6 +141,35 @@ fn simplify_polygon(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
 
     simplified_polygon
 }
+
+
+fn remove_polygon_loops(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
+    // basically just do a traversal of the polygon, keeping track of
+    // when we visit each node, and excise any loops.
+    let mut visited: HashMap<VoxelIJ, u32> = HashMap::new();
+    let mut loopless_polygon = Vec::new();
+    for (k, p) in polygon.iter().enumerate() {
+        if k == polygon.len() - 1 {
+            loopless_polygon.push(*p);
+
+        } else {
+            match visited.entry(*p) {
+                Occupied(entry) => {
+                    // Erase the loop
+                    loopless_polygon.truncate((entry.get() + 1) as usize);
+                },
+                Vacant(entry) => {
+                    entry.insert(loopless_polygon.len() as u32);
+                    loopless_polygon.push(*p);
+                }
+            }
+        }
+    }
+
+    return loopless_polygon;
+}
+
+
 
 impl PolygonBuilder {
     pub fn new() -> Self {
@@ -218,32 +277,30 @@ impl PolygonBuilder {
                             v = adjacent_edge.2;
                         } else {
                             let w;
-
-                            // Might be a nicer way, but I'm just going to handle
-                            // each case exhaustively here.
-                            if voxels.contains(&Voxel::new(k, v.0, v.1)) {
+                            if voxels.contains(&Voxel::new(v.0, v.1, k)) {
                                 if δi == -1 {
-                                    w = (v.0, v.1 - 1);
-                                } else if δi == 1 {
                                     w = (v.0, v.1 + 1);
+                                } else if δi == 1 {
+                                    w = (v.0, v.1 - 1);
                                 } else if δj == -1 {
-                                    w = (v.0 - 1, v.1);
-                                } else if δj == 1 {
                                     w = (v.0 + 1, v.1);
+                                } else if δj == 1 {
+                                    w = (v.0 - 1, v.1);
                                 } else {
                                     unreachable!();
                                 }
                             } else if δi == -1 {
-                                w = (v.0, v.1 + 1);
-                            } else if δi == 1 {
                                 w = (v.0, v.1 - 1);
+                            } else if δi == 1 {
+                                w = (v.0, v.1 + 1);
                             } else if δj == -1 {
-                                w = (v.0 + 1, v.1);
-                            } else if δj == 1 {
                                 w = (v.0 - 1, v.1);
+                            } else if δj == 1 {
+                                w = (v.0 + 1, v.1);
                             } else {
                                 unreachable!();
                             }
+
                             let adjacent_edge = (k, v, w);
                             assert!(adjacent_edges.contains(&adjacent_edge));
                             if adjacent_edges_visited[adjacent_edges
@@ -267,6 +324,7 @@ impl PolygonBuilder {
 
                     // let polygon = antialias_polygon(polygon);
                     let polygon = simplify_polygon(polygon);
+                    let polygon = remove_polygon_loops(polygon);
 
                     // convert coordinates to μm
                     let polygon: Vec<(f32, f32)> = polygon
@@ -289,7 +347,11 @@ impl PolygonBuilder {
                 }
             }
 
-            multipolygons.push((k, MultiPolygon::new(polygons_k)));
+            // TODO: try flattening here, then maybe we don't actually need to pop
+            // bubbles.
+
+            // multipolygons.push((k, MultiPolygon::new(polygons_k)));
+            multipolygons.push((k, union_all_into_multipolygon(polygons_k, true)));
         }
 
         multipolygons

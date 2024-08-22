@@ -83,9 +83,6 @@ pub struct ModelPriors {
     pub α_σ_volume: f32,
     pub β_σ_volume: f32,
 
-    pub α_θ: f32,
-    pub β_θ: f32,
-
     // gamma rate prior
     pub e_r: f32,
 
@@ -1640,8 +1637,8 @@ where
         Zip::from(&mut params.λ_c)
             .and(&params.confusion_counts)
             .for_each(|λ, c| {
-                let α = priors.α_bg + *c as f32;
-                let β = priors.β_bg + total_cell_volume;
+                let α = priors.α_c + *c as f32;
+                let β = priors.β_c + total_cell_volume;
                 *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
             });
     }

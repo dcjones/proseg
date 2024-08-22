@@ -1,6 +1,6 @@
 use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
-use super::polygons::PolygonBuilder;
+use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
@@ -8,7 +8,6 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
 // use arrow;
 use geo::geometry::{MultiPolygon, Polygon};
-use geo::BooleanOps;
 use itertools::Itertools;
 use ndarray::Array2;
 use rand::{thread_rng, Rng};
@@ -24,34 +23,6 @@ pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
 // use std::time::Instant;
-
-fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
-    return MultiPolygon::from_iter(
-        multipoly
-            .iter()
-            .map(|poly| Polygon::new(poly.exterior().clone(), vec![])),
-    );
-}
-
-// taken from: https://github.com/a-b-street/abstreet
-fn union_all_into_multipolygon(
-    mut list: Vec<Polygon<f32>>,
-    no_interiors: bool,
-) -> MultiPolygon<f32> {
-    if list.is_empty() {
-        return MultiPolygon(Vec::new());
-    }
-
-    let mut result = geo::MultiPolygon(vec![list.pop().unwrap()]);
-    for p in list {
-        result = result.union(&p.into());
-
-        if no_interiors {
-            result = drop_interiors(result);
-        }
-    }
-    result
-}
 
 fn clip_z_position(position: (f32, f32, f32), zmin: f32, zmax: f32) -> (f32, f32, f32) {
     let eps = (zmax - zmin) * 1e-6;
@@ -868,57 +839,6 @@ impl VoxelSampler {
         (cell_polygons, cell_flattened_polygons)
     }
 
-    // Go through and reassign voxels that are surrounded by
-    fn pop_bubbles(&self, cell_voxels: &mut Vec<HashSet<Voxel>>, rounds: usize) {
-        // build a reverse index
-        let mut voxel_cells: HashMap<Voxel, CellIndex> = HashMap::new();
-        for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
-            for voxel in voxels.iter() {
-                voxel_cells.insert(*voxel, cell as u32);
-            }
-        }
-
-        let mut reassignments = Vec::new();
-        for _round in 0..rounds {
-            reassignments.clear();
-
-            for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
-                let cell = cell as u32;
-                for voxel in voxels.iter() {
-                    let mut neighbor_cell: CellIndex = BACKGROUND_CELL;
-                    let mut neighbor_cell_count = 0;
-
-                    for neighbor in voxel.von_neumann_neighborhood_xy() {
-                        let c = match voxel_cells.get(&neighbor) {
-                            Some(cell) => *cell,
-                            None => BACKGROUND_CELL,
-                        };
-                        if c != cell {
-                            if neighbor_cell == BACKGROUND_CELL {
-                                neighbor_cell = c;
-                                neighbor_cell_count = 1;
-                            } else if neighbor_cell == c {
-                                neighbor_cell_count += 1;
-                            }
-                        }
-                    }
-
-                    if neighbor_cell_count >= 3 {
-                        reassignments.push((*voxel, cell, neighbor_cell));
-                    }
-                }
-            }
-
-            // dbg!(reassignments.len());
-
-            for (voxel, from_cell, to_cell) in reassignments.iter() {
-                cell_voxels[*from_cell as usize].remove(&voxel);
-                cell_voxels[*to_cell as usize].insert(*voxel);
-                voxel_cells.insert(*voxel, *to_cell);
-            }
-        }
-    }
-
     pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
         // let t0 = Instant::now();
         let mut voxel_votes = HashMap::new();
@@ -981,10 +901,6 @@ impl VoxelSampler {
             });
         }
         // println!("tally votes: {:?}", t0.elapsed());
-
-        // let t0 = Instant::now();
-        self.pop_bubbles(&mut cell_voxels, 3);
-        // println!("pop bubbles: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
         let polygon_builder = ThreadLocal::new();
