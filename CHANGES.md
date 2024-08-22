@@ -1,4 +1,7 @@
 
+# 1.1.3
+  - Fix some cases in which weird or invalid polygons are reported.
+
 # 1.1.2
   - Use newer Xenium parquet format.
 
