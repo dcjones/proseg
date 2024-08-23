@@ -10,7 +10,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 use geo::geometry::{MultiPolygon, Polygon};
 use geo::BooleanOps;
 use itertools::Itertools;
-use ndarray::Array2;
+use ndarray::{Array2, Zip};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -577,6 +577,7 @@ impl VoxelSampler {
         sampler.recompute_cell_population();
         sampler.recompute_cell_perimeter();
         sampler.recompute_cell_volume(priors, params);
+        params.effective_cell_volume.assign(&params.cell_volume);
         sampler.populate_mismatches();
         sampler.update_transcript_positions(
             &vec![true; transcripts.len()],
@@ -732,6 +733,14 @@ impl VoxelSampler {
             assert!(*cell_volume > 0.0);
             *cell_volume = cell_volume.max(priors.min_cell_volume);
         }
+
+        Zip::from(&mut params.log_cell_volume)
+            .and(&params.cell_volume)
+            .into_par_iter()
+            .with_min_len(50)
+            .for_each(|(log_volume, &volume)| {
+                *log_volume = volume.ln();
+            });
     }
 
     fn recompute_cell_population(&mut self) {
