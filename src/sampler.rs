@@ -131,6 +131,9 @@ pub struct ModelPriors {
     pub σ_z_diffusion_proposal: f32,
     pub σ_z_diffusion: f32,
 
+    // prior precision on effective log cell volume
+    pub τv: f32,
+
     // bounds on z coordinate
     pub zmin: f32,
     pub zmax: f32,
@@ -157,7 +160,10 @@ pub struct ModelParams {
 
     // [ncells] per-cell volumes
     pub cell_volume: Array1<f32>,
-    pub cell_log_volume: Array1<f32>,
+    pub log_cell_volume: Array1<f32>,
+
+    // [ncells] per-cell "effective" volumes
+    pub effective_cell_volume: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_layer_volume: f32,
@@ -344,7 +350,8 @@ impl ModelParams {
         let rθ= Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
-        let cell_log_volume = Array1::<f32>::zeros(ncells);
+        let log_cell_volume = Array1::<f32>::zeros(ncells);
+        let effective_cell_volume = cell_volume.clone();
 
         // compute initial counts
         let mut counts = Array2::<f32>::zeros((ngenes, ncells));
@@ -458,7 +465,8 @@ impl ModelParams {
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.to_vec(),
             cell_volume,
-            cell_log_volume,
+            log_cell_volume,
+            effective_cell_volume,
             full_layer_volume,
             z0,
             layer_depth,
@@ -1550,7 +1558,9 @@ where
         // println!("  sample_rφ: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
+        self.sample_ωck(params);
         self.sample_sφ(priors, params);
+        self.sample_effective_volume(priors, params);
         // println!("  sample_sφ: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
@@ -1571,7 +1581,7 @@ where
         Zip::from(&mut params.z) // for each cell
             .and(params.φ.rows())
             .and(params.cell_latent_counts.rows())
-            .and(&params.cell_volume)
+            .and(&params.effective_cell_volume)
             .par_for_each(|z_c, φ_c, x_c, v_c| {
                 let mut rng = rand::thread_rng();
                 let mut z_probs = params.z_probs
@@ -1641,7 +1651,7 @@ where
         Zip::from(params.φ.outer_iter_mut()) // for each cell
             .and(&params.z)
             .and(params.cell_latent_counts.outer_iter())
-            .and(&params.cell_volume)
+            .and(&params.effective_cell_volume)
             .par_for_each(|φ_c, z_c, x_c, v_c| {
                 let z_c = *z_c as usize;
                 let mut rng = thread_rng();
@@ -1660,7 +1670,7 @@ where
         Zip::from(&mut params.φ_v_dot)
             .and(params.φ.axis_iter(Axis(1)))
             .for_each(|φ_v_dot_k, φ_k| {
-                *φ_v_dot_k = φ_k.dot(&params.cell_volume);
+                *φ_v_dot_k = φ_k.dot(&params.effective_cell_volume);
             });
     }
 
@@ -1740,7 +1750,7 @@ where
                         let shape = priors.eφ + lsum as f32;
 
                         let scale_inv = (1.0/priors.fφ) + params.z.iter()
-                            .zip(&params.cell_volume)
+                            .zip(&params.effective_cell_volume)
                             .filter(|(z_c, _v_c)| **z_c as usize == t)
                             .map(|(_z_c, v_c)| (*s_tk * v_c * *θ_k_sum).ln_1p())
                             .sum::<f32>();
@@ -1780,13 +1790,13 @@ where
             });
     }
 
-    fn sample_sφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_ωck(&mut self, params: &mut ModelParams) {
         // sample ω ~ PolyaGamma
         let t0 = Instant::now();
         Zip::from(params.ωφ.outer_iter_mut()) // for every cell
             .and(&params.z)
             .and(params.cell_latent_counts.outer_iter())
-            .and(&params.cell_volume)
+            .and(&params.effective_cell_volume)
             .par_for_each(|ω_c, z_c, x_c, v_c| {
                 let mut rng = thread_rng();
                 Zip::from(ω_c) // for every hidden dim
@@ -1803,7 +1813,9 @@ where
                     });
             });
         println!("  sample_sφ/PolyaGamma: {:?}", t0.elapsed());
+    }
 
+    fn sample_sφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // sample s ~ LogNormal
         let t0 = Instant::now();
         Zip::indexed(params.sφ.outer_iter_mut()) // for every component
@@ -1827,7 +1839,7 @@ where
                         let μ = σ2 * (priors.μφ * priors.τφ + Zip::from(x_k) // for every cell
                             .and(&params.z)
                             .and(ω_k)
-                            .and(&params.cell_volume)
+                            .and(&params.effective_cell_volume)
                             .fold(0.0, |acc, x_ck, z_c, ω_ck, v_c| {
                                 if *z_c as usize == t {
                                     acc + (*x_ck as f32 - *r_tk)/2.0 - ω_ck * (v_c * *θ_k_sum).ln()
@@ -1849,6 +1861,36 @@ where
         // let var = &params.rφ * &params.sφ * &params.sφ;
         // dbg!(var.mean().unwrap());
 
+    }
+
+    fn sample_effective_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // for each cell
+        Zip::from(&mut params.effective_cell_volume)
+            .and(&params.log_cell_volume)
+            .and(params.cell_latent_counts.outer_iter())
+            .and(&params.z)
+            .and(params.ωφ.outer_iter())
+            // .par_for_each(|eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
+            .for_each(|eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
+                let mut rng = thread_rng();
+                let z_c = z_c as usize;
+
+                let τ = priors.τv + ω_c.sum();
+                let σ2 = τ.recip();
+
+                // for each hidden dim
+                let μ = σ2 * (priors.τv * log_v_c +
+                Zip::from(&params.θksum)
+                    .and(x_c)
+                    .and(params.rφ.row(z_c))
+                    .and(ω_c)
+                    .and(params.sφ.row(z_c))
+                    .fold(0.0, |acc, &θ_k_sum, x_ck, &r_tk, &ω_ck, &s_tk| {
+                        acc + (*x_ck as f32 - r_tk)/2.0 - ω_ck * (s_tk * θ_k_sum).ln()
+                    }));
+
+                *eff_v_c = (μ + σ2.sqrt() * randn(&mut rng)).exp();
+            });
     }
 
     fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1935,7 +1977,7 @@ where
     }
 
     fn sample_volume_params(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        Zip::from(&mut params.cell_log_volume)
+        Zip::from(&mut params.log_cell_volume)
             .and(&params.cell_volume)
             .into_par_iter()
             .with_min_len(50)
@@ -1946,7 +1988,7 @@ where
         // compute sample means
         params.μ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_log_volume)
+            .and(&params.log_cell_volume)
             .for_each(|&z, &log_volume| {
                 params.μ_volume[z as usize] += log_volume;
             });
@@ -1975,7 +2017,7 @@ where
         // compute sample variances
         params.σ_volume.fill(0_f32);
         Zip::from(&params.z)
-            .and(&params.cell_log_volume)
+            .and(&params.log_cell_volume)
             .for_each(|&z, &log_volume| {
                 params.σ_volume[z as usize] += (params.μ_volume[z as usize] - log_volume).powi(2);
             });

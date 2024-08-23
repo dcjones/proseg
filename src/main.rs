@@ -722,6 +722,8 @@ fn main() {
         σ_z_diffusion_proposal: 0.2 * zspan,
         σ_z_diffusion: 0.2 * zspan,
 
+        τv: 10.0,
+
         zmin,
         zmax,
 

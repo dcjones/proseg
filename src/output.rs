@@ -270,6 +270,7 @@ pub fn write_cell_metadata(
             Field::new("fov", DataType::Utf8, true),
             Field::new("cluster", DataType::UInt16, false),
             Field::new("volume", DataType::Float32, false),
+            Field::new("effective_volume", DataType::Float32, false),
             Field::new("population", DataType::UInt64, false),
         ]);
 
@@ -315,6 +316,13 @@ pub fn write_cell_metadata(
             Arc::new(
                 params
                     .cell_volume
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                params
+                    .effective_cell_volume
                     .iter()
                     .cloned()
                     .collect::<arrow::array::Float32Array>(),
