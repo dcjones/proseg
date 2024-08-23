@@ -7,7 +7,7 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;
 
-// use super::output::{OutputFormat, write_expected_counts};
+use super::output::{OutputFormat, write_expected_counts};
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -299,6 +299,7 @@ impl ModelParams {
         init_cell_assignments: &[u32],
         init_cell_population: &[usize],
         prior_seg_cell_assignment: &[u32],
+        transcript_names: &[String],
         ncomponents: usize,
         nhidden: usize,
         nlayers: usize,
@@ -358,23 +359,24 @@ impl ModelParams {
         }
 
         // initial component assignments
-        // let mut init_samples = counts
-        //     .map(|&x| (x as f32))
-        //     .reversed_axes();
-        // // DEBUG: dumping initial counts to see if they make any sense at all.
-        // {
-        //     // let transcript_names: Vec<String> = (0..ngenes).map(|i| format!("gene-{}", i)).collect();
-        //     write_expected_counts(
-        //         &Some(String::from("initial-counts.csv.gz")),
-        //         OutputFormat::CsvGz,
-        //         &transcript_names,
-        //         &init_samples.clone().reversed_axes());
-        // }
+        let init_samples = counts
+            .map(|&x| (x as f32))
+            .reversed_axes();
+        // DEBUG: dumping initial counts to see if they make any sense at all.
+        {
+            // let transcript_names: Vec<String> = (0..ngenes).map(|i| format!("gene-{}", i)).collect();
+            write_expected_counts(
+                &Some(String::from("initial-counts.csv.gz")),
+                OutputFormat::CsvGz,
+                &transcript_names,
+                &init_samples.clone().reversed_axes());
+        }
 
-        let norm_constant = 1e4;
+        let norm_constant = 1e2;
         counts.columns_mut().into_iter().for_each(|mut col| {
             let colsum = col.sum();
             col.mapv_inplace(|x| (norm_constant * (x / colsum)).ln_1p());
+            // col.mapv_inplace(|x| x.ln_1p());
         });
 
         // subtract mean
@@ -384,21 +386,40 @@ impl ModelParams {
         }
 
         let result = TruncatedSvd::new(counts, TruncatedOrder::Largest)
-            .decompose(nhidden)
+            // .decompose(nhidden)
+            .decompose(10)
             .unwrap();
 
         let (_, _sigma, embedding) = result.values_vectors();
+
+        // TODO: I guess we output embedding and see if that makes any sense
+
+        // dbg!(embedding.shape());
+        // dbg!(_sigma.shape());
+        // dbg!(_sigma);
+        // panic!();
 
         let embedding_db = DatasetBase::from(embedding.t());
 
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
-            .tolerance(1e-1)
+            .tolerance(1e-2)
             .fit(&embedding_db)
             .expect("kmeans failed to converge");
 
         let z_probs = ThreadLocal::new();
         let z = model.predict(&embedding_db).map(|&x| x as u32);
+
+        // TODO: writing initial component assignments for debugging
+        {
+            let mut file = File::create("initial-component-assignments.csv").unwrap();
+            writeln!(file, "component").unwrap();
+            for z_c in &z {
+                writeln!(file, "{}", z_c).unwrap();
+            }
+        }
+
+        // panic!();
 
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
 

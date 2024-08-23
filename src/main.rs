@@ -738,6 +738,7 @@ fn main() {
         &dataset.nucleus_assignments,
         &dataset.nucleus_population,
         &dataset.cell_assignments,
+        &dataset.transcript_names,
         args.ncomponents,
         args.nhidden,
         args.nbglayers,
