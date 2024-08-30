@@ -476,7 +476,7 @@ fn main() {
 
     let mut dataset = read_transcripts_csv(
         &args.transcript_csv,
-        &expect_arg(args.gene_column, "transcript-column"),
+        &expect_arg(args.gene_column, "gene-column"),
         args.transcript_id_column,
         args.compartment_column,
         args.compartment_nuclear,
