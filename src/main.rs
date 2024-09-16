@@ -18,6 +18,7 @@ use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTrack
 use core::f32;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use schemas::OutputFormat;
 
 use output::*;
 

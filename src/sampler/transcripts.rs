@@ -15,7 +15,8 @@ pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 
 
 // Should probably rearrange this...
-use super::super::output::{infer_format_from_filename, OutputFormat};
+use super::super::output::infer_format_from_filename;
+use crate::schemas::OutputFormat;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {

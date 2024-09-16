@@ -6,7 +6,6 @@ use parquet::errors::ParquetError;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
-use clap::ValueEnum;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
@@ -15,19 +14,11 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
-use crate::schemas::transcript_metadata_schema;
+use crate::schemas::{transcript_metadata_schema, OutputFormat};
 use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::{ModelParams, TranscriptState};
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum OutputFormat {
-    Infer,
-    Csv,
-    CsvGz,
-    Parquet,
-}
 
 pub fn write_table(
     filename: &str,
@@ -338,6 +329,7 @@ pub fn write_cell_metadata(
     }
 }
 
+
 #[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
@@ -352,7 +344,10 @@ pub fn write_transcript_metadata(
     fov_names: &[String],
 ) {
     if let Some(output_transcript_metadata) = output_transcript_metadata {
-        let schema = transcript_metadata_schema();
+        // arraw_csv has no problem outputting LargeStringArray, but can't read them.
+        // As a work around we always output the same schema, but change the schema
+        // when reading csv.
+        let schema = transcript_metadata_schema(OutputFormat::Parquet);
 
         let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
             Arc::new(

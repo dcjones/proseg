@@ -9,7 +9,7 @@ use clap::Parser;
 // use csv::StringRecord;
 
 mod schemas;
-use crate::schemas::transcript_metadata_schema;
+use crate::schemas::{transcript_metadata_schema, OutputFormat};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, Field, DataType};
@@ -55,12 +55,6 @@ fn main() {
 
     write_baysor_transcript_metadata(args.output_transcript_metadata, metadata);
     write_cell_polygon_geojson(polygon_data, polygons, args.output_cell_polygons, &mask);
-}
-
-enum OutputFormat {
-    Csv,
-    CsvGz,
-    Parquet,
 }
 
 fn cell_populations(metadata: &TranscriptMetadata, ncells: usize, min_qv: f32) -> Vec<u32> {
@@ -117,12 +111,13 @@ struct TranscriptMetadata {
 fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
     let fmt = determine_format(&filename, &None);
 
-    let schema = transcript_metadata_schema();
+    let schema = transcript_metadata_schema(fmt);
     let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
 
     match fmt {
         OutputFormat::Csv => {
             let rdr = csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                .with_header(true)
                 .build(input_file)
                 .expect(&format!("Unable to construct CSV reader for '{}'", filename));
             read_proseg_transcript_metadata_from_reader(rdr, &schema)
@@ -130,6 +125,7 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
         OutputFormat::CsvGz => {
             let input_decoder = GzDecoder::new(input_file);
             let rdr = csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                .with_header(true)
                 .build(input_decoder)
                 .expect(&format!("Unable to construct CSV reader for '{}'", filename));
             read_proseg_transcript_metadata_from_reader(rdr, &schema)
@@ -141,7 +137,8 @@ fn read_proseg_transcript_metadata(filename: String) -> TranscriptMetadata {
                 .expect(&format!("Unable to read parquet data from frobm {}", filename));
 
             read_proseg_transcript_metadata_from_reader(rdr, &schema)
-        }
+        },
+        OutputFormat::Infer => panic!("Indeterminable output format")
     }
 }
 

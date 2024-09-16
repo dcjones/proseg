@@ -1,4 +1,7 @@
 
+# 1.1.4
+  - Fix error reading csv transcript metadata in `proseg-to-baysor`
+
 # 1.1.3
   - Fix some cases in which weird or invalid polygons are reported.
 
