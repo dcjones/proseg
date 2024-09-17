@@ -162,8 +162,11 @@ pub struct ModelParams {
     pub cell_volume: Array1<f32>,
     pub log_cell_volume: Array1<f32>,
 
-    // [ncells] per-cell "effective" volumes
+    // [ncells] cell_volume * cell_scale
     pub effective_cell_volume: Array1<f32>,
+
+    // [ncells] per-cell "effective" volume scaling factor 
+    pub cell_scale: Array1<f32>,
 
     // area of the convex hull containing all transcripts
     full_layer_volume: f32,
@@ -351,6 +354,7 @@ impl ModelParams {
         let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
         let log_cell_volume = Array1::<f32>::zeros(ncells);
+        let cell_scale = Array1::<f32>::from_elem(ncells, 1.0_f32);
         let effective_cell_volume = cell_volume.clone();
 
         // compute initial counts
@@ -466,6 +470,7 @@ impl ModelParams {
             cell_population: init_cell_population.to_vec(),
             cell_volume,
             log_cell_volume,
+            cell_scale,
             effective_cell_volume,
             full_layer_volume,
             z0,
@@ -981,13 +986,14 @@ pub trait Proposal {
                 });
         } else {
             let volume_diff = self.old_cell_volume_delta();
+            let a_c = params.cell_scale[old_cell as usize];
 
             let prev_volume = params.cell_volume[old_cell as usize];
             let new_volume = prev_volume + volume_diff;
 
             // normalization term difference
             δ += Zip::from(params.λ.row(old_cell as usize))
-                .fold(0.0, |acc, &λ| acc - λ * volume_diff);
+                .fold(0.0, |acc, &λ| acc - λ * a_c * volume_diff);
 
             Zip::from(self.gene_count().rows())
                 .and(params.λ_bg.rows())
@@ -1024,13 +1030,14 @@ pub trait Proposal {
                 });
         } else {
             let volume_diff = self.new_cell_volume_delta();
+            let a_c = params.cell_scale[new_cell as usize];
 
             let prev_volume = params.cell_volume[new_cell as usize];
             let new_volume = prev_volume + volume_diff;
 
             // normalization term difference
             δ += Zip::from(params.λ.row(new_cell as usize))
-                .fold(0.0, |acc, &λ| acc - λ * volume_diff);
+                .fold(0.0, |acc, &λ| acc - λ * a_c * volume_diff);
 
             // add in new cell likelihood terms
             Zip::from(self.gene_count().rows())
@@ -1552,7 +1559,11 @@ where
         // let t0 = Instant::now();
         self.sample_ωck(params);
         self.sample_sφ(priors, params);
-        self.sample_effective_volume(priors, params);
+
+        // TODO: This appears not to work well, but worth experimenting with
+        // more. (E.g. constraining scale somehow to avoid completel degenerate
+        // states)
+        // self.sample_cell_scales(priors, params);
         // println!("  sample_sφ: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
@@ -1855,15 +1866,15 @@ where
 
     }
 
-    fn sample_effective_volume(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn sample_cell_scales(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // for each cell
-        Zip::from(&mut params.effective_cell_volume)
+        Zip::from(&mut params.cell_scale)
+            .and(&mut params.effective_cell_volume)
             .and(&params.log_cell_volume)
             .and(params.cell_latent_counts.outer_iter())
             .and(&params.z)
             .and(params.ωφ.outer_iter())
-            // .par_for_each(|eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
-            .for_each(|eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
+            .par_for_each(|a_c, eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
                 let mut rng = thread_rng();
                 let z_c = z_c as usize;
 
@@ -1871,17 +1882,19 @@ where
                 let σ2 = τ.recip();
 
                 // for each hidden dim
-                let μ = σ2 * (priors.τv * log_v_c +
-                Zip::from(&params.θksum)
-                    .and(x_c)
-                    .and(params.rφ.row(z_c))
-                    .and(ω_c)
-                    .and(params.sφ.row(z_c))
-                    .fold(0.0, |acc, &θ_k_sum, x_ck, &r_tk, &ω_ck, &s_tk| {
-                        acc + (*x_ck as f32 - r_tk)/2.0 - ω_ck * (s_tk * θ_k_sum).ln()
-                    }));
+                let μ = σ2 *
+                    Zip::from(&params.θksum)
+                        .and(x_c)
+                        .and(params.rφ.row(z_c))
+                        .and(ω_c)
+                        .and(params.sφ.row(z_c))
+                        .fold(0.0, |acc, &θ_k_sum, x_ck, &r_tk, &ω_ck, &s_tk| {
+                            acc + (*x_ck as f32 - r_tk)/2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c)
+                        });
 
-                *eff_v_c = (μ + σ2.sqrt() * randn(&mut rng)).exp();
+                let log_a_c = μ + σ2.sqrt() * randn(&mut rng);
+                *a_c = log_a_c.exp();
+                *eff_v_c = (log_a_c + log_v_c).exp();
             });
     }
 
