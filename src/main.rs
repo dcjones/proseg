@@ -323,7 +323,7 @@ struct Args {
     #[arg(long, default_value_t=1.0)]
     hyperparam_f_phi: f32,
 
-    #[arg(long, default_value_t=20.0)]
+    #[arg(long, default_value_t=10.0)]
     hyperparam_neg_mu_phi: f32,
 
     #[arg(long, default_value_t=0.1)]
@@ -722,7 +722,7 @@ fn main() {
         σ_z_diffusion_proposal: 0.2 * zspan,
         σ_z_diffusion: 0.2 * zspan,
 
-        τv: 10.0,
+        τv: 100.0,
 
         zmin,
         zmax,
