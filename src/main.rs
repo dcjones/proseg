@@ -19,6 +19,7 @@ use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use std::cell::RefCell;
 use std::collections::HashSet;
+use regex::Regex;
 
 use output::*;
 
@@ -55,6 +56,10 @@ struct Args {
     /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
+
+    /// Regex pattern matching names of genes/features to be excluded
+    #[arg(long, default_value = None)]
+    excluded_genes: Option<String>,
 
     /// Initialize with cell assignments rather than nucleus assignments
     #[arg(long, default_value_t = false)]
@@ -343,6 +348,7 @@ fn set_xenium_presets(args: &mut Args) {
     args.cell_id_unassigned
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
+    args.excluded_genes.get_or_insert(String::from("^(Deprecated|NegControl|Unassigned|Intergenic)"));
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
@@ -515,8 +521,12 @@ fn main() {
     mut cell_assignments,
     mut nucleus_population) = */
 
+    let excluded_genes = args.excluded_genes.map(
+        |pat| Regex::new(&pat).unwrap());
+
     let mut dataset = read_transcripts_csv(
         &args.transcript_csv,
+        excluded_genes,
         &expect_arg(args.gene_column, "transcript-column"),
         args.transcript_id_column,
         args.compartment_column,
