@@ -165,7 +165,7 @@ pub fn write_rates(
         );
 
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
-        for row in params.λ.rows() {
+        for row in params.λ.columns() {
             columns.push(Arc::new(
                 row.iter().cloned().collect::<arrow::array::Float32Array>(),
             ));
