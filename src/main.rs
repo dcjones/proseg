@@ -141,7 +141,7 @@ struct Args {
     ncomponents: usize,
 
     /// Dimenionality of the latent space
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 80)]
     nhidden: usize,
 
     /// Number of z-axis layers used to model background expression
@@ -224,6 +224,18 @@ struct Args {
     #[arg(long, default_value_t = 4.0)]
     diffusion_sigma_far: f32,
 
+    /// Allow dispersion parameter to vary during burn-in
+    #[arg(long, default_value_t = false)]
+    variable_burnin_dispersion: bool,
+
+    /// Fixed dispersion parameter value during burn-in
+    #[arg(long, default_value_t = 10.0)]
+    burnin_dispersion: f32,
+
+    /// Fixed dispersion parameter throughout sampling
+    #[arg(long, default_value = "10.0")]
+    dispersion: Option<f32>,
+
     /// Perturb initial transcript positions with this standard deviation
     #[arg(long, default_value = None)]
     initial_perturbation_sd: Option<f32>,
@@ -250,9 +262,9 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_rates_fmt: OutputFormat,
 
-    /// Output per-component parameter values
-    #[arg(long, default_value = None)]
-    output_component_params: Option<String>,
+    // /// Output per-component parameter values
+    // #[arg(long, default_value = None)]
+    // output_component_params: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_component_params_fmt: OutputFormat,
@@ -317,18 +329,23 @@ struct Args {
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
 
+    /// Disable factorization model and use genes directly
     #[arg(long, default_value_t = false)]
     no_factorization: bool,
 
+    /// Disable cell scale factors
+    #[arg(long, default_value_t = false)]
+    no_cell_scales: bool,
+
     // Hyperparameters
 
-    #[arg(long, default_value_t=1000.0)]
+    #[arg(long, default_value_t=1.0)]
     hyperparam_e_phi: f32,
 
     #[arg(long, default_value_t=1.0)]
     hyperparam_f_phi: f32,
 
-    #[arg(long, default_value_t=10.0)]
+    #[arg(long, default_value_t=1.0)]
     hyperparam_neg_mu_phi: f32,
 
     #[arg(long, default_value_t=0.1)]
@@ -675,6 +692,15 @@ fn main() {
     let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
 
     let priors = ModelPriors {
+        dispersion: args.dispersion,
+        burnin_dispersion: if args.variable_burnin_dispersion {
+            None
+        } else {
+            Some(args.burnin_dispersion)
+        },
+
+        use_cell_scales: !args.no_cell_scales,
+
         min_cell_volume,
 
         μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
@@ -696,17 +722,13 @@ fn main() {
         // μφ: -20.0,
         // τφ: 0.1,
 
+        αθ: 1e-1,
+
         eφ: args.hyperparam_e_phi,
         fφ: args.hyperparam_f_phi,
 
         μφ: -args.hyperparam_neg_mu_phi,
         τφ: args.hyperparam_tau_phi,
-
-        eθ: 1.0,
-        fθ: 1.0,
-
-        μθ: 1.0,
-        τθ: 0.1,
 
         α_bg: 1.0,
         β_bg: 1.0,
@@ -732,7 +754,7 @@ fn main() {
         σ_z_diffusion_proposal: 0.2 * zspan,
         σ_z_diffusion: 0.2 * zspan,
 
-        τv: 100.0,
+        τv: 10.0,
 
         zmin,
         zmax,

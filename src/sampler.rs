@@ -75,6 +75,11 @@ pub enum TranscriptState {
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {
+    pub dispersion: Option<f32>,
+    pub burnin_dispersion: Option<f32>,
+
+    pub use_cell_scales: bool,
+
     pub min_cell_volume: f32,
 
     // params for normal prior
@@ -87,21 +92,16 @@ pub struct ModelPriors {
 
     pub use_factorization: bool,
 
+    // dirichlet prior on θ
+    pub αθ: f32,
+
     // gamma prior on rφ
     pub eφ: f32,
     pub fφ: f32,
 
-    // gamma prior on rθ
-    pub eθ: f32,
-    pub fθ: f32,
-
     // log-normal prior on sφ
     pub μφ: f32,
     pub τφ: f32,
-
-    // log-normal prior on sθ
-    pub μθ: f32,
-    pub τθ: f32,
 
     // gamma prior for background rates
     pub α_bg: f32,
@@ -165,7 +165,7 @@ pub struct ModelParams {
     // [ncells] cell_volume * cell_scale
     pub effective_cell_volume: Array1<f32>,
 
-    // [ncells] per-cell "effective" volume scaling factor 
+    // [ncells] per-cell "effective" volume scaling factor
     pub cell_scale: Array1<f32>,
 
     // area of the convex hull containing all transcripts
@@ -258,18 +258,6 @@ pub struct ModelParams {
     // [nhidden]: Sums across the first axis of θ
     pub θksum: Array1<f32>,
 
-    // [ngenes, nhidden] aux CRT variables for sampling rθ
-    pub lθ: Array2<u32>,
-
-    // [ngenes, nhidden] aux PolyaGamma variables for sampling sφ
-    pub ωθ: Array2<f32>,
-
-    // [nhidden] φ gamma shape parameters
-    pub rθ: Array1<f32>,
-
-    // [nhidden] φ gamma scale parameters
-    pub sθ: Array1<f32>,
-
     // // [ncomponents, ngenes] NB p parameters.
     // θ: Array2<f32>,
 
@@ -279,7 +267,7 @@ pub struct ModelParams {
     // // log(1 - ods_to_prob(θ))
     // log1mp: Array2<f32>,
 
-    // [ngenes, ncells] Poisson rates
+    // [ncells, ngenes] Poisson rates
     pub λ: Array2<f32>,
 
     // [ngenes, nlayers] background rate: rate at which halucinate transcripts
@@ -348,10 +336,6 @@ impl ModelParams {
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let lgamma_rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
-        let lθ = Array2::<u32>::zeros((ngenes, nhidden));
-        let ωθ = Array2::<f32>::zeros((ngenes, nhidden));
-        let rθ= Array1::<f32>::from_elem(nhidden, 1.0_f32);
-        let sθ = Array1::<f32>::from_elem(nhidden, 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
         let log_cell_volume = Array1::<f32>::zeros(ncells);
         let cell_scale = Array1::<f32>::from_elem(ncells, 1.0_f32);
@@ -504,10 +488,6 @@ impl ModelParams {
             sφ,
             rφ,
             lgamma_rφ,
-            lθ,
-            ωθ,
-            sθ,
-            rθ,
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ncells, ngenes), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
@@ -1115,7 +1095,7 @@ where
         for _ in 0..20 {
             self.sample_transcript_state(priors, params, transcripts, &mut Option::None);
             self.compute_counts(priors, params, transcripts);
-            self.sample_factor_model(priors, params, false);
+            self.sample_factor_model(priors, params, false, true);
             self.sample_background_rates(priors, params);
             self.sample_confusion_rates(priors, params);
         }
@@ -1263,7 +1243,7 @@ where
         // println!("  Compute counts: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
-        self.sample_factor_model(priors, params, true);
+        self.sample_factor_model(priors, params, true, burnin);
         // println!("  Sample factor model: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
@@ -1529,7 +1509,7 @@ where
     //     }
     // }
 
-    fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams, sample_z: bool) {
+    fn sample_factor_model(&mut self, priors: &ModelPriors, params: &mut ModelParams, sample_z: bool, burnin: bool) {
 
         // let t0 = Instant::now();
         self.sample_latent_counts(params);
@@ -1546,14 +1526,6 @@ where
             // let t0 = Instant::now();
             self.sample_θ(priors, params);
             // println!("  sample_θ: {:?}", t0.elapsed());
-
-            // let t0 = Instant::now();
-            self.sample_rθ(priors, params);
-            // println!("  sample_rθ: {:?}", t0.elapsed());
-
-            // let t0 = Instant::now();
-            self.sample_sθ(priors, params);
-            // println!("  sample_sθ: {:?}", t0.elapsed());
         }
 
         // let t0 = Instant::now();
@@ -1561,18 +1533,24 @@ where
         // println!("  sample_φ: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
-        self.sample_rφ(priors, params);
+        if let Some(dispersion) = priors.dispersion {
+            params.rφ.fill(dispersion);
+        } else if burnin && priors.burnin_dispersion.is_some() {
+            let dispersion = priors.burnin_dispersion.unwrap();
+            dbg!(dispersion);
+            params.rφ.fill(dispersion);
+        } else {
+            self.sample_rφ(priors, params);
+        }
         // println!("  sample_rφ: {:?}", t0.elapsed());
 
         // let t0 = Instant::now();
         self.sample_ωck(params);
         self.sample_sφ(priors, params);
 
-        // TODO: This appears not to work well, but worth experimenting with
-        // more. (E.g. constraining scale somehow to avoid completel degenerate
-        // states)
-        // self.sample_cell_scales(priors, params);
-        // println!("  sample_sφ: {:?}", t0.elapsed());
+        if priors.use_cell_scales {
+            self.sample_cell_scales(priors, params);
+        }
 
         // let t0 = Instant::now();
         self.compute_rates(params);
@@ -1685,21 +1663,23 @@ where
             });
     }
 
-    fn sample_θ(&mut self, _priors: &ModelPriors, params: &mut ModelParams) {
-        Zip::from(params.θ.outer_iter_mut()) // for every gene
-            .and(params.gene_latent_counts.outer_iter())
-            .par_for_each(|θ_g, x_g| {
+    fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        // Sampling with Dirichlet prior on θ (I think Gamma makes more
+        // sense, but this is an alternative to consider)
+        Zip::from(params.θ.axis_iter_mut(Axis(1)))
+            .and(params.gene_latent_counts.axis_iter(Axis(1)))
+            .for_each(|mut θ_k, x_k| {
                 let mut rng = thread_rng();
-                Zip::from(θ_g) // for each latent dim
-                    .and(&params.φ_v_dot)
-                    .and(x_g)
-                    .and(&params.rθ)
-                    .and(&params.sθ)
-                    .for_each(|θ_gk, φ_v_dot_k, x_gk, r_k, s_k| {
-                        let shape = *r_k + *x_gk as f32;
-                        let scale = s_k / (1.0 + s_k * *φ_v_dot_k);
-                        *θ_gk = Gamma::new(shape, scale).unwrap().sample(&mut rng);
+
+                // dirichlet sampling by normalizing gammas
+                Zip::from(&mut θ_k)
+                    .and(x_k)
+                    .for_each(|θ_gk, x_gk| {
+                        *θ_gk = Gamma::new(priors.αθ + *x_gk as f32, 1.0).unwrap().sample(&mut rng);
                     });
+
+                let θsum = θ_k.sum();
+                θ_k *= θsum.recip();
             });
 
         Zip::from(&mut params.θksum)
@@ -1707,25 +1687,6 @@ where
             .for_each(|θksum, θ_k| {
                 *θksum = θ_k.sum();
             });
-
-        // Sampling with Dirichlet prior on θ (I think Gamma makes more
-        // sense, but this is an alternative to consider)
-        // let α0 = 1e-1;
-        // Zip::from(params.θ.axis_iter_mut(Axis(1)))
-        //     .and(params.gene_latent_counts.axis_iter(Axis(1)))
-        //     .for_each(|mut θ_k, x_k| {
-        //         let mut rng = thread_rng();
-
-        //         // dirichlet sampling by normalizing gammas
-        //         Zip::from(&mut θ_k)
-        //             .and(x_k)
-        //             .for_each(|θ_gk, x_gk| {
-        //                 *θ_gk = Gamma::new(α0 + *x_gk as f32, 1.0).unwrap().sample(&mut rng);
-        //             });
-
-        //         let θsum = θ_k.sum();
-        //         θ_k *= θsum.recip();
-        //     });
     }
 
     fn sample_rφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -1772,33 +1733,6 @@ where
             });
 
         // dbg!(&params.rφ);
-    }
-
-    fn sample_rθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        Zip::from(params.lθ.outer_iter_mut()) // for every gene
-            .and(params.gene_latent_counts.outer_iter())
-            .par_for_each(|l_g, x_g| {
-                let mut rng = thread_rng();
-                Zip::from(l_g) // for each hidden dim
-                    .and(x_g)
-                    .and(&params.rθ)
-                    .for_each(|l_gk, x_gk, r_k| {
-                        *l_gk = rand_crt(&mut rng, *x_gk, *r_k);
-                    });
-            });
-
-        let ngenes = params.lθ.shape()[0];
-        let mut rng = thread_rng();
-        Zip::from(&mut params.rθ) // for each hidden dim
-            .and(&params.sθ)
-            .and(params.lθ.axis_iter(Axis(1)))
-            .and(&params.φ_v_dot)
-            .for_each(|r_k, s_k, l_k, φ_v_dot_k| {
-                let shape = priors.eθ + l_k.sum() as f32;
-                let scale = (priors.fθ.recip() + (ngenes as f32) * (*s_k * *φ_v_dot_k).ln_1p()).recip();
-                *r_k = Gamma::new(shape, scale).unwrap().sample(&mut rng);
-                *r_k = r_k.max(2e-4);
-            });
     }
 
     fn sample_ωck(&mut self, params: &mut ModelParams) {
@@ -1904,49 +1838,6 @@ where
                 *a_c = log_a_c.exp();
                 *eff_v_c = (log_a_c + log_v_c).exp();
             });
-    }
-
-    fn sample_sθ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        // sample ω ~ PolyaGamma
-        let t0 = Instant::now();
-        Zip::from(params.ωθ.outer_iter_mut()) // for every gene
-            .and(params.gene_latent_counts.outer_iter())
-            .par_for_each(|ω_g, x_g| {
-                let mut rng = thread_rng();
-                Zip::from(ω_g) // for every hidden dim
-                    .and(x_g)
-                    .and(&params.rθ)
-                    .and(&params.sθ)
-                    .and(&params.φ_v_dot)
-                    .for_each(|ω_gk, x_gk, r_k, s_k, φ_v_dot_k| {
-                        let ε = (*s_k * *φ_v_dot_k).ln();
-                        *ω_gk = PolyaGamma::new(
-                            *x_gk as f32 + *r_k,
-                            ε
-                        ).sample(&mut rng);
-                    });
-            });
-        println!("  sample_sθ/PolyaGamma: {:?}", t0.elapsed());
-
-        // sample s ~ LogNormal
-        let t0 = Instant::now();
-        Zip::from(&mut params.sθ) // for every hidden dim
-            .and(&params.rθ)
-            .and(&params.φ_v_dot)
-            .and(params.ωθ.axis_iter(Axis(1)))
-            .and(params.gene_latent_counts.axis_iter(Axis(1)))
-            .for_each(|s_k, r_k, φ_v_dot_k, ω_k, x_k| {
-                let mut rng = thread_rng();
-                let σ2 = (priors.τθ + ω_k.sum()).recip();
-                let log_v_φ_k = φ_v_dot_k.ln();
-                let μ = σ2 * (priors.μθ * priors.τθ + Zip::from(x_k)
-                    .and(ω_k)
-                    .fold(0.0, |acc, x_gk, ω_gk| {
-                        acc + (*x_gk as f32 - *r_k)/2.0 - ω_gk * log_v_φ_k
-                    }));
-                *s_k = (μ + σ2.sqrt() * randn(&mut rng)).exp();
-            });
-        println!("  sample_sθ/LogNormal: {:?}", t0.elapsed());
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
