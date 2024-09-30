@@ -147,6 +147,74 @@ pub fn write_expected_counts(
     }
 }
 
+
+pub fn write_metagene_rates(
+    output_metagene_rates: &Option<String>,
+    output_metagene_rates_fmt: OutputFormat,
+    φ: &Array2<f32>
+) {
+    if let Some(output_metagene_rates) = output_metagene_rates {
+        let k = φ.shape()[1];
+        let schema = Schema::new(
+                (0..k)
+                .map(|name| Field::new(format!("phi{}", name), DataType::Float32, false))
+                .collect::<Vec<Field>>(),
+        );
+
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+        for row in φ.columns() {
+            columns.push(Arc::new(
+                row.iter().cloned().collect::<arrow::array::Float32Array>(),
+            ));
+        }
+
+        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+
+        write_table(output_metagene_rates, output_metagene_rates_fmt, &batch);
+    }
+}
+
+
+pub fn write_metagene_loadings(
+    output_metagene_rates: &Option<String>,
+    output_metagene_rates_fmt: OutputFormat,
+    transcript_names: &[String],
+    θ: &Array2<f32>
+) {
+    if let Some(output_metagene_rates) = output_metagene_rates {
+        let k = θ.shape()[1];
+
+        let mut schema = vec![
+            Field::new("gene", DataType::Utf8, false),
+        ];
+
+        for i in 0..k {
+            schema.push(Field::new(format!("theta{}", i), DataType::Float32, false));
+        }
+
+        let schema = Schema::new(schema);
+
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+
+        columns.push(
+            Arc::new(
+                transcript_names.iter().map(|gene| Some(gene)).collect::<arrow::array::StringArray>()
+            )
+        );
+
+        for row in θ.columns() {
+            columns.push(Arc::new(
+                row.iter().cloned().collect::<arrow::array::Float32Array>(),
+            ));
+        }
+
+        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+
+        write_table(output_metagene_rates, output_metagene_rates_fmt, &batch);
+    }
+}
+
+
 pub fn write_rates(
     output_rates: &Option<String>,
     output_rates_fmt: OutputFormat,
