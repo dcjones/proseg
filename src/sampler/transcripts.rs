@@ -1,5 +1,5 @@
 use csv;
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
 use ndarray::Array2;
@@ -85,7 +85,7 @@ pub fn read_transcripts_csv(
             )
         }
         OutputFormat::CsvGz => {
-            let mut rdr = csv::Reader::from_reader(GzDecoder::new(File::open(path).unwrap()));
+            let mut rdr = csv::Reader::from_reader(MultiGzDecoder::new(File::open(path).unwrap()));
             read_transcripts_csv_xyz(
                 &mut rdr,
                 transcript_column,
