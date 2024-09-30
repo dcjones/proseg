@@ -296,6 +296,20 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_gene_metadata_fmt: OutputFormat,
 
+    /// Output cell metagene rates
+    #[arg(long, default_value=None)]
+    output_metagene_rates: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_metagene_rates_fmt: OutputFormat,
+
+    /// Output metagene loadings
+    #[arg(long, default_value=None)]
+    output_metagene_loadings: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
+    output_metagene_loadings_fmt: OutputFormat,
+
     /// Output a table of each voxel in each cell
     #[arg(long, default_value=None)]
     output_cell_voxels: Option<String>,
@@ -955,6 +969,15 @@ fn main() {
         &dataset.transcript_names,
         &ecounts,
     );
+    write_metagene_rates(
+        &args.output_metagene_rates,
+        args.output_metagene_rates_fmt,
+        &params.φ);
+    write_metagene_loadings(
+        &args.output_metagene_loadings,
+        args.output_metagene_loadings_fmt,
+        &dataset.transcript_names,
+        &params.θ);
     write_voxels(
         &args.output_cell_voxels,
         args.output_cell_voxels_fmt,
