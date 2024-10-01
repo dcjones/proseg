@@ -1,4 +1,7 @@
 
+# 1.1.5
+  - Fix failure to read certain .csv.gz input files. (Issue #29)
+
 # 1.1.4
   - Fix error reading csv transcript metadata in `proseg-to-baysor`
 
