@@ -842,6 +842,7 @@ impl VoxelSampler {
     pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
         // let t0 = Instant::now();
         let mut voxel_votes = HashMap::new();
+        let mut top_voxel: HashMap<CellIndex, (Voxel, usize)> = HashMap::new();
         for (voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
@@ -866,6 +867,16 @@ impl VoxelSampler {
                 .entry((voxel.i, voxel.j))
                 .or_insert_with(|| Vec::with_capacity(self.voxel_layers))
                 .push((cell, transcript_count));
+
+            top_voxel
+                .entry(cell)
+                .and_modify(|e| {
+                    if transcript_count > e.1 {
+                        *e = (Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count)
+                    }
+                })
+                .or_insert((Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count));
+
         }
         // println!("index voxels: {:?}", t0.elapsed());
 
@@ -901,6 +912,16 @@ impl VoxelSampler {
             });
         }
         // println!("tally votes: {:?}", t0.elapsed());
+
+        // Issues arise with some downstream tools (e.g. xeniumranger) if there
+        // are empty cell polygons, which can happen with this consensus approach.
+        // Here we try to fix those cases by including at least on voxel.
+        for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
+            if voxels.is_empty() {
+                let cell =  cell as u32;
+                voxels.insert(top_voxel[&cell].0);
+            }
+        }
 
         // let t0 = Instant::now();
         let polygon_builder = ThreadLocal::new();

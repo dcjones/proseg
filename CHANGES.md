@@ -1,3 +1,5 @@
+# 1.1.6
+  - Fix errors when importing segmentation using xeniumranger 3. (Issue #38)
 
 # 1.1.5
   - Fix failure to read certain .csv.gz input files. (Issue #29)

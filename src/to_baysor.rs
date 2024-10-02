@@ -23,6 +23,7 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
+use std::collections::HashSet;
 
 pub const BACKGROUND_CELL: u32 = std::u32::MAX;
 
@@ -46,25 +47,15 @@ fn main() {
     let metadata = read_proseg_transcript_metadata(args.transcript_metadata);
     let (polygon_data, polygons) = read_cell_polygons_geojson(args.cell_polygons);
 
-    let ncells = polygons.len();
-    let pops = cell_populations(&metadata, ncells, 20.0);
+    let cells_with_transcripts: HashSet<u32> = metadata.cell.iter().cloned().collect();
 
-    let mask: Vec<bool> = pops.iter().zip(&polygons).map(|(&pop, polygon)| {
-        pop > 0 && !polygon["coordinates"].is_null()
+    let mask: Vec<bool> = polygons.iter().map(|polygon| {
+        let cell = polygon["cell"].as_u32().unwrap();
+        cells_with_transcripts.contains(&cell) && !polygon["coordinates"].is_null()
     }).collect();
 
     write_baysor_transcript_metadata(args.output_transcript_metadata, metadata);
     write_cell_polygon_geojson(polygon_data, polygons, args.output_cell_polygons, &mask);
-}
-
-fn cell_populations(metadata: &TranscriptMetadata, ncells: usize, min_qv: f32) -> Vec<u32> {
-    let mut cell_population: Vec<u32> = vec![0; ncells];
-    for (&cell, &qv) in metadata.cell.iter().zip(&metadata.qv) {
-        if qv >= min_qv && cell != BACKGROUND_CELL {
-            cell_population[cell as usize] += 1;
-        }
-    }
-    return cell_population;
 }
 
 fn determine_format(filename: &str, fmtstr: &Option<String>) -> OutputFormat {
