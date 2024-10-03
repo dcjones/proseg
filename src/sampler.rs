@@ -7,7 +7,8 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;
 
-use super::output::{OutputFormat, write_expected_counts};
+use super::output::write_expected_counts;
+use super::schemas::OutputFormat;
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
