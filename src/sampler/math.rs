@@ -93,3 +93,23 @@ pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
 pub fn randn(rng: &mut ThreadRng) -> f32 {
     return rng.sample::<f32, StandardNormal>(StandardNormal);
 }
+
+pub fn quantile_normalization(zs: &mut Vec<f32>) {
+    let n = zs.len();
+    let mut zs_sorted = zs.clone();
+    zs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    dbg!(zs.len());
+
+    // TODO: need to deal with the possibility that z coordinates are integer
+    // layers. Might be ideal to add some amount of noise if that's the case.
+
+    let nquantiles = 100;
+    let quantiles: Vec<f32> = (0..nquantiles)
+        .map(|q| zs_sorted[q * n / nquantiles])
+        .collect();
+
+    for z in zs {
+        *z = quantiles.partition_point(|q| *q < *z) as f32 / nquantiles as f32;
+    }
+}
