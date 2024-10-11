@@ -122,15 +122,14 @@ Issues displaying proseg polygons in Xenium Explorer are resolved with more
 recent versions of Xenium Ranger (starting with 2.0).
 
 
-
 # Running on CosMx datasets
 
-Current version of CosMx provide output that is shambolic and more difficult to
-deal with than other platforms. The recommended way of running proseg on CosMx datasets
-is to download the flat files from AtoMx and manually "stitch" and scale the FOV-level data
-using the provided Julia program provided in `extra/stitch-cosmx.jl`:
+Earlier versions of CosMx did not automatically provide a single table of global
+transcript positions. To work around this, we provide a Julia program in
+`extra/stitch-cosmx.jl` to construct a table from the flat files downloaded from
+AtoMx.
 
-Some dependencies are required, which can be installed with
+To run this, some dependencies are required, which can be installed with
 ```shell
 julia -e 'import Pkg; Pkg.add(["Glob", "CSV", "DataFrames", "CodecZlib", "ArgParse"])'
 ```
@@ -146,7 +145,7 @@ From here proseg can be run with
 proseg --cosmx-micron transcripts.csv.gz
 ```
 
-Alternatively, the `--cosmx` can used with CosMx data that is in pixel coordinates.
+Alternatively, the `--cosmx` can be used with CosMx data that is in pixel coordinates.
 It will automatically scale the data to micrometers.
 
 
@@ -154,5 +153,3 @@ It will automatically scale the data to micrometers.
 
 No special considerations are needed for MERSCOPE data. Simply use the
 `--merscope` argument with the `detected_transcripts.csv.gz` file.
-
-
