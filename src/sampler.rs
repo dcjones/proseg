@@ -1,6 +1,6 @@
 mod connectivity;
 pub mod hull;
-pub mod math;
+mod math;
 mod polyagamma;
 mod polygons;
 mod sampleset;

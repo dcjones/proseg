@@ -17,7 +17,6 @@ use sampler::transcripts::{
 };
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
-use sampler::math::quantile_normalization;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use regex::Regex;
@@ -600,13 +599,6 @@ fn main() {
     let nucleus_assignments = &mut transcript_dataset.nucleus_assignments;
     let nucleus_population = &transcript_dataset.nucleus_population; */
 
-    let mut zs = dataset.transcripts.iter().map(|t| t.z).collect();
-    quantile_normalization(&mut zs);
-    dbg!(&zs[0..20]);
-    for (t, z) in dataset.transcripts.iter_mut().zip(&zs) {
-        t.z = *z;
-    }
-
     // Clamp transcript depth
     // This is we get some reasonable depth slices when we step up to
     // 3d sampling.
@@ -617,8 +609,12 @@ fn main() {
         .sorted_by(|a, b| a.partial_cmp(b).unwrap())
         .collect();
 
-    let zmin = *zs.first().unwrap();
-    let zmax = *zs.last().unwrap();
+    let (q0, q1) = (0.01, 0.99);
+    let zmin = zs[(q0 * (zs.len() as f32)) as usize];
+    let zmax = zs[(q1 * (zs.len() as f32)) as usize];
+    for t in &mut dataset.transcripts {
+        t.z = t.z.max(zmin).min(zmax);
+    }
 
     let mut ncells = dataset.nucleus_population.len();
     filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
