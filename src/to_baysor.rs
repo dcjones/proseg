@@ -291,15 +291,17 @@ fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
 
 fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
     // From: https://stackoverflow.com/a/6989383
-    if a.0 - c.0 >= 0.0 && b.0 - c.0 < 0.0 {
+    if a == b {
+        return Ordering::Equal;
+    } else if a.0 >= c.0 && b.0 < c.0 {
         return Ordering::Less;
-    } else if a.0 - c.0 < 0.0 && b.0 - c.0 >= 0.0 {
+    } else if a.0 < c.0 && b.0 >= c.0 {
         return Ordering::Greater;
-    } else if a.0 - c.0 == 0.0 && b.0 - c.0 == 0.0 {
-        if a.1 - c.1 >= 0.0 || b.1 - c.1 >= 0.0 {
-            return a.1.partial_cmp(&b.1).unwrap();
-        } else {
-            return b.1.partial_cmp(&a.1).unwrap();
+    } else if a.0 == c.0 && b.0 == c.0 {
+        if a.1 < c.1 && b.1 > c.1 {
+            return Ordering::Greater;
+        } else if a.1 > c.1 && b.1 < c.1 {
+            return Ordering::Less;
         }
     }
 
@@ -312,14 +314,10 @@ fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
         Ordering::Greater
     } else {
         // points a and b are on the same line from the c
-        // check which point is closer to the c
+        // break these ties using distance from c
         let d1 = (a.0 - c.0) * (a.0 - c.0) + (a.1 - c.1) * (a.1 - c.1);
         let d2 = (b.0 - c.0) * (b.0 - c.0) + (b.1 - c.1) * (b.1 - c.1);
-        if d1 >= d2 {
-            Ordering::Greater
-        } else {
-            Ordering::Less
-        }
+        d2.partial_cmp(&d1).unwrap()
     }
 }
 
