@@ -18,7 +18,7 @@ use libm::lgammaf;
 use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
-use math::{lognormal_logpdf, negbin_logpmf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
+use math::{lognormal_logpdf, negbin_logpmf, normal_logpdf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Axis, Zip};
 use ndarray_linalg::{TruncatedSvd, TruncatedOrder};
@@ -403,7 +403,6 @@ impl ModelParams {
             .fit(&embedding_db)
             .expect("kmeans failed to converge");
 
-        let z_probs = ThreadLocal::new();
         let z = model.predict(&embedding_db).map(|&x| x as u32);
 
         // TODO: writing initial component assignments for debugging
@@ -414,6 +413,7 @@ impl ModelParams {
                 writeln!(file, "{}", z_c).unwrap();
             }
         }
+        let z_probs = ThreadLocal::new();
 
         // panic!();
 
@@ -1551,6 +1551,8 @@ where
 
         if priors.use_cell_scales {
             self.sample_cell_scales(priors, params);
+        } else {
+            params.effective_cell_volume.assign(&params.cell_volume);
         }
 
         // let t0 = Instant::now();
@@ -1572,8 +1574,10 @@ where
             .and(params.φ.rows())
             .and(params.cell_latent_counts.rows())
             .and(&params.effective_cell_volume)
-            .par_for_each(|z_c, φ_c, x_c, v_c| {
+            .and(&params.cell_volume)
+            .par_for_each(|z_c, φ_c, x_c, ev_c, v_c| {
                 let mut rng = rand::thread_rng();
+                let log_v_c = v_c.ln();
                 let mut z_probs = params.z_probs
                     .get_or(|| RefCell::new(vec![0_f64; ncomponents]))
                     .borrow_mut();
@@ -1582,7 +1586,8 @@ where
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, π_t, r_t, lgamma_r_t, s_t) in izip!(z_probs.iter_mut(), params.π.iter(), params.rφ.rows(), params.lgamma_rφ.rows(), params.sφ.rows()) {
+                for (z_probs_t, π_t, r_t, lgamma_r_t, s_t, μ_vol_c, σ_vol_c) in
+                        izip!(z_probs.iter_mut(), params.π.iter(), params.rφ.rows(), params.lgamma_rφ.rows(), params.sφ.rows(), &params.μ_volume, &params.σ_volume) {
                     *z_probs_t = π_t.ln() as f64;
 
                     // for every hidden dim
@@ -1592,11 +1597,13 @@ where
                         .and(&params.θksum)
                         .and(x_c)
                         .for_each(|r_tk, lgamma_r_tk, s_tk, θ_k_sum, x_ck| {
-                            let p = odds_to_prob(*s_tk * *v_c * *θ_k_sum);
+                            let p = odds_to_prob(*s_tk * *ev_c * *θ_k_sum);
                             let lp = negbin_logpmf(*r_tk, *lgamma_r_tk, p, *x_ck) as f64;
                             *z_probs_t += lp;
                         });
-                    }
+
+                    *z_probs_t += normal_logpdf(*μ_vol_c, *σ_vol_c, log_v_c) as f64;
+                }
 
                 for z_probs_t in z_probs.iter_mut() {
                     *z_probs_t = z_probs_t.exp();

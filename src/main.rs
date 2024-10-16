@@ -229,11 +229,11 @@ struct Args {
     variable_burnin_dispersion: bool,
 
     /// Fixed dispersion parameter value during burn-in
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 1.0)]
     burnin_dispersion: f32,
 
     /// Fixed dispersion parameter throughout sampling
-    #[arg(long, default_value = "10.0")]
+    #[arg(long, default_value = None)]
     dispersion: Option<f32>,
 
     /// Perturb initial transcript positions with this standard deviation

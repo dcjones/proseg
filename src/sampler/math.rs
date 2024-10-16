@@ -85,6 +85,10 @@ fn negbin_logpmf_fast(
 //     return 0.5 * (1.0 + erff((x - μ) / (SQRT2 * σ)));
 // }
 
+pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
+    -LN_SQRT_TWO_PI - σ.ln() - ((x - μ) / σ).powi(2) / 2.0
+}
+
 pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     let xln = x.ln();
     -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0
