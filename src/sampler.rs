@@ -989,6 +989,14 @@ where
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        Zip::from(&mut params.cell_log_volume)
+            .and(&params.cell_volume)
+            .into_par_iter()
+            .with_min_len(50)
+            .for_each(|(log_volume, &volume)| {
+                *log_volume = volume.ln();
+            });
+
         // get to a reasonably high probability assignment
         for _ in 0..40 {
             self.sample_component_nb_params(priors, params, true);
