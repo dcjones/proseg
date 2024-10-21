@@ -343,6 +343,9 @@ struct Args {
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
 
+    #[arg(long, default_value_t = 80)]
+    nunfactored: usize,
+
     /// Disable factorization model and use genes directly
     #[arg(long, default_value_t = false)]
     no_factorization: bool,
@@ -577,6 +580,10 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
+    if !args.no_factorization {
+        dataset.select_unfactored_genes(args.nunfactored);
+    }
+
     // let cd3e_idx = dataset
     //     .transcript_names
     //     .iter()
@@ -789,6 +796,7 @@ fn main() {
         &dataset.transcript_names,
         args.ncomponents,
         args.nhidden,
+        args.nunfactored,
         args.nbglayers,
         ncells,
         ngenes,

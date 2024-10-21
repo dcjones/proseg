@@ -20,7 +20,7 @@ use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use math::{lognormal_logpdf, negbin_logpmf, normal_logpdf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Axis, Zip};
+use ndarray::{s, Array1, Array2, Axis, Zip};
 use ndarray_linalg::{TruncatedSvd, TruncatedOrder};
 use rand::{thread_rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
@@ -253,6 +253,9 @@ pub struct ModelParams {
     // [ncomponents, nhidden] φ gamma scale parameters
     pub sφ: Array2<f32>,
 
+    // Size of the upper block of θ that is the identity matrix
+    nunfactored: usize,
+
     // [ngenes, nhidden]: gene loadings in the latent space
     pub θ: Array2<f32>,
 
@@ -300,6 +303,7 @@ impl ModelParams {
         transcript_names: &[String],
         ncomponents: usize,
         nhidden: usize,
+        nunfactored: usize,
         nlayers: usize,
         ncells: usize,
         ngenes: usize,
@@ -326,7 +330,7 @@ impl ModelParams {
         let transcript_position_updates = vec![(0, 0, 0, 0); transcripts.len()];
 
         let nhidden = if priors.use_factorization {
-            nhidden
+            nhidden + nunfactored
         } else {
             ngenes
         };
@@ -425,9 +429,15 @@ impl ModelParams {
         let mut θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
         let θksum = Array1::<f32>::zeros(nhidden);
 
+        θ.fill(0.0);
         if !priors.use_factorization {
-            θ.fill(0.0);
             θ.diag_mut().fill(1.0);
+        }
+
+        // fix the upper block of θ to the identity matrix
+        if nunfactored > 0 {
+            let mut θunfac = θ.slice_mut(s![0..nunfactored, 0..nunfactored]);
+            θunfac.diag_mut().fill(1.0);
         }
 
         let transcript_state =
@@ -482,6 +492,7 @@ impl ModelParams {
             σ_volume: Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume),
             φ,
             φ_v_dot,
+            nunfactored,
             θ,
             θksum,
             lφ,
@@ -1672,10 +1683,13 @@ where
     }
 
     fn sample_θ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
+        let mut θfac = params.θ.slice_mut(s![params.nunfactored.., params.nunfactored..]);
+        let gene_latent_counts_fac = params.gene_latent_counts.slice(s![params.nunfactored.., params.nunfactored..]);
+
         // Sampling with Dirichlet prior on θ (I think Gamma makes more
         // sense, but this is an alternative to consider)
-        Zip::from(params.θ.axis_iter_mut(Axis(1)))
-            .and(params.gene_latent_counts.axis_iter(Axis(1)))
+        Zip::from(θfac.axis_iter_mut(Axis(1)))
+            .and(gene_latent_counts_fac.axis_iter(Axis(1)))
             .for_each(|mut θ_k, x_k| {
                 let mut rng = thread_rng();
 

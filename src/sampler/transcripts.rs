@@ -2,7 +2,7 @@ use csv;
 use flate2::read::MultiGzDecoder;
 use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 use std::fs::File;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReaderBuilder, ParquetRecordBatchReader};
@@ -39,6 +39,32 @@ pub struct TranscriptDataset {
     pub qvs: Vec<f32>,
     pub fov_names: Vec<String>,
 }
+
+
+impl TranscriptDataset {
+    pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
+        // Current heuristic is just to select the highest expression genes.
+        let mut gene_counts = Array1::<u32>::zeros(self.transcript_names.len());
+        for transcript in self.transcripts.iter() {
+            gene_counts[transcript.gene as usize] += 1;
+        }
+
+        let mut ord = (0..self.transcript_names.len())
+            .collect::<Vec<_>>();
+        ord.sort_unstable_by(|&i, &j| gene_counts[i].cmp(&gene_counts[j]).reverse());
+
+        let mut rev_ord = vec![0; ord.len()];
+        for (i, j) in ord.iter().enumerate() {
+            rev_ord[*j] = i;
+        }
+
+        self.transcript_names = ord.iter().map(|&i| self.transcript_names[i].clone()).collect();
+        for transcript in self.transcripts.iter_mut() {
+            transcript.gene = rev_ord[transcript.gene as usize] as u32;
+        }
+    }
+}
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_csv(
