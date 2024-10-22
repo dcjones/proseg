@@ -141,7 +141,7 @@ struct Args {
     ncomponents: usize,
 
     /// Dimenionality of the latent space
-    #[arg(long, default_value_t = 80)]
+    #[arg(long, default_value_t = 100)]
     nhidden: usize,
 
     /// Number of z-axis layers used to model background expression
@@ -343,7 +343,7 @@ struct Args {
     #[arg(long, default_value_t = true)]
     enforce_connectivity: bool,
 
-    #[arg(long, default_value_t = 80)]
+    #[arg(long, default_value_t = 300)]
     nunfactored: usize,
 
     /// Disable factorization model and use genes directly
