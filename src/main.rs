@@ -793,7 +793,6 @@ fn main() {
         &dataset.nucleus_assignments,
         &dataset.nucleus_population,
         &dataset.cell_assignments,
-        &dataset.transcript_names,
         args.ncomponents,
         args.nhidden,
         args.nunfactored,
@@ -1032,7 +1031,7 @@ fn run_hexbin_sampler(
     for _ in 0..niter {
         // sampler.check_perimeter_bounds(priors);
 
-        let t0 = std::time::Instant::now();
+        // let t0 = std::time::Instant::now();
         if sample_cell_regions {
             // let t0 = std::time::Instant::now();
             for _ in 0..local_steps_per_iter {
@@ -1046,11 +1045,11 @@ fn run_hexbin_sampler(
             }
             // println!("Sample cell regions: {:?}", t0.elapsed());
         }
-        println!("Sample cell regions: {:?}", t0.elapsed());
+        // println!("Sample cell regions: {:?}", t0.elapsed());
 
-        let t0 = std::time::Instant::now();
+        // let t0 = std::time::Instant::now();
         sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
-        println!("Sample global parameters: {:?}", t0.elapsed());
+        // println!("Sample global parameters: {:?}", t0.elapsed());
 
         let nassigned = params.nassigned();
         let nforeground = params.nforeground();

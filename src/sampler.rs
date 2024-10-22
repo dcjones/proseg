@@ -7,8 +7,6 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;
 
-use super::output::write_expected_counts;
-use super::schemas::OutputFormat;
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -35,7 +33,7 @@ use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
-use std::time::Instant;
+// use std::time::Instant;
 
 // use std::any::type_name;
 // fn print_type_of<T>(_: &T) {
@@ -300,7 +298,6 @@ impl ModelParams {
         init_cell_assignments: &[u32],
         init_cell_population: &[usize],
         prior_seg_cell_assignment: &[u32],
-        transcript_names: &[String],
         ncomponents: usize,
         nhidden: usize,
         nunfactored: usize,
@@ -359,19 +356,6 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let init_samples = counts
-            .map(|&x| (x as f32))
-            .reversed_axes();
-        // DEBUG: dumping initial counts to see if they make any sense at all.
-        {
-            // let transcript_names: Vec<String> = (0..ngenes).map(|i| format!("gene-{}", i)).collect();
-            write_expected_counts(
-                &Some(String::from("initial-counts.csv.gz")),
-                OutputFormat::CsvGz,
-                &transcript_names,
-                &init_samples.clone().reversed_axes());
-        }
-
         let norm_constant = 1e2;
         counts.columns_mut().into_iter().for_each(|mut col| {
             let colsum = col.sum();
@@ -392,13 +376,6 @@ impl ModelParams {
 
         let (_, _sigma, embedding) = result.values_vectors();
 
-        // TODO: I guess we output embedding and see if that makes any sense
-
-        // dbg!(embedding.shape());
-        // dbg!(_sigma.shape());
-        // dbg!(_sigma);
-        // panic!();
-
         let embedding_db = DatasetBase::from(embedding.t());
 
         let rng = rand::thread_rng();
@@ -408,18 +385,7 @@ impl ModelParams {
             .expect("kmeans failed to converge");
 
         let z = model.predict(&embedding_db).map(|&x| x as u32);
-
-        // TODO: writing initial component assignments for debugging
-        {
-            let mut file = File::create("initial-component-assignments.csv").unwrap();
-            writeln!(file, "component").unwrap();
-            for z_c in &z {
-                writeln!(file, "{}", z_c).unwrap();
-            }
-        }
         let z_probs = ThreadLocal::new();
-
-        // panic!();
 
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
 
@@ -1062,14 +1028,6 @@ pub trait Proposal {
 
         if (hillclimb && δ > 0.0) || (!hillclimb && logu < δ + self.log_weight()) {
             self.accept();
-            // TODO: debugging
-            // if from_background && !to_background {
-            //     dbg!(
-            //         self.log_weight(),
-            //         δ,
-            //         self.gene_count().sum(),
-            //     );
-            // }
         } else {
             self.reject();
         }
@@ -1262,11 +1220,11 @@ where
         self.sample_confusion_rates(priors, params);
         // println!("  Sample confusion rates: {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         if !burnin && priors.use_diffusion_model {
             self.sample_transcript_positions(priors, params, transcripts, uncertainty);
         }
-        println!("  Sample transcript positions: {:?}", t0.elapsed());
+        // println!("  Sample transcript positions: {:?}", t0.elapsed());
     }
 
     fn sample_transcript_state(
@@ -1481,11 +1439,7 @@ where
                 params.component_latent_counts.row_mut(z_c).scaled_add(1, &x_c);
             });
 
-        dbg!(&params.component_population);
-        // dbg!(&params.component_latent_counts);
-        // dbg!(&params.cell_latent_counts.slice(s![0..10,..]));
-        // dbg!(&params.p);
-        // dbg!(&params.r);
+        // dbg!(&params.component_population);
     }
 
     // This is indended just for debugging
@@ -1520,9 +1474,9 @@ where
         // println!("  sample_latent_counts: {:?}", t0.elapsed());
 
         if sample_z {
-            let t0 = Instant::now();
+            // let t0 = Instant::now();
             self.sample_z(params);
-            println!("  sample_z: {:?}", t0.elapsed());
+            // println!("  sample_z: {:?}", t0.elapsed());
         }
         self.sample_π(params);
 
@@ -1541,7 +1495,6 @@ where
             params.rφ.fill(dispersion);
         } else if burnin && priors.burnin_dispersion.is_some() {
             let dispersion = priors.burnin_dispersion.unwrap();
-            dbg!(dispersion);
             params.rφ.fill(dispersion);
         } else {
             self.sample_rφ(priors, params);
@@ -1751,7 +1704,7 @@ where
 
     fn sample_ωck(&mut self, params: &mut ModelParams) {
         // sample ω ~ PolyaGamma
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::from(params.ωφ.outer_iter_mut()) // for every cell
             .and(&params.z)
             .and(params.cell_latent_counts.outer_iter())
@@ -1771,12 +1724,12 @@ where
                         ).sample(&mut rng);
                     });
             });
-        println!("  sample_sφ/PolyaGamma: {:?}", t0.elapsed());
+        // println!("  sample_sφ/PolyaGamma: {:?}", t0.elapsed());
     }
 
     fn sample_sφ(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         // sample s ~ LogNormal
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         Zip::indexed(params.sφ.outer_iter_mut()) // for every component
             .and(params.rφ.outer_iter())
             .par_for_each(|t, s_t, r_t| {
@@ -1809,17 +1762,7 @@ where
                         *s_tk = (μ + σ2.sqrt() * randn(&mut rng)).exp();
                     });
             });
-        println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
-
-        // dbg!(&params.rφ.mean().unwrap());
-        // dbg!(&params.sφ.mean().unwrap());
-
-        // let mean = &params.sφ * &params.rφ;
-        // dbg!(mean.mean().unwrap());
-
-        // let var = &params.rφ * &params.sφ * &params.sφ;
-        // dbg!(var.mean().unwrap());
-
+        // println!("  sample_sφ/LogNormal: {:?}", t0.elapsed());
     }
 
     fn sample_cell_scales(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -2120,12 +2063,12 @@ where
         transcripts: &Vec<Transcript>,
         uncertainty: &mut Option<&mut UncertaintyTracker>,
     ) {
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.propose_eval_transcript_positions(priors, params, transcripts);
-        println!("  REPO: proposals {:?}", t0.elapsed());
+        // println!("  REPO: proposals {:?}", t0.elapsed());
 
         // Update position and compute cell and layer changes for updates
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         params
             .transcript_position_updates
             .par_iter_mut()
@@ -2151,10 +2094,10 @@ where
                     }
                 },
             );
-        println!("  REPO: update positions {:?}", t0.elapsed());
+        // println!("  REPO: update positions {:?}", t0.elapsed());
 
         // Update counts and cell_population
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         params
             .transcript_position_updates
             .iter()
@@ -2194,13 +2137,13 @@ where
                     }
                 },
             );
-        println!("  REPO: update counts {:?}", t0.elapsed());
+        // println!("  REPO: update counts {:?}", t0.elapsed());
 
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         self.update_transcript_positions(
             &params.accept_proposed_transcript_positions,
             &params.transcript_positions,
         );
-        println!("  REPO: voxel sampler update positions {:?}", t0.elapsed());
+        // println!("  REPO: voxel sampler update positions {:?}", t0.elapsed());
     }
 }
