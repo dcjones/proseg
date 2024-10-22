@@ -457,13 +457,13 @@ fn read_xenium_transcripts_parquet(
 
     match string_type {
         arrow::datatypes::DataType::Utf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::StringArray>(
-            rdr, schema,
+            rdr, schema, excluded_genes,
             transcript_col_name, id_col_name, compartment_col_name,
             compartment_nuclear, fov_col_name, cell_id_col_name,
             cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
             min_qv, ignore_z_column, coordinate_scale),
         arrow::datatypes::DataType::LargeUtf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
-            rdr, schema,
+            rdr, schema, excluded_genes,
             transcript_col_name, id_col_name, compartment_col_name,
             compartment_nuclear, fov_col_name, cell_id_col_name,
             cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
@@ -477,6 +477,7 @@ fn read_xenium_transcripts_parquet(
 fn read_xenium_transcripts_parquet_str_type<T>(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
+    excluded_genes: Option<Regex>,
     transcript_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,

@@ -1083,14 +1083,6 @@ where
 {
     // fn generate_proposals<'b, 'c>(&'b mut self, params: &ModelParams) -> &'c mut [P] where 'b: 'c;
     fn initialize(&mut self, priors: &ModelPriors, params: &mut ModelParams, transcripts: &Vec<Transcript>) {
-        Zip::from(&mut params.cell_log_volume)
-            .and(&params.cell_volume)
-            .into_par_iter()
-            .with_min_len(50)
-            .for_each(|(log_volume, &volume)| {
-                *log_volume = volume.ln();
-            });
-
         Zip::from(&mut params.φ_v_dot)
             .and(params.φ.axis_iter(Axis(1)))
             .for_each(|φ_v_dot_k, φ_k| {
