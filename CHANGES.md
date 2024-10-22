@@ -1,3 +1,10 @@
+
+# 1.1.8
+  - Fix error reading some newer Xenium parquet files.
+
+# 1.1.7
+  - Fix error compiling proseg using rust 1.81.
+
 # 1.1.6
   - Fix errors when importing segmentation using xeniumranger 3. (Issue #38)
 

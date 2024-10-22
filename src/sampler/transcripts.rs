@@ -5,7 +5,7 @@ use kiddo::float::kdtree::KdTree;
 use ndarray::Array2;
 use std::collections::HashMap;
 use std::fs::File;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReaderBuilder, ParquetRecordBatchReader};
 use arrow;
 use itertools::izip;
 use std::str;
@@ -403,6 +403,52 @@ fn read_xenium_transcripts_parquet(
     let rdr = builder.build()
         .expect(&format!("Unable to read parquet data from frobm {}", filename));
 
+    // Xenium parquet files can use i32 or i64 indexes in their string arrays,
+    // so we have to dynamically dispatch here.
+    let transcript_field = schema.field_with_name(transcript_col_name).unwrap();
+    let string_type = transcript_field.data_type();
+
+    match string_type {
+        arrow::datatypes::DataType::Utf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::StringArray>(
+            rdr, schema,
+            transcript_col_name, id_col_name, compartment_col_name,
+            compartment_nuclear, fov_col_name, cell_id_col_name,
+            cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
+            min_qv, ignore_z_column, coordinate_scale),
+        arrow::datatypes::DataType::LargeUtf8 => read_xenium_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
+            rdr, schema,
+            transcript_col_name, id_col_name, compartment_col_name,
+            compartment_nuclear, fov_col_name, cell_id_col_name,
+            cell_id_unassigned, qv_col_name, x_col_name, y_col_name, z_col_name,
+            min_qv, ignore_z_column, coordinate_scale),
+        _ => panic!("Unexpected string array type in Xenium parquet file")
+    }
+}
+
+
+#[allow(clippy::too_many_arguments)]
+fn read_xenium_transcripts_parquet_str_type<T>(
+    rdr: ParquetRecordBatchReader,
+    schema: arrow::datatypes::Schema,
+    transcript_col_name: &str,
+    id_col_name: &str,
+    compartment_col_name: &str,
+    compartment_nuclear: u8,
+    fov_col_name: &str,
+    cell_id_col_name: &str,
+    cell_id_unassigned: &str,
+    qv_col_name: &str,
+    x_col_name: &str,
+    y_col_name: &str,
+    z_col_name: &str,
+    min_qv: f32,
+    ignore_z_column: bool,
+    coordinate_scale: f32,
+) -> TranscriptDataset
+where
+    T: 'static,
+    for <'a> &'a T: IntoIterator<Item=Option<&'a str>>,
+{
     let transcript_col_idx = schema.index_of(transcript_col_name).unwrap();
     let id_col_idx = schema.index_of(id_col_name).unwrap();
     let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
@@ -430,7 +476,7 @@ fn read_xenium_transcripts_parquet(
         let transcript_col = rec_batch
             .column(transcript_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<T>()
             .unwrap();
 
         let id_col = rec_batch
@@ -448,13 +494,13 @@ fn read_xenium_transcripts_parquet(
         let cell_id_col = rec_batch
             .column(cell_id_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<T>()
             .unwrap();
 
         let fov_col = rec_batch
             .column(fov_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<T>()
             .unwrap();
 
         let x_col = rec_batch
