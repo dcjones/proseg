@@ -13,13 +13,9 @@ use flate2::Compression;
 use hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::lgammaf;
-use linfa::traits::{Fit, Predict};
-use linfa::DatasetBase;
-use linfa_clustering::KMeans;
 use math::{lognormal_logpdf, negbin_logpmf, normal_logpdf, normal_x2_logpdf, normal_x2_pdf, rand_crt, randn, odds_to_prob};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
-use ndarray_linalg::{TruncatedSvd, TruncatedOrder};
 use rand::{thread_rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
 use polyagamma::PolyaGamma;
@@ -32,6 +28,9 @@ use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
+use faer_ext::IntoFaer;
+use clustering::kmeans;
+
 
 // use std::time::Instant;
 
@@ -369,22 +368,21 @@ impl ModelParams {
             counts_i -= mean;
         }
 
-        let result = TruncatedSvd::new(counts, TruncatedOrder::Largest)
-            // .decompose(nhidden)
-            .decompose(10)
-            .unwrap();
+        let counts = counts.view().into_faer();
+        let counts_svd = counts.thin_svd();
 
-        let (_, _sigma, embedding) = result.values_vectors();
+        // truncate the svd for kmeans (I hope it's sorted...)
+        let svd_dim = counts_svd.v().shape().1.min(100);
+        let embedding: Vec<Vec<f32>> = counts_svd
+            .v()
+            .row_iter()
+            .map(|row| row.get(0..svd_dim).iter().cloned().collect())
+            .collect();
 
-        let embedding_db = DatasetBase::from(embedding.t());
+        let kmeans_results = kmeans(ncomponents, &embedding, 100);
 
-        let rng = rand::thread_rng();
-        let model = KMeans::params_with_rng(ncomponents, rng)
-            .tolerance(1e-2)
-            .fit(&embedding_db)
-            .expect("kmeans failed to converge");
+        let z: Array1<u32> = kmeans_results.membership.iter().map(|z_c| *z_c as u32).collect();
 
-        let z = model.predict(&embedding_db).map(|&x| x as u32);
         let z_probs = ThreadLocal::new();
 
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);

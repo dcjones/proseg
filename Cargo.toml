@@ -38,12 +38,7 @@ itertools = "0.12.1"
 json = "0.12.4"
 kiddo = "4.2.0"
 libm = "0.2.7"
-linfa = "0.7.0"
-linfa-clustering = "0.7.0"
-linfa-reduction = "0.7.0"
-ndarray = { version = "0.15.6", features = ["rayon", "matrixmultiply-threading"] }
-ndarray-conv = "0.2.0"
-ndarray-linalg = { version = "0.16.0", features = ["netlib"] }
+ndarray = { version = "0.16.1", features = ["rayon", "matrixmultiply-threading"] }
 num-traits = "0.2.17"
 numeric_literals = "0.2.0"
 parquet = "52.2.0"
@@ -53,4 +48,6 @@ rand_distr = "0.4.3"
 rayon = "1.7.0"
 regex = "1.10.6"
 thread_local = "1.1.7"
-sprs = "=0.11.1"
+faer = "0.19.4"
+faer-ext = { version = "0.3.0", features = ["ndarray"] }
+clustering = { version = "0.2.1", features = ["parallel"] }
