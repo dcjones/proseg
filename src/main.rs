@@ -5,13 +5,16 @@ use clap::Parser;
 mod output;
 mod sampler;
 mod schemas;
+mod polygon_area;
+mod hull;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use sampler::hull::compute_cell_areas;
+use hull::convex_hull_area;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv, Transcript
+    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv, Transcript,
+    CellIndex, BACKGROUND_CELL
 };
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
@@ -960,3 +963,26 @@ fn run_hexbin_sampler(
         *total_steps += 1;
     }
 }
+
+
+fn compute_cell_areas(
+    ncells: usize,
+    transcripts: &[Transcript],
+    cell_assignments: &[CellIndex],
+) -> Vec<f32> {
+    let mut vertices: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ncells];
+    for (&c, &t) in cell_assignments.iter().zip(transcripts.iter()) {
+        if c != BACKGROUND_CELL {
+            vertices[c as usize].push((t.x, t.y));
+        }
+    }
+
+    let mut hull = Vec::new();
+    let areas = vertices
+        .iter_mut()
+        .map(|vs| convex_hull_area(vs, &mut hull))
+        .collect();
+
+    areas
+}
+

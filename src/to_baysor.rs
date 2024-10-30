@@ -11,6 +11,9 @@ use clap::Parser;
 mod schemas;
 use crate::schemas::{transcript_metadata_schema, OutputFormat};
 
+mod polygon_area;
+use crate::polygon_area::polygon_area;
+
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, Field, DataType};
 use arrow::error::ArrowError;
@@ -19,7 +22,6 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use flate2::read::GzDecoder;
 use json::JsonValue;
-use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -277,70 +279,6 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
     writer.write(&batch).expect("Unable to write CSV file");
 }
 
-fn center(vertices: &[(f32, f32)]) -> (f32, f32) {
-    let mut x = 0.0;
-    let mut y = 0.0;
-    for v in vertices {
-        x += v.0;
-        y += v.1;
-    }
-    x /= vertices.len() as f32;
-    y /= vertices.len() as f32;
-    (x, y)
-}
-
-fn clockwise_cmp(c: (f32, f32), a: (f32, f32), b: (f32, f32)) -> Ordering {
-    // From: https://stackoverflow.com/a/6989383
-    if a == b {
-        return Ordering::Equal;
-    } else if a.0 >= c.0 && b.0 < c.0 {
-        return Ordering::Less;
-    } else if a.0 < c.0 && b.0 >= c.0 {
-        return Ordering::Greater;
-    } else if a.0 == c.0 && b.0 == c.0 {
-        if a.1 < c.1 && b.1 > c.1 {
-            return Ordering::Greater;
-        } else if a.1 > c.1 && b.1 < c.1 {
-            return Ordering::Less;
-        }
-    }
-
-    // compute the cross product of vectors (c -> a) x (c -> b)
-    let det = (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1);
-
-    if det < 0.0 {
-        Ordering::Less
-    } else if det > 0.0 {
-        Ordering::Greater
-    } else {
-        // points a and b are on the same line from the c
-        // break these ties using distance from c
-        let d1 = (a.0 - c.0) * (a.0 - c.0) + (a.1 - c.1) * (a.1 - c.1);
-        let d2 = (b.0 - c.0) * (b.0 - c.0) + (b.1 - c.1) * (b.1 - c.1);
-        d2.partial_cmp(&d1).unwrap()
-    }
-}
-
-fn polygon_area(vertices: &mut [(f32, f32)]) -> f32 {
-    let c = center(vertices);
-    vertices.sort_unstable_by(|a, b| clockwise_cmp(c, *a, *b));
-
-    let mut area = 0.0;
-
-    for (i, u) in vertices.iter().enumerate() {
-        let j = (i + 1) % vertices.len();
-        let v = vertices[j];
-
-        // triangle formula.
-        // area += u.0 * v.1 - v.0 * u.1;
-
-        // trapezoid formula (this is more numerically stable with large coordinates)
-        area += (v.0 + u.0) * (v.1 - u.1);
-    }
-    area = area.abs() / 2.0;
-
-    area
-}
 
 fn read_cell_polygons_geojson(input_filename: String) -> (JsonValue, Vec<JsonValue>) {
     let input =

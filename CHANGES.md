@@ -1,4 +1,7 @@
 
+# 1.1.9
+  - Fix potential error using rust >=1.81 (Issue #41)
+
 # 1.1.8
   - Fix error reading some newer Xenium parquet files.
 

@@ -1,6 +1,5 @@
 mod connectivity;
 pub mod voxelsampler;
-pub mod hull;
 mod math;
 pub mod polyagamma;
 mod polygons;
@@ -10,7 +9,7 @@ pub mod transcripts;
 use core::fmt::Debug;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use hull::convex_hull_area;
+use crate::hull::convex_hull_area;
 use itertools::{izip, Itertools};
 use libm::{lgammaf, log1pf};
 use linfa::traits::{Fit, Predict};
