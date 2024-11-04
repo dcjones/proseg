@@ -650,7 +650,9 @@ fn main() {
     let ncells = dataset.nucleus_population.len();
     let ntranscripts = dataset.transcripts.len();
 
-    args.nunfactored = args.nunfactored.min(ngenes);
+    if args.nunfactored >= ngenes {
+        args.no_factorization = true;
+    }
 
     let nucleus_areas =
         compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
