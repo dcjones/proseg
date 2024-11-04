@@ -651,6 +651,8 @@ fn main() {
     let ncells = dataset.nucleus_population.len();
     let ntranscripts = dataset.transcripts.len();
 
+    args.nunfactored = args.nunfactored.min(ngenes);
+
     let nucleus_areas =
         compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
     let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
