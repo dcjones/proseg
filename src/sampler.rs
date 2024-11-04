@@ -399,7 +399,7 @@ impl ModelParams {
         }
 
         // fix the upper block of θ to the identity matrix
-        if nunfactored > 0 {
+        if priors.use_factorization && nunfactored > 0 {
             let mut θunfac = θ.slice_mut(s![0..nunfactored, 0..nunfactored]);
             θunfac.diag_mut().fill(1.0);
         }
