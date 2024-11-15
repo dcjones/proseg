@@ -28,7 +28,6 @@ use std::io::Write;
 use std::iter::Iterator;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
-use faer_ext::IntoFaer;
 use clustering::kmeans;
 
 
@@ -368,26 +367,31 @@ impl ModelParams {
             counts_i -= mean;
         }
 
-        let counts = counts.view().into_faer();
-        let counts_svd = counts.thin_svd();
+        // reduce dimensionality with random projection
+        let mut rng = rand::thread_rng();
+        const EMBEDDING_DIM: usize = 25;
+        let mut embedding = Array2::<f32>::zeros((EMBEDDING_DIM, ncells));
+        let mut proj = Array2::<f32>::from_shape_simple_fn(
+            (EMBEDDING_DIM, ngenes), || (EMBEDDING_DIM as f32).recip().sqrt() * randn(&mut rng));
+        for mut proj_i in proj.rows_mut() {
+            let norm = proj_i.map(|&proj_ij| proj_ij * proj_ij).sum().sqrt();
+            proj_i.map_inplace(|proj_ij| *proj_ij /= norm);
+        }
+        general_mat_mul(1.0, &proj, &counts, 1.0, &mut embedding);
 
-        // truncate the svd for kmeans (I hope it's sorted...)
-        let svd_dim = counts_svd.v().shape().1.min(100);
-        let embedding: Vec<Vec<f32>> = counts_svd
-            .v()
-            .row_iter()
-            .map(|row| row.get(0..svd_dim).iter().cloned().collect())
+        let embedding: Vec<Vec<f32>> = embedding
+            .columns()
+            .into_iter()
+            .map(|row| row.iter().cloned().collect())
             .collect();
 
-        let kmeans_results = kmeans(ncomponents, &embedding, 100);
+        let kmeans_results = kmeans(ncomponents, &embedding, 500);
 
         let z: Array1<u32> = kmeans_results.membership.iter().map(|z_c| *z_c as u32).collect();
-
         let z_probs = ThreadLocal::new();
 
         let π = Array1::<f32>::from_elem(ncomponents, 1.0 / ncomponents as f32);
 
-        let mut rng = rand::thread_rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
         let φ_v_dot = Array1::<f32>::zeros(nhidden);
         let mut θ = Array2::<f32>::from_shape_simple_fn((ngenes, nhidden), || randn(&mut rng).exp());
