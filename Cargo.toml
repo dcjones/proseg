@@ -48,6 +48,4 @@ rand_distr = "0.4.3"
 rayon = "1.7.0"
 regex = "1.10.6"
 thread_local = "1.1.7"
-faer = "0.19.4"
-faer-ext = { version = "0.3.0", features = ["ndarray"] }
 clustering = { version = "0.2.1", features = ["parallel"] }
