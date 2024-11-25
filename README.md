@@ -105,7 +105,7 @@ then be run to import these into a format useable with Xenium Explorer:
 ```shell
 xeniumranger import-segmentation \
     --id project-id \
-    --xeinum-bundle /path/to/original/xenium/output \
+    --xenium-bundle /path/to/original/xenium/output \
     --viz-polygons baysor-cell-polygons.geojson \
     --transcript-assignment baysor-transcript-metadata.csv \
     --units microns
