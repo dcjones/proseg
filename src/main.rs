@@ -2,28 +2,30 @@
 
 use clap::Parser;
 
+mod hull;
 mod output;
+mod polygon_area;
 mod sampler;
 mod schemas;
-mod polygon_area;
-mod hull;
 
+use core::f32;
+use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use rayon::current_num_threads;
-use hull::convex_hull_area;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv, Transcript,
-    CellIndex, BACKGROUND_CELL
+    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
+    CellIndex, Transcript, BACKGROUND_CELL,
 };
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
-use core::f32;
+use schemas::OutputFormat;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use schemas::OutputFormat;
 
 use output::*;
+
+const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 4.0;
 
 #[derive(Parser)]
 #[command(version)]
@@ -186,8 +188,8 @@ struct Args {
     coordinate_scale: Option<f32>,
 
     /// Initial size x/y size of voxels.
-    #[arg(long, default_value_t = 4.0_f32)]
-    initial_voxel_size: f32,
+    #[arg(long, default_value=None)]
+    initial_voxel_size: Option<f32>,
 
     /// Exclude transcripts that are more than this distance from any nucleus
     #[arg(long, default_value_t = 60_f32)]
@@ -332,8 +334,6 @@ fn set_xenium_presets(args: &mut Args) {
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
-
-    args.initial_voxel_size = 4.0;
 }
 
 fn set_cosmx_presets(args: &mut Args) {
@@ -348,13 +348,13 @@ fn set_cosmx_presets(args: &mut Args) {
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell"));
     args.cell_id_unassigned.get_or_insert(String::from(""));
-    args.cell_assignment_column.get_or_insert(String::from("cell_ID"));
-    args.cell_assignment_unassigned.get_or_insert(String::from("0"));
+    args.cell_assignment_column
+        .get_or_insert(String::from("cell_ID"));
+    args.cell_assignment_unassigned
+        .get_or_insert(String::from("0"));
 
     // CosMx reports values in pixels and pixel size appears to always be 0.12 microns.
     args.coordinate_scale.get_or_insert(0.12);
-
-    args.initial_voxel_size = 4.0;
 }
 
 fn set_cosmx_micron_presets(args: &mut Args) {
@@ -369,8 +369,6 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-
-    args.initial_voxel_size = 4.0;
 }
 
 fn set_merfish_presets(args: &mut Args) {
@@ -381,7 +379,6 @@ fn set_merfish_presets(args: &mut Args) {
     args.cell_id_column.get_or_insert(String::from("cell"));
     args.cell_id_unassigned.get_or_insert(String::from("NA"));
     // args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.initial_voxel_size = 4.0;
 }
 
 fn set_merscope_presets(args: &mut Args) {
@@ -392,7 +389,6 @@ fn set_merscope_presets(args: &mut Args) {
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_id"));
     args.cell_id_unassigned.get_or_insert(String::from("-1"));
-    args.initial_voxel_size = 4.0;
 }
 
 fn main() {
@@ -472,6 +468,10 @@ fn main() {
         arg.unwrap_or_else(|| panic!("Missing required argument: --{}", argname))
     }
 
+    let initial_voxel_size = args
+        .initial_voxel_size
+        .unwrap_or(DEFAULT_INITIAL_VOXEL_SIZE);
+
     /* let (transcript_names,
     mut transcripts,
     mut nucleus_assignments,
@@ -537,7 +537,7 @@ fn main() {
         let prev_ncells = ncells;
 
         filter_sparse_cells(
-            args.initial_voxel_size,
+            initial_voxel_size,
             args.voxel_layers,
             &dataset.transcripts,
             &mut dataset.nucleus_assignments,
@@ -704,7 +704,7 @@ fn main() {
         args.nbglayers,
         zmin,
         layer_depth,
-        args.initial_voxel_size,
+        initial_voxel_size,
         chunk_size,
     ));
     sampler.borrow_mut().initialize(&priors, &mut params);
@@ -875,10 +875,7 @@ fn main() {
 
     if args.output_cell_polygons.is_some() {
         let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
-        write_cell_multipolygons(
-            &args.output_cell_polygons,
-            consensus_cell_polygons,
-        );
+        write_cell_multipolygons(&args.output_cell_polygons, consensus_cell_polygons);
     }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
@@ -964,7 +961,6 @@ fn run_hexbin_sampler(
     }
 }
 
-
 fn compute_cell_areas(
     ncells: usize,
     transcripts: &[Transcript],
@@ -985,4 +981,3 @@ fn compute_cell_areas(
 
     areas
 }
-
