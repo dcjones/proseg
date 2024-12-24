@@ -2,7 +2,7 @@ use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::sampleset::SampleSet;
-use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
+use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL, estimate_cell_centroids};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
@@ -443,6 +443,7 @@ impl VoxelSampler {
         layer_depth: f32,
         scale: f32,
         chunk_size: f32,
+        centroid_initialization: bool,
     ) -> Self {
         let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(transcripts);
         let nxchunks = ((xmax - xmin) / chunk_size).ceil() as usize;
@@ -468,8 +469,26 @@ impl VoxelSampler {
             }
         }
 
-        // initial voxel assignments
-        let voxel_cells = voxel_assignments(&voxel_bins, &params.cell_assignments);
+        let voxel_cells = if centroid_initialization {
+            // When doing centroid initialization, just pretend we have
+            // a single transcript at each cell centroid assigned to that cell.
+            let cell_centroids = estimate_cell_centroids(
+                transcripts, &params.cell_assignments, params.ncells());
+
+            let centroid_cell_assignments: Vec<u32> = (0..params.ncells() as u32).collect();
+            let mut centroid_voxel_bins: Vec<VoxelBin> = Vec::new();
+            for (i, &centroid) in cell_centroids.iter().enumerate() {
+                let voxel = layout.world_pos_to_voxel(centroid);
+                centroid_voxel_bins.push(VoxelBin {
+                    voxel,
+                    transcripts: Arc::new(Mutex::new(vec![i])),
+                });
+            }
+            voxel_assignments(&centroid_voxel_bins, &centroid_cell_assignments)
+        } else {
+            // Normal initial voxel assignments
+            voxel_assignments(&voxel_bins, &params.cell_assignments)
+        };
 
         // TODO: debugging
         let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();

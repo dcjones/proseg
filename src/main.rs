@@ -195,6 +195,14 @@ struct Args {
     #[arg(long, default_value_t = 60_f32)]
     max_transcript_nucleus_distance: f32,
 
+    /// Initialize using only cell centroids
+    #[arg(long, default_value_t = false)]
+    centroid_initialization: bool,
+
+    /// Initialize using full prior cell assignments
+    #[arg(long, default_value_t = false)]
+    cell_initialization: bool,
+
     /// Disable transcript diffusion model
     #[arg(long, default_value_t = false)]
     no_diffusion: bool,
@@ -419,6 +427,12 @@ fn main() {
     }
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
+
+    if args.cell_initialization && args.centroid_initialization {
+        panic!(
+            "At most one of --cell-initialization and --centroid-initialization can be used"
+        );
+    }
 
     if (args.xenium as u8)
         + (args.cosmx as u8)
@@ -670,14 +684,20 @@ fn main() {
         enforce_connectivity: args.enforce_connectivity,
     };
 
+    let (init_cell_assignments, init_cell_population) = if args.cell_initialization {
+        (&dataset.cell_assignments, &dataset.cell_population)
+    } else {
+        (&dataset.nucleus_assignments, &dataset.nucleus_population)
+    };
+
     let mut params = ModelParams::new(
         &priors,
         full_layer_volume,
         zmin,
         layer_depth,
         &dataset.transcripts,
-        &dataset.nucleus_assignments,
-        &dataset.nucleus_population,
+        &init_cell_assignments,
+        &init_cell_population,
         &dataset.cell_assignments,
         args.ncomponents,
         args.nbglayers,
@@ -706,6 +726,7 @@ fn main() {
         layer_depth,
         initial_voxel_size,
         chunk_size,
+        args.centroid_initialization,
     ));
     sampler.borrow_mut().initialize(&priors, &mut params);
 

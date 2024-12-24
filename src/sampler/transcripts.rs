@@ -34,6 +34,7 @@ pub struct TranscriptDataset {
     pub nucleus_assignments: Vec<CellIndex>,
     pub cell_assignments: Vec<CellIndex>,
     pub nucleus_population: Vec<usize>,
+    pub cell_population: Vec<usize>,
     pub fovs: Vec<u32>,
     pub qvs: Vec<f32>,
     pub fov_names: Vec<String>,
@@ -145,7 +146,7 @@ fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) ->
 fn postprocess_cell_assignments(
     nucleus_assignments: &mut [CellIndex],
     cell_assignments: &mut [CellIndex],
-) -> Vec<usize> {
+) -> (Vec<usize>, Vec<usize>) {
     // reassign cell ids to exclude anything that no initial transcripts assigned
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
     for &cell_id in nucleus_assignments.iter() {
@@ -182,7 +183,14 @@ fn postprocess_cell_assignments(
         }
     }
 
-    nucleus_population
+    let mut cell_population = vec![0; ncells];
+    for &cell_id in cell_assignments.iter() {
+        if cell_id != BACKGROUND_CELL {
+            cell_population[cell_id as usize] += 1;
+        }
+    }
+
+    (nucleus_population, cell_population)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -361,7 +369,7 @@ where
         }
     }
 
-    let nucleus_population =
+    let (nucleus_population, cell_population) =
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
     TranscriptDataset {
@@ -370,6 +378,7 @@ where
         nucleus_assignments,
         cell_assignments,
         nucleus_population,
+        cell_population,
         qvs,
         fovs,
         fov_names,
@@ -606,7 +615,7 @@ where
         }
     }
 
-    let nucleus_population =
+    let (nucleus_population, cell_population) =
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
     TranscriptDataset {
@@ -615,6 +624,7 @@ where
         nucleus_assignments,
         cell_assignments,
         nucleus_population,
+        cell_population,
         qvs,
         fovs,
         fov_names,
@@ -709,7 +719,7 @@ pub fn estimate_cell_centroids(
     transcripts: &[Transcript],
     cell_assignments: &[CellIndex],
     ncells: usize,
-) -> Vec<(f32, f32)> {
+) -> Vec<(f32, f32, f32)> {
     let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); ncells];
     for (i, &cell) in cell_assignments.iter().enumerate() {
         if cell != BACKGROUND_CELL {
@@ -720,19 +730,22 @@ pub fn estimate_cell_centroids(
     let mut centroids = Vec::with_capacity(ncells);
     for ts in cell_transcripts.iter() {
         if ts.is_empty() {
-            centroids.push((f32::NAN, f32::NAN));
+            centroids.push((f32::NAN, f32::NAN, f32::NAN));
             continue;
         }
 
         let mut x = 0.0;
         let mut y = 0.0;
+        let mut z = 0.0;
         for &t in ts {
             x += transcripts[t].x;
             y += transcripts[t].y;
+            z += transcripts[t].z;
         }
         x /= ts.len() as f32;
         y /= ts.len() as f32;
-        centroids.push((x, y));
+        z /= ts.len() as f32;
+        centroids.push((x, y, z));
     }
 
     centroids
@@ -752,7 +765,7 @@ pub fn filter_cellfree_transcripts(
         &dataset.transcripts, &dataset.nucleus_assignments, ncells);
 
     let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
-    for (i, (x, y)) in centroids.iter().enumerate() {
+    for (i, (x, y, _z)) in centroids.iter().enumerate() {
         if !x.is_finite() || !y.is_finite() {
             continue;
         }
