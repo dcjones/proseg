@@ -349,6 +349,13 @@ fn bin_transcripts(
         })
         .collect::<Vec<_>>();
 
+    let voxel_bins = collect_voxel_transcripts(&mut voxel_transcripts);
+
+    (layout, voxel_bins)
+}
+
+
+fn collect_voxel_transcripts(voxel_transcripts: &mut Vec<(Voxel, usize)>) -> Vec<VoxelBin> {
     voxel_transcripts.par_sort_unstable_by_key(|(voxel, _)| *voxel);
 
     let mut voxel_bins = Vec::new();
@@ -364,7 +371,7 @@ fn bin_transcripts(
             });
         });
 
-    (layout, voxel_bins)
+    return voxel_bins;
 }
 
 fn voxel_assignments(voxel_bins: &Vec<VoxelBin>, cell_assignments: &[CellIndex]) -> VoxelCellMap {
@@ -476,14 +483,24 @@ impl VoxelSampler {
                 transcripts, &params.cell_assignments, params.ncells());
 
             let centroid_cell_assignments: Vec<u32> = (0..params.ncells() as u32).collect();
-            let mut centroid_voxel_bins: Vec<VoxelBin> = Vec::new();
-            for (i, &centroid) in cell_centroids.iter().enumerate() {
-                let voxel = layout.world_pos_to_voxel(centroid);
-                centroid_voxel_bins.push(VoxelBin {
-                    voxel,
-                    transcripts: Arc::new(Mutex::new(vec![i])),
-                });
-            }
+            let mut voxel_centroids = cell_centroids.iter().enumerate().map(
+                |(i, &centroid)| {
+                    let centroid = clip_z_position(centroid, zmin, zmax);
+                    let voxel = layout.world_pos_to_voxel(centroid);
+                    assert!((voxel.k as usize) < voxellayers);
+                    (voxel, i)
+                }
+            ).collect::<Vec<_>>();
+
+            let centroid_voxel_bins = collect_voxel_transcripts(&mut voxel_centroids);
+
+            dbg!(voxellayers);
+            dbg!(params.ncells());
+            dbg!(params.cell_population.len());
+            dbg!(params.cell_volume.len());
+            dbg!(centroid_voxel_bins.len());
+            dbg!(centroid_cell_assignments.len());
+
             voxel_assignments(&centroid_voxel_bins, &centroid_cell_assignments)
         } else {
             // Normal initial voxel assignments
@@ -566,9 +583,32 @@ impl VoxelSampler {
             quad: 0,
         };
 
+        eprintln!("A");
         sampler.recompute_cell_population();
+
+        let mut minpop = f32::INFINITY;
+        let mut maxpop = 0.0;
+        for &pop in sampler.cell_population.iter() {
+            if pop > maxpop {
+                maxpop = pop;
+            }
+            if pop < minpop {
+                minpop = pop;
+            }
+        }
+        dbg!(minpop, maxpop);
+        dbg!(params.cell_population.iter().min());
+        dbg!(params.cell_population.iter().max());
+
+        let meanpop = params.cell_population.iter().sum::<usize>() as f64 / params.cell_volume.len() as f64;
+        dbg!(meanpop);
+        // panic!();
+        eprintln!("B");
         sampler.recompute_cell_perimeter();
+        eprintln!("C");
         sampler.recompute_cell_volume(priors, params);
+        eprintln!("D");
+
         sampler.populate_mismatches();
         sampler.update_transcript_positions(
             &vec![true; transcripts.len()],
@@ -727,11 +767,14 @@ impl VoxelSampler {
     }
 
     fn recompute_cell_population(&mut self) {
+        dbg!(self.cell_population.shape());
         self.cell_population.fill(0.0_f32);
         for (&voxel, &cell) in self.voxel_cells.iter() {
             if cell == BACKGROUND_CELL {
                 continue;
             }
+            assert!((voxel.k as usize) < self.cell_population.shape()[0]);
+            assert!((cell as usize) < self.cell_population.shape()[1]);
             self.cell_population[[voxel.k as usize, cell as usize]] += 1.0_f32;
         }
     }
@@ -1644,17 +1687,17 @@ pub fn filter_sparse_cells(
     scale: f32,
     voxellayers: usize,
     transcripts: &Vec<Transcript>,
-    nucleus_assignments: &mut [CellIndex],
-    cell_assignments: &mut [CellIndex],
-    nucleus_population: &mut Vec<usize>,
-) {
+    init_cell_assignments: &[CellIndex],
+) -> HashMap<CellIndex, CellIndex> {
     // let t0 = Instant::now();
     let (_layout, voxel_bins) = bin_transcripts(transcripts, scale, voxellayers);
     // println!("bin_transcripts: {:?}", t0.elapsed());
 
     // let t0 = Instant::now();
-    let voxel_cells = voxel_assignments(&voxel_bins, nucleus_assignments);
-    // println!("cube_assignments: {:?}", t0.elapsed());
+
+    let voxel_cells = voxel_assignments(
+            &voxel_bins,
+            &init_cell_assignments);
 
     // let t0 = Instant::now();
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
@@ -1665,33 +1708,107 @@ pub fn filter_sparse_cells(
         }
     }
 
-    if used_cell_ids.len() != nucleus_population.len() {
-        for cell_id in nucleus_assignments.iter_mut() {
-            if *cell_id != BACKGROUND_CELL {
-                if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
-                    *cell_id = *new_cell_id;
-                } else {
-                    *cell_id = BACKGROUND_CELL;
-                }
-            }
+    return used_cell_ids;
+}
+
+
+// Like `filter_sparse_cells` but operating under centroid initialization
+// logic.
+pub fn filter_sparse_cells_centroids(
+    scale: f32,
+    voxellayers: usize,
+    transcripts: &Vec<Transcript>,
+    init_cell_assignments: &[CellIndex],
+    centroid_assignments: &mut [CellIndex],
+    ncells: usize,
+) -> HashMap<CellIndex, CellIndex> {
+
+    let (_xmin, _xmax, _ymin, _ymax, zmin, zmax) = coordinate_span(transcripts);
+    let (layout, voxel_bins) = bin_transcripts(transcripts, scale, voxellayers);
+
+    let voxel_bins: HashMap<Voxel, Vec<usize>> = voxel_bins.into_iter().map(
+        |vb| (vb.voxel, vb.transcripts.lock().unwrap().clone())
+    ).collect();
+
+    let cell_centroids = estimate_cell_centroids(
+        transcripts, &init_cell_assignments, ncells);
+
+    {
+        let mut min_x = std::f32::MAX;
+        let mut max_x = std::f32::MIN;
+        let mut min_y = std::f32::MAX;
+        let mut max_y = std::f32::MIN;
+        let mut min_z = std::f32::MAX;
+        let mut max_z = std::f32::MIN;
+
+        for (x, y, z) in &cell_centroids {
+            min_x = min_x.min(*x);
+            max_x = max_x.max(*x);
+            min_y = min_y.min(*y);
+            max_y = max_y.max(*y);
+            min_z = min_z.min(*z);
+            max_z = max_z.max(*z);
         }
-        for cell_id in cell_assignments.iter_mut() {
-            if *cell_id != BACKGROUND_CELL {
-                if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
-                    *cell_id = *new_cell_id;
-                } else {
-                    *cell_id = BACKGROUND_CELL;
-                }
+        dbg!((min_x, max_x, min_y, max_y, min_z, max_z));
+    }
+
+    dbg!(coordinate_span(transcripts));
+
+    let centroid_cell_assignments: Vec<u32> = (0..ncells as u32).collect();
+
+    let mut voxel_centroids = cell_centroids.iter().enumerate().map(
+        |(i, &centroid)| {
+            let centroid = clip_z_position(centroid, zmin, zmax);
+            let voxel = layout.world_pos_to_voxel(centroid);
+            (voxel, i)
+        }).collect::<Vec<_>>();
+
+    let centroid_voxel_bins = collect_voxel_transcripts(&mut voxel_centroids);
+
+    let voxel_cells = voxel_assignments(
+        &centroid_voxel_bins, &centroid_cell_assignments);
+
+    let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
+    centroid_assignments.fill(BACKGROUND_CELL);
+    for (voxel, cell_id) in voxel_cells.iter() {
+        let transcripts = voxel_bins.get(voxel);
+        let voxel_pop = transcripts.map_or(0, |transcripts| transcripts.len());
+        if *cell_id != BACKGROUND_CELL && voxel_pop > 0 {
+            for &t in transcripts.unwrap().iter() {
+                centroid_assignments[t] = *cell_id;
+            }
+            let next_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids.entry(*cell_id).or_insert(next_id);
+        }
+    }
+
+    return used_cell_ids;
+}
+
+pub fn reindex_cells(
+    used_cell_ids: &HashMap<CellIndex, CellIndex>,
+    assignments: &mut [CellIndex], population: &mut Vec<usize>) {
+
+    if used_cell_ids.len() == population.len() {
+        return;
+    }
+
+    for cell_id in assignments.iter_mut() {
+        if *cell_id != BACKGROUND_CELL {
+            if let Some(new_cell_id) = used_cell_ids.get(cell_id) {
+                *cell_id = *new_cell_id;
+            } else {
+                *cell_id = BACKGROUND_CELL;
             }
         }
     }
-    // println!("index assignments {:?}", t0.elapsed());
 
-    nucleus_population.resize(used_cell_ids.len(), 0);
-    nucleus_population.fill(0);
-    for cell_id in nucleus_assignments.iter() {
+    population.resize(used_cell_ids.len(), 0);
+    population.fill(0);
+    for cell_id in assignments.iter() {
         if *cell_id != BACKGROUND_CELL {
-            nucleus_population[*cell_id as usize] += 1;
+            population[*cell_id as usize] += 1;
         }
     }
 }
+

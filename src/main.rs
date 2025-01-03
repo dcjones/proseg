@@ -15,13 +15,16 @@ use itertools::Itertools;
 use rayon::current_num_threads;
 use sampler::transcripts::{
     coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
-    CellIndex, Transcript, BACKGROUND_CELL,
+    CellIndex, Transcript, BACKGROUND_CELL, estimate_cell_centroids
 };
-use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
+use sampler::voxelsampler::{filter_sparse_cells, filter_sparse_cells_centroids, reindex_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use schemas::OutputFormat;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 
 use output::*;
 
@@ -60,10 +63,6 @@ struct Args {
     /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
-
-    /// Initialize with cell assignments rather than nucleus assignments
-    #[arg(long, default_value_t = false)]
-    use_cell_initialization: bool,
 
     /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
@@ -471,11 +470,6 @@ fn main() {
         panic!("recorded-samples must be <= the last entry in the schedule");
     }
 
-    if args.use_cell_initialization {
-        args.compartment_column = None;
-        args.compartment_nuclear = None;
-    }
-
     assert!(args.ncomponents > 0);
 
     fn expect_arg<T>(arg: Option<T>, argname: &str) -> T {
@@ -546,19 +540,77 @@ fn main() {
     let mut ncells = dataset.nucleus_population.len();
     filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
 
+    // TODO: I think here we need to specially handle the centroid
+    // initialization scheme, otherwise we can end up with empty cells.
+    //
+    // Actually I think the simplest thing to do would be to let all of
+    // these functions take an additional init_assignments array. When
+    // doing centroid initialization we pass the same pseudo-transcripts to
+    // everything. No need for special code in VoxelSampler.
+
+
+    // This is so much more difficult than I thought. I think I need an entirely
+    // different filter_sparse_cells function to deal with this centroid
+    // initialization scheme.
+
+
+    {
+        let cell_centroids = estimate_cell_centroids(
+            &dataset.transcripts, &dataset.nucleus_assignments, ncells);
+
+        let file = File::create("cell-centroids.csv").unwrap();
+        let mut writer = BufWriter::new(file);
+        writeln!(writer, "x,y,z").unwrap();
+        for (x, y, z) in &cell_centroids {
+            writeln!(writer, "{},{},{}", x, y, z).unwrap();
+        }
+    }
+
+
+    let mut centroid_assignments = if args.centroid_initialization {
+        Some(vec![BACKGROUND_CELL; dataset.transcripts.len()])
+    } else {
+        None
+    };
+
     // keep removing cells until we can initialize with every cell having at least one voxel
+    dbg!(ncells);
     loop {
         let prev_ncells = ncells;
 
-        filter_sparse_cells(
-            initial_voxel_size,
-            args.voxel_layers,
-            &dataset.transcripts,
+        let used_cell_ids = if args.centroid_initialization {
+            filter_sparse_cells_centroids(
+                initial_voxel_size,
+                args.voxel_layers,
+                &dataset.transcripts,
+                &dataset.nucleus_assignments,
+                centroid_assignments.as_mut().unwrap(),
+                ncells)
+        } else {
+            filter_sparse_cells(
+                initial_voxel_size,
+                args.voxel_layers,
+                &dataset.transcripts,
+                if args.cell_initialization {
+                    &dataset.cell_assignments
+                } else {
+                    &dataset.nucleus_assignments
+                }
+            )
+        };
+
+        reindex_cells(
+            &used_cell_ids,
             &mut dataset.nucleus_assignments,
+            &mut dataset.nucleus_population);
+
+        reindex_cells(
+            &used_cell_ids,
             &mut dataset.cell_assignments,
-            &mut dataset.nucleus_population,
-        );
-        ncells = dataset.nucleus_population.len();
+            &mut dataset.cell_population);
+
+        ncells = used_cell_ids.len();
+        dbg!(ncells);
         if ncells == prev_ncells {
             break;
         }
@@ -684,20 +736,20 @@ fn main() {
         enforce_connectivity: args.enforce_connectivity,
     };
 
-    let (init_cell_assignments, init_cell_population) = if args.cell_initialization {
-        (&dataset.cell_assignments, &dataset.cell_population)
-    } else {
-        (&dataset.nucleus_assignments, &dataset.nucleus_population)
-    };
-
     let mut params = ModelParams::new(
         &priors,
         full_layer_volume,
         zmin,
         layer_depth,
         &dataset.transcripts,
-        &init_cell_assignments,
-        &init_cell_population,
+        if args.centroid_initialization {
+            centroid_assignments.as_ref().unwrap()
+        } else if args.cell_initialization {
+            &dataset.cell_assignments
+        } else {
+            &dataset.nucleus_assignments
+        },
+        &dataset.nucleus_assignments,
         &dataset.cell_assignments,
         args.ncomponents,
         args.nbglayers,
@@ -728,7 +780,26 @@ fn main() {
         chunk_size,
         args.centroid_initialization,
     ));
+
+    write_transcript_metadata(
+        &Some(String::from("initial-transcript-metadata.csv.gz")),
+        OutputFormat::CsvGz,
+        &dataset.transcripts,
+        &params.transcript_positions,
+        &dataset.transcript_names,
+        &params.cell_assignments
+            .iter()
+            .cloned().map(|c| (c, 1_f32))
+            .collect::<Vec<(u32, f32)>>(),
+        &params.transcript_state,
+        &dataset.qvs,
+        &dataset.fovs,
+        &dataset.fov_names,
+    );
+
+    eprintln!("A");
     sampler.borrow_mut().initialize(&priors, &mut params);
+    eprintln!("B");
 
     let mut total_steps = 0;
 

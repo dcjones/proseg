@@ -134,8 +134,8 @@ pub struct ModelParams {
     accept_proposed_transcript_positions: Vec<bool>,
     transcript_position_updates: Vec<(u32, u32, u32, u32)>,
 
-    init_nuclear_cell_assignment: Vec<CellIndex>,
-    prior_seg_cell_assignment: Vec<CellIndex>,
+    prior_nuclear_assignment: Vec<CellIndex>,
+    prior_cell_assignment: Vec<CellIndex>,
 
     pub cell_assignments: Vec<CellIndex>,
     pub cell_assignment_time: Vec<u32>,
@@ -248,8 +248,8 @@ impl ModelParams {
         layer_depth: f32,
         transcripts: &[Transcript],
         init_cell_assignments: &[u32],
-        init_cell_population: &[usize],
-        prior_seg_cell_assignment: &[u32],
+        prior_nuclear_assignments: &[u32],
+        prior_cell_assignments: &[u32],
         ncomponents: usize,
         nlayers: usize,
         ncells: usize,
@@ -282,14 +282,17 @@ impl ModelParams {
         }
 
         // initial component assignments
-        let norm_constant = 1e4;
+        let norm_constant = 1e5;
         let mut init_samples = counts
             .sum_axis(Axis(2))
             .map(|&x| (x as f32))
             .reversed_axes();
+
         init_samples.rows_mut().into_iter().for_each(|mut row| {
             let rowsum = row.sum();
             row.mapv_inplace(|x| (norm_constant * (x / rowsum)).ln_1p());
+            // row.mapv_inplace(|x| x.ln_1p());
+            assert!(rowsum > 0.0);
         });
         let init_samples = DatasetBase::from(init_samples);
 
@@ -297,14 +300,20 @@ impl ModelParams {
         // let init_samples =
         //     DatasetBase::from(counts.sum_axis(Axis(2)).map(|&x| (x as f32).ln_1p()).reversed_axes());
 
+        // TODO: This is fucked for centroid initialization. We are still initializing
+        // components using counts form prior nuclear or cell assignments. This
+        // breaks things when it gets updated to the centroid initialization.
+        //
+        // Solution? We have to compute centroid initialization counts
+
         let rng = rand::thread_rng();
         let model = KMeans::params_with_rng(ncomponents, rng)
             .tolerance(1e-1)
             .fit(&init_samples)
             .expect("kmeans failed to converge");
 
-        let z = model.predict(&init_samples).map(|&x| x as u32);
 
+        let z = model.predict(&init_samples).map(|&x| x as u32);
         // let rng = rand::thread_rng();
         // let model = GaussianMixtureModel::params_with_rng(ncomponents, rng)
         //     .tolerance(1e-1)
@@ -335,16 +344,26 @@ impl ModelParams {
         let prev_transcript_state =
             Array1::<TranscriptState>::from_elem(transcripts.len(), TranscriptState::Foreground);
 
+        let mut cell_population = vec![0; ncells];
+        for cell_id in init_cell_assignments {
+            if *cell_id != BACKGROUND_CELL {
+                cell_population[*cell_id as usize] += 1;
+            }
+        }
+
+        dbg!(cell_population.iter().min());
+        dbg!(cell_population.iter().max());
+
         ModelParams {
             transcript_positions,
             proposed_transcript_positions,
             accept_proposed_transcript_positions,
             transcript_position_updates,
-            init_nuclear_cell_assignment: init_cell_assignments.to_vec(),
-            prior_seg_cell_assignment: prior_seg_cell_assignment.to_vec(),
+            prior_nuclear_assignment: prior_nuclear_assignments.to_vec(),
+            prior_cell_assignment: prior_cell_assignments.to_vec(),
             cell_assignments: init_cell_assignments.to_vec(),
             cell_assignment_time: vec![0; init_cell_assignments.len()],
-            cell_population: init_cell_population.to_vec(),
+            cell_population: cell_population,
             cell_volume,
             cell_log_volume,
             component_volume,
@@ -475,7 +494,7 @@ impl ModelParams {
 
         // nuclear reassignment terms
         ll += Zip::from(&self.cell_assignments)
-            .and(&self.init_nuclear_cell_assignment)
+            .and(&self.prior_nuclear_assignment)
             .fold(0_f32, |accum, &cell, &nuc_cell| {
                 if nuc_cell != BACKGROUND_CELL {
                     if cell == nuc_cell {
@@ -490,7 +509,7 @@ impl ModelParams {
 
         // prior seg reassignment terms
         ll += Zip::from(&self.cell_assignments)
-            .and(&self.prior_seg_cell_assignment)
+            .and(&self.prior_cell_assignment)
             .fold(0_f32, |accum, &cell, &nuc_cell| {
                 if cell == nuc_cell {
                     accum + priors.prior_seg_reassignment_1mlog_prob
@@ -844,7 +863,7 @@ pub trait Proposal {
 
         // Tally penalties from mis-assigning nuclear transcripts
         for &t in self.transcripts() {
-            let cell = params.init_nuclear_cell_assignment[t];
+            let cell = params.prior_nuclear_assignment[t];
             if cell != BACKGROUND_CELL {
                 if cell == old_cell {
                     δ -= priors.nuclear_reassignment_1mlog_prob;
@@ -861,7 +880,7 @@ pub trait Proposal {
         }
 
         for &t in self.transcripts() {
-            let cell = params.prior_seg_cell_assignment[t];
+            let cell = params.prior_cell_assignment[t];
             if cell == old_cell {
                 δ -= priors.prior_seg_reassignment_1mlog_prob;
             } else {
@@ -1696,7 +1715,14 @@ where
                             }) as f64)
                             .exp();
 
-                    *zp *= normal_pdf(μ_volume, σ_volume, *cell_log_volume).exp() as f64;
+                    // *zp *= normal_pdf(μ_volume, σ_volume, *cell_log_volume).exp() as f64;
+
+                    // Silently supressing these numerical errors isn't ideal,
+                    // but allows us to keep going when, e.g., a component
+                    // become depopulated.
+                    if !zp.is_finite() {
+                        *zp = 0.0;
+                    }
                 }
 
                 // z_probs.iter_mut().enumerate().for_each(|(j, zp)| {
@@ -1706,6 +1732,10 @@ where
                 // });
 
                 let z_prob_sum = z_probs.iter().sum::<f64>();
+
+                if !z_prob_sum.is_finite() {
+                    dbg!(&z_probs);
+                }
 
                 assert!(z_prob_sum.is_finite());
 
@@ -1741,7 +1771,7 @@ where
                 params.component_population[z as usize] += 1;
             });
 
-        // dbg!(&params.component_population);
+        dbg!(&params.component_population);
 
         // Sampling is parallelizable, but unually number of components is low,
         // so it's dominated by overhead.
@@ -1903,6 +1933,7 @@ where
                     let ln_λ_diff = λ_new.ln() - λ_prev.ln();
                     δ += ln_λ_diff;
 
+                    // TODO: Why is this commented out???
                     // let cell_nuc = params.init_nuclear_cell_assignment[i];
                     // if cell_nuc != BACKGROUND_CELL {
                     //     if cell_nuc == cell_prev {
@@ -1918,7 +1949,7 @@ where
                     //     }
                     // }
 
-                    let cell_prior = params.prior_seg_cell_assignment[i];
+                    let cell_prior = params.prior_cell_assignment[i];
                     if cell_prior == cell_prev {
                         δ -= priors.prior_seg_reassignment_1mlog_prob;
                     } else {
