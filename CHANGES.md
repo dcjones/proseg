@@ -1,4 +1,10 @@
 
+# 2.0.1
+  - Implement a partial factorization model to avoid model failures on high-plex
+    data like Xenium Prime.
+  - Fix `--initial-voxel-size` not actually doing anything.
+  - Include an experiment `--visiumhd` preset, that has had to be tested.
+
 # 1.1.9
   - Fix potential error using rust >=1.81 (Issue #41)
 
