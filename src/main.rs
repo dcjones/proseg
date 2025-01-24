@@ -355,7 +355,7 @@ struct Args {
 
     /// Disable cell scale factors
     #[arg(long, default_value_t = false)]
-    no_cell_scales: bool,
+    use_scaled_cells: bool,
 
     // Hyperparameters
     #[arg(long, default_value_t = 1.0)]
@@ -727,7 +727,7 @@ fn main() {
             Some(args.burnin_dispersion)
         },
 
-        use_cell_scales: !args.no_cell_scales,
+        use_cell_scales: args.use_scaled_cells,
 
         min_cell_volume,
 
