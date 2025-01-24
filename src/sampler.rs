@@ -275,6 +275,7 @@ pub struct ModelParams {
     // [ngenes, nlayers] background rate: rate at which halucinate transcripts
     // across the entire layer
     pub λ_bg: Array2<f32>,
+    pub logλ_bg: Array2<f32>,
 
     // [ngenes] confusion: rate at which we halucinate transcripts within cells
     pub λ_c: Array1<f32>,
@@ -479,6 +480,7 @@ impl ModelParams {
             // θ: Array2::<f32>::from_elem((ncomponents, ngenes), 0.1),
             λ: Array2::<f32>::from_elem((ncells, ngenes), 0.1),
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
+            logλ_bg: Array2::<f32>::zeros((ngenes, nlayers)),
             λ_c: Array1::<f32>::from_elem(ngenes, 1e-4),
             t: 0,
         }
@@ -913,31 +915,32 @@ pub trait Proposal {
 
         // Tally penalties from mis-assigning nuclear transcripts
         for &t in self.transcripts() {
-            let cell = params.init_nuclear_cell_assignment[t];
-            if cell != BACKGROUND_CELL {
-                if cell == old_cell {
+            let nuclear_cell = params.init_nuclear_cell_assignment[t];
+            let seg_cell = params.prior_seg_cell_assignment[t];
+
+            // Nuclear assignment penalties
+            if nuclear_cell != BACKGROUND_CELL {
+                if nuclear_cell == old_cell {
                     δ -= priors.nuclear_reassignment_1mlog_prob;
                 } else {
                     δ -= priors.nuclear_reassignment_log_prob;
                 }
 
-                if cell == new_cell {
+                if nuclear_cell == new_cell {
                     δ += priors.nuclear_reassignment_1mlog_prob;
                 } else {
                     δ += priors.nuclear_reassignment_log_prob;
                 }
             }
-        }
 
-        for &t in self.transcripts() {
-            let cell = params.prior_seg_cell_assignment[t];
-            if cell == old_cell {
+            // Segmentation assignment penalties
+            if seg_cell == old_cell {
                 δ -= priors.prior_seg_reassignment_1mlog_prob;
             } else {
                 δ -= priors.prior_seg_reassignment_log_prob;
             }
 
-            if cell == new_cell {
+            if seg_cell == new_cell {
                 δ += priors.prior_seg_reassignment_1mlog_prob;
             } else {
                 δ += priors.prior_seg_reassignment_log_prob;
@@ -946,10 +949,12 @@ pub trait Proposal {
 
         if from_background {
             Zip::from(self.gene_count().rows())
-                .and(params.λ_bg.rows())
-                .for_each(|gene_counts, λ_bg| {
-                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
-                        δ -= count as f32 * λ_bg.ln();
+                .and(params.logλ_bg.rows())
+                .for_each(|gene_counts, logλ_bg| {
+                    Zip::from(gene_counts).and(logλ_bg).for_each(|&count, &logλ_bg| {
+                        if count > 0 {
+                            δ -= count as f32 * logλ_bg;
+                        }
                     });
                 });
         } else {
@@ -990,10 +995,12 @@ pub trait Proposal {
 
         if to_background {
             Zip::from(self.gene_count().rows())
-                .and(params.λ_bg.rows())
-                .for_each(|gene_counts, λ_bg| {
-                    Zip::from(gene_counts).and(λ_bg).for_each(|&count, &λ_bg| {
-                        δ += count as f32 * λ_bg.ln();
+                .and(params.logλ_bg.rows())
+                .for_each(|gene_counts, logλ_bg| {
+                    Zip::from(gene_counts).and(logλ_bg).for_each(|&count, &logλ_bg| {
+                        if count > 0 {
+                            δ += count as f32 * logλ_bg;
+                        }
                     });
                 });
         } else {
@@ -1860,6 +1867,12 @@ where
                     let β = priors.β_bg + params.full_layer_volume;
                     *λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                 });
+            });
+
+        Zip::from(&mut params.logλ_bg)
+            .and(&params.λ_bg)
+            .for_each(|logλ_bg, λ_bg| {
+                *logλ_bg = λ_bg.ln();
             });
 
         // dbg!(&params.total_transcript_density);
