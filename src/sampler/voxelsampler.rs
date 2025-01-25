@@ -1429,7 +1429,7 @@ impl Sampler<VoxelProposal> for VoxelSampler {
 
         // let t0 = Instant::now();
         self.transcript_voxel_ord
-            .par_sort_by_key(|&t| self.transcript_voxels[t]);
+            .par_sort_by_key(|&t| (self.transcript_voxels[t], self.transcript_genes[t]));
         // println!("    REPO: sort on voxel assignment {:?}", t0.elapsed());
     }
 

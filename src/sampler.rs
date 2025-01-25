@@ -1118,11 +1118,20 @@ where
         if uncertainty.is_some() {
             params.t += 1;
         }
+
+        // let t0 = Instant::now();
         self.repopulate_proposals(priors, params);
+        // println!("  Repopulate proposals: {:?}", t0.elapsed());
+
+        // let t0 = Instant::now();
         self.proposals_mut()
             .par_iter_mut()
             .for_each(|p| p.evaluate(priors, params, hillclimb));
+        // println!("  Evaluate proposals: {:?}", t0.elapsed());
+
+        // let t0 = Instant::now();
         self.apply_accepted_proposals(stats, priors, params, uncertainty);
+        // println!("  Apply accepted proposals: {:?}", t0.elapsed());
     }
 
     fn apply_accepted_proposals(
@@ -1372,19 +1381,21 @@ where
         let ngenes = params.foreground_counts.shape()[1];
         let nhidden = params.cell_latent_counts.shape()[1];
 
+        // let t0 = Instant::now();
         Zip::from(params.cell_latent_counts.outer_iter_mut()) // for every cell
             .and(params.φ.outer_iter())
             .and(params.foreground_counts.outer_iter())
             .par_for_each(|mut cell_latent_counts_c, φ_c, x_c| {
+            // .for_each(|mut cell_latent_counts_c, φ_c, x_c| {
                 let mut rng = thread_rng();
                 let mut multinomial_rates = params
                     .multinomial_rates
-                    .get_or(|| RefCell::new(Array1::zeros(nhidden)))
+                    .get_or(|| RefCell::new(Array1::zeros(nhidden - params.nunfactored)))
                     .borrow_mut();
 
                 let mut multinomial_sample = params
                     .multinomial_sample
-                    .get_or(|| RefCell::new(Array1::zeros(nhidden)))
+                    .get_or(|| RefCell::new(Array1::zeros(nhidden - params.nunfactored)))
                     .borrow_mut();
 
                 let mut gene_latent_counts_tl = params
@@ -1392,9 +1403,21 @@ where
                     .get_or(|| RefCell::new(Array2::zeros((ngenes, nhidden))))
                     .borrow_mut();
 
-                Zip::indexed(x_c) // for every gene
-                    .and(params.θ.outer_iter())
+                // assign unfactored genes
+                Zip::indexed(x_c.slice(s![0..params.nunfactored])) // for every unfactored gene
+                    .for_each(|g, &x_cg| {
+                        if x_cg > 0 {
+                            cell_latent_counts_c[g] += x_cg as u32;
+                            gene_latent_counts_tl[[g,g]] += x_cg as u32;
+                        }
+                    });
+
+                // distribute factored genes
+                // let t0 = Instant::now();
+                Zip::indexed(x_c.slice(s![params.nunfactored..])) // for every (factored) gene
+                    .and(params.θ.slice(s![params.nunfactored..,..]).outer_iter())
                     .for_each(|g, &x_cg, θ_g| {
+                        let g = g + params.nunfactored;
                         if x_cg == 0 {
                             return;
                         }
@@ -1402,8 +1425,8 @@ where
                         multinomial_sample.fill(0);
 
                         // rates: normalized element-wise product
-                        multinomial_rates.assign(&φ_c);
-                        *multinomial_rates *= &θ_g;
+                        multinomial_rates.assign(&φ_c.slice(s![params.nunfactored..]));
+                        *multinomial_rates *= &θ_g.slice(s![params.nunfactored..]);
                         let rate_norm = multinomial_rates.sum();
                         *multinomial_rates /= rate_norm;
 
@@ -1430,21 +1453,26 @@ where
                         }
 
                         // add to cell marginal
-                        cell_latent_counts_c.scaled_add(1, &multinomial_sample);
+                        cell_latent_counts_c.slice_mut(s![params.nunfactored..]).scaled_add(1, &multinomial_sample);
 
                         // add to gene marginal
                         let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g);
-                        gene_latent_counts_g.scaled_add(1, &multinomial_sample);
+                        gene_latent_counts_g.slice_mut(s![params.nunfactored..]).scaled_add(1, &multinomial_sample);
                     });
+                // println!("      distribute factored: {:?}", t0.elapsed());
             });
+        // println!("    sample_latent_counts: {:?}", t0.elapsed());
 
         // accumulate from thread local matrices
+        // let t0 = Instant::now();
         params.gene_latent_counts.fill(0);
         for x in params.gene_latent_counts_tl.iter_mut() {
             params.gene_latent_counts.scaled_add(1, &x.borrow());
         }
+        // println!("    accumulate_latent_counts: {:?}", t0.elapsed());
 
         // marginal count along the hidden axis
+        // let t0 = Instant::now();
         Zip::from(&mut params.latent_counts)
             .and(params.gene_latent_counts.columns())
             .for_each(|lc, glc| {
@@ -1472,6 +1500,7 @@ where
                     .scaled_add(1, &x_c);
             });
 
+        // println!("    compute marginal latent counts: {:?}", t0.elapsed());
         // dbg!(&params.component_population);
     }
 
@@ -1542,6 +1571,7 @@ where
         // let t0 = Instant::now();
         self.sample_ωck(params);
         self.sample_sφ(priors, params);
+        // println!("  sample_sφ: {:?}", t0.elapsed());
 
         if priors.use_cell_scales {
             self.sample_cell_scales(priors, params);
@@ -1645,7 +1675,18 @@ where
     }
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
-        general_mat_mul(1.0, &params.φ, &params.θ.t(), 0.0, &mut params.λ);
+        // assign to get the unfactored rates
+        params.λ.slice_mut(s![.., ..params.nunfactored]).assign(
+            &params.φ.slice(s![.., ..params.nunfactored])
+        );
+
+        // matmul to get the factored rates
+        general_mat_mul(
+            1.0,
+            &params.φ.slice(s![.., params.nunfactored..]),
+            &params.θ.slice(s![params.nunfactored.., params.nunfactored..]).t(),
+            0.0,
+            &mut params.λ.slice_mut(s![.., params.nunfactored..]));
     }
 
     fn sample_φ(&mut self, params: &mut ModelParams) {
