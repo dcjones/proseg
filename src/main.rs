@@ -11,12 +11,11 @@ mod schemas;
 use core::f32;
 use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
 use rayon::current_num_threads;
 use regex::Regex;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts, read_transcripts_csv,
-    CellIndex, Transcript, BACKGROUND_CELL,
+    coordinate_span, estimate_full_area, filter_cellfree_transcripts, normalize_z_coordinates,
+    read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL,
 };
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
@@ -603,29 +602,6 @@ fn main() {
         }
     });
 
-    /* let transcripts = &mut transcript_dataset.transcripts;
-    let transcript_names = &transcript_dataset.transcript_names;
-    let cell_assignments = &mut transcript_dataset.cell_assignments;
-    let nucleus_assignments = &mut transcript_dataset.nucleus_assignments;
-    let nucleus_population = &transcript_dataset.nucleus_population; */
-
-    // Clamp transcript depth
-    // This is we get some reasonable depth slices when we step up to
-    // 3d sampling.
-    let zs: Vec<f32> = dataset
-        .transcripts
-        .iter()
-        .map(|t| t.z)
-        .sorted_by(|a, b| a.partial_cmp(b).unwrap())
-        .collect();
-
-    let (q0, q1) = (0.01, 0.99);
-    let zmin = zs[(q0 * (zs.len() as f32)) as usize];
-    let zmax = zs[(q1 * (zs.len() as f32)) as usize];
-    for t in &mut dataset.transcripts {
-        t.z = t.z.max(zmin).min(zmax);
-    }
-
     let mut ncells = dataset.nucleus_population.len();
     filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
 
@@ -678,6 +654,16 @@ fn main() {
             println!("Detected {} z-layers", args.nbglayers);
         }
     }
+
+    normalize_z_coordinates(&mut dataset);
+    let zmin = dataset
+        .transcripts
+        .iter()
+        .fold(f32::INFINITY, |zmin, t| zmin.min(t.z));
+    let zmax = dataset
+        .transcripts
+        .iter()
+        .fold(f32::NEG_INFINITY, |zmin, t| zmin.max(t.z));
 
     let mut layer_depth = 1.01 * (zmax - zmin) / (args.nbglayers as f32);
     if layer_depth == 0.0 {

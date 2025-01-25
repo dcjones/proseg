@@ -4,8 +4,10 @@ use flate2::read::MultiGzDecoder;
 use itertools::izip;
 use kiddo::float::kdtree::KdTree;
 use kiddo::SquaredEuclidean;
+use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 use ndarray::{Array1, Array2};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use rand::Rng;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -912,4 +914,68 @@ pub fn filter_cellfree_transcripts(
             .cloned()
             .collect::<Vec<_>>(),
     );
+}
+
+fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
+    assert!(xs.len() == ys.len());
+    assert!(xs.len() == zs.len());
+
+    // downsample transcript positions
+    let max_points: usize = 1_000_000;
+    let npoints = xs.len().min(max_points);
+
+    let mut xvec = Vec::with_capacity(npoints);
+    let mut yvec = Vec::with_capacity(npoints);
+    let mut zvec = Vec::with_capacity(npoints);
+
+    let mut rng = rand::thread_rng();
+    let shuffle_key = (0..npoints).map(|_| rng.gen::<u32>()).collect::<Vec<_>>();
+    let mut random_perm = (0..npoints).collect::<Vec<_>>();
+    random_perm.sort_by_key(|&i| shuffle_key[i]);
+    for &i in random_perm[0..npoints].iter() {
+        xvec.push(xs[i] as f64);
+        yvec.push(ys[i] as f64);
+        zvec.push(zs[i] as f64);
+    }
+
+    // run linear regression
+    let data = RegressionDataBuilder::new()
+        .build_from([("x", xvec), ("y", yvec), ("z", zvec)])
+        .unwrap();
+    let model = FormulaRegressionBuilder::new()
+        .data(&data)
+        .formula("z ~ x + y")
+        .fit()
+        .unwrap();
+
+    let model_params = model.parameters();
+    let b = model_params[0] as f32;
+    let wx = model_params[1] as f32;
+    let wy = model_params[2] as f32;
+
+    // replace z coordinates with regression residuals
+    for (x, y, z) in izip!(xs, ys, zs) {
+        *z = *z - b - wx * x - wy * y;
+    }
+}
+
+pub fn normalize_z_coordinates(dataset: &mut TranscriptDataset) {
+    let xs = dataset.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
+    let ys = dataset.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
+    let mut zs = dataset.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
+
+    regress_out_tilt(&xs, &ys, &mut zs);
+
+    let mut zs_sorted = zs.clone();
+    zs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let (q0, q1) = (0.01, 0.99);
+    let zmin = zs_sorted[(q0 * (zs.len() as f32)) as usize];
+    let zmax = zs_sorted[(q1 * (zs.len() as f32)) as usize];
+    dbg!(zmin, zmax);
+    zs.iter_mut().for_each(|z| *z = z.max(zmin).min(zmax));
+
+    for (t, z) in dataset.transcripts.iter_mut().zip(zs.iter()) {
+        t.z = *z;
+    }
 }
