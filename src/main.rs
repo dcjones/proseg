@@ -44,6 +44,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     xenium: bool,
 
+    /// Preset for probel-level 10X Xenium data
+    #[arg(long, default_value_t = false)]
+    xenium_probe: bool,
+
     /// Preset for NanoString CosMx data that using pixel coordinates. Output will still be
     /// in microns.
     #[arg(long, default_value_t = false)]
@@ -132,6 +136,12 @@ struct Args {
     /// Filter out transcripts with quality values below this threshold
     #[arg(long, default_value_t = 0.0_f32)]
     min_qv: f32,
+
+    /// Treats each probe as separate gene for the purpose of segmentation
+    probes: bool,
+
+    /// Name of column containing the probe ID
+    probe_column: Option<String>,
 
     /// Target number of cells per chunk in the parallelization scheme
     /// Smaller number enabled more parallelization, but too small a number
@@ -387,6 +397,31 @@ fn set_xenium_presets(args: &mut Args) {
     args.excluded_genes.get_or_insert(String::from(
         "^(Deprecated|NegControl|Unassigned|Intergenic)",
     ));
+    args.probe_column = Some(String::from("codeword_index"));
+
+    // newer xenium data does have a fov column
+    args.fov_column.get_or_insert(String::from("fov_name"));
+}
+
+fn set_xenium_probe_presets(args: &mut Args) {
+    args.gene_column.get_or_insert(String::from("feature_name"));
+    args.transcript_id_column
+        .get_or_insert(String::from("transcript_id"));
+    args.x_column.get_or_insert(String::from("x_location"));
+    args.y_column.get_or_insert(String::from("y_location"));
+    args.z_column.get_or_insert(String::from("z_location"));
+    args.compartment_column
+        .get_or_insert(String::from("overlaps_nucleus"));
+    args.compartment_nuclear.get_or_insert(String::from("1"));
+    args.cell_id_column.get_or_insert(String::from("cell_id"));
+    args.cell_id_unassigned
+        .get_or_insert(String::from("UNASSIGNED"));
+    args.qv_column.get_or_insert(String::from("qv"));
+    args.excluded_genes.get_or_insert(String::from(
+        "^(Deprecated|NegControl|Unassigned|Intergenic)",
+    ));
+    args.probe_column = Some(String::from("codeword_index"));
+    args.probes = true;
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
@@ -504,13 +539,18 @@ fn main() {
         + (args.merfish as u8)
         + (args.merscope as u8)
         + (args.visiumhd as u8)
+        + (args.xenium_probe as u8)
         > 1
     {
-        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope, --visiumhd can be set");
+        panic!("At most one of --xenium, --xenium-probe, --cosmx, --cosmx-micron, --merfish, --merscope, --visiumhd can be set");
     }
 
     if args.xenium {
         set_xenium_presets(&mut args);
+    }
+
+    if args.xenium_probe {
+        set_xenium_probe_presets(&mut args);
     }
 
     if args.cosmx {
@@ -577,9 +617,11 @@ fn main() {
         &expect_arg(args.x_column, "x-column"),
         &expect_arg(args.y_column, "y-column"),
         &expect_arg(args.z_column, "z-column"),
+        args.probe_column,
         args.min_qv,
         args.ignore_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
+        args.probes,
     );
 
     if !args.no_factorization {
@@ -623,7 +665,7 @@ fn main() {
         }
     }
 
-    let ngenes = dataset.transcript_names.len();
+    let ngenes = dataset.gene_names.len();
     let ncells = dataset.nucleus_population.len();
     let ntranscripts = dataset.transcripts.len();
 
@@ -922,20 +964,20 @@ fn main() {
     write_expected_counts(
         &args.output_expected_counts,
         args.output_expected_counts_fmt,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &ecounts,
     );
     write_counts(
         &args.output_maxpost_counts,
         args.output_maxpost_counts_fmt,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &counts,
     );
     write_rates(
         &args.output_rates,
         args.output_rates_fmt,
         &params,
-        &dataset.transcript_names,
+        &dataset.gene_names,
     );
     // write_component_params(
     //     &args.output_component_params,
@@ -957,7 +999,7 @@ fn main() {
         args.output_transcript_metadata_fmt,
         &dataset.transcripts,
         &params.transcript_positions,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &cell_assignments,
         &params.transcript_state,
         &dataset.qvs,
@@ -968,7 +1010,7 @@ fn main() {
         &args.output_gene_metadata,
         args.output_gene_metadata_fmt,
         &params,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &ecounts,
     );
     write_metagene_rates(
@@ -979,7 +1021,7 @@ fn main() {
     write_metagene_loadings(
         &args.output_metagene_loadings,
         args.output_metagene_loadings_fmt,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &params.θ,
     );
     write_voxels(

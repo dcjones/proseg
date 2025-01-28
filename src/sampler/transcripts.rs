@@ -31,7 +31,7 @@ pub struct Transcript {
 }
 
 pub struct TranscriptDataset {
-    pub transcript_names: Vec<String>,
+    pub gene_names: Vec<String>,
     pub transcripts: Vec<Transcript>,
     pub nucleus_assignments: Vec<CellIndex>,
     pub cell_assignments: Vec<CellIndex>,
@@ -44,12 +44,12 @@ pub struct TranscriptDataset {
 impl TranscriptDataset {
     pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
         // Current heuristic is just to select the highest expression genes.
-        let mut gene_counts = Array1::<u32>::zeros(self.transcript_names.len());
+        let mut gene_counts = Array1::<u32>::zeros(self.gene_names.len());
         for transcript in self.transcripts.iter() {
             gene_counts[transcript.gene as usize] += 1;
         }
 
-        let mut ord = (0..self.transcript_names.len()).collect::<Vec<_>>();
+        let mut ord = (0..self.gene_names.len()).collect::<Vec<_>>();
         ord.sort_unstable_by(|&i, &j| gene_counts[i].cmp(&gene_counts[j]).reverse());
 
         let mut rev_ord = vec![0; ord.len()];
@@ -57,10 +57,7 @@ impl TranscriptDataset {
             rev_ord[*j] = i;
         }
 
-        self.transcript_names = ord
-            .iter()
-            .map(|&i| self.transcript_names[i].clone())
-            .collect();
+        self.gene_names = ord.iter().map(|&i| self.gene_names[i].clone()).collect();
         for transcript in self.transcripts.iter_mut() {
             transcript.gene = rev_ord[transcript.gene as usize] as u32;
         }
@@ -84,9 +81,11 @@ pub fn read_transcripts_csv(
     x_column: &str,
     y_column: &str,
     z_column: &str,
+    probe_column: Option<String>,
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    mangle_probes: bool,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
 
@@ -151,9 +150,11 @@ pub fn read_transcripts_csv(
             x_column,
             y_column,
             z_column,
+            &probe_column.unwrap(),
             min_qv,
             ignore_z_column,
             coordinate_scale,
+            mangle_probes,
         ),
         OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
     }
@@ -222,7 +223,7 @@ fn postprocess_cell_assignments(
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     excluded_genes: Option<Regex>,
-    transcript_column: &str,
+    gene_column: &str,
     id_column: Option<String>,
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
@@ -245,7 +246,7 @@ where
     // Find the column we need
     let headers = rdr.headers().unwrap();
     let ncolumns = headers.len();
-    let transcript_col = find_column(headers, transcript_column);
+    let gene_col = find_column(headers, gene_column);
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
     let z_col = if no_z_column {
@@ -272,8 +273,8 @@ where
     let cell_assignment_unassigned = cell_assignment_unassigned.unwrap_or(String::from(""));
 
     let mut transcripts = Vec::new();
-    let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
-    let mut transcript_names = Vec::new();
+    let mut gene_name_map: HashMap<String, usize> = HashMap::new();
+    let mut gene_names = Vec::new();
     let mut nucleus_assignments = Vec::new();
     let mut cell_assignments = Vec::new();
     let mut qvs = Vec::new();
@@ -308,20 +309,20 @@ where
             0
         };
 
-        let transcript_name = &row[transcript_col];
+        let gene_name = &row[gene_col];
 
         if let Some(excluded_genes) = &excluded_genes {
-            if excluded_genes.is_match(transcript_name) {
+            if excluded_genes.is_match(gene_name) {
                 continue;
             }
         }
 
-        let gene = if let Some(gene) = transcript_name_map.get(transcript_name) {
+        let gene = if let Some(gene) = gene_name_map.get(gene_name) {
             *gene
         } else {
-            transcript_names.push(transcript_name.to_string());
-            transcript_name_map.insert(transcript_name.to_string(), transcript_names.len() - 1);
-            transcript_names.len() - 1
+            gene_names.push(gene_name.to_string());
+            gene_name_map.insert(gene_name.to_string(), gene_names.len() - 1);
+            gene_names.len() - 1
         };
 
         let x = coordinate_scale * row[x_col].parse::<f32>().unwrap();
@@ -413,7 +414,7 @@ where
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
     TranscriptDataset {
-        transcript_names,
+        gene_names,
         transcripts,
         nucleus_assignments,
         cell_assignments,
@@ -428,7 +429,7 @@ where
 fn read_xenium_transcripts_parquet(
     filename: &str,
     excluded_genes: Option<Regex>,
-    transcript_col_name: &str,
+    gene_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,
     compartment_nuclear: u8,
@@ -439,9 +440,11 @@ fn read_xenium_transcripts_parquet(
     x_col_name: &str,
     y_col_name: &str,
     z_col_name: &str,
+    probe_col_name: &str,
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    mangle_probes: bool,
 ) -> TranscriptDataset {
     let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
@@ -453,8 +456,8 @@ fn read_xenium_transcripts_parquet(
 
     // Xenium parquet files can use i32 or i64 indexes in their string arrays,
     // so we have to dynamically dispatch here.
-    let transcript_field = schema.field_with_name(transcript_col_name).unwrap();
-    let string_type = transcript_field.data_type();
+    let gene_field = schema.field_with_name(gene_col_name).unwrap();
+    let string_type = gene_field.data_type();
 
     match string_type {
         arrow::datatypes::DataType::Utf8 => {
@@ -462,7 +465,7 @@ fn read_xenium_transcripts_parquet(
                 rdr,
                 schema,
                 excluded_genes,
-                transcript_col_name,
+                gene_col_name,
                 id_col_name,
                 compartment_col_name,
                 compartment_nuclear,
@@ -473,9 +476,11 @@ fn read_xenium_transcripts_parquet(
                 x_col_name,
                 y_col_name,
                 z_col_name,
+                probe_col_name,
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                mangle_probes,
             )
         }
         arrow::datatypes::DataType::LargeUtf8 => {
@@ -483,7 +488,7 @@ fn read_xenium_transcripts_parquet(
                 rdr,
                 schema,
                 excluded_genes,
-                transcript_col_name,
+                gene_col_name,
                 id_col_name,
                 compartment_col_name,
                 compartment_nuclear,
@@ -494,9 +499,11 @@ fn read_xenium_transcripts_parquet(
                 x_col_name,
                 y_col_name,
                 z_col_name,
+                probe_col_name,
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                mangle_probes,
             )
         }
         _ => panic!("Unexpected string array type in Xenium parquet file"),
@@ -508,7 +515,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
-    transcript_col_name: &str,
+    gene_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,
     compartment_nuclear: u8,
@@ -519,15 +526,17 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     x_col_name: &str,
     y_col_name: &str,
     z_col_name: &str,
+    probe_col_name: &str,
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    mangle_probes: bool,
 ) -> TranscriptDataset
 where
     T: 'static,
     for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
 {
-    let transcript_col_idx = schema.index_of(transcript_col_name).unwrap();
+    let gene_col_idx = schema.index_of(gene_col_name).unwrap();
     let id_col_idx = schema.index_of(id_col_name).unwrap();
     let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
@@ -536,10 +545,11 @@ where
     let y_col_idx = schema.index_of(y_col_name).unwrap();
     let z_col_idx = schema.index_of(z_col_name).unwrap();
     let qv_col_idx = schema.index_of(qv_col_name).unwrap();
+    let probe_col_idx = schema.index_of(probe_col_name).unwrap();
 
     let mut transcripts = Vec::new();
-    let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
-    let mut transcript_names = Vec::new();
+    let mut gene_name_map: HashMap<String, usize> = HashMap::new();
+    let mut gene_names = Vec::new();
     let mut nucleus_assignments = Vec::new();
     let mut cell_assignments = Vec::new();
     let mut qvs = Vec::new();
@@ -551,8 +561,8 @@ where
     for rec_batch in rdr {
         let rec_batch = rec_batch.expect("Unable to read record batch.");
 
-        let transcript_col = rec_batch
-            .column(transcript_col_idx)
+        let gene_col = rec_batch
+            .column(gene_col_idx)
             .as_any()
             .downcast_ref::<T>()
             .unwrap();
@@ -605,8 +615,14 @@ where
             .downcast_ref::<arrow::array::Float32Array>()
             .unwrap();
 
-        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in izip!(
-            transcript_col,
+        let probe_col = rec_batch
+            .column(probe_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .unwrap();
+
+        for (gene, id, compartment, cell_id, fov, x, y, z, qv, probe) in izip!(
+            gene_col,
             id_col,
             compartment_col,
             cell_id_col,
@@ -614,9 +630,10 @@ where
             x_col,
             y_col,
             z_col,
-            qv_col
+            qv_col,
+            probe_col,
         ) {
-            let transcript = transcript.unwrap();
+            let gene = gene.unwrap();
             let transcript_id = id.unwrap();
             let compartment = compartment.unwrap();
             let cell_id = cell_id.unwrap();
@@ -625,13 +642,14 @@ where
             let y = y.unwrap();
             let z = z.unwrap();
             let qv = qv.unwrap();
+            let probe = probe.unwrap();
 
             if qv < min_qv {
                 continue;
             }
 
             if let Some(excluded_genes) = &excluded_genes {
-                if excluded_genes.is_match(transcript) {
+                if excluded_genes.is_match(gene) {
                     continue;
                 }
             }
@@ -645,12 +663,23 @@ where
                 }
             };
 
-            let gene = if let Some(gene) = transcript_name_map.get(transcript) {
-                *gene
+            let gene = if mangle_probes {
+                let gene_probe = format!("{}|{}", gene, probe);
+                if let Some(gene) = gene_name_map.get(&gene_probe) {
+                    *gene
+                } else {
+                    gene_names.push(gene_probe.clone());
+                    gene_name_map.insert(gene_probe, gene_names.len() - 1);
+                    gene_names.len() - 1
+                }
             } else {
-                transcript_names.push(transcript.to_string());
-                transcript_name_map.insert(transcript.to_string(), transcript_names.len() - 1);
-                transcript_names.len() - 1
+                if let Some(gene) = gene_name_map.get(gene) {
+                    *gene
+                } else {
+                    gene_names.push(gene.to_string());
+                    gene_name_map.insert(gene.to_string(), gene_names.len() - 1);
+                    gene_names.len() - 1
+                }
             };
 
             let x = coordinate_scale * x;
@@ -702,7 +731,7 @@ where
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
     TranscriptDataset {
-        transcript_names,
+        gene_names,
         transcripts,
         nucleus_assignments,
         cell_assignments,
