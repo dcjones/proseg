@@ -1,4 +1,8 @@
 
+# 2.0.2
+  - Optimizations (should be 20-30% on high-plex data)
+  - Automatic untilting of samples that are tilted on the z-axis.
+
 # 2.0.1
   - Implement a partial factorization model to avoid model failures on high-plex
     data like Xenium Prime.
@@ -79,5 +83,3 @@
 # 1.0.0
 
 Initial release
-
-

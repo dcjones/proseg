@@ -73,6 +73,11 @@ not need
   * `--nuclear-reassignment_prob 0.2`: Prior probability that the initial nuclear assignment (if any) is incorrect.
   * `--perimeter-bound 1.3`: Larger numbers allow less spherical cells.
 
+# General advice
+
+  * If the dataset conisists of multiple tissue sections, it's generally safer
+  to split these and segment them separately. This avoids potential sub-optimal
+  modeling due to different z-coordinate distributions.
 
 # Running on Xenium datasets
 
