@@ -2,16 +2,17 @@ use arrow::array::RecordBatch;
 use arrow::csv;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
-use parquet::errors::ParquetError;
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
-use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
 use ndarray::{Array1, Array2, Axis};
+use parquet::arrow::ArrowWriter;
+use parquet::basic::{Compression::ZSTD, ZstdLevel};
+use parquet::errors::ParquetError;
+use parquet::file::properties::WriterProperties;
 use std::fs::File;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::sampler::transcripts::Transcript;
@@ -20,13 +21,22 @@ use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::{ModelParams, TranscriptState};
 use crate::schemas::{transcript_metadata_schema, OutputFormat};
 
-pub fn write_table(filename: &str, fmt: OutputFormat, batch: &RecordBatch) {
+pub fn write_table(
+    output_path: &Option<String>,
+    filename: &str,
+    fmt: OutputFormat,
+    batch: &RecordBatch,
+) {
     let fmt = match fmt {
         OutputFormat::Infer => infer_format_from_filename(filename),
         _ => fmt,
     };
 
-    let mut file = File::create(filename).unwrap();
+    let mut file = if let Some(output_path) = output_path {
+        File::create(Path::new(output_path).join(filename)).unwrap()
+    } else {
+        File::create(filename).unwrap()
+    };
 
     match fmt {
         OutputFormat::Csv => {
@@ -88,6 +98,7 @@ pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
 }
 
 pub fn write_counts(
+    output_path: &Option<String>,
     output_counts: &Option<String>,
     output_counts_fmt: OutputFormat,
     transcript_names: &[String],
@@ -110,11 +121,12 @@ pub fn write_counts(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_counts, output_counts_fmt, &batch);
+        write_table(output_path, output_counts, output_counts_fmt, &batch);
     }
 }
 
 pub fn write_expected_counts(
+    output_path: &Option<String>,
     output_expected_counts: &Option<String>,
     output_expected_counts_fmt: OutputFormat,
     transcript_names: &[String],
@@ -137,20 +149,25 @@ pub fn write_expected_counts(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_expected_counts, output_expected_counts_fmt, &batch);
+        write_table(
+            output_path,
+            output_expected_counts,
+            output_expected_counts_fmt,
+            &batch,
+        );
     }
 }
 
-
 pub fn write_metagene_rates(
+    output_path: &Option<String>,
     output_metagene_rates: &Option<String>,
     output_metagene_rates_fmt: OutputFormat,
-    φ: &Array2<f32>
+    φ: &Array2<f32>,
 ) {
     if let Some(output_metagene_rates) = output_metagene_rates {
         let k = φ.shape()[1];
         let schema = Schema::new(
-                (0..k)
+            (0..k)
                 .map(|name| Field::new(format!("phi{}", name), DataType::Float32, false))
                 .collect::<Vec<Field>>(),
         );
@@ -164,23 +181,26 @@ pub fn write_metagene_rates(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_metagene_rates, output_metagene_rates_fmt, &batch);
+        write_table(
+            output_path,
+            output_metagene_rates,
+            output_metagene_rates_fmt,
+            &batch,
+        );
     }
 }
 
-
 pub fn write_metagene_loadings(
+    output_path: &Option<String>,
     output_metagene_rates: &Option<String>,
     output_metagene_rates_fmt: OutputFormat,
     transcript_names: &[String],
-    θ: &Array2<f32>
+    θ: &Array2<f32>,
 ) {
     if let Some(output_metagene_rates) = output_metagene_rates {
         let k = θ.shape()[1];
 
-        let mut schema = vec![
-            Field::new("gene", DataType::Utf8, false),
-        ];
+        let mut schema = vec![Field::new("gene", DataType::Utf8, false)];
 
         for i in 0..k {
             schema.push(Field::new(format!("theta{}", i), DataType::Float32, false));
@@ -190,11 +210,12 @@ pub fn write_metagene_loadings(
 
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
 
-        columns.push(
-            Arc::new(
-                transcript_names.iter().map(|gene| Some(gene)).collect::<arrow::array::StringArray>()
-            )
-        );
+        columns.push(Arc::new(
+            transcript_names
+                .iter()
+                .map(|gene| Some(gene))
+                .collect::<arrow::array::StringArray>(),
+        ));
 
         for row in θ.columns() {
             columns.push(Arc::new(
@@ -204,12 +225,17 @@ pub fn write_metagene_loadings(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_metagene_rates, output_metagene_rates_fmt, &batch);
+        write_table(
+            output_path,
+            output_metagene_rates,
+            output_metagene_rates_fmt,
+            &batch,
+        );
     }
 }
 
-
 pub fn write_rates(
+    output_path: &Option<String>,
     output_rates: &Option<String>,
     output_rates_fmt: OutputFormat,
     params: &ModelParams,
@@ -232,7 +258,7 @@ pub fn write_rates(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_rates, output_rates_fmt, &batch);
+        write_table(output_path, output_rates, output_rates_fmt, &batch);
     }
 }
 
@@ -309,6 +335,7 @@ fn cell_fov_vote(
 }
 
 pub fn write_cell_metadata(
+    output_path: &Option<String>,
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: OutputFormat,
     params: &ModelParams,
@@ -399,12 +426,18 @@ pub fn write_cell_metadata(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_cell_metadata, output_cell_metadata_fmt, &batch);
+        write_table(
+            output_path,
+            output_cell_metadata,
+            output_cell_metadata_fmt,
+            &batch,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
+    output_path: &Option<String>,
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: OutputFormat,
     transcripts: &[Transcript],
@@ -506,6 +539,7 @@ pub fn write_transcript_metadata(
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
         write_table(
+            output_path,
             output_transcript_metadata,
             output_transcript_metadata_fmt,
             &batch,
@@ -514,6 +548,7 @@ pub fn write_transcript_metadata(
 }
 
 pub fn write_gene_metadata(
+    output_path: &Option<String>,
     output_gene_metadata: &Option<String>,
     output_gene_metadata_fmt: OutputFormat,
     params: &ModelParams,
@@ -608,11 +643,17 @@ pub fn write_gene_metadata(
         let schema = Schema::new(schema_fields);
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_gene_metadata, output_gene_metadata_fmt, &batch);
+        write_table(
+            output_path,
+            output_gene_metadata,
+            output_gene_metadata_fmt,
+            &batch,
+        );
     }
 }
 
 pub fn write_voxels(
+    output_path: &Option<String>,
     output_voxels: &Option<String>,
     output_voxels_fmt: OutputFormat,
     sampler: &VoxelSampler,
@@ -660,7 +701,7 @@ pub fn write_voxels(
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(output_voxels, output_voxels_fmt, &batch);
+        write_table(output_path, output_voxels, output_voxels_fmt, &batch);
     }
 }
 
@@ -670,11 +711,16 @@ pub fn write_voxels(
 // MultiPolygons, so we need to write each polygon in a cell to a separate Polygon entry.
 
 pub fn write_cell_multipolygons(
+    output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
     polygons: Vec<MultiPolygon<f32>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
-        let file = File::create(output_cell_polygons).unwrap();
+        let file = if let Some(output_path) = output_path {
+            File::create(Path::new(output_path).join(output_cell_polygons)).unwrap()
+        } else {
+            File::create(output_cell_polygons).unwrap()
+        };
         let mut encoder = GzEncoder::new(file, Compression::default());
 
         writeln!(
@@ -737,11 +783,16 @@ pub fn write_cell_multipolygons(
 }
 
 pub fn write_cell_layered_multipolygons(
+    output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
     polygons: Vec<Vec<(i32, MultiPolygon<f32>)>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
-        let file = File::create(output_cell_polygons).unwrap();
+        let file = if let Some(output_path) = output_path {
+            File::create(Path::new(output_path).join(output_cell_polygons)).unwrap()
+        } else {
+            File::create(output_cell_polygons).unwrap()
+        };
         let mut encoder = GzEncoder::new(file, Compression::default());
 
         writeln!(

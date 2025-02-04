@@ -30,6 +30,7 @@ use std::f32;
 use std::fs::File;
 use std::io::Write;
 use std::iter::Iterator;
+use std::path::Path;
 use thread_local::ThreadLocal;
 use transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 
@@ -595,6 +596,7 @@ impl ModelParams {
         &self,
         transcripts: &[Transcript],
         counts: &Array2<u32>,
+        output_path: &Option<String>,
         filename: &str,
     ) {
         // We are not maintaining any kind of per-cell array, so I guess I have
@@ -606,8 +608,13 @@ impl ModelParams {
             }
         }
 
-        let file = File::create(filename).unwrap();
+        let file = if let Some(output_path) = output_path {
+            File::create(Path::new(output_path).join(filename)).unwrap()
+        } else {
+            File::create(filename).unwrap()
+        };
         let mut encoder = GzEncoder::new(file, Compression::default());
+
         writeln!(
             encoder,
             "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
@@ -951,11 +958,13 @@ pub trait Proposal {
             Zip::from(self.gene_count().rows())
                 .and(params.logλ_bg.rows())
                 .for_each(|gene_counts, logλ_bg| {
-                    Zip::from(gene_counts).and(logλ_bg).for_each(|&count, &logλ_bg| {
-                        if count > 0 {
-                            δ -= count as f32 * logλ_bg;
-                        }
-                    });
+                    Zip::from(gene_counts)
+                        .and(logλ_bg)
+                        .for_each(|&count, &logλ_bg| {
+                            if count > 0 {
+                                δ -= count as f32 * logλ_bg;
+                            }
+                        });
                 });
         } else {
             let volume_diff = self.old_cell_volume_delta();
@@ -997,11 +1006,13 @@ pub trait Proposal {
             Zip::from(self.gene_count().rows())
                 .and(params.logλ_bg.rows())
                 .for_each(|gene_counts, logλ_bg| {
-                    Zip::from(gene_counts).and(logλ_bg).for_each(|&count, &logλ_bg| {
-                        if count > 0 {
-                            δ += count as f32 * logλ_bg;
-                        }
-                    });
+                    Zip::from(gene_counts)
+                        .and(logλ_bg)
+                        .for_each(|&count, &logλ_bg| {
+                            if count > 0 {
+                                δ += count as f32 * logλ_bg;
+                            }
+                        });
                 });
         } else {
             let volume_diff = self.new_cell_volume_delta();
@@ -1386,7 +1397,7 @@ where
             .and(params.φ.outer_iter())
             .and(params.foreground_counts.outer_iter())
             .par_for_each(|mut cell_latent_counts_c, φ_c, x_c| {
-            // .for_each(|mut cell_latent_counts_c, φ_c, x_c| {
+                // .for_each(|mut cell_latent_counts_c, φ_c, x_c| {
                 let mut rng = thread_rng();
                 let mut multinomial_rates = params
                     .multinomial_rates
@@ -1408,14 +1419,14 @@ where
                     .for_each(|g, &x_cg| {
                         if x_cg > 0 {
                             cell_latent_counts_c[g] += x_cg as u32;
-                            gene_latent_counts_tl[[g,g]] += x_cg as u32;
+                            gene_latent_counts_tl[[g, g]] += x_cg as u32;
                         }
                     });
 
                 // distribute factored genes
                 // let t0 = Instant::now();
                 Zip::indexed(x_c.slice(s![params.nunfactored..])) // for every (factored) gene
-                    .and(params.θ.slice(s![params.nunfactored..,..]).outer_iter())
+                    .and(params.θ.slice(s![params.nunfactored.., ..]).outer_iter())
                     .for_each(|g, &x_cg, θ_g| {
                         let g = g + params.nunfactored;
                         if x_cg == 0 {
@@ -1453,11 +1464,15 @@ where
                         }
 
                         // add to cell marginal
-                        cell_latent_counts_c.slice_mut(s![params.nunfactored..]).scaled_add(1, &multinomial_sample);
+                        cell_latent_counts_c
+                            .slice_mut(s![params.nunfactored..])
+                            .scaled_add(1, &multinomial_sample);
 
                         // add to gene marginal
                         let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g);
-                        gene_latent_counts_g.slice_mut(s![params.nunfactored..]).scaled_add(1, &multinomial_sample);
+                        gene_latent_counts_g
+                            .slice_mut(s![params.nunfactored..])
+                            .scaled_add(1, &multinomial_sample);
                     });
                 // println!("      distribute factored: {:?}", t0.elapsed());
             });
@@ -1676,17 +1691,22 @@ where
 
     fn compute_rates(&mut self, params: &mut ModelParams) {
         // assign to get the unfactored rates
-        params.λ.slice_mut(s![.., ..params.nunfactored]).assign(
-            &params.φ.slice(s![.., ..params.nunfactored])
-        );
+        params
+            .λ
+            .slice_mut(s![.., ..params.nunfactored])
+            .assign(&params.φ.slice(s![.., ..params.nunfactored]));
 
         // matmul to get the factored rates
         general_mat_mul(
             1.0,
             &params.φ.slice(s![.., params.nunfactored..]),
-            &params.θ.slice(s![params.nunfactored.., params.nunfactored..]).t(),
+            &params
+                .θ
+                .slice(s![params.nunfactored.., params.nunfactored..])
+                .t(),
             0.0,
-            &mut params.λ.slice_mut(s![.., params.nunfactored..]));
+            &mut params.λ.slice_mut(s![.., params.nunfactored..]),
+        );
     }
 
     fn sample_φ(&mut self, params: &mut ModelParams) {

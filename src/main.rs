@@ -247,6 +247,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 
+    /// Prepend a path name to every  output file name
+    #[arg(long, default_value = None)]
+    output_path: Option<String>,
+
     /// Output a point estimate of transcript counts per cell
     #[arg(long, default_value = None)]
     output_maxpost_counts: Option<String>,
@@ -837,6 +841,7 @@ fn main() {
             true,
             true,
             false,
+            &args.output_path,
         );
 
         for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
@@ -861,6 +866,7 @@ fn main() {
                 true,
                 true,
                 false,
+                &args.output_path,
             );
         }
         if args.check_consistency {
@@ -884,6 +890,7 @@ fn main() {
         true,
         false,
         false,
+        &args.output_path,
     );
 
     run_hexbin_sampler(
@@ -901,6 +908,7 @@ fn main() {
         true,
         false,
         false,
+        &args.output_path,
     );
 
     if args.check_consistency {
@@ -920,18 +928,21 @@ fn main() {
     let cell_centroids = sampler.borrow().cell_centroids();
 
     write_expected_counts(
+        &args.output_path,
         &args.output_expected_counts,
         args.output_expected_counts_fmt,
         &dataset.transcript_names,
         &ecounts,
     );
     write_counts(
+        &args.output_path,
         &args.output_maxpost_counts,
         args.output_maxpost_counts_fmt,
         &dataset.transcript_names,
         &counts,
     );
     write_rates(
+        &args.output_path,
         &args.output_rates,
         args.output_rates_fmt,
         &params,
@@ -944,6 +955,7 @@ fn main() {
     //     &dataset.transcript_names,
     // );
     write_cell_metadata(
+        &args.output_path,
         &args.output_cell_metadata,
         args.output_cell_metadata_fmt,
         &params,
@@ -953,6 +965,7 @@ fn main() {
         &dataset.fov_names,
     );
     write_transcript_metadata(
+        &args.output_path,
         &args.output_transcript_metadata,
         args.output_transcript_metadata_fmt,
         &dataset.transcripts,
@@ -965,6 +978,7 @@ fn main() {
         &dataset.fov_names,
     );
     write_gene_metadata(
+        &args.output_path,
         &args.output_gene_metadata,
         args.output_gene_metadata_fmt,
         &params,
@@ -972,17 +986,20 @@ fn main() {
         &ecounts,
     );
     write_metagene_rates(
+        &args.output_path,
         &args.output_metagene_rates,
         args.output_metagene_rates_fmt,
         &params.φ,
     );
     write_metagene_loadings(
+        &args.output_path,
         &args.output_metagene_loadings,
         args.output_metagene_loadings_fmt,
         &dataset.transcript_names,
         &params.θ,
     );
     write_voxels(
+        &args.output_path,
         &args.output_cell_voxels,
         args.output_cell_voxels_fmt,
         &sampler.borrow(),
@@ -990,17 +1007,34 @@ fn main() {
 
     if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
         let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
-        write_cell_multipolygons(&args.output_union_cell_polygons, cell_flattened_polygons);
-        write_cell_layered_multipolygons(&args.output_cell_polygon_layers, cell_polygons);
+        write_cell_multipolygons(
+            &args.output_path,
+            &args.output_union_cell_polygons,
+            cell_flattened_polygons,
+        );
+        write_cell_layered_multipolygons(
+            &args.output_path,
+            &args.output_cell_polygon_layers,
+            cell_polygons,
+        );
     }
 
     if args.output_cell_polygons.is_some() {
         let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
-        write_cell_multipolygons(&args.output_cell_polygons, consensus_cell_polygons);
+        write_cell_multipolygons(
+            &args.output_path,
+            &args.output_cell_polygons,
+            consensus_cell_polygons,
+        );
     }
 
     if let Some(output_cell_hulls) = args.output_cell_hulls {
-        params.write_cell_hulls(&dataset.transcripts, &counts, &output_cell_hulls);
+        params.write_cell_hulls(
+            &dataset.transcripts,
+            &counts,
+            &args.output_path,
+            &output_cell_hulls,
+        );
     }
 }
 
@@ -1020,6 +1054,7 @@ fn run_hexbin_sampler(
     sample_cell_regions: bool,
     burnin: bool,
     hillclimb: bool,
+    output_path: &Option<String>,
 ) {
     sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
     let mut proposal_stats = ProposalStats::new();
@@ -1076,7 +1111,7 @@ fn run_hexbin_sampler(
             if let Some(basename) = monitor_cell_polygons {
                 let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
                 let (cell_polygons, _cell_flattened_polygons) = sampler.cell_polygons();
-                write_cell_layered_multipolygons(&Some(filename), cell_polygons);
+                write_cell_layered_multipolygons(output_path, &Some(filename), cell_polygons);
             }
         }
 
