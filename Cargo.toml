@@ -22,7 +22,7 @@ path = "src/to_baysor.rs"
 # path = "src/centroid_distance.rs"
 
 [profile.release]
-debug = false
+debug = true
 # lto = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

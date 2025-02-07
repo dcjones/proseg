@@ -1,6 +1,6 @@
 use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
-use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
+use super::polygons::{union_all_into_multipolygon, PolygonBuilder};
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
@@ -9,7 +9,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 // use arrow;
 use geo::geometry::{MultiPolygon, Polygon};
 use itertools::Itertools;
-use ndarray::{Array2, Zip};
+use ndarray::{s, Array1, Array2, Array3, Axis, Zip};
 use rand::{thread_rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -417,8 +417,11 @@ pub struct VoxelSampler {
     // need to track the per z-layer cell population and perimeter in order
     // to implement perimeter constraints.
     voxel_layers: usize,
-    cell_population: Array2<f32>, // [voxellayers, ncells]
-    cell_perimeter: Array2<f32>,  // [voxellayers, ncells]
+    cell_population: Array2<f32>,        // [voxellayers, ncells]
+    cell_perimeter: Array2<f32>,         // [voxellayers, ncells]
+    cell_layer_centroids: Array3<f32>,   // [voxellayers, ncells]
+    cell_layer_voxel_count: Array2<f32>, // [voxellayers, ncells]
+    cell_layer_moi: Array2<f32>,         // [voxellayers, ncells]
 
     proposals: Vec<VoxelProposal>,
     connectivity_checker: ThreadLocal<RefCell<ConnectivityChecker>>,
@@ -511,6 +514,9 @@ impl VoxelSampler {
 
         let cell_population = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
         let cell_perimeter = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
+        let cell_layer_centroids = Array3::from_elem((voxellayers, params.ncells(), 2), 0.0_f32);
+        let cell_layer_voxel_count = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
+        let cell_layer_moi = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
 
         let proposals = vec![VoxelProposal::new(ngenes, nlayers); nchunks];
         let connectivity_checker = ThreadLocal::new();
@@ -537,6 +543,9 @@ impl VoxelSampler {
             voxel_layers: voxellayers,
             cell_population,
             cell_perimeter,
+            cell_layer_centroids,
+            cell_layer_voxel_count,
+            cell_layer_moi,
             proposals,
             connectivity_checker,
             zmin,
@@ -639,6 +648,9 @@ impl VoxelSampler {
             Array2::from_elem((voxellayers, self.cell_population.shape()[1]), 0.0_f32);
         let cell_perimeter =
             Array2::from_elem((voxellayers, self.cell_perimeter.shape()[1]), 0.0_f32);
+        let cell_layer_centroids = Array3::from_elem((voxellayers, params.ncells(), 2), 0.0_f32);
+        let cell_layer_voxel_count = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
+        let cell_layer_moi = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
 
         let mut sampler = VoxelSampler {
             chunkquad: ChunkQuadMap {
@@ -659,6 +671,9 @@ impl VoxelSampler {
             voxel_layers: voxellayers,
             cell_population,
             cell_perimeter,
+            cell_layer_centroids,
+            cell_layer_voxel_count,
+            cell_layer_moi,
             proposals,
             connectivity_checker,
             zmin: self.zmin,
@@ -744,6 +759,61 @@ impl VoxelSampler {
         }
     }
 
+    fn recompute_cell_moi(&mut self) {
+        self.cell_layer_centroids.fill(0.0_f32);
+        self.cell_layer_voxel_count.fill(0.0_f32);
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+            let mut centroid =
+                self.cell_layer_centroids
+                    .slice_mut(s![voxel.k as usize, cell as usize, ..]);
+            centroid[0] += voxel.i as f32 + 0.5;
+            centroid[1] += voxel.j as f32 + 0.5;
+
+            self.cell_layer_voxel_count[[voxel.k as usize, cell as usize]] += 1.0_f32;
+        }
+
+        // divide by voxel count to get centroids
+        Zip::from(self.cell_layer_centroids.outer_iter_mut())
+            .and(self.cell_layer_voxel_count.outer_iter())
+            .for_each(|mut centroid_t, count_t| {
+                Zip::from(centroid_t.outer_iter_mut())
+                    .and(count_t)
+                    .for_each(|mut centroid_tc, count_tc| {
+                        centroid_tc[0] /= count_tc;
+                        centroid_tc[1] /= count_tc;
+                    });
+            });
+
+        self.cell_layer_moi.fill(0.0_f32);
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let centroid = self
+                .cell_layer_centroids
+                .slice(s![voxel.k as usize, cell as usize, ..]);
+            let cx = centroid[0];
+            let cy = centroid[1];
+
+            let x = voxel.i as f32 + 0.5;
+            let y = voxel.j as f32 + 0.5;
+
+            self.cell_layer_moi[[voxel.k as usize, cell as usize]] +=
+                (x - cx).powi(2) + (y - cy).powi(2);
+        }
+
+        Zip::from(&mut self.cell_layer_moi)
+            .and(&self.cell_layer_voxel_count)
+            .for_each(|moi_tc, count_tc| {
+                *moi_tc /= count_tc.powi(2);
+            });
+    }
+
     fn populate_mismatches(&mut self) {
         for (&voxel, &cell) in self.voxel_cells.iter() {
             let (chunk, quad) = self.chunkquad.get(voxel);
@@ -783,6 +853,25 @@ impl VoxelSampler {
             .iter()
             .filter(|(_, &cell)| cell != BACKGROUND_CELL)
             .map(|(voxel, cell)| (*cell, self.chunkquad.layout.voxel_to_world_coords(*voxel)));
+    }
+
+    pub fn cell_mois(&mut self) -> Array1<f32> {
+        self.recompute_cell_moi();
+        Zip::from(self.cell_layer_moi.axis_iter(Axis(1)))
+            .and(self.cell_layer_voxel_count.axis_iter(Axis(1)))
+            .map_collect(|moi_c, count_c| {
+                let mut mean_moi = 0.0_f32;
+                let mut layer_count = 0.0_f32;
+                Zip::from(moi_c)
+                    .and(count_c)
+                    .for_each(|&moi_tc, &count_tc| {
+                        if count_tc > 0.0 {
+                            mean_moi += moi_tc / count_tc;
+                            layer_count += 1.0;
+                        }
+                    });
+                mean_moi / layer_count
+            })
     }
 
     pub fn cell_centroids(&self) -> Vec<(f32, f32, f32)> {
@@ -879,11 +968,24 @@ impl VoxelSampler {
                 .entry(cell)
                 .and_modify(|e| {
                     if transcript_count > e.1 {
-                        *e = (Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count)
+                        *e = (
+                            Voxel {
+                                i: voxel.i,
+                                j: voxel.j,
+                                k: 0,
+                            },
+                            transcript_count,
+                        )
                     }
                 })
-                .or_insert((Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count));
-
+                .or_insert((
+                    Voxel {
+                        i: voxel.i,
+                        j: voxel.j,
+                        k: 0,
+                    },
+                    transcript_count,
+                ));
         }
         // println!("index voxels: {:?}", t0.elapsed());
 
@@ -925,7 +1027,7 @@ impl VoxelSampler {
         // Here we try to fix those cases by including at least on voxel.
         for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
             if voxels.is_empty() {
-                let cell =  cell as u32;
+                let cell = cell as u32;
                 voxels.insert(top_voxel[&cell].0);
             }
         }

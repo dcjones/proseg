@@ -164,7 +164,7 @@ struct Args {
     schedule: Vec<usize>,
 
     /// Whether to double the z-layers when doubling resolution
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     double_z_layers: bool,
 
     /// Number of samples at the end of the schedule used to compute
@@ -926,6 +926,7 @@ fn main() {
 
     let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
     let cell_centroids = sampler.borrow().cell_centroids();
+    let cell_mois = sampler.borrow_mut().cell_mois();
 
     write_expected_counts(
         &args.output_path,
@@ -963,6 +964,7 @@ fn main() {
         &cell_assignments,
         &dataset.fovs,
         &dataset.fov_names,
+        cell_mois.as_slice().unwrap(),
     );
     write_transcript_metadata(
         &args.output_path,

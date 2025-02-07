@@ -343,6 +343,7 @@ pub fn write_cell_metadata(
     cell_assignments: &[(u32, f32)],
     fovs: &[u32],
     fov_names: &[String],
+    mois: &[f32],
 ) {
     // TODO: write factorization
     let ncells = cell_centroids.len();
@@ -360,6 +361,7 @@ pub fn write_cell_metadata(
             Field::new("volume", DataType::Float32, false),
             Field::new("scale", DataType::Float32, false),
             Field::new("population", DataType::UInt64, false),
+            Field::new("moi", DataType::Float32, false),
         ]);
 
         let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
@@ -422,6 +424,7 @@ pub fn write_cell_metadata(
                     .map(|&p| p as u64)
                     .collect::<arrow::array::UInt64Array>(),
             ),
+            Arc::new(mois.iter().cloned().collect::<arrow::array::Float32Array>()),
         ];
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
