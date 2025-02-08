@@ -927,6 +927,11 @@ fn main() {
     let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
     let cell_centroids = sampler.borrow().cell_centroids();
     let cell_mois = sampler.borrow_mut().cell_mois();
+    let cell_moore_perimeters = sampler.borrow_mut().cell_moore_perimeters();
+    let cell_von_neumann_perimeters = sampler.borrow_mut().cell_von_neumann_perimeters();
+    let cell_radius2x_perimeters = sampler.borrow_mut().cell_radius2x_perimeters();
+    let cell_unique_moore_perimeters = sampler.borrow_mut().cell_unique_moore_perimeters();
+    let cell_eccentricities = sampler.borrow_mut().cell_eccentricities();
 
     write_expected_counts(
         &args.output_path,
@@ -965,6 +970,11 @@ fn main() {
         &dataset.fovs,
         &dataset.fov_names,
         cell_mois.as_slice().unwrap(),
+        cell_moore_perimeters.as_slice().unwrap(),
+        cell_von_neumann_perimeters.as_slice().unwrap(),
+        cell_radius2x_perimeters.as_slice().unwrap(),
+        cell_unique_moore_perimeters.as_slice().unwrap(),
+        cell_eccentricities.as_slice().unwrap(),
     );
     write_transcript_metadata(
         &args.output_path,

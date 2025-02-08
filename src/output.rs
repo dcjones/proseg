@@ -344,6 +344,11 @@ pub fn write_cell_metadata(
     fovs: &[u32],
     fov_names: &[String],
     mois: &[f32],
+    moore_perimeters: &[f32],
+    von_neumann_perimeters: &[f32],
+    radius2x_perimeters: &[f32],
+    unique_moore_perimeters: &[f32],
+    eccentricities: &[f32],
 ) {
     // TODO: write factorization
     let ncells = cell_centroids.len();
@@ -362,6 +367,11 @@ pub fn write_cell_metadata(
             Field::new("scale", DataType::Float32, false),
             Field::new("population", DataType::UInt64, false),
             Field::new("moi", DataType::Float32, false),
+            Field::new("moore_perimeter", DataType::Float32, false),
+            Field::new("von_neumann_perimeter", DataType::Float32, false),
+            Field::new("radius2_perimeter", DataType::Float32, false),
+            Field::new("unique_moore_perimeter", DataType::Float32, false),
+            Field::new("eccentricity", DataType::Float32, false),
         ]);
 
         let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
@@ -425,6 +435,36 @@ pub fn write_cell_metadata(
                     .collect::<arrow::array::UInt64Array>(),
             ),
             Arc::new(mois.iter().cloned().collect::<arrow::array::Float32Array>()),
+            Arc::new(
+                moore_perimeters
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                von_neumann_perimeters
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                radius2x_perimeters
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                unique_moore_perimeters
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                eccentricities
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ),
         ];
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();

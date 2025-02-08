@@ -84,19 +84,19 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
     }
 
-    // pub fn moore_neighborhood_xy(&self) -> [Voxel; 8] {
-    //     [
-    //         (-1, 0, 0),
-    //         (1, 0, 0),
-    //         (-1, 1, 0),
-    //         (0, 1, 0),
-    //         (1, 1, 0),
-    //         (-1, -1, 0),
-    //         (0, -1, 0),
-    //         (1, -1, 0),
-    //     ]
-    //     .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
-    // }
+    pub fn moore_neighborhood_xy(&self) -> [Voxel; 8] {
+        [
+            (-1, 0, 0),
+            (1, 0, 0),
+            (-1, 1, 0),
+            (0, 1, 0),
+            (1, 1, 0),
+            (-1, -1, 0),
+            (0, -1, 0),
+            (1, -1, 0),
+        ]
+        .map(|(di, dj, dk)| Voxel::new(self.i + di, self.j + dj, self.k + dk))
+    }
 
     pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         [
@@ -871,6 +871,149 @@ impl VoxelSampler {
                         }
                     });
                 mean_moi / layer_count
+            })
+    }
+
+    pub fn cell_moore_perimeters(&self) -> Array1<f32> {
+        let mut perimeter = Array1::zeros(self.ncells());
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in voxel.moore_neighborhood_xy() {
+                let neighbor_cell = self.voxel_cells.get(neighbor);
+                if neighbor_cell != cell {
+                    perimeter[[cell as usize]] += 1.0_f32;
+                }
+            }
+        }
+
+        perimeter
+    }
+
+    pub fn cell_von_neumann_perimeters(&self) -> Array1<f32> {
+        let mut perimeter = Array1::zeros(self.ncells());
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in voxel.von_neumann_neighborhood_xy() {
+                let neighbor_cell = self.voxel_cells.get(neighbor);
+                if neighbor_cell != cell {
+                    perimeter[[cell as usize]] += 1.0_f32;
+                }
+            }
+        }
+
+        perimeter
+    }
+
+    pub fn cell_radius2x_perimeters(&self) -> Array1<f32> {
+        let mut perimeter = Array1::zeros(self.ncells());
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in voxel.radius2_xy_neighborhood() {
+                let neighbor_cell = self.voxel_cells.get(neighbor);
+                if neighbor_cell != cell {
+                    perimeter[[cell as usize]] += 1.0_f32;
+                }
+            }
+        }
+
+        perimeter
+    }
+
+    pub fn cell_unique_moore_perimeters(&self) -> Array1<f32> {
+        let mut neighbors = vec![HashSet::new(); self.ncells()];
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in voxel.moore_neighborhood_xy() {
+                let neighbor_cell = self.voxel_cells.get(neighbor);
+                if neighbor_cell != cell {
+                    neighbors[cell as usize].insert(neighbor);
+                }
+            }
+        }
+
+        neighbors.iter().map(|n| n.len() as f32).collect()
+    }
+
+    pub fn cell_eccentricities(&mut self) -> Array1<f32> {
+        self.cell_layer_centroids.fill(0.0_f32);
+        self.cell_layer_voxel_count.fill(0.0_f32);
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+            let mut centroid =
+                self.cell_layer_centroids
+                    .slice_mut(s![voxel.k as usize, cell as usize, ..]);
+            centroid[0] += voxel.i as f32 + 0.5;
+            centroid[1] += voxel.j as f32 + 0.5;
+
+            self.cell_layer_voxel_count[[voxel.k as usize, cell as usize]] += 1.0_f32;
+        }
+
+        // divide by voxel count to get centroids
+        Zip::from(self.cell_layer_centroids.outer_iter_mut())
+            .and(self.cell_layer_voxel_count.outer_iter())
+            .for_each(|mut centroid_t, count_t| {
+                Zip::from(centroid_t.outer_iter_mut())
+                    .and(count_t)
+                    .for_each(|mut centroid_tc, count_tc| {
+                        centroid_tc[0] /= count_tc;
+                        centroid_tc[1] /= count_tc;
+                    });
+            });
+
+        let mut μ_20 = Array2::<f32>::zeros((self.voxel_layers, self.ncells()));
+        let mut μ_02 = Array2::<f32>::zeros((self.voxel_layers, self.ncells()));
+        let mut μ_11 = Array2::<f32>::zeros((self.voxel_layers, self.ncells()));
+
+        for (&voxel, &cell) in self.voxel_cells.iter() {
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let cell = cell as usize;
+            let k = voxel.k as usize;
+            let centroid = self
+                .cell_layer_centroids
+                .slice(s![voxel.k as usize, cell as usize, ..]);
+            let cx = centroid[0];
+            let cy = centroid[1];
+
+            let x = voxel.i as f32 + 0.5;
+            let y = voxel.j as f32 + 0.5;
+
+            μ_20[[k, cell]] += (x - cx).powi(2);
+            μ_02[[k, cell]] += (y - cy).powi(2);
+            μ_11[[k, cell]] += (x - cx) * (y - cy);
+        }
+
+        Zip::from(μ_20.axis_iter(Axis(1)))
+            .and(μ_02.axis_iter(Axis(1)))
+            .and(μ_11.axis_iter(Axis(1)))
+            .and(self.cell_layer_voxel_count.axis_iter(Axis(1)))
+            .map_collect(|μ_20_c, μ_02_c, μ_11_c, area_c| {
+                Zip::from(μ_20_c).and(μ_02_c).and(μ_11_c).and(area_c).fold(
+                    0.0_f32,
+                    |acc, &μ_20_tc, &μ_02_tc, &μ_11_tc, &area_tc| {
+                        acc + ((μ_20_tc - μ_02_tc).powi(2) + 4.0 * μ_11_tc.powi(2)) / area_tc
+                    },
+                )
             })
     }
 
