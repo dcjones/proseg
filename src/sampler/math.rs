@@ -45,7 +45,7 @@ pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
 
 pub fn rand_crt(rng: &mut ThreadRng, n: u32, r: f32) -> u32 {
     (0..n)
-        .map(|t| rng.gen_bool(r as f64 / (r as f64 + t as f64)) as u32)
+        .map(|t| rng.random_bool(r as f64 / (r as f64 + t as f64)) as u32)
         .sum()
 }
 

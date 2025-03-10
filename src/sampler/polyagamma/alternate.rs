@@ -122,7 +122,7 @@ impl Parameters {
 
     fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64 {
         loop {
-            let u = rng.gen::<f32>();
+            let u = rng.random::<f32>();
             if u <= self.proposal_probability {
                 self.x = random_left_bounded_gamma(rng, self.h, self.lambda_z, self.t);
             } else if self.z > 0.0 {
@@ -135,7 +135,7 @@ impl Parameters {
             assert!(self.x > 0.0);
 
             self.logx = (self.x as f32).ln() as f64;
-            let u = rng.gen::<f32>() * self.bounding_kernel();
+            let u = rng.random::<f32>() * self.bounding_kernel();
             let mut s = self.piecewise_coef(0);
 
             let mut n = 1;
@@ -192,7 +192,7 @@ impl Parameters {
             loop {
                 self.x = random_left_bounded_gamma(rng, 0.5, self.half_h2, self.t_inv).recip();
 
-                let u = rng.gen::<f32>();
+                let u = rng.random::<f32>();
                 if (-u).ln_1p() < (-0.5 * self.z2 * self.x) as f32 {
                     return;
                 }
@@ -207,7 +207,7 @@ impl Parameters {
             // causing things to break downstream
             self.x = self.x.max(1e-10);
 
-            let u = rng.gen::<f64>();
+            let u = rng.random::<f64>();
             if u * (self.h_z + self.x) > self.h_z {
                 self.x = self.h_z2 / self.x;
             }

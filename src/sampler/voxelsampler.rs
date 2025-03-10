@@ -1,6 +1,6 @@
 use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
-use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
+use super::polygons::{union_all_into_multipolygon, PolygonBuilder};
 use super::sampleset::SampleSet;
 use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
@@ -10,7 +10,7 @@ use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Samp
 use geo::geometry::{MultiPolygon, Polygon};
 use itertools::Itertools;
 use ndarray::{Array2, Zip};
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
@@ -879,11 +879,24 @@ impl VoxelSampler {
                 .entry(cell)
                 .and_modify(|e| {
                     if transcript_count > e.1 {
-                        *e = (Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count)
+                        *e = (
+                            Voxel {
+                                i: voxel.i,
+                                j: voxel.j,
+                                k: 0,
+                            },
+                            transcript_count,
+                        )
                     }
                 })
-                .or_insert((Voxel{i: voxel.i, j: voxel.j, k: 0}, transcript_count));
-
+                .or_insert((
+                    Voxel {
+                        i: voxel.i,
+                        j: voxel.j,
+                        k: 0,
+                    },
+                    transcript_count,
+                ));
         }
         // println!("index voxels: {:?}", t0.elapsed());
 
@@ -925,7 +938,7 @@ impl VoxelSampler {
         // Here we try to fix those cases by including at least on voxel.
         for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
             if voxels.is_empty() {
-                let cell =  cell as u32;
+                let cell = cell as u32;
                 voxels.insert(top_voxel[&cell].0);
             }
         }
@@ -1082,7 +1095,7 @@ impl Sampler<VoxelProposal> for VoxelSampler {
                     return;
                 }
 
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 let (i, j) = mismatch_edges.choose(&mut rng).unwrap();
 
                 let cell_from = self.voxel_cells.get(*i);
@@ -1103,7 +1116,7 @@ impl Sampler<VoxelProposal> for VoxelSampler {
                     }
                 }
 
-                if !from_unassigned && rng.gen::<f64>() < UNASSIGNED_PROPOSAL_PROB {
+                if !from_unassigned && rng.random::<f64>() < UNASSIGNED_PROPOSAL_PROB {
                     cell_to = BACKGROUND_CELL;
                 }
 

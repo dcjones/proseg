@@ -2,13 +2,13 @@ use super::common::{random_left_bounded_gamma, upper_incomplete_gamma};
 use super::float::Float;
 use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::{Distribution, Exp1, Standard, StandardNormal};
+use rand_distr::{Distribution, Exp1, StandardNormal, StandardUniform};
 
 #[replace_float_literals(T::from(literal).unwrap())]
 pub fn sample_polyagamma_saddlepoint<T: Float, R: Rng>(rng: &mut R, h: T, z: T) -> T
 where
     StandardNormal: Distribution<T>,
-    Standard: Distribution<T>,
+    StandardUniform: Distribution<T>,
     Exp1: Distribution<T>,
 {
     let mut pr = Parameters::new(h, 0.5 * z.abs());
@@ -35,14 +35,15 @@ where
     let mu2 = sqrt_rho_inv * sqrt_rho_inv;
 
     loop {
-        let u = T::from(rng.gen::<f32>()).unwrap();
+        let u = T::from(rng.random::<f32>()).unwrap();
         if u < proposal_probability {
             loop {
                 let y = rng.sample::<T, StandardNormal>(StandardNormal);
                 let w = sqrt_rho_inv + 0.5 * mu2 * y * y / h;
                 pr.x = w - (w * w - mu2).abs().sqrt();
 
-                if rng.sample::<T, Standard>(Standard) * (1.0 + pr.x * sqrt_rho) > 1.0 {
+                if rng.sample::<T, StandardUniform>(StandardUniform) * (1.0 + pr.x * sqrt_rho) > 1.0
+                {
                     pr.x = mu2 / pr.x;
                 }
 
@@ -54,7 +55,7 @@ where
             pr.x = random_left_bounded_gamma(rng, h, hrho, pr.xc);
         }
 
-        if T::from(rng.gen::<f32>()).unwrap() * bounding_kernel(&pr) <= saddle_point(&pr) {
+        if T::from(rng.random::<f32>()).unwrap() * bounding_kernel(&pr) <= saddle_point(&pr) {
             break;
         }
     }

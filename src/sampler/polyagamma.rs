@@ -1,7 +1,7 @@
 // use num_traits::{cast::FromPrimitive, float::Float};
 use numeric_literals::replace_float_literals;
 use rand::Rng;
-use rand_distr::{Distribution, Exp1, Normal, Standard, StandardNormal};
+use rand_distr::{Distribution, Exp1, Normal, StandardNormal, StandardUniform};
 
 mod float;
 use float::Float;
@@ -26,7 +26,7 @@ fn sech<T: Float>(x: T) -> T {
 impl<T: Float> PolyaGamma<T>
 where
     StandardNormal: Distribution<T>,
-    Standard: Distribution<T>,
+    StandardUniform: Distribution<T>,
     Exp1: Distribution<T>,
 {
     pub fn new(h: T, z: T) -> Self {
@@ -115,7 +115,7 @@ where
 
 #[test]
 fn try_pg_sampler() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let pg = PolyaGamma::new(2.0, 2.0);
     let mut rs = Vec::new();
     for _ in 0..1000 {

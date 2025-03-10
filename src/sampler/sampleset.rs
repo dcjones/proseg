@@ -66,7 +66,7 @@ where
         if self.is_empty() {
             return None;
         }
-        let index = rng.gen_range(0..self.len());
+        let index = rng.random_range(0..self.len());
         Some(&self.vec[index])
     }
 

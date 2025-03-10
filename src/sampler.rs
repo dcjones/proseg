@@ -21,7 +21,7 @@ use math::{
 use ndarray::linalg::general_mat_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use polyagamma::PolyaGamma;
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -313,7 +313,7 @@ impl ModelParams {
             .collect::<Vec<_>>();
 
         if initial_perturbation_sd > 0.0 {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             for pos in &mut transcript_positions {
                 pos.0 +=
                     rng.sample::<f32, StandardNormal>(StandardNormal) * initial_perturbation_sd;
@@ -372,7 +372,7 @@ impl ModelParams {
         }
 
         // reduce dimensionality with random projection
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         const EMBEDDING_DIM: usize = 25;
         let mut embedding = Array2::<f32>::zeros((EMBEDDING_DIM, ncells));
         let mut proj = Array2::<f32>::from_shape_simple_fn((EMBEDDING_DIM, ngenes), || {
@@ -1051,8 +1051,8 @@ pub trait Proposal {
             );
         }
 
-        let mut rng = thread_rng();
-        let logu = rng.gen::<f32>().ln();
+        let mut rng = rng();
+        let logu = rng.random::<f32>().ln();
 
         if (hillclimb && δ > 0.0) || (!hillclimb && logu < δ + self.log_weight()) {
             self.accept();
@@ -1299,7 +1299,7 @@ where
                     let λ_c = params.λ_c[gene];
                     let λ = λ_cell + λ_bg + λ_c;
 
-                    let u = thread_rng().gen::<f32>();
+                    let u = rng().random::<f32>();
                     *state = if u < λ_cell / λ {
                         TranscriptState::Foreground
                     } else if u < (λ_cell + λ_bg) / λ {
@@ -1398,7 +1398,7 @@ where
             .and(params.foreground_counts.outer_iter())
             .par_for_each(|mut cell_latent_counts_c, φ_c, x_c| {
                 // .for_each(|mut cell_latent_counts_c, φ_c, x_c| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 let mut multinomial_rates = params
                     .multinomial_rates
                     .get_or(|| RefCell::new(Array1::zeros(nhidden - params.nunfactored)))
@@ -1615,7 +1615,7 @@ where
             .and(&params.effective_cell_volume)
             .and(&params.cell_volume)
             .par_for_each(|z_c, φ_c, x_c, ev_c, v_c| {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 let log_v_c = v_c.ln();
                 let mut z_probs = params
                     .z_probs
@@ -1668,13 +1668,13 @@ where
                     acc
                 });
 
-                let u = rng.gen::<f64>();
+                let u = rng.random::<f64>();
                 *z_c = z_probs.partition_point(|x| *x < u) as u32;
             });
     }
 
     fn sample_π(&mut self, params: &mut ModelParams) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut π_sum = 0.0;
         Zip::from(&mut params.π)
             .and(&params.component_population)
@@ -1716,7 +1716,7 @@ where
             .and(&params.effective_cell_volume)
             .par_for_each(|φ_c, z_c, x_c, v_c| {
                 let z_c = *z_c as usize;
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 Zip::from(φ_c) // for each latent dim
                     .and(&params.θksum)
                     .and(x_c)
@@ -1749,7 +1749,7 @@ where
         Zip::from(θfac.axis_iter_mut(Axis(1)))
             .and(gene_latent_counts_fac.axis_iter(Axis(1)))
             .for_each(|mut θ_k, x_k| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
 
                 // dirichlet sampling by normalizing gammas
                 Zip::from(&mut θ_k).and(x_k).for_each(|θ_gk, x_gk| {
@@ -1774,7 +1774,7 @@ where
             .and(&params.z)
             .and(params.cell_latent_counts.outer_iter())
             .par_for_each(|l_c, z_c, x_c| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 Zip::from(l_c) // for each hidden dim
                     .and(x_c)
                     .and(&params.rφ.row(*z_c as usize))
@@ -1786,7 +1786,7 @@ where
         Zip::indexed(params.rφ.outer_iter_mut()) // for each component
             .and(params.sφ.outer_iter())
             .par_for_each(|t, r_t, s_t| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 Zip::from(r_t) // each hidden dim
                     .and(s_t)
                     .and(params.lφ.axis_iter(Axis(1)))
@@ -1827,7 +1827,7 @@ where
             .and(params.cell_latent_counts.outer_iter())
             .and(&params.effective_cell_volume)
             .par_for_each(|ω_c, z_c, x_c, v_c| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 Zip::from(ω_c) // for every hidden dim
                     .and(x_c)
                     .and(params.rφ.row(*z_c as usize))
@@ -1847,7 +1847,7 @@ where
         Zip::indexed(params.sφ.outer_iter_mut()) // for every component
             .and(params.rφ.outer_iter())
             .par_for_each(|t, s_t, r_t| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 Zip::from(s_t) // for every hidden dim
                     .and(r_t)
                     .and(&params.θksum)
@@ -1893,7 +1893,7 @@ where
             .and(&params.z)
             .and(params.ωφ.outer_iter())
             .par_for_each(|a_c, eff_v_c, &log_v_c, x_c, &z_c, ω_c| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 let z_c = z_c as usize;
 
                 let τ = priors.τv + ω_c.sum();
@@ -1918,7 +1918,7 @@ where
     }
 
     fn sample_background_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         Zip::from(params.λ_bg.rows_mut())
             .and(params.background_counts.rows())
@@ -1953,7 +1953,7 @@ where
 
     fn sample_confusion_rates(&mut self, priors: &ModelPriors, params: &mut ModelParams) {
         let total_cell_volume = params.cell_volume.sum();
-        let mut rng = thread_rng();
+        let mut rng = rng();
         Zip::from(&mut params.λ_c)
             .and(&params.confusion_counts)
             .for_each(|λ, c| {
@@ -1990,7 +1990,7 @@ where
             .and(&params.σ_volume)
             .and(&params.component_population)
             .for_each(|μ, &σ, &pop| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
 
                 let v = (1_f32 / priors.σ_μ_volume.powi(2) + pop as f32 / σ.powi(2)).recip();
                 *μ = Normal::new(
@@ -2013,7 +2013,7 @@ where
         Zip::from(&mut params.σ_volume)
             .and(&params.component_population)
             .for_each(|σ, &pop| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 *σ = Gamma::new(
                     priors.α_σ_volume + (pop as f32) / 2.0,
                     (priors.β_σ_volume + *σ / 2.0).recip(),
@@ -2039,7 +2039,7 @@ where
             // .zip(&params.transcript_positions)
             .zip(transcripts)
             .for_each(|(proposed_position, t)| {
-                let mut rng = thread_rng();
+                let mut rng = rng();
                 *proposed_position = (
                     t.x + priors.σ_diffusion_proposal
                         * rng.sample::<f32, StandardNormal>(StandardNormal),
@@ -2170,8 +2170,8 @@ where
                         δ += priors.prior_seg_reassignment_log_prob;
                     }
 
-                    let mut rng = thread_rng();
-                    let logu = rng.gen::<f32>().ln();
+                    let mut rng = rng();
+                    let logu = rng.random::<f32>().ln();
                     *accept = logu < δ;
                 },
             );

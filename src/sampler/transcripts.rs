@@ -928,8 +928,10 @@ fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     let mut yvec = Vec::with_capacity(npoints);
     let mut zvec = Vec::with_capacity(npoints);
 
-    let mut rng = rand::thread_rng();
-    let shuffle_key = (0..npoints).map(|_| rng.gen::<u32>()).collect::<Vec<_>>();
+    let mut rng = rand::rng();
+    let shuffle_key = (0..npoints)
+        .map(|_| rng.random::<u32>())
+        .collect::<Vec<_>>();
     let mut random_perm = (0..npoints).collect::<Vec<_>>();
     random_perm.sort_by_key(|&i| shuffle_key[i]);
     for &i in random_perm[0..npoints].iter() {
