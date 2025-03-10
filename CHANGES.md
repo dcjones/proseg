@@ -1,6 +1,7 @@
 
 # 2.0.2
-  - Optimizations (should be 20-30% on high-plex data)
+  - Updating dependencies to avoid some compilation errors.
+  - Optimizations (should be 20-30% faster on high-plex data)
   - Automatic untilting of samples that are tilted on the z-axis.
 
 # 2.0.1
