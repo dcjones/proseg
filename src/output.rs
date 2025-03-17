@@ -341,6 +341,7 @@ pub fn write_cell_metadata(
     params: &ModelParams,
     cell_centroids: &[(f32, f32, f32)],
     cell_assignments: &[(u32, f32)],
+    original_cell_ids: Option<&Vec<String>>,
     fovs: &[u32],
     fov_names: &[String],
 ) {
@@ -349,9 +350,20 @@ pub fn write_cell_metadata(
     let nfovs = fov_names.len();
     let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
 
+    let cell_ids = if let Some(original_cell_ids) = original_cell_ids {
+        original_cell_ids
+            .iter()
+            .map(|id| Some(id.clone()))
+            .collect::<arrow::array::StringArray>()
+    } else {
+        (0..params.ncells() as u32)
+            .map(|id| Some(id.to_string()))
+            .collect::<arrow::array::StringArray>()
+    };
+
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::new(vec![
-            Field::new("cell", DataType::UInt32, false),
+            Field::new("cell", DataType::Utf8, false),
             Field::new("centroid_x", DataType::Float32, false),
             Field::new("centroid_y", DataType::Float32, false),
             Field::new("centroid_z", DataType::Float32, false),
@@ -363,7 +375,7 @@ pub fn write_cell_metadata(
         ]);
 
         let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
-            Arc::new((0..params.ncells() as u32).collect::<arrow::array::UInt32Array>()),
+            Arc::new(cell_ids),
             Arc::new(
                 cell_centroids
                     .iter()
@@ -714,6 +726,7 @@ pub fn write_cell_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
     polygons: Vec<MultiPolygon<f32>>,
+    original_cell_ids: Option<&Vec<String>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {
@@ -731,6 +744,9 @@ pub fn write_cell_multipolygons(
 
         let ncells = polygons.len();
         for (cell, polys) in polygons.into_iter().enumerate() {
+            let cell_id =
+                original_cell_ids.map_or_else(|| cell.to_string(), |ids| ids[cell].clone());
+
             writeln!(
                 encoder,
                 concat!(
@@ -743,7 +759,7 @@ pub fn write_cell_multipolygons(
                     "        \"type\": \"MultiPolygon\",\n",
                     "        \"coordinates\": ["
                 ),
-                cell
+                cell_id
             )
             .unwrap();
 
@@ -786,6 +802,7 @@ pub fn write_cell_layered_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
     polygons: Vec<Vec<(i32, MultiPolygon<f32>)>>,
+    original_cell_ids: Option<&Vec<String>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {
@@ -808,6 +825,9 @@ pub fn write_cell_layered_multipolygons(
 
         let mut count = 0;
         for (cell, cell_polys) in polygons.iter().enumerate() {
+            let cell_id =
+                original_cell_ids.map_or_else(|| cell.to_string(), |ids| ids[cell].clone());
+
             for (layer, polys) in cell_polys.iter() {
                 writeln!(
                     encoder,
@@ -822,7 +842,7 @@ pub fn write_cell_layered_multipolygons(
                         "        \"type\": \"MultiPolygon\",\n",
                         "        \"coordinates\": ["
                     ),
-                    cell, layer
+                    cell_id, layer
                 )
                 .unwrap();
 

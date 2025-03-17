@@ -73,6 +73,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     visiumhd: bool,
 
+    /// Output cell ids in the original segmentation
+    #[arg(long, default_value_t = false)]
+    use_original_cell_ids: bool,
+
     /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
     gene_column: Option<String>,
@@ -391,6 +395,7 @@ fn set_xenium_presets(args: &mut Args) {
     args.excluded_genes.get_or_insert(String::from(
         "^(Deprecated|NegControl|Unassigned|Intergenic)",
     ));
+    args.use_original_cell_ids = true;
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
@@ -620,6 +625,7 @@ fn main() {
             &mut dataset.nucleus_assignments,
             &mut dataset.cell_assignments,
             &mut dataset.nucleus_population,
+            &mut dataset.original_cell_ids,
         );
         ncells = dataset.nucleus_population.len();
         if ncells == prev_ncells {
@@ -805,6 +811,11 @@ fn main() {
             .progress_chars("##-"),
     );
 
+    let original_cell_ids = if args.use_original_cell_ids {
+        Some(&dataset.original_cell_ids)
+    } else {
+        None
+    };
     let mut uncertainty = UncertaintyTracker::new();
 
     let mut sampler = RefCell::new(VoxelSampler::new(
@@ -838,6 +849,7 @@ fn main() {
             &mut total_steps,
             &args.monitor_cell_polygons,
             args.monitor_cell_polygons_freq,
+            original_cell_ids,
             true,
             true,
             false,
@@ -863,6 +875,7 @@ fn main() {
                 &mut total_steps,
                 &args.monitor_cell_polygons,
                 args.monitor_cell_polygons_freq,
+                original_cell_ids,
                 true,
                 true,
                 false,
@@ -887,6 +900,7 @@ fn main() {
         &mut total_steps,
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
+        original_cell_ids,
         true,
         false,
         false,
@@ -905,6 +919,7 @@ fn main() {
         &mut total_steps,
         &args.monitor_cell_polygons,
         args.monitor_cell_polygons_freq,
+        original_cell_ids,
         true,
         false,
         false,
@@ -961,6 +976,11 @@ fn main() {
         &params,
         &cell_centroids,
         &cell_assignments,
+        if args.use_original_cell_ids {
+            Some(&dataset.original_cell_ids)
+        } else {
+            None
+        },
         &dataset.fovs,
         &dataset.fov_names,
     );
@@ -1011,11 +1031,13 @@ fn main() {
             &args.output_path,
             &args.output_union_cell_polygons,
             cell_flattened_polygons,
+            original_cell_ids,
         );
         write_cell_layered_multipolygons(
             &args.output_path,
             &args.output_cell_polygon_layers,
             cell_polygons,
+            original_cell_ids,
         );
     }
 
@@ -1025,6 +1047,7 @@ fn main() {
             &args.output_path,
             &args.output_cell_polygons,
             consensus_cell_polygons,
+            original_cell_ids,
         );
     }
 
@@ -1051,6 +1074,7 @@ fn run_hexbin_sampler(
     total_steps: &mut usize,
     monitor_cell_polygons: &Option<String>,
     monitor_cell_polygons_freq: usize,
+    original_cell_ids: Option<&Vec<String>>,
     sample_cell_regions: bool,
     burnin: bool,
     hillclimb: bool,
@@ -1111,7 +1135,12 @@ fn run_hexbin_sampler(
             if let Some(basename) = monitor_cell_polygons {
                 let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
                 let (cell_polygons, _cell_flattened_polygons) = sampler.cell_polygons();
-                write_cell_layered_multipolygons(output_path, &Some(filename), cell_polygons);
+                write_cell_layered_multipolygons(
+                    output_path,
+                    &Some(filename),
+                    cell_polygons,
+                    original_cell_ids,
+                );
             }
         }
 

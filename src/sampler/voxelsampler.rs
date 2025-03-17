@@ -1652,6 +1652,7 @@ pub fn filter_sparse_cells(
     nucleus_assignments: &mut [CellIndex],
     cell_assignments: &mut [CellIndex],
     nucleus_population: &mut Vec<usize>,
+    original_cell_ids: &mut Vec<String>,
 ) {
     // let t0 = Instant::now();
     let (_layout, voxel_bins) = bin_transcripts(transcripts, scale, voxellayers);
@@ -1688,6 +1689,13 @@ pub fn filter_sparse_cells(
                     *cell_id = BACKGROUND_CELL;
                 }
             }
+        }
+
+        let old_original_cell_ids = original_cell_ids.clone();
+        original_cell_ids.resize(used_cell_ids.len(), String::new());
+        for (old_cell_id, new_cell_id) in used_cell_ids.iter() {
+            original_cell_ids[*new_cell_id as usize] =
+                old_original_cell_ids[*old_cell_id as usize].clone();
         }
     }
     // println!("index assignments {:?}", t0.elapsed());

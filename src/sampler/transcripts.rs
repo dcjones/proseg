@@ -39,6 +39,7 @@ pub struct TranscriptDataset {
     pub fovs: Vec<u32>,
     pub qvs: Vec<f32>,
     pub fov_names: Vec<String>,
+    pub original_cell_ids: Vec<String>,
 }
 
 impl TranscriptDataset {
@@ -412,6 +413,11 @@ where
     let nucleus_population =
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
+    let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
+    for ((_fov, cell_id), i) in cell_id_map {
+        original_cell_ids[i as usize] = cell_id;
+    }
+
     TranscriptDataset {
         transcript_names,
         transcripts,
@@ -421,6 +427,7 @@ where
         qvs,
         fovs,
         fov_names,
+        original_cell_ids,
     }
 }
 
@@ -701,6 +708,11 @@ where
     let nucleus_population =
         postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
 
+    let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
+    for ((_fov, cell_id), i) in cell_id_map {
+        original_cell_ids[i as usize] = cell_id;
+    }
+
     TranscriptDataset {
         transcript_names,
         transcripts,
@@ -710,6 +722,7 @@ where
         qvs,
         fovs,
         fov_names,
+        original_cell_ids,
     }
 }
 
@@ -974,7 +987,7 @@ pub fn normalize_z_coordinates(dataset: &mut TranscriptDataset) {
     let (q0, q1) = (0.01, 0.99);
     let zmin = zs_sorted[(q0 * (zs.len() as f32)) as usize];
     let zmax = zs_sorted[(q1 * (zs.len() as f32)) as usize];
-    dbg!(zmin, zmax);
+    // dbg!(zmin, zmax);
     zs.iter_mut().for_each(|z| *z = z.max(zmin).min(zmax));
 
     for (t, z) in dataset.transcripts.iter_mut().zip(zs.iter()) {
