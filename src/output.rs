@@ -460,33 +460,7 @@ pub fn write_transcript_metadata(
     qvs: &[f32],
     fovs: &[u32],
     fov_names: &[String],
-    original_cell_ids: Option<&Vec<String>>,
 ) {
-    let cell_ids: arrow::array::LargeStringArray =
-        if let Some(original_cell_ids) = original_cell_ids {
-            cell_assignments
-                .iter()
-                .map(|(cell, _)| {
-                    if *cell == BACKGROUND_CELL {
-                        None
-                    } else {
-                        Some(original_cell_ids[*cell as usize].clone())
-                    }
-                })
-                .collect()
-        } else {
-            cell_assignments
-                .iter()
-                .map(|(cell, _)| {
-                    if *cell == BACKGROUND_CELL {
-                        None
-                    } else {
-                        Some(cell.to_string())
-                    }
-                })
-                .collect()
-        };
-
     if let Some(output_transcript_metadata) = output_transcript_metadata {
         // arraw_csv has no problem outputting LargeStringArray, but can't read them.
         // As a work around we always output the same schema, but change the schema
@@ -548,7 +522,12 @@ pub fn write_transcript_metadata(
                     .map(|fov| Some(fov_names[*fov as usize].clone()))
                     .collect::<arrow::array::LargeStringArray>(),
             ),
-            Arc::new(cell_ids),
+            Arc::new(
+                cell_assignments
+                    .iter()
+                    .map(|(cell, _)| *cell)
+                    .collect::<arrow::array::UInt32Array>(),
+            ),
             Arc::new(
                 cell_assignments
                     .iter()
@@ -774,7 +753,7 @@ pub fn write_cell_multipolygons(
                     "    {{\n",
                     "      \"type\": \"Feature\",\n",
                     "      \"properties\": {{\n",
-                    "        \"cell\": \"{}\"\n",
+                    "        \"cell\": {}\n",
                     "      }},\n",
                     "      \"geometry\": {{\n",
                     "        \"type\": \"MultiPolygon\",\n",
@@ -856,7 +835,7 @@ pub fn write_cell_layered_multipolygons(
                         "    {{\n",
                         "      \"type\": \"Feature\",\n",
                         "      \"properties\": {{\n",
-                        "        \"cell\": \"{}\",\n",
+                        "        \"cell\": {},\n",
                         "        \"layer\": {}\n",
                         "      }},\n",
                         "      \"geometry\": {{\n",
