@@ -408,7 +408,6 @@ pub struct VoxelSampler {
     nlayers: usize,
 
     mismatch_edges: [Vec<Arc<Mutex<VoxelEdgeSampleSet>>>; 4],
-    transcript_x_ord: Vec<usize>,
 
     // assignment of rectbins to cells
     // (Unassigned cells are either absent or set to `BACKGROUND_CELL`)
@@ -507,8 +506,6 @@ impl VoxelSampler {
         //     // assert!(loc_cell == cell);
         // }
 
-        let transcript_x_ord: Vec<usize> = (0..transcripts.len()).collect();
-
         let cell_population = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
         let cell_perimeter = Array2::from_elem((voxellayers, params.ncells()), 0.0_f32);
 
@@ -532,7 +529,6 @@ impl VoxelSampler {
             transcript_layers,
             nlayers,
             mismatch_edges,
-            transcript_x_ord,
             voxel_cells,
             voxel_layers: voxellayers,
             cell_population,
@@ -654,7 +650,6 @@ impl VoxelSampler {
             transcript_layers: self.transcript_layers.clone(),
             nlayers: self.nlayers,
             mismatch_edges,
-            transcript_x_ord: self.transcript_x_ord.clone(),
             voxel_cells,
             voxel_layers: voxellayers,
             cell_population,
