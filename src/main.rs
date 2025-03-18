@@ -996,6 +996,7 @@ fn main() {
         &dataset.qvs,
         &dataset.fovs,
         &dataset.fov_names,
+        original_cell_ids,
     );
     write_gene_metadata(
         &args.output_path,
