@@ -587,29 +587,22 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
-    unimplemented!("proseg3: only initializing for now.");
-
-    /*
     if !args.no_factorization {
         dataset.select_unfactored_genes(args.nunfactored);
     }
 
-    // let cd3e_idx = dataset
-    //     .transcript_names
-    //     .iter()
-    //     .position(|gene| gene == "CXCL6")
-    //     .unwrap();
-    // dbg!(cd3e_idx);
-    // panic!();
+    // TODO: need to do this somewhere else.
+    // // Warn if any nucleus has extremely high population, which is likely
+    // // an error interpreting the file.
+    // dataset.nucleus_population.iter().for_each(|&p| {
+    //     if p > 10000 {
+    //         eprintln!("Warning: nucleus with population {}", p);
+    //     }
+    // });
 
-    // Warn if any nucleus has extremely high population, which is likely
-    // an error interpreting the file.
-    dataset.nucleus_population.iter().for_each(|&p| {
-        if p > 10000 {
-            eprintln!("Warning: nucleus with population {}", p);
-        }
-    });
+    unimplemented!("proseg3: only initializing for now.");
 
+    /*
     let mut ncells = dataset.nucleus_population.len();
     filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
     normalize_z_coordinates(&mut dataset);
