@@ -2,6 +2,7 @@ mod connectivity;
 mod math;
 mod polyagamma;
 mod polygons;
+mod runvec;
 mod sampleset;
 pub mod transcripts;
 pub mod voxelsampler;

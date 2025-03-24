@@ -42,7 +42,6 @@ ndarray = { version = "0.16.1", features = [
     "rayon",
     "matrixmultiply-threading",
 ] }
-num-traits = "0.2.17"
 numeric_literals = "0.2.0"
 parquet = "54.2.1"
 petgraph = "0.6.3"
@@ -53,3 +52,4 @@ regex = "1.10.6"
 thread_local = "1.1.7"
 clustering = { version = "0.2.1", features = ["parallel"] }
 linregress = "0.5.4"
+num = "0.4.3"

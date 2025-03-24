@@ -447,6 +447,7 @@ pub fn write_cell_metadata(
     }
 }
 
+/*
 #[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
     output_path: &Option<String>,
@@ -663,6 +664,7 @@ pub fn write_gene_metadata(
         );
     }
 }
+*/
 
 pub fn write_voxels(
     output_path: &Option<String>,
