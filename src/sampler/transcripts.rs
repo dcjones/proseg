@@ -5,7 +5,7 @@ use itertools::izip;
 use kiddo::float::kdtree::KdTree;
 use kiddo::SquaredEuclidean;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Zip};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use rand::Rng;
 use regex::Regex;
@@ -18,39 +18,43 @@ pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
 
 // Should probably rearrange this...
 use super::super::output::infer_format_from_filename;
+use super::runvec::RunVec;
 use crate::schemas::OutputFormat;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {
-    pub transcript_id: u64,
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub gene: u32,
-    pub fov: u32,
+}
+
+#[derive(Copy, Clone, PartialEq)]
+struct PriorTranscriptSeg {
+    nucleus: CellIndex,
+    cell: CellIndex,
 }
 
 pub struct TranscriptDataset {
-    pub transcript_names: Vec<String>,
-    pub transcripts: Vec<Transcript>,
-    pub nucleus_assignments: Vec<CellIndex>,
-    pub cell_assignments: Vec<CellIndex>,
-    pub nucleus_population: Vec<usize>,
-    pub fovs: Vec<u32>,
-    pub qvs: Vec<f32>,
-    pub fov_names: Vec<String>,
-    pub original_cell_ids: Vec<String>,
+    pub transcripts: RunVec<u32, Transcript>, // [ntranscripts]
+    pub priorseg: RunVec<u32, PriorTranscriptSeg>, // [ntranscripts]
+    pub fovs: RunVec<usize, u32>,             // [ntranscripts] (Why to we need to save this?)
+
+    pub gene_names: Vec<String>,        // [ngenes]
+    pub fov_names: Vec<String>,         // [nfovs]
+    pub original_cell_ids: Vec<String>, // [ncells]
+    pub ncells: usize,
 }
 
 impl TranscriptDataset {
     pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
         // Current heuristic is just to select the highest expression genes.
-        let mut gene_counts = Array1::<u32>::zeros(self.transcript_names.len());
-        for transcript in self.transcripts.iter() {
-            gene_counts[transcript.gene as usize] += 1;
+        let mut gene_counts = Array1::<u32>::zeros(self.gene_names.len());
+        for transcript_run in self.transcripts.iter_runs() {
+            gene_counts[transcript_run.value.gene as usize] += transcript_run.len as u32;
         }
 
-        let mut ord = (0..self.transcript_names.len()).collect::<Vec<_>>();
+        let mut ord = (0..self.gene_names.len()).collect::<Vec<_>>();
         ord.sort_unstable_by(|&i, &j| gene_counts[i].cmp(&gene_counts[j]).reverse());
 
         let mut rev_ord = vec![0; ord.len()];
@@ -58,12 +62,83 @@ impl TranscriptDataset {
             rev_ord[*j] = i;
         }
 
-        self.transcript_names = ord
-            .iter()
-            .map(|&i| self.transcript_names[i].clone())
-            .collect();
-        for transcript in self.transcripts.iter_mut() {
-            transcript.gene = rev_ord[transcript.gene as usize] as u32;
+        self.gene_names = ord.iter().map(|&i| self.gene_names[i].clone()).collect();
+        for transcript_run in self.transcripts.iter_runs_mut() {
+            transcript_run.value.gene = rev_ord[transcript_run.value.gene as usize] as u32;
+        }
+    }
+
+    // Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
+    pub fn estimate_cell_centroids(&self) -> Array2<f32> {
+        let mut centroids = Array2::zeros((self.ncells, 2));
+        let mut centroids_count = Array1::<u32>::zeros(self.ncells);
+
+        for (prior, transcript) in self.priorseg.iter().zip(self.transcripts.iter()) {
+            if prior.cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            let i = prior.cell as usize;
+            centroids[[i, 0]] += transcript.x;
+            centroids[[i, 1]] += transcript.y;
+            centroids_count[i] += 1;
+        }
+
+        Zip::from(centroids.rows_mut())
+            .and(&centroids_count)
+            .for_each(|mut centroid, count| {
+                centroid[0] /= *count as f32;
+                centroid[1] /= *count as f32;
+            });
+
+        centroids
+    }
+
+    pub fn filter_cellfree_transcripts(&mut self, max_distance: f32) {
+        let max_distance_squared = max_distance * max_distance;
+
+        let centroids = self.estimate_cell_centroids();
+
+        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
+        for (i, xy) in centroids.rows().into_iter().enumerate() {
+            if !xy[0].is_finite() || !xy[1].is_finite() {
+                continue;
+            }
+            kdtree.add(&[xy[0], xy[1]], i as u32);
+        }
+
+        let mut mask = vec![false; self.transcripts.len()];
+        for (i, t) in self.transcripts.iter().enumerate() {
+            let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
+
+            if d <= max_distance_squared {
+                mask[i] = true;
+            }
+        }
+
+        self.transcripts.retain_masked(&mask);
+        self.priorseg.retain_masked(&mask);
+        self.fovs.retain_masked(&mask);
+    }
+
+    pub fn normalize_z_coordinates(&mut self) {
+        let xs = self.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
+        let ys = self.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
+        let mut zs = self.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
+
+        regress_out_tilt(&xs, &ys, &mut zs);
+
+        let mut zs_sorted = zs.clone();
+        zs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let (q0, q1) = (0.01, 0.99);
+        let zmin = zs_sorted[(q0 * (zs.len() as f32)) as usize];
+        let zmax = zs_sorted[(q1 * (zs.len() as f32)) as usize];
+        // dbg!(zmin, zmax);
+        zs.iter_mut().for_each(|z| *z = z.max(zmin).min(zmax));
+
+        for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
+            run.value.z = *z;
         }
     }
 }
@@ -176,62 +251,39 @@ fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) ->
     }
 }
 
-fn postprocess_cell_assignments(
-    nucleus_assignments: &mut [CellIndex],
-    cell_assignments: &mut [CellIndex],
-    original_cell_ids: &mut Vec<String>,
-) -> Vec<usize> {
-    // reassign cell ids to exclude anything that no initial transcripts assigned
+// Make sure numerical cell ids are sequential with no empty cells.
+fn compact_priorseg(priorseg: &mut RunVec<u32, PriorTranscriptSeg>) -> usize {
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
-    for &cell_id in nucleus_assignments.iter() {
-        if cell_id != BACKGROUND_CELL {
-            let next_id = used_cell_ids.len() as CellIndex;
-            used_cell_ids.entry(cell_id).or_insert(next_id);
+
+    for assignment_run in priorseg.iter_runs() {
+        if assignment_run.value.nucleus != BACKGROUND_CELL {
+            let next_cell_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids
+                .entry(assignment_run.value.nucleus)
+                .or_insert(next_cell_id);
+        }
+        if assignment_run.value.cell != BACKGROUND_CELL {
+            let next_cell_id = used_cell_ids.len() as CellIndex;
+            used_cell_ids
+                .entry(assignment_run.value.nucleus)
+                .or_insert(next_cell_id);
         }
     }
-    for &cell_id in cell_assignments.iter() {
-        if cell_id != BACKGROUND_CELL {
-            let next_id = used_cell_ids.len() as CellIndex;
-            used_cell_ids.entry(cell_id).or_insert(next_id);
-        }
+    used_cell_ids.insert(BACKGROUND_CELL, BACKGROUND_CELL);
+
+    for assignment_run in priorseg.iter_runs_mut() {
+        assignment_run.value.nucleus = *used_cell_ids.get(&assignment_run.value.nucleus).unwrap();
+        assignment_run.value.cell = *used_cell_ids.get(&assignment_run.value.cell).unwrap();
     }
 
-    for cell_id in nucleus_assignments.iter_mut() {
-        if *cell_id != BACKGROUND_CELL {
-            *cell_id = *used_cell_ids.get(cell_id).unwrap();
-        }
-    }
-
-    for cell_id in cell_assignments.iter_mut() {
-        if *cell_id != BACKGROUND_CELL {
-            *cell_id = *used_cell_ids.get(cell_id).unwrap();
-        }
-    }
-
-    let ncells = used_cell_ids.len();
-
-    let mut nucleus_population = vec![0; ncells];
-    for &cell_id in nucleus_assignments.iter() {
-        if cell_id != BACKGROUND_CELL {
-            nucleus_population[cell_id as usize] += 1;
-        }
-    }
-
-    let old_original_cell_ids = original_cell_ids.clone();
-    original_cell_ids.resize_with(ncells, || String::new());
-    for (old_cell_id, new_cell_id) in &used_cell_ids {
-        original_cell_ids[*new_cell_id as usize] =
-            old_original_cell_ids[*old_cell_id as usize].clone();
-    }
-
-    nucleus_population
+    used_cell_ids.len() - 1
 }
 
 #[allow(clippy::too_many_arguments)]
 fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     excluded_genes: Option<Regex>,
-    transcript_column: &str,
+    gene_column: &str,
     id_column: Option<String>,
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
@@ -254,7 +306,7 @@ where
     // Find the column we need
     let headers = rdr.headers().unwrap();
     let ncolumns = headers.len();
-    let transcript_col = find_column(headers, transcript_column);
+    let gene_col = find_column(headers, gene_column);
     let x_col = find_column(headers, x_column);
     let y_col = find_column(headers, y_column);
     let z_col = if no_z_column {
@@ -280,15 +332,15 @@ where
     let cell_assignment_col = find_optional_column(headers, &cell_assignment_column);
     let cell_assignment_unassigned = cell_assignment_unassigned.unwrap_or(String::from(""));
 
-    let mut transcripts = Vec::new();
-    let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
-    let mut transcript_names = Vec::new();
-    let mut nucleus_assignments = Vec::new();
-    let mut cell_assignments = Vec::new();
-    let mut qvs = Vec::new();
-    let mut fovs = Vec::new();
+    let mut transcripts = RunVec::new();
+    let mut gene_name_map: HashMap<String, usize> = HashMap::new();
+    let mut gene_names = Vec::new();
+    let mut priorseg = RunVec::new();
+    let mut fovs = RunVec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
+
+    // Need to map (fov, cell_id), since on some platform (e.g. CosMx cell_ids are only unique within fovs.)
     let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
 
     for result in rdr.records() {
@@ -317,20 +369,20 @@ where
             0
         };
 
-        let transcript_name = &row[transcript_col];
+        let gene_name = &row[gene_col];
 
         if let Some(excluded_genes) = &excluded_genes {
-            if excluded_genes.is_match(transcript_name) {
+            if excluded_genes.is_match(gene_name) {
                 continue;
             }
         }
 
-        let gene = if let Some(gene) = transcript_name_map.get(transcript_name) {
+        let gene = if let Some(gene) = gene_name_map.get(gene_name) {
             *gene
         } else {
-            transcript_names.push(transcript_name.to_string());
-            transcript_name_map.insert(transcript_name.to_string(), transcript_names.len() - 1);
-            transcript_names.len() - 1
+            gene_names.push(gene_name.to_string());
+            gene_name_map.insert(gene_name.to_string(), gene_names.len() - 1);
+            gene_names.len() - 1
         };
 
         let x = coordinate_scale * row[x_col].parse::<f32>().unwrap();
@@ -340,42 +392,32 @@ where
         } else {
             row[z_col].parse::<f32>().unwrap()
         };
-        let transcript_id = if let Some(id_col) = id_col {
-            row[id_col]
-                .parse::<u64>()
-                .unwrap_or_else(|_| panic!("Transcript ID must be an integer: {}", &row[id_col]))
-        } else {
-            transcripts.len() as u64
-        };
 
         transcripts.push(Transcript {
-            transcript_id,
             x,
             y,
             z,
             gene: gene as u32,
-            fov,
         });
 
-        qvs.push(qv);
         fovs.push(fov);
 
         if let Some(cell_assignment_col) = cell_assignment_col {
             if row[cell_assignment_col] == cell_assignment_unassigned {
-                nucleus_assignments.push(BACKGROUND_CELL);
-                cell_assignments.push(BACKGROUND_CELL);
+                priorseg.push(PriorTranscriptSeg {
+                    nucleus: BACKGROUND_CELL,
+                    cell: BACKGROUND_CELL,
+                });
                 continue;
             }
         };
 
         let cell_id_str = &row[cell_id_col];
-        // let overlaps_nucleus = row[overlaps_nucleus_col].parse::<i32>().unwrap();
-
-        // Earlier version of Xenium used numeric cell ids and -1 for unassigned.
-        // Newer versions use alphanumeric hash codes and "UNASSIGNED" for unasssigned.
         if cell_id_str == cell_id_unassigned {
-            nucleus_assignments.push(BACKGROUND_CELL);
-            cell_assignments.push(BACKGROUND_CELL);
+            priorseg.push(PriorTranscriptSeg {
+                nucleus: BACKGROUND_CELL,
+                cell: BACKGROUND_CELL,
+            });
         } else {
             let next_cell_id = cell_id_map.len() as CellIndex;
             let cell_id = *cell_id_map
@@ -389,12 +431,10 @@ where
                 true
             };
 
-            if is_nuclear {
-                nucleus_assignments.push(cell_id);
-            } else {
-                nucleus_assignments.push(BACKGROUND_CELL);
-            }
-            cell_assignments.push(cell_id);
+            priorseg.push(PriorTranscriptSeg {
+                nucleus: if is_nuclear { cell_id } else { BACKGROUND_CELL },
+                cell: cell_id,
+            });
         }
     }
 
@@ -418,6 +458,7 @@ where
         }
     }
 
+    let ncells = compact_priorseg(&mut priorseg);
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
@@ -430,15 +471,13 @@ where
     );
 
     TranscriptDataset {
-        transcript_names,
         transcripts,
-        nucleus_assignments,
-        cell_assignments,
-        nucleus_population,
-        qvs,
+        priorseg,
         fovs,
+        gene_names,
         fov_names,
         original_cell_ids,
+        ncells,
     }
 }
 
@@ -526,7 +565,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
-    transcript_col_name: &str,
+    gene_col_name: &str,
     id_col_name: &str,
     compartment_col_name: &str,
     compartment_nuclear: u8,
@@ -545,7 +584,7 @@ where
     T: 'static,
     for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
 {
-    let transcript_col_idx = schema.index_of(transcript_col_name).unwrap();
+    let gene_col_idx = schema.index_of(gene_col_name).unwrap();
     let id_col_idx = schema.index_of(id_col_name).unwrap();
     let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
@@ -555,13 +594,11 @@ where
     let z_col_idx = schema.index_of(z_col_name).unwrap();
     let qv_col_idx = schema.index_of(qv_col_name).unwrap();
 
-    let mut transcripts = Vec::new();
-    let mut transcript_name_map: HashMap<String, usize> = HashMap::new();
-    let mut transcript_names = Vec::new();
-    let mut nucleus_assignments = Vec::new();
-    let mut cell_assignments = Vec::new();
-    let mut qvs = Vec::new();
-    let mut fovs = Vec::new();
+    let mut transcripts = RunVec::new();
+    let mut gene_name_map: HashMap<String, usize> = HashMap::new();
+    let mut gene_names = Vec::new();
+    let mut priorseg = RunVec::new();
+    let mut fovs = RunVec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
     let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
@@ -570,7 +607,7 @@ where
         let rec_batch = rec_batch.expect("Unable to read record batch.");
 
         let transcript_col = rec_batch
-            .column(transcript_col_idx)
+            .column(gene_col_idx)
             .as_any()
             .downcast_ref::<T>()
             .unwrap();
@@ -663,32 +700,31 @@ where
                 }
             };
 
-            let gene = if let Some(gene) = transcript_name_map.get(transcript) {
+            let gene = if let Some(gene) = gene_name_map.get(transcript) {
                 *gene
             } else {
-                transcript_names.push(transcript.to_string());
-                transcript_name_map.insert(transcript.to_string(), transcript_names.len() - 1);
-                transcript_names.len() - 1
+                gene_names.push(transcript.to_string());
+                gene_name_map.insert(transcript.to_string(), gene_names.len() - 1);
+                gene_names.len() - 1
             };
 
             let x = coordinate_scale * x;
             let y = coordinate_scale * y;
 
             transcripts.push(Transcript {
-                transcript_id,
                 x,
                 y,
                 z: if ignore_z_column { 0.0 } else { z },
                 gene: gene as u32,
-                fov,
             });
 
-            qvs.push(qv);
             fovs.push(fov);
 
             if cell_id == cell_id_unassigned {
-                nucleus_assignments.push(BACKGROUND_CELL);
-                cell_assignments.push(BACKGROUND_CELL);
+                priorseg.push(PriorTranscriptSeg {
+                    nucleus: BACKGROUND_CELL,
+                    cell: BACKGROUND_CELL,
+                });
             } else {
                 let next_cell_id = cell_id_map.len() as CellIndex;
                 let cell_id = *cell_id_map
@@ -696,13 +732,10 @@ where
                     .or_insert_with(|| next_cell_id);
 
                 let is_nuclear = compartment == compartment_nuclear;
-
-                if is_nuclear {
-                    nucleus_assignments.push(cell_id);
-                } else {
-                    nucleus_assignments.push(BACKGROUND_CELL);
-                }
-                cell_assignments.push(cell_id);
+                priorseg.push(PriorTranscriptSeg {
+                    nucleus: if is_nuclear { cell_id } else { BACKGROUND_CELL },
+                    cell: cell_id,
+                });
             }
         }
     }
@@ -716,6 +749,7 @@ where
         }
     }
 
+    let ncells = compact_priorseg(&mut priorseg);
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
@@ -728,15 +762,13 @@ where
     );
 
     TranscriptDataset {
-        transcript_names,
         transcripts,
-        nucleus_assignments,
-        cell_assignments,
-        nucleus_population,
-        qvs,
+        priorseg,
         fovs,
+        gene_names,
         fov_names,
         original_cell_ids,
+        ncells,
     }
 }
 
@@ -823,126 +855,6 @@ pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32)
 
 // }
 
-// Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
-pub fn estimate_cell_centroids(
-    transcripts: &[Transcript],
-    cell_assignments: &[CellIndex],
-    ncells: usize,
-) -> Vec<(f32, f32)> {
-    let mut cell_transcripts: Vec<Vec<usize>> = vec![Vec::new(); ncells];
-    for (i, &cell) in cell_assignments.iter().enumerate() {
-        if cell != BACKGROUND_CELL {
-            cell_transcripts[cell as usize].push(i);
-        }
-    }
-
-    let mut centroids = Vec::with_capacity(ncells);
-    for ts in cell_transcripts.iter() {
-        if ts.is_empty() {
-            centroids.push((f32::NAN, f32::NAN));
-            continue;
-        }
-
-        let mut x = 0.0;
-        let mut y = 0.0;
-        for &t in ts {
-            x += transcripts[t].x;
-            y += transcripts[t].y;
-        }
-        x /= ts.len() as f32;
-        y /= ts.len() as f32;
-        centroids.push((x, y));
-    }
-
-    centroids
-}
-
-pub fn filter_cellfree_transcripts(
-    // transcripts: &[Transcript],
-    // nucleus_assignments: &[CellIndex],
-    // cell_assignments: &[CellIndex],
-    dataset: &mut TranscriptDataset,
-    ncells: usize,
-    max_distance: f32,
-) {
-    let max_distance_squared = max_distance * max_distance;
-
-    let centroids =
-        estimate_cell_centroids(&dataset.transcripts, &dataset.nucleus_assignments, ncells);
-
-    let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
-    for (i, (x, y)) in centroids.iter().enumerate() {
-        if !x.is_finite() || !y.is_finite() {
-            continue;
-        }
-        kdtree.add(&[*x, *y], i as u32);
-    }
-
-    let mut mask = vec![false; dataset.transcripts.len()];
-    for (i, t) in dataset.transcripts.iter().enumerate() {
-        let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
-
-        if d <= max_distance_squared {
-            mask[i] = true;
-        }
-    }
-
-    dataset.transcripts.clone_from(
-        &dataset
-            .transcripts
-            .iter()
-            .zip(mask.iter())
-            .filter(|(_, &m)| m)
-            .map(|(t, _)| t)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-
-    dataset.nucleus_assignments.clone_from(
-        &dataset
-            .nucleus_assignments
-            .iter()
-            .zip(mask.iter())
-            .filter(|(_, &m)| m)
-            .map(|(t, _)| t)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-
-    dataset.cell_assignments.clone_from(
-        &dataset
-            .cell_assignments
-            .iter()
-            .zip(mask.iter())
-            .filter(|(_, &m)| m)
-            .map(|(t, _)| t)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-
-    dataset.fovs.clone_from(
-        &dataset
-            .fovs
-            .iter()
-            .zip(mask.iter())
-            .filter(|(_, &m)| m)
-            .map(|(t, _)| t)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-
-    dataset.qvs.clone_from(
-        &dataset
-            .qvs
-            .iter()
-            .zip(mask.iter())
-            .filter(|(_, &m)| m)
-            .map(|(t, _)| t)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-}
-
 fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     assert!(xs.len() == ys.len());
     assert!(xs.len() == zs.len());
@@ -985,26 +897,5 @@ fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     // replace z coordinates with regression residuals
     for (x, y, z) in izip!(xs, ys, zs) {
         *z = *z - b - wx * x - wy * y;
-    }
-}
-
-pub fn normalize_z_coordinates(dataset: &mut TranscriptDataset) {
-    let xs = dataset.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
-    let ys = dataset.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
-    let mut zs = dataset.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
-
-    regress_out_tilt(&xs, &ys, &mut zs);
-
-    let mut zs_sorted = zs.clone();
-    zs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let (q0, q1) = (0.01, 0.99);
-    let zmin = zs_sorted[(q0 * (zs.len() as f32)) as usize];
-    let zmax = zs_sorted[(q1 * (zs.len() as f32)) as usize];
-    // dbg!(zmin, zmax);
-    zs.iter_mut().for_each(|z| *z = z.max(zmin).min(zmax));
-
-    for (t, z) in dataset.transcripts.iter_mut().zip(zs.iter()) {
-        t.z = *z;
     }
 }

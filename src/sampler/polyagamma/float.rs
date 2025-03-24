@@ -1,5 +1,5 @@
 use libm::{erfc, erfcf, lgamma_r, lgammaf_r};
-use num_traits::{cast::NumCast, float};
+use num::{traits::float, NumCast};
 use std::ops::{AddAssign, MulAssign, SubAssign};
 
 // Wrapping the num_traits Float trait to add more special functions.
