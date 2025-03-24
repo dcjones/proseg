@@ -5,6 +5,7 @@ mod polygons;
 mod runvec;
 mod sampleset;
 pub mod transcripts;
+mod voxelcheckerboard;
 pub mod voxelsampler;
 
 // use super::output::{write_expected_counts, OutputFormat};
