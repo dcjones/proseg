@@ -14,8 +14,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::current_num_threads;
 use regex::Regex;
 use sampler::transcripts::{
-    coordinate_span, estimate_full_area, filter_cellfree_transcripts, normalize_z_coordinates,
-    read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL,
+    coordinate_span, estimate_full_area, read_transcripts_csv, CellIndex, Transcript,
+    BACKGROUND_CELL,
 };
 use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
@@ -587,6 +587,9 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
+    unimplemented!("proseg3: only initializing for now.");
+
+    /*
     if !args.no_factorization {
         dataset.select_unfactored_genes(args.nunfactored);
     }
@@ -1042,6 +1045,7 @@ fn main() {
             &output_cell_hulls,
         );
     }
+    */
 }
 
 #[allow(clippy::too_many_arguments)]
