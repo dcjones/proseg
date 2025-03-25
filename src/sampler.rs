@@ -1,12 +1,12 @@
-mod connectivity;
+// mod connectivity;
 mod math;
 mod polyagamma;
-mod polygons;
+// mod polygons;
 mod runvec;
 mod sampleset;
 pub mod transcripts;
-mod voxelcheckerboard;
-pub mod voxelsampler;
+pub mod voxelcheckerboard;
+// pub mod voxelsampler;
 
 // use super::output::{write_expected_counts, OutputFormat};
 use crate::hull::convex_hull_area;

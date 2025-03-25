@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
-use super::sampler::voxelsampler::VoxelSampler;
 use super::sampler::{ModelParams, TranscriptState};
 use crate::schemas::{transcript_metadata_schema, OutputFormat};
 
@@ -666,6 +665,7 @@ pub fn write_gene_metadata(
 }
 */
 
+/*
 pub fn write_voxels(
     output_path: &Option<String>,
     output_voxels: &Option<String>,
@@ -718,6 +718,7 @@ pub fn write_voxels(
         write_table(output_path, output_voxels, output_voxels_fmt, &batch);
     }
 }
+*/
 
 // TODO:
 // If we want to import things into qupath, I think we need a way to scale

@@ -13,11 +13,8 @@ use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::current_num_threads;
 use regex::Regex;
-use sampler::transcripts::{
-    coordinate_span, estimate_full_area, read_transcripts_csv, CellIndex, Transcript,
-    BACKGROUND_CELL,
-};
-use sampler::voxelsampler::{filter_sparse_cells, VoxelSampler};
+use sampler::transcripts::{read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL};
+use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
 use schemas::OutputFormat;
 use std::cell::RefCell;
@@ -25,7 +22,7 @@ use std::collections::HashSet;
 
 use output::*;
 
-const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 4.0;
+const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 1.0;
 
 #[derive(Parser)]
 #[command(version)]
@@ -202,6 +199,10 @@ struct Args {
     /// Initial size x/y size of voxels.
     #[arg(long, default_value=None)]
     initial_voxel_size: Option<f32>,
+
+    /// Size of quads in voxel checkerboard
+    #[arg(long, default_value_t = 150.0)]
+    quad_size: f32,
 
     /// Exclude transcripts that are more than this distance from any nucleus
     #[arg(long, default_value_t = 60_f32)]
@@ -587,9 +588,21 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
+    dataset.normalize_z_coordinates();
+
     if !args.no_factorization {
         dataset.select_unfactored_genes(args.nunfactored);
     }
+
+    // We are going to try to initialize at full resolution.
+    let voxelcheckerboard = VoxelCheckerboard::from_prior_transcript_assignments(
+        &dataset,
+        initial_voxel_size,
+        args.quad_size,
+        args.voxel_layers,
+        args.nuclear_reassignment_prob,
+        args.prior_seg_reassignment_prob,
+    );
 
     // TODO: need to do this somewhere else.
     // // Warn if any nucleus has extremely high population, which is likely
@@ -1041,6 +1054,7 @@ fn main() {
     */
 }
 
+/*
 #[allow(clippy::too_many_arguments)]
 fn run_hexbin_sampler(
     prog: &mut ProgressBar,
@@ -1142,3 +1156,4 @@ fn compute_cell_areas(
 
     areas
 }
+*/
