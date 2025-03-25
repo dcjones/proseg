@@ -29,10 +29,10 @@ pub struct Transcript {
     pub gene: u32,
 }
 
-#[derive(Copy, Clone, PartialEq)]
-struct PriorTranscriptSeg {
-    nucleus: CellIndex,
-    cell: CellIndex,
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PriorTranscriptSeg {
+    pub nucleus: CellIndex,
+    pub cell: CellIndex,
 }
 
 pub struct TranscriptDataset {
@@ -128,6 +128,7 @@ impl TranscriptDataset {
 
         regress_out_tilt(&xs, &ys, &mut zs);
 
+        // clip extreme quantiles to avoid the z-axis binning being defined by a few outliers
         let mut zs_sorted = zs.clone();
         zs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -140,6 +141,48 @@ impl TranscriptDataset {
         for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
             run.value.z = *z;
         }
+    }
+
+    pub fn coordinate_span(&self) -> (f32, f32, f32, f32, f32, f32) {
+        let mut min_x = std::f32::MAX;
+        let mut max_x = std::f32::MIN;
+        let mut min_y = std::f32::MAX;
+        let mut max_y = std::f32::MIN;
+        let mut min_z = std::f32::MAX;
+        let mut max_z = std::f32::MIN;
+
+        for run in self.transcripts.iter_runs() {
+            let t = &run.value;
+            min_x = min_x.min(t.x);
+            max_x = max_x.max(t.x);
+            min_y = min_y.min(t.y);
+            max_y = max_y.max(t.y);
+            min_z = min_z.min(t.z);
+            max_z = max_z.max(t.z);
+        }
+
+        (min_x, max_x, min_y, max_y, min_z, max_z)
+    }
+
+    pub fn estimate_full_area(&self, mean_nucleus_area: f32) -> f32 {
+        let (xmin, xmax, ymin, ymax, _, _) = self.coordinate_span();
+
+        const SCALE: f32 = 2.0;
+        let binsize = SCALE * mean_nucleus_area.sqrt();
+
+        let xbins = ((xmax - xmin) / binsize).ceil() as usize;
+        let ybins = ((ymax - ymin) / binsize).ceil() as usize;
+
+        let mut occupied = Array2::from_elem((xbins, ybins), false);
+
+        for run in self.transcripts.iter_runs() {
+            let xbin = ((run.value.x - xmin) / binsize).floor() as usize;
+            let ybin = ((run.value.y - ymin) / binsize).floor() as usize;
+
+            occupied[[xbin, ybin]] = true;
+        }
+
+        occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize
     }
 }
 
@@ -265,7 +308,7 @@ fn compact_priorseg(priorseg: &mut RunVec<u32, PriorTranscriptSeg>) -> usize {
         if assignment_run.value.cell != BACKGROUND_CELL {
             let next_cell_id = used_cell_ids.len() as CellIndex;
             used_cell_ids
-                .entry(assignment_run.value.nucleus)
+                .entry(assignment_run.value.cell)
                 .or_insert(next_cell_id);
         }
     }
@@ -803,47 +846,7 @@ where
 //     }
 // }
 
-pub fn coordinate_span(transcripts: &Vec<Transcript>) -> (f32, f32, f32, f32, f32, f32) {
-    let mut min_x = std::f32::MAX;
-    let mut max_x = std::f32::MIN;
-    let mut min_y = std::f32::MAX;
-    let mut max_y = std::f32::MIN;
-    let mut min_z = std::f32::MAX;
-    let mut max_z = std::f32::MIN;
-
-    for t in transcripts {
-        min_x = min_x.min(t.x);
-        max_x = max_x.max(t.x);
-        min_y = min_y.min(t.y);
-        max_y = max_y.max(t.y);
-        min_z = min_z.min(t.z);
-        max_z = max_z.max(t.z);
-    }
-
-    (min_x, max_x, min_y, max_y, min_z, max_z)
-}
-
 // Estimate what region of the slide to model by counting the number of occupied bins.
-pub fn estimate_full_area(transcripts: &Vec<Transcript>, mean_nucleus_area: f32) -> f32 {
-    let (xmin, xmax, ymin, ymax, _, _) = coordinate_span(transcripts);
-
-    const SCALE: f32 = 2.0;
-    let binsize = SCALE * mean_nucleus_area.sqrt();
-
-    let xbins = ((xmax - xmin) / binsize).ceil() as usize;
-    let ybins = ((ymax - ymin) / binsize).ceil() as usize;
-
-    let mut occupied = Array2::from_elem((xbins, ybins), false);
-
-    for transcript in transcripts {
-        let xbin = ((transcript.x - xmin) / binsize).floor() as usize;
-        let ybin = ((transcript.y - ymin) / binsize).floor() as usize;
-
-        occupied[[xbin, ybin]] = true;
-    }
-
-    occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize
-}
 
 // pub fn estimate_cell_fovs(
 //     transcripts: &Vec<Transcript>,

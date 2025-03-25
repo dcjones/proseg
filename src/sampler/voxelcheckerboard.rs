@@ -1,14 +1,15 @@
 // Data structures for maintaining a set of voxels each with an associated
 // sparse transcript vector.
 
-use super::transcripts::{CellIndex, BACKGROUND_CELL};
+use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
 
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeMap, HashSet};
-use std::sync::RwLock;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Instant;
 
 // Store a voxel offset in compact form
-#[derive(Clone, Copy, Debug, PartialOrd, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct VoxelOffset {
     // offsets (di, dj, dk) in each dimension packed into a single u32 with
     // 12, 12, and 8 bits, respectively.
@@ -196,14 +197,15 @@ impl Voxel {
 
 // Z-order curve comparison function. Following from:
 // https://en.wikipedia.org/wiki/Z-order_curve#Efficiently_building_quadtrees_and_octrees
-impl PartialOrd for Voxel {
-    fn partial_cmp(&self, other: &Voxel) -> Option<Ordering> {
+impl Ord for Voxel {
+    fn cmp(&self, other: &Voxel) -> Ordering {
+        // self.index.cmp(&other.index)
         fn less_msb(a: u32, b: u32) -> bool {
             a < b && a < (a ^ b)
         }
 
         if self.index == other.index {
-            return Some(Ordering::Equal);
+            return Ordering::Equal;
         }
 
         // xor then extract coords rather than vice versa to save a few ops
@@ -229,10 +231,16 @@ impl PartialOrd for Voxel {
         };
 
         if islt {
-            Some(Ordering::Less)
+            Ordering::Less
         } else {
-            Some(Ordering::Greater)
+            Ordering::Greater
         }
+    }
+}
+
+impl PartialOrd for Voxel {
+    fn partial_cmp(&self, other: &Voxel) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -243,6 +251,12 @@ type GeneIndex = u32;
 struct GeneCount {
     count: u32,
     noise: u32,
+}
+
+impl GeneCount {
+    fn zero() -> Self {
+        GeneCount { count: 0, noise: 0 }
+    }
 }
 
 // TODO: Honestly, what is the point of having a separate B-tree for every voxel?
@@ -267,13 +281,14 @@ struct GeneCount {
 // }
 
 // Ok, so each key is 8 + 8 + 4 = 20 bytes
-#[derive(Clone, Copy, Debug, PartialOrd, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
 struct VoxelCountKey {
     voxel: Voxel,
     gene: GeneIndex,
     offset: VoxelOffset,
 }
 
+#[derive(Clone, Copy)]
 struct VoxelState {
     cell: CellIndex,
     prior_cell: CellIndex,
@@ -281,7 +296,7 @@ struct VoxelState {
 }
 
 // This will represent one square of the checkerboard
-struct VoxelSet {
+struct VoxelQuad {
     // Voxel state and prior.
     states: BTreeMap<Voxel, VoxelState>,
 
@@ -290,17 +305,18 @@ struct VoxelSet {
     counts: BTreeMap<VoxelCountKey, GeneCount>,
 
     cell_edge_voxels: HashSet<Voxel>,
-    bounds: (Voxel, Voxel),
+    // TODO: Do we ever need to actually know the bounds? When daoes this come up?
+    // bounds: (Voxel, Voxel),
 }
 
-impl VoxelSet {
+impl VoxelQuad {
     // Initialize empty voxel set
-    fn new(from: Voxel, to: Voxel) -> VoxelSet {
-        return VoxelSet {
+    fn new() -> VoxelQuad {
+        return VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
             cell_edge_voxels: HashSet::new(),
-            bounds: (from, to),
+            // bounds: (from, to),
         };
     }
 
@@ -309,26 +325,297 @@ impl VoxelSet {
     // Maybe we wait to see what functionality we actually need here
 }
 
-struct VoxelCheckerboard {
+pub struct VoxelCheckerboard {
     // number of voxels in each direction
-    quad_x_size: usize,
-    quad_y_size: usize,
+    quadsize: usize,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
     //
     // We also need to keep track of whether indexe parities to
     // do staggered updates. So how do we want to organize this.
-    voxel_sets: Vec<RwLock<VoxelSet>>,
+    quads: HashMap<(u32, u32), RwLock<VoxelQuad>>,
 }
 
-// impl VoxelCheckerboard {
-//     fn voxel_state(voxel: Voxel) -> CellIndex {
-//         // TODO: lookup the quad
-//         // TODO: linearize the voxel
-//         // TODO: check the quad
-//     }
-// }
+impl VoxelCheckerboard {
+    pub fn from_prior_transcript_assignments(
+        dataset: &TranscriptDataset,
+        voxelsize: f32,
+        quadsize: f32,
+        nzlayers: usize,
+        nucprior: f32,
+        cellprior: f32,
+    ) -> VoxelCheckerboard {
+        let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
+        let voxelsize_z = (zmax - zmin) / nzlayers as f32;
+
+        let coords_to_voxel = |x: f32, y: f32, z: f32| {
+            let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
+            let j = ((y - ymin) / voxelsize).round().max(0.0) as i32;
+            let k = (((z - zmin) / voxelsize_z) as i32)
+                .min(nzlayers as i32 - 1)
+                .max(0);
+            Voxel::new(i, j, k)
+        };
+
+        // tally votes: count transcripts in each voxel aggregated by prior cell assignment
+        let t0 = Instant::now();
+        let mut nuc_votes: BTreeMap<(Voxel, CellIndex), u32> = BTreeMap::new();
+        let mut cell_votes: BTreeMap<(Voxel, CellIndex), u32> = BTreeMap::new();
+        for (transcript, prior) in dataset.transcripts.iter().zip(dataset.priorseg.iter()) {
+            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+
+            if prior.nucleus != BACKGROUND_CELL {
+                let key = (voxel, prior.nucleus);
+                *nuc_votes.entry(key).or_insert(0) += 1;
+            }
+
+            if prior.cell != BACKGROUND_CELL {
+                let key = (voxel, prior.cell);
+                *cell_votes.entry(key).or_insert(0) += 1;
+            }
+        }
+
+        let mut checkerboard = VoxelCheckerboard {
+            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
+            quads: HashMap::new(),
+        };
+
+        // assign voxels based on vote winners
+        let mut used_cells = HashMap::new();
+        let mut current_voxel = Voxel::oob();
+        let mut vote_winner = BACKGROUND_CELL;
+        let mut vote_winner_count: u32 = 0;
+        for ((voxel, cell), count) in nuc_votes {
+            if voxel != current_voxel {
+                if !current_voxel.is_oob() {
+                    checkerboard.insert_state(
+                        current_voxel,
+                        VoxelState {
+                            cell: vote_winner,
+                            prior_cell: vote_winner,
+                            prior: nucprior,
+                        },
+                    );
+                    let next_cell_id = used_cells.len() as CellIndex;
+                    used_cells.entry(vote_winner).or_insert(next_cell_id);
+                }
+                vote_winner = cell;
+                vote_winner_count = count;
+                current_voxel = voxel;
+            } else {
+                if count > vote_winner_count {
+                    vote_winner = cell;
+                    vote_winner_count = count;
+                }
+            }
+        }
+        if !current_voxel.is_oob() {
+            checkerboard.insert_state(
+                current_voxel,
+                VoxelState {
+                    cell: vote_winner,
+                    prior_cell: vote_winner,
+                    prior: nucprior,
+                },
+            );
+
+            let next_cell_id = used_cells.len() as CellIndex;
+            used_cells.entry(vote_winner).or_insert(next_cell_id);
+        }
+        println!("initialized voxel state: {:?}", t0.elapsed());
+        dbg!(checkerboard.quads.len());
+        dbg!(dataset.ncells);
+        dbg!(used_cells.len());
+
+        // re-assign cell indices so that there are no cells without any assigned voxel
+        for quad in &mut checkerboard.quads.values() {
+            let mut quad = quad.write().unwrap();
+            for state in quad.states.values_mut() {
+                let cell = *used_cells.get(&state.cell).unwrap();
+                state.cell = cell;
+                state.prior_cell = cell;
+            }
+        }
+
+        // assign cell priors, by once again voting
+        let mut current_voxel = Voxel::oob();
+        let mut vote_winner = BACKGROUND_CELL;
+        let mut vote_winner_count: u32 = 0;
+        for ((voxel, cell), count) in cell_votes {
+            if voxel != current_voxel {
+                if !current_voxel.is_oob() {
+                    if let Some(&vote_winner) = used_cells.get(&vote_winner) {
+                        checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                            cell: BACKGROUND_CELL,
+                            prior_cell: vote_winner,
+                            prior: cellprior,
+                        });
+                    }
+                }
+                vote_winner = cell;
+                vote_winner_count = count;
+                current_voxel = voxel;
+            } else {
+                if count > vote_winner_count {
+                    vote_winner = cell;
+                    vote_winner_count = count;
+                }
+            }
+        }
+        if !current_voxel.is_oob() {
+            if let Some(&vote_winner) = used_cells.get(&vote_winner) {
+                checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                    cell: BACKGROUND_CELL,
+                    prior_cell: vote_winner,
+                    prior: cellprior,
+                });
+            }
+        }
+        println!("assigned cell priors: {:?}", t0.elapsed());
+
+        // assign voxel counts
+        let t0 = Instant::now();
+        for run in dataset.transcripts.iter_runs() {
+            let transcript = &run.value;
+            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+            checkerboard
+                .write_quad(voxel)
+                .counts
+                .entry(key)
+                .or_insert(GeneCount::zero())
+                .count += run.len;
+        }
+        println!("assigned voxel counts: {:?}", t0.elapsed());
+
+        // initialize edge voxel sets
+        checkerboard.mirror_quad_edges();
+        checkerboard.build_edge_sets();
+
+        checkerboard
+    }
+
+    fn quad_index(&self, voxel: Voxel) -> (u32, u32) {
+        let u = voxel.i() as u32 / self.quadsize as u32;
+        let v = voxel.j() as u32 / self.quadsize as u32;
+        (u, v)
+    }
+
+    fn write_quad(&mut self, voxel: Voxel) -> RwLockWriteGuard<VoxelQuad> {
+        self.write_quad_index(self.quad_index(voxel))
+    }
+
+    fn write_quad_index(&mut self, index: (u32, u32)) -> RwLockWriteGuard<VoxelQuad> {
+        self.quads
+            .entry(index)
+            .or_insert_with(|| RwLock::new(VoxelQuad::new()))
+            .write()
+            .unwrap()
+    }
+
+    // fn read_quad(&mut self, voxel: Voxel) -> RwLockReadGuard<VoxelQuad> {
+    //     self.quads
+    //         .entry(self.quad_index(voxel))
+    //         .or_insert_with(|| RwLock::new(VoxelQuad::new()))
+    //         .read()
+    //         .unwrap()
+    // }
+
+    fn insert_state(&mut self, voxel: Voxel, state: VoxelState) {
+        self.write_quad(voxel).states.insert(voxel, state);
+    }
+
+    fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
+        self.write_quad(voxel).states.entry(voxel).or_insert_with(f);
+    }
+
+    // We keep redundant copies of the states of voxels along the edges of each
+    // quad. This way we can always stay within the quad to check neighborhoods.
+    fn mirror_quad_edges(&mut self) {
+        for (&(u, v), quad) in &self.quads {
+            let mut quad = quad.write().unwrap();
+
+            let quad_imin = u * self.quadsize as u32;
+            let quad_imax = ((u + 1) * self.quadsize as u32) - 1;
+            let quad_jmin = v * self.quadsize as u32;
+            let quad_jmax = ((v + 1) * self.quadsize as u32) - 1;
+
+            // copy states from our left neighbor
+            if let Some(left_quad) = self.quads.get(&(u - 1, v)) {
+                let left_quad = left_quad.read().unwrap();
+                for (voxel, state) in &left_quad.states {
+                    if voxel.i() as u32 == quad_imin - 1 {
+                        quad.states.insert(voxel.clone(), state.clone());
+                    }
+                }
+            }
+
+            // copy states from our top neighbor
+            if let Some(top_quad) = self.quads.get(&(u, v - 1)) {
+                let top_quad = top_quad.read().unwrap();
+                for (voxel, state) in &top_quad.states {
+                    if voxel.j() as u32 == quad_jmin - 1 {
+                        quad.states.insert(voxel.clone(), state.clone());
+                    }
+                }
+            }
+
+            // copy states from our right neighbor
+            if let Some(right_quad) = self.quads.get(&(u + 1, v)) {
+                let right_quad = right_quad.read().unwrap();
+                for (voxel, state) in &right_quad.states {
+                    if voxel.i() as u32 == quad_imax + 1 {
+                        quad.states.insert(voxel.clone(), state.clone());
+                    }
+                }
+            }
+
+            // copy states from our bottom neighbor
+            if let Some(bottom_quad) = self.quads.get(&(u, v + 1)) {
+                let bottom_quad = bottom_quad.read().unwrap();
+                for (voxel, state) in &bottom_quad.states {
+                    if voxel.j() as u32 == quad_jmax + 1 {
+                        quad.states.insert(voxel.clone(), state.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_edge_sets(&mut self) {
+        // have to do this to get around a double borrow issue
+        let mut cell_edge_voxels = HashSet::new();
+        for quad in self.quads.values() {
+            let mut quad = quad.write().unwrap();
+            cell_edge_voxels.clear();
+            for (voxel, state) in &quad.states {
+                let cell = state.cell;
+                if cell == BACKGROUND_CELL {
+                    continue;
+                }
+
+                for neighbor in voxel.von_neumann_neighborhood() {
+                    let neighbor_cell = quad
+                        .states
+                        .get(&neighbor)
+                        .map_or(BACKGROUND_CELL, |state| state.cell);
+
+                    if cell != neighbor_cell {
+                        cell_edge_voxels.insert(*voxel);
+                        break;
+                    }
+                }
+            }
+
+            quad.cell_edge_voxels.clone_from(&cell_edge_voxels);
+        }
+    }
+}
 
 // TODO: Data structure to hold a grid of `VoxelSets`
 // Design considerations:
