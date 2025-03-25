@@ -7,6 +7,7 @@ use std::iter::Iterator;
 use std::mem::replace;
 use std::ops::{AddAssign, SubAssign};
 
+#[derive(Debug)]
 pub struct Run<I, T> {
     pub len: I,
     pub value: T,
@@ -61,13 +62,15 @@ where
         if let Some(last) = self.runs.last_mut() {
             if last.value == value {
                 last.len += I::one();
+                self.len += 1;
+                return;
             }
-        } else {
-            self.runs.push(Run {
-                len: I::one(),
-                value,
-            });
         }
+
+        self.runs.push(Run {
+            len: I::one(),
+            value,
+        });
         self.len += 1;
     }
 

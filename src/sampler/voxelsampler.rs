@@ -2,7 +2,7 @@ use super::connectivity::ConnectivityChecker;
 use super::math::relerr;
 use super::polygons::{union_all_into_multipolygon, PolygonBuilder};
 use super::sampleset::SampleSet;
-use super::transcripts::{coordinate_span, CellIndex, Transcript, BACKGROUND_CELL};
+use super::transcripts::{CellIndex, Transcript, BACKGROUND_CELL};
 use super::{chunkquad, perimeter_bound, ModelParams, ModelPriors, Proposal, Sampler};
 
 // use hexx::{Hex, HexLayout, HexOrientation, Vec2};
