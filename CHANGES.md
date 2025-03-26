@@ -1,4 +1,8 @@
 
+# 2.0.3
+  - Fix crash on data with fewer than 300 genes.
+  - Output corresponding original cell ids to the cell metadata table.
+
 # 2.0.2
   - Updating dependencies to avoid some compilation errors.
   - Optimizations (should be 20-30% faster on high-plex data)
