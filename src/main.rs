@@ -634,6 +634,7 @@ fn main() {
 
     if args.nunfactored >= ngenes {
         args.no_factorization = true;
+        args.nunfactored = ngenes;
     }
 
     let nucleus_areas =
