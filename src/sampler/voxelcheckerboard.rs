@@ -1,6 +1,7 @@
 // Data structures for maintaining a set of voxels each with an associated
 // sparse transcript vector.
 
+use super::sampleset::SampleSet;
 use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
 
 use std::cmp::{Ordering, PartialOrd};
@@ -304,7 +305,7 @@ struct VoxelQuad {
     // voxel set. We also have to keep track of repositioned transcripts here.
     counts: BTreeMap<VoxelCountKey, GeneCount>,
 
-    cell_edge_voxels: HashSet<Voxel>,
+    cell_edge_voxels: SampleSet<Voxel>,
     // TODO: Do we ever need to actually know the bounds? When daoes this come up?
     // bounds: (Voxel, Voxel),
 }
@@ -315,7 +316,7 @@ impl VoxelQuad {
         return VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
-            cell_edge_voxels: HashSet::new(),
+            cell_edge_voxels: SampleSet::new(),
             // bounds: (from, to),
         };
     }
@@ -584,12 +585,14 @@ impl VoxelCheckerboard {
                     }
                 }
             }
+
+            // TODO: We also have to check our corners!
         }
     }
 
     fn build_edge_sets(&mut self) {
         // have to do this to get around a double borrow issue
-        let mut cell_edge_voxels = HashSet::new();
+        let mut cell_edge_voxels = Vec::new();
         for quad in self.quads.values() {
             let mut quad = quad.write().unwrap();
             cell_edge_voxels.clear();
@@ -606,16 +609,21 @@ impl VoxelCheckerboard {
                         .map_or(BACKGROUND_CELL, |state| state.cell);
 
                     if cell != neighbor_cell {
-                        cell_edge_voxels.insert(*voxel);
+                        cell_edge_voxels.push(*voxel);
                         break;
                     }
                 }
             }
 
-            quad.cell_edge_voxels.clone_from(&cell_edge_voxels);
+            quad.cell_edge_voxels.clear();
+            quad.cell_edge_voxels.extend(&cell_edge_voxels);
         }
     }
 }
+
+// TODO: Ok, now we have to think about how we are actually sampling voxels.
+// I'm thinking I'm going to have rewrite everything in voxelsampler and sampler
+// gets turned into paramsampler
 
 // TODO: Data structure to hold a grid of `VoxelSets`
 // Design considerations:
