@@ -604,14 +604,13 @@ fn main() {
         args.prior_seg_reassignment_prob,
     );
 
-    // TODO: need to do this somewhere else.
-    // // Warn if any nucleus has extremely high population, which is likely
-    // // an error interpreting the file.
-    // dataset.nucleus_population.iter().for_each(|&p| {
-    //     if p > 10000 {
-    //         eprintln!("Warning: nucleus with population {}", p);
-    //     }
-    // });
+    // Warn if any nucleus has extremely high population, which is likely
+    // an error interpreting the file. (e.g. Misinterpreting the unassigned indicator as a cell)
+    dataset.prior_nuclei_populations().iter().for_each(|&p| {
+        if p > 50000 {
+            eprintln!("Warning: nucleus with population {}", p);
+        }
+    });
 
     unimplemented!("proseg3: only initializing for now.");
 
