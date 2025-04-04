@@ -70,6 +70,21 @@ where
         Some(&self.vec[index])
     }
 
+    pub fn clear(&mut self) {
+        self.set.clear();
+        self.vec.clear();
+    }
+
+    pub fn extend<'a, I>(&mut self, other: I)
+    where
+        I: IntoIterator<Item = &'a T>,
+        T: 'a,
+    {
+        for value in other.into_iter() {
+            self.insert(value.clone());
+        }
+    }
+
     // fn contains(&self, value: &T) -> bool {
     //     return self.set.contains_key(value);
     // }

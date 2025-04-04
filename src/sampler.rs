@@ -7,6 +7,8 @@ mod sampleset;
 pub mod transcripts;
 pub mod voxelcheckerboard;
 // pub mod voxelsampler;
+mod sparsemat;
+pub mod voxelsampler2;
 
 // use super::output::{write_expected_counts, OutputFormat};
 use crate::hull::convex_hull_area;

@@ -184,6 +184,16 @@ impl TranscriptDataset {
 
         occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize
     }
+
+    pub fn prior_nuclei_populations(&self) -> Array1<u32> {
+        let mut counts = Array1::zeros(self.ncells);
+        for run in self.priorseg.iter_runs() {
+            if run.value.nucleus != BACKGROUND_CELL {
+                counts[run.value.nucleus as usize] += run.len;
+            }
+        }
+        counts
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
