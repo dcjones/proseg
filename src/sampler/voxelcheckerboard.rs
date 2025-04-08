@@ -96,11 +96,11 @@ impl Voxel {
         }
     }
 
-    fn oob() -> Voxel {
+    pub fn oob() -> Voxel {
         Voxel { index: OOB_VOXEL }
     }
 
-    fn is_oob(&self) -> bool {
+    pub fn is_oob(&self) -> bool {
         self.index == OOB_VOXEL
     }
 
@@ -112,15 +112,15 @@ impl Voxel {
         [self.i() as u32, self.j() as u32, self.k() as u32]
     }
 
-    fn i(&self) -> i32 {
+    pub fn i(&self) -> i32 {
         ((self.index >> 48) & 0xFFFFFF) as i32
     }
 
-    fn j(&self) -> i32 {
+    pub fn j(&self) -> i32 {
         ((self.index >> 24) & 0xFFFFFF) as i32
     }
 
-    fn k(&self) -> i32 {
+    pub fn k(&self) -> i32 {
         (self.index & 0xFFFF) as i32
     }
 
@@ -245,6 +245,22 @@ impl PartialOrd for Voxel {
     }
 }
 
+#[derive(Hash, PartialEq, Eq, Copy, Clone)]
+pub struct UndirectedVoxelPair {
+    pub a: Voxel,
+    pub b: Voxel,
+}
+
+impl UndirectedVoxelPair {
+    fn new(a: Voxel, b: Voxel) -> UndirectedVoxelPair {
+        if a <= b {
+            UndirectedVoxelPair { a, b }
+        } else {
+            UndirectedVoxelPair { a: b, b: a }
+        }
+    }
+}
+
 type GeneIndex = u32;
 
 // TODO: we could probably get away with packing this into one u32,
@@ -297,15 +313,15 @@ struct VoxelState {
 }
 
 // This will represent one square of the checkerboard
-struct VoxelQuad {
+pub struct VoxelQuad {
     // Voxel state and prior.
-    states: BTreeMap<Voxel, VoxelState>,
+    pub states: BTreeMap<Voxel, VoxelState>,
 
     // This is essentially one giant sparse matrix for the entire
     // voxel set. We also have to keep track of repositioned transcripts here.
-    counts: BTreeMap<VoxelCountKey, GeneCount>,
+    pub counts: BTreeMap<VoxelCountKey, GeneCount>,
 
-    cell_edge_voxels: SampleSet<Voxel>,
+    pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
     // TODO: Do we ever need to actually know the bounds? When daoes this come up?
     // bounds: (Voxel, Voxel),
 }
@@ -316,9 +332,16 @@ impl VoxelQuad {
         return VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
-            cell_edge_voxels: SampleSet::new(),
+            mismatch_edges: SampleSet::new(),
             // bounds: (from, to),
         };
+    }
+
+    pub fn get_cell(&self, voxel: Voxel) -> CellIndex {
+        self.states
+            .get(&voxel)
+            .map(|state| state.cell)
+            .unwrap_or(BACKGROUND_CELL)
     }
 
     // TODO: initialize with
@@ -329,13 +352,14 @@ impl VoxelQuad {
 pub struct VoxelCheckerboard {
     // number of voxels in each direction
     quadsize: usize,
+    kmax: i32,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
     //
     // We also need to keep track of whether indexe parities to
     // do staggered updates. So how do we want to organize this.
-    quads: HashMap<(u32, u32), RwLock<VoxelQuad>>,
+    pub quads: HashMap<(u32, u32), RwLock<VoxelQuad>>,
 }
 
 impl VoxelCheckerboard {
@@ -379,6 +403,7 @@ impl VoxelCheckerboard {
 
         let mut checkerboard = VoxelCheckerboard {
             quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
+            kmax: (nzlayers - 1) as i32,
             quads: HashMap::new(),
         };
 
@@ -592,31 +617,35 @@ impl VoxelCheckerboard {
 
     fn build_edge_sets(&mut self) {
         // have to do this to get around a double borrow issue
-        let mut cell_edge_voxels = Vec::new();
+        let mut mismatch_edges = Vec::new();
         for quad in self.quads.values() {
             let mut quad = quad.write().unwrap();
-            cell_edge_voxels.clear();
-            for (voxel, state) in &quad.states {
+            mismatch_edges.clear();
+            for (&voxel, state) in &quad.states {
                 let cell = state.cell;
                 if cell == BACKGROUND_CELL {
                     continue;
                 }
 
                 for neighbor in voxel.von_neumann_neighborhood() {
+                    let k = neighbor.k();
+                    if k < 0 || k > self.kmax {
+                        continue;
+                    }
+
                     let neighbor_cell = quad
                         .states
                         .get(&neighbor)
                         .map_or(BACKGROUND_CELL, |state| state.cell);
 
                     if cell != neighbor_cell {
-                        cell_edge_voxels.push(*voxel);
-                        break;
+                        mismatch_edges.push(UndirectedVoxelPair::new(voxel, neighbor));
                     }
                 }
             }
 
-            quad.cell_edge_voxels.clear();
-            quad.cell_edge_voxels.extend(&cell_edge_voxels);
+            quad.mismatch_edges.clear();
+            quad.mismatch_edges.extend(&mismatch_edges);
         }
     }
 }
