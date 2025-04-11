@@ -97,3 +97,7 @@ pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
 pub fn randn(rng: &mut ThreadRng) -> f32 {
     return rng.sample::<f32, StandardNormal>(StandardNormal);
 }
+
+pub fn halfnormal_logpdf(σ: f32, x: f32) -> f32 {
+    -LN_SQRT_TWO_PI - σ.ln() - x.powi(2) / (2.0 * σ.powi(2))
+}
