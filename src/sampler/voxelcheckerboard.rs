@@ -6,12 +6,13 @@ use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
 
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::Bound::{Excluded, Included};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
 // Store a voxel offset in compact form
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
-struct VoxelOffset {
+pub struct VoxelOffset {
     // offsets (di, dj, dk) in each dimension packed into a single u32 with
     // 12, 12, and 8 bits, respectively.
     offset: u32,
@@ -263,19 +264,6 @@ impl UndirectedVoxelPair {
 
 type GeneIndex = u32;
 
-// TODO: we could probably get away with packing this into one u32,
-// as well, but that probably gets a bit sketchier on visium and the like.
-struct GeneCount {
-    count: u32,
-    noise: u32,
-}
-
-impl GeneCount {
-    fn zero() -> Self {
-        GeneCount { count: 0, noise: 0 }
-    }
-}
-
 // TODO: Honestly, what is the point of having a separate B-tree for every voxel?
 // What if we were to just have one huge BTree that's like
 // BTreeMap<(Voxel, VoxelOffset, GeneIndex), GeneCount>
@@ -299,17 +287,17 @@ impl GeneCount {
 
 // Ok, so each key is 8 + 8 + 4 = 20 bytes
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
-struct VoxelCountKey {
-    voxel: Voxel,
-    gene: GeneIndex,
-    offset: VoxelOffset,
+pub struct VoxelCountKey {
+    pub voxel: Voxel,
+    pub gene: GeneIndex,
+    pub offset: VoxelOffset,
 }
 
-#[derive(Clone, Copy)]
-struct VoxelState {
-    cell: CellIndex,
-    prior_cell: CellIndex,
-    prior: f32,
+#[derive(Debug, Clone, Copy)]
+pub struct VoxelState {
+    pub cell: CellIndex,
+    pub prior_cell: CellIndex,
+    pub prior: f32,
 }
 
 // This will represent one square of the checkerboard
@@ -319,7 +307,7 @@ pub struct VoxelQuad {
 
     // This is essentially one giant sparse matrix for the entire
     // voxel set. We also have to keep track of repositioned transcripts here.
-    pub counts: BTreeMap<VoxelCountKey, GeneCount>,
+    pub counts: BTreeMap<VoxelCountKey, u32>,
 
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
     // TODO: Do we ever need to actually know the bounds? When daoes this come up?
@@ -337,16 +325,35 @@ impl VoxelQuad {
         };
     }
 
+    pub fn get(&self, voxel: Voxel) -> Option<&VoxelState> {
+        self.states.get(&voxel)
+    }
+
     pub fn get_cell(&self, voxel: Voxel) -> CellIndex {
         self.states
             .get(&voxel)
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL)
     }
+}
 
-    // TODO: initialize with
-
-    // Maybe we wait to see what functionality we actually need here
+impl<'a> VoxelQuad {
+    pub fn voxel_counts(
+        &'a self,
+        voxel: Voxel,
+    ) -> std::collections::btree_map::Range<'a, VoxelCountKey, u32> {
+        let from = VoxelCountKey {
+            voxel,
+            gene: 0,
+            offset: VoxelOffset::zero(),
+        };
+        let to = VoxelCountKey {
+            voxel,
+            gene: GeneIndex::MAX,
+            offset: VoxelOffset::zero(),
+        };
+        self.counts.range((Included(from), Included(to)))
+    }
 }
 
 pub struct VoxelCheckerboard {
@@ -510,12 +517,10 @@ impl VoxelCheckerboard {
                 gene: transcript.gene,
                 offset: VoxelOffset::zero(),
             };
-            checkerboard
-                .write_quad(voxel)
-                .counts
-                .entry(key)
-                .or_insert(GeneCount::zero())
-                .count += run.len;
+
+            let mut quad = checkerboard.write_quad(voxel);
+            let count = quad.counts.entry(key).or_insert(0_u32);
+            *count += run.len;
         }
         println!("assigned voxel counts: {:?}", t0.elapsed());
 

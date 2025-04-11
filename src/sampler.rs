@@ -115,6 +115,8 @@ pub struct ModelPriors {
     pub α_c: f32,
     pub β_c: f32,
 
+    pub σ_iiq: f32,
+
     // scaling factor for circle perimeters
     pub perimeter_eta: f32,
     pub perimeter_bound: f32,
@@ -164,6 +166,7 @@ pub struct ModelParams {
 
     // [ncells] per-cell volumes
     pub cell_volume: Array1<f32>,
+    pub cell_surface_area: Array1<f32>,
     pub log_cell_volume: Array1<f32>,
 
     // [ncells] cell_volume * cell_scale
@@ -285,6 +288,8 @@ pub struct ModelParams {
     // [ngenes] confusion: rate at which we halucinate transcripts within cells
     pub λ_c: Array1<f32>,
 
+    pub voxel_volume: f32,
+
     // time, which is incremented after every iteration
     t: u32,
 }
@@ -345,6 +350,7 @@ impl ModelParams {
         let lgamma_rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0_f32);
         let cell_volume = Array1::<f32>::zeros(ncells);
+        let cell_surface_area = Array1::<f32>::zeros(ncells);
         let log_cell_volume = Array1::<f32>::zeros(ncells);
         let cell_scale = Array1::<f32>::from_elem(ncells, 1.0_f32);
         let effective_cell_volume = cell_volume.clone();
@@ -446,6 +452,7 @@ impl ModelParams {
             cell_assignment_time: vec![0; init_cell_assignments.len()],
             cell_population: init_cell_population.to_vec(),
             cell_volume,
+            cell_surface_area,
             log_cell_volume,
             cell_scale,
             effective_cell_volume,
@@ -487,6 +494,8 @@ impl ModelParams {
             λ_bg: Array2::<f32>::from_elem((ngenes, nlayers), 0.0),
             logλ_bg: Array2::<f32>::zeros((ngenes, nlayers)),
             λ_c: Array1::<f32>::from_elem(ngenes, 1e-4),
+            // TODO: initialize and update this
+            voxel_volume: 0.0,
             t: 0,
         }
     }
