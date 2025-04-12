@@ -4,9 +4,11 @@
 use super::sampleset::SampleSet;
 use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
 
+use itertools::Itertools;
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ops::Bound::{Excluded, Included};
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound::Included;
+use std::ops::DerefMut;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
@@ -97,6 +99,10 @@ impl Voxel {
         }
     }
 
+    pub fn zero() -> Voxel {
+        Voxel::new(0, 0, 0)
+    }
+
     pub fn oob() -> Voxel {
         Voxel { index: OOB_VOXEL }
     }
@@ -105,7 +111,7 @@ impl Voxel {
         self.index == OOB_VOXEL
     }
 
-    fn coords(&self) -> [i32; 3] {
+    pub fn coords(&self) -> [i32; 3] {
         [self.i(), self.j(), self.k()]
     }
 
@@ -253,7 +259,7 @@ pub struct UndirectedVoxelPair {
 }
 
 impl UndirectedVoxelPair {
-    fn new(a: Voxel, b: Voxel) -> UndirectedVoxelPair {
+    pub fn new(a: Voxel, b: Voxel) -> UndirectedVoxelPair {
         if a <= b {
             UndirectedVoxelPair { a, b }
         } else {
@@ -300,6 +306,16 @@ pub struct VoxelState {
     pub prior: f32,
 }
 
+impl VoxelState {
+    fn new_cell_only(cell: CellIndex) -> VoxelState {
+        VoxelState {
+            cell,
+            prior_cell: BACKGROUND_CELL,
+            prior: 0.0,
+        }
+    }
+}
+
 // This will represent one square of the checkerboard
 pub struct VoxelQuad {
     // Voxel state and prior.
@@ -310,30 +326,90 @@ pub struct VoxelQuad {
     pub counts: BTreeMap<VoxelCountKey, u32>,
 
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
-    // TODO: Do we ever need to actually know the bounds? When daoes this come up?
-    // bounds: (Voxel, Voxel),
+
+    kmax: i32,
+    quadsize: usize,
+
+    // quad coordinates
+    pub u: u32,
+    pub v: u32,
 }
 
 impl VoxelQuad {
     // Initialize empty voxel set
-    fn new() -> VoxelQuad {
+    fn new(kmax: i32, quadsize: usize, u: u32, v: u32) -> VoxelQuad {
         return VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
             mismatch_edges: SampleSet::new(),
-            // bounds: (from, to),
+            kmax,
+            quadsize,
+            u,
+            v,
         };
     }
 
-    pub fn get(&self, voxel: Voxel) -> Option<&VoxelState> {
+    pub fn get_voxel_state(&self, voxel: Voxel) -> Option<&VoxelState> {
         self.states.get(&voxel)
     }
 
-    pub fn get_cell(&self, voxel: Voxel) -> CellIndex {
+    pub fn set_voxel_cell(&mut self, voxel: Voxel, cell: CellIndex) {
+        if cell == BACKGROUND_CELL {
+            self.states.remove(&voxel);
+        } else {
+            self.states
+                .entry(voxel)
+                .and_modify(|state| state.cell = cell)
+                .or_insert_with(|| VoxelState::new_cell_only(cell));
+        }
+    }
+
+    pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
         self.states
             .get(&voxel)
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL)
+    }
+
+    // Inclusive bounds: (min_i, max_i, min_j, max_j)
+    pub fn bounds(&self) -> (i32, i32, i32, i32) {
+        (
+            (self.u as usize * self.quadsize) as i32,
+            (((self.u + 1) as usize * self.quadsize) as i32) - 1,
+            (self.v as usize * self.quadsize) as i32,
+            (((self.v + 1) as usize * self.quadsize) as i32) - 1,
+        )
+    }
+
+    pub fn voxel_in_bounds(&self, voxel: Voxel) -> bool {
+        let [i, j, _k] = voxel.coords();
+        let (min_i, max_i, min_j, max_j) = self.bounds();
+        min_i <= i && i <= max_i && min_j <= j && j <= max_j
+    }
+
+    pub fn update_voxel_cell(
+        &mut self,
+        voxel: Voxel,
+        current_cell: CellIndex,
+        proposed_cell: CellIndex,
+    ) {
+        self.set_voxel_cell(voxel, proposed_cell);
+
+        for neighbor in voxel.von_neumann_neighborhood() {
+            let k = neighbor.k();
+            if k < 0 || k > self.kmax {
+                continue;
+            }
+
+            let neighbor_cell = self.get_voxel_cell(neighbor);
+            if neighbor_cell == proposed_cell {
+                self.mismatch_edges
+                    .remove(UndirectedVoxelPair::new(voxel, neighbor));
+            } else if neighbor_cell == current_cell {
+                self.mismatch_edges
+                    .insert(UndirectedVoxelPair::new(voxel, neighbor));
+            }
+        }
     }
 }
 
@@ -542,11 +618,29 @@ impl VoxelCheckerboard {
     }
 
     fn write_quad_index(&mut self, index: (u32, u32)) -> RwLockWriteGuard<VoxelQuad> {
+        let (u, v) = index;
+
         self.quads
             .entry(index)
-            .or_insert_with(|| RwLock::new(VoxelQuad::new()))
+            .or_insert_with(|| RwLock::new(VoxelQuad::new(self.kmax, self.quadsize, u, v)))
             .write()
             .unwrap()
+    }
+
+    fn quad_bounds(&self, index: (u32, u32)) -> (Voxel, Voxel) {
+        let min_ij = Voxel::new(
+            index.0 as i32 * self.quadsize as i32,
+            index.1 as i32 * self.quadsize as i32,
+            0,
+        );
+
+        let max_ij = Voxel::new(
+            (index.0 + 1) as i32 * self.quadsize as i32 - 1,
+            (index.1 + 1) as i32 * self.quadsize as i32 - 1,
+            0,
+        );
+
+        (min_ij, max_ij)
     }
 
     // fn read_quad(&mut self, voxel: Voxel) -> RwLockReadGuard<VoxelQuad> {
@@ -569,54 +663,16 @@ impl VoxelCheckerboard {
     // quad. This way we can always stay within the quad to check neighborhoods.
     fn mirror_quad_edges(&mut self) {
         for (&(u, v), quad) in &self.quads {
-            let mut quad = quad.write().unwrap();
-
-            let quad_imin = u * self.quadsize as u32;
-            let quad_imax = ((u + 1) * self.quadsize as u32) - 1;
-            let quad_jmin = v * self.quadsize as u32;
-            let quad_jmax = ((v + 1) * self.quadsize as u32) - 1;
-
-            // copy states from our left neighbor
-            if let Some(left_quad) = self.quads.get(&(u - 1, v)) {
-                let left_quad = left_quad.read().unwrap();
-                for (voxel, state) in &left_quad.states {
-                    if voxel.i() as u32 == quad_imin - 1 {
-                        quad.states.insert(voxel.clone(), state.clone());
+            let quad = quad.read().unwrap();
+            self.for_each_quad_neighbor(u, v, |neighbor_quad| {
+                let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
+                for (voxel, state) in &quad.states {
+                    let [i, j, k] = voxel.coords();
+                    if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
+                        neighbor_quad.states.insert(voxel.clone(), state.clone());
                     }
                 }
-            }
-
-            // copy states from our top neighbor
-            if let Some(top_quad) = self.quads.get(&(u, v - 1)) {
-                let top_quad = top_quad.read().unwrap();
-                for (voxel, state) in &top_quad.states {
-                    if voxel.j() as u32 == quad_jmin - 1 {
-                        quad.states.insert(voxel.clone(), state.clone());
-                    }
-                }
-            }
-
-            // copy states from our right neighbor
-            if let Some(right_quad) = self.quads.get(&(u + 1, v)) {
-                let right_quad = right_quad.read().unwrap();
-                for (voxel, state) in &right_quad.states {
-                    if voxel.i() as u32 == quad_imax + 1 {
-                        quad.states.insert(voxel.clone(), state.clone());
-                    }
-                }
-            }
-
-            // copy states from our bottom neighbor
-            if let Some(bottom_quad) = self.quads.get(&(u, v + 1)) {
-                let bottom_quad = bottom_quad.read().unwrap();
-                for (voxel, state) in &bottom_quad.states {
-                    if voxel.j() as u32 == quad_jmax + 1 {
-                        quad.states.insert(voxel.clone(), state.clone());
-                    }
-                }
-            }
-
-            // TODO: We also have to check our corners!
+            });
         }
     }
 
@@ -651,6 +707,38 @@ impl VoxelCheckerboard {
 
             quad.mismatch_edges.clear();
             quad.mismatch_edges.extend(&mismatch_edges);
+        }
+    }
+
+    pub fn for_each_quad_neighbor<F>(&self, u: u32, v: u32, f: F)
+    where
+        F: Fn(&mut VoxelQuad) -> (),
+    {
+        let offsets = [
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        ];
+
+        for (delta_u, delta_v) in offsets {
+            let neighbor_u = u as i32 + delta_u;
+            let neighbor_v = v as i32 + delta_v;
+
+            if neighbor_u < 0 || neighbor_v < 0 {
+                continue;
+            }
+
+            let neighbor_u = neighbor_u as u32;
+            let neighbor_v = neighbor_v as u32;
+
+            if let Some(neighbor_quad) = self.quads.get(&(neighbor_u, neighbor_v)) {
+                f(neighbor_quad.write().unwrap().deref_mut())
+            }
         }
     }
 }

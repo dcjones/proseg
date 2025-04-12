@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
-use super::sampler::{ModelParams, TranscriptState};
+use super::sampler::ModelParams;
 use crate::schemas::{transcript_metadata_schema, OutputFormat};
 
 pub fn write_table(
@@ -416,7 +416,7 @@ pub fn write_cell_metadata(
                 params
                     .cell_volume
                     .iter()
-                    .cloned()
+                    .map(|v| v as f32 * params.voxel_volume)
                     .collect::<arrow::array::Float32Array>(),
             ),
             Arc::new(
@@ -430,7 +430,7 @@ pub fn write_cell_metadata(
                 params
                     .cell_population
                     .iter()
-                    .map(|&p| p as u64)
+                    .map(|p| p as u64)
                     .collect::<arrow::array::UInt64Array>(),
             ),
         ];
