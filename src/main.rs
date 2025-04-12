@@ -15,7 +15,7 @@ use rayon::current_num_threads;
 use regex::Regex;
 use sampler::transcripts::{read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL};
 use sampler::voxelcheckerboard::VoxelCheckerboard;
-use sampler::{ModelParams, ModelPriors, ProposalStats, Sampler, UncertaintyTracker};
+use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -589,6 +589,10 @@ fn main() {
     );
 
     dataset.normalize_z_coordinates();
+
+    // TODO: In various sharded data structures we assume cells index proximity
+    // is correlated with spatial proximity. We may want to shuffle indexes so
+    // this is true.
 
     if !args.no_factorization {
         dataset.select_unfactored_genes(args.nunfactored);

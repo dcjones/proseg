@@ -1,4 +1,5 @@
 use crate::sampler::transcripts::{CellIndex, BACKGROUND_CELL};
+use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::{halfnormal_logpdf, lognormal_logpdf, normal_logpdf};
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
@@ -8,8 +9,26 @@ use rayon::prelude::*;
 use std::f32;
 use std::thread::current;
 
-pub fn inv_isoperimetric_quotient(surface_area: f32, volume: f32) -> f32 {
-    (surface_area).powi(3) / (36.0 * f32::consts::PI * volume.powi(2))
+fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
+    (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
+}
+
+fn count_matching_neighbors(
+    neighbor_cells: &[Option<CellIndex>; 6],
+    cell: CellIndex,
+) -> (u32, u32) {
+    let mut matching_neighbors = 0;
+    let mut nonmatching_neighbors = 0;
+    for neighbor_cell in neighbor_cells {
+        if let &Some(neighbor_cell) = neighbor_cell {
+            if neighbor_cell == cell {
+                matching_neighbors += 1;
+            } else {
+                nonmatching_neighbors += 1;
+            }
+        }
+    }
+    (matching_neighbors, nonmatching_neighbors)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -18,8 +37,7 @@ struct Proposal {
     current_state: Option<VoxelState>,
     proposed_cell: CellIndex,
     log_proposal_imbalance: f32,
-    current_cell_surface_area_delta: i8,
-    proposed_cell_surface_area_delta: i8,
+    neighbor_cells: [Option<CellIndex>; 6],
 }
 
 pub struct VoxelSampler {
@@ -63,27 +81,18 @@ impl VoxelSampler {
 
                 let proposal = self.generate_proposal(&*quad);
                 if proposal.is_none() {
+                    // TODO: We may be here because we randomly generated an oob proposal.
+                    // In that case we should just regenerate, but we have to be careful we
+                    // don't get stuck in an infinite loop.
                     return;
                 }
                 let proposal = proposal.unwrap();
 
                 let logu = self.evaluate_proposal(&*quad, priors, params, proposal);
                 if rng().random::<f32>().ln() < logu {
-                    self.accept_proposal(&mut *quad, proposal);
-                    // TODO: We are going to have to do some bookkeeping to
-                    // facilitate efficient cross-quad consistency updates,
-                    // and to update transcript count matrices.
+                    self.accept_proposal(voxels, &mut *quad, params, proposal);
                 }
             });
-
-        // TODO:
-        // Whan post-processing will we need:
-        //  - Update cell-by-gene sparse count matrix (we could put this in a sharded hash table)
-        //  - Update cell perimiter (could also be in a sharded hash table)
-        //  - Recompute redundant quad edge voxel states. (I guess we compute updates for each quad then pull them as needed)
-        //    NOTE: This may necessitate updating the edge sets on these neighboring quads!
-        //
-        // We need to optimize the fuck out of this post-processing or be the victim of Amdahls law.
 
         self.t += 1;
     }
@@ -99,8 +108,12 @@ impl VoxelSampler {
             (edge.b, edge.a)
         };
 
-        let mut proposed_cell = quad.get_cell(source);
-        let current_state = quad.get(target).map(|&state| state);
+        if !quad.voxel_in_bounds(target) {
+            return None;
+        }
+
+        let mut proposed_cell = quad.get_voxel_cell(source);
+        let current_state = quad.get_voxel_state(target).map(|&state| state);
         let current_cell = current_state
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
@@ -123,7 +136,7 @@ impl VoxelSampler {
             if k < self.kmin || k > self.kmax {
                 None
             } else {
-                Some(quad.get_cell(voxel))
+                Some(quad.get_voxel_cell(voxel))
             }
         });
 
@@ -169,37 +182,12 @@ impl VoxelSampler {
 
         let log_proposal_imbalance = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
 
-        // TODO: Figure out surface area deltas
-        let mut current_cell_surface_area_delta = 0;
-        let mut proposed_cell_surface_area_delta = 0;
-        for neighbor_cell in target_neighbor_cells {
-            // skip oob neighbors
-            if neighbor_cell.is_none() {
-                continue;
-            }
-            let neighbor_cell = neighbor_cell.unwrap();
-
-            if neighbor_cell == proposed_cell {
-                proposed_cell_surface_area_delta -= 1;
-            }
-            if neighbor_cell != proposed_cell {
-                proposed_cell_surface_area_delta += 1;
-            }
-            if neighbor_cell == current_cell {
-                current_cell_surface_area_delta += 1;
-            }
-            if neighbor_cell != current_cell {
-                current_cell_surface_area_delta -= 1;
-            }
-        }
-
         Some(Proposal {
             voxel: target,
             current_state,
             proposed_cell,
             log_proposal_imbalance,
-            current_cell_surface_area_delta,
-            proposed_cell_surface_area_delta,
+            neighbor_cells: target_neighbor_cells,
         })
     }
 
@@ -297,25 +285,28 @@ impl VoxelSampler {
 
         if current_cell != BACKGROUND_CELL {
             let z = params.z[current_cell as usize];
-            let current_volume = params.cell_volume[current_cell as usize];
-            let proposed_volume = current_volume - params.voxel_volume;
+            let current_volume = params.cell_volume.get(current_cell as usize);
+            let proposed_volume = current_volume - 1;
+            let current_volume_μm = current_volume as f32 * params.voxel_volume;
+            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
             let σ_vol_z = params.σ_volume[z as usize];
-            δ += ((current_volume - μ_vol_z).powi(2) - (proposed_volume - μ_vol_z).powi(2))
+            δ += ((current_volume_μm - μ_vol_z).powi(2) - (proposed_volume_μm - μ_vol_z).powi(2))
                 / σ_vol_z;
 
-            let current_surface_area = params.cell_surface_area[current_cell as usize];
+            let current_surface_area = params.cell_surface_area.get(current_cell as usize);
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
                 inv_isoperimetric_quotient(current_surface_area, current_volume),
             );
 
+            let (current_cell_neighbors, other_cell_neighbors) =
+                count_matching_neighbors(&proposal.neighbor_cells, current_cell);
             let proposed_surface_area =
-                current_surface_area + proposal.proposed_cell_surface_area_delta as f32;
-            // TODO: Need to iterate over voxels neighbors again! I guess we should
-            // compute this when generating the proposal.
+                current_surface_area + current_cell_neighbors - other_cell_neighbors;
+
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
                 inv_isoperimetric_quotient(proposed_surface_area, current_volume),
@@ -324,25 +315,28 @@ impl VoxelSampler {
 
         if proposed_cell != BACKGROUND_CELL {
             let z = params.z[proposed_cell as usize];
-            let current_volume = params.cell_volume[proposed_cell as usize];
-            let proposed_volume = current_volume + params.voxel_volume;
+            let current_volume = params.cell_volume.get(proposed_cell as usize);
+            let proposed_volume = current_volume + 1;
+            let current_volume_μm = current_volume as f32 * params.voxel_volume;
+            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
             let σ_vol_z = params.σ_volume[z as usize];
-            δ += ((current_volume - μ_vol_z).powi(2) - (proposed_volume - μ_vol_z).powi(2))
+            δ += ((current_volume_μm - μ_vol_z).powi(2) - (proposed_volume_μm - μ_vol_z).powi(2))
                 / σ_vol_z;
 
-            let current_surface_area = params.cell_surface_area[proposed_cell as usize];
+            let current_surface_area = params.cell_surface_area.get(proposed_cell as usize);
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
                 inv_isoperimetric_quotient(current_surface_area, current_volume),
             );
 
+            let (proposed_cell_neighbors, other_cell_neighbors) =
+                count_matching_neighbors(&proposal.neighbor_cells, proposed_cell);
             let proposed_surface_area =
-                current_surface_area + proposal.current_cell_surface_area_delta as f32;
-            // TODO: Need to iterate over voxels neighbors again! I guess we should
-            // compute this when generating the proposal.
+                current_surface_area - proposed_cell_neighbors + other_cell_neighbors;
+
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
                 inv_isoperimetric_quotient(proposed_surface_area, current_volume),
@@ -352,11 +346,100 @@ impl VoxelSampler {
         δ + proposal.log_proposal_imbalance
     }
 
-    fn accept_proposal(&self, quad: &mut VoxelQuad, proposal: Proposal) {
-        //   - On acceptance:
-        //     - Update voxel state
-        //     - Updaate edge sets
-        todo!();
+    fn accept_proposal(
+        &self,
+        voxels: &VoxelCheckerboard,
+        quad: &mut VoxelQuad,
+        params: &ModelParams,
+        proposal: Proposal,
+    ) {
+        let voxel = proposal.voxel;
+        let proposed_cell = proposal.proposed_cell;
+        let current_cell = proposal
+            .current_state
+            .map(|state| state.cell)
+            .unwrap_or(BACKGROUND_CELL);
+
+        quad.set_voxel_cell(voxel, proposed_cell);
+        for (neighbor, neighbor_cell) in proposal
+            .voxel
+            .von_neumann_neighborhood()
+            .iter()
+            .cloned()
+            .zip(proposal.neighbor_cells)
+        {
+            if let Some(neighbor_cell) = neighbor_cell {
+                let edge = UndirectedVoxelPair::new(voxel, neighbor);
+                if neighbor_cell == proposed_cell {
+                    quad.mismatch_edges.remove(edge);
+                } else if neighbor_cell == current_cell {
+                    quad.mismatch_edges.insert(edge);
+                };
+            }
+        }
+
+        // Update neighboring quads to mirror voxel states on the edge
+        let (u, v) = (quad.u, quad.v);
+        let [i, j, k] = proposal.voxel.coords();
+        voxels.for_each_quad_neighbor(u, v, |neighbor_quad| {
+            let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
+            if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
+                neighbor_quad.update_voxel_cell(voxel, current_cell, proposed_cell);
+            }
+        });
+
+        // Updating count matrices
+        if current_cell != BACKGROUND_CELL {
+            params
+                .cell_volume
+                .modify(current_cell as usize, |volume| *volume -= 1);
+
+            let (current_cell_neighbors, other_cell_neighbors) =
+                count_matching_neighbors(&proposal.neighbor_cells, current_cell);
+            params
+                .cell_surface_area
+                .modify(current_cell as usize, |surface_area| {
+                    *surface_area += current_cell_neighbors;
+                    *surface_area -= other_cell_neighbors;
+                });
+
+            let counts_row = params.foreground_counts.row(current_cell as usize);
+            let mut counts_row_write = counts_row.write();
+            for (key, &count) in quad.voxel_counts(voxel) {
+                counts_row_write.sub(key.gene as usize, count);
+            }
+        } else {
+            let background_counts_k = &params.background_counts[k as usize];
+            for (key, &count) in quad.voxel_counts(voxel) {
+                background_counts_k.sub(key.gene as usize, count);
+            }
+        }
+
+        if proposed_cell != BACKGROUND_CELL {
+            params
+                .cell_volume
+                .modify(proposed_cell as usize, |volume| *volume += 1);
+
+            let (proposed_cell_neighbors, other_cell_neighbors) =
+                count_matching_neighbors(&proposal.neighbor_cells, proposed_cell);
+            params
+                .cell_surface_area
+                .modify(proposed_cell as usize, |surface_area| {
+                    *surface_area -= proposed_cell_neighbors;
+                    *surface_area += other_cell_neighbors;
+                });
+
+            let counts_row = params.foreground_counts.row(proposed_cell as usize);
+            let mut counts_row_write = counts_row.write();
+            for (key, &count) in quad.voxel_counts(voxel) {
+                counts_row_write.add(key.gene as usize, count);
+            }
+        } else {
+            let background_counts_k = &params.background_counts[k as usize];
+            for (key, &count) in quad.voxel_counts(voxel) {
+                background_counts_k.add(key.gene as usize, count);
+            }
+        }
     }
 }
 

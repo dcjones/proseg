@@ -1,9 +1,11 @@
+use num::traits::Zero;
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
 use std::collections::BTreeMap;
 use std::iter::{IntoIterator, Iterator};
 use std::ops::Bound::{Excluded, Included};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::ops::{AddAssign, SubAssign};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // This is a very specific sparse matirx implementation with the purpose
 // of storing cell-by-gene count matrices that get updated during sampling.
@@ -13,7 +15,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 //   but split into concurrent groups of cell indices, where cell indices are
 //   spatially correlated.
 // - Efficient (read-only) iteration across rows: this is needed in various places in the sampler.
-struct SparseMat<T> {
+pub struct SparseMat<T> {
     shards: Vec<Arc<RwLock<BTreeMap<(u32, u32), T>>>>,
     shardsize: usize,
     m: usize,
@@ -21,7 +23,7 @@ struct SparseMat<T> {
 }
 
 impl<T> SparseMat<T> {
-    fn new(m: usize, n: usize, shardsize: usize) -> Self {
+    pub fn zeros(m: usize, n: usize, shardsize: usize) -> Self {
         let nshards = (m + shardsize - 1) / shardsize;
         let mut shards = Vec::with_capacity(nshards);
         for _ in 0..nshards {
@@ -35,11 +37,11 @@ impl<T> SparseMat<T> {
         }
     }
 
-    fn row(&self, i: usize) -> SparseRow<T> {
+    pub fn row(&self, i: usize) -> SparseRow<T> {
         SparseRow::new(self, i)
     }
 
-    fn rows(&self) -> SparseMatRowsIter<'_, T> {
+    pub fn rows(&self) -> SparseMatRowsIter<'_, T> {
         SparseMatRowsIter { mat: self }
     }
 
@@ -100,7 +102,7 @@ where
     }
 }
 
-struct SparseRow<T> {
+pub struct SparseRow<T> {
     shard: Arc<RwLock<BTreeMap<(u32, u32), T>>>,
     i: usize,
 }
@@ -114,6 +116,11 @@ impl<T> SparseRow<T> {
     fn read(&self) -> SparseRowReadLock<T> {
         let shard = self.shard.read().unwrap();
         SparseRowReadLock { shard, i: self.i }
+    }
+
+    pub fn write(&self) -> SparseRowWriteLock<T> {
+        let shard = self.shard.write().unwrap();
+        SparseRowWriteLock { shard, i: self.i }
     }
 }
 
@@ -131,6 +138,36 @@ where
 
     fn into_iter(self) -> Self::IntoIter {
         SparseRowIterator::new(self, self.i)
+    }
+}
+
+pub struct SparseRowWriteLock<'a, T> {
+    shard: RwLockWriteGuard<'a, BTreeMap<(u32, u32), T>>,
+    i: usize,
+}
+
+impl<'a, T> SparseRowWriteLock<'a, T>
+where
+    T: AddAssign + SubAssign + Zero + Eq,
+{
+    pub fn sub(&mut self, j: usize, delta: T) {
+        let key = (self.i as u32, j as u32);
+        let count = self
+            .shard
+            .get_mut(&key)
+            .expect("Subtracting from a 0 entry in a sparse matrix. ");
+        *count -= delta;
+        if *count == T::zero() {
+            self.shard.remove(&key);
+        }
+    }
+
+    pub fn add(&mut self, j: usize, delta: T) {
+        let count = self
+            .shard
+            .entry((self.i as u32, j as u32))
+            .or_insert(T::zero());
+        *count += delta;
     }
 }
 
