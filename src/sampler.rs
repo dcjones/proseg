@@ -1,4 +1,5 @@
 mod math;
+pub mod paramsampler;
 pub mod runvec;
 mod sampleset;
 mod shardedvec;
@@ -8,9 +9,11 @@ pub mod voxelcheckerboard;
 pub mod voxelsampler2;
 
 use ndarray::{s, Array1, Array2, Axis, Zip};
+use num::traits::Zero;
 use shardedvec::ShardedVec;
 use sparsemat::SparseMat;
 use std::cell::RefCell;
+use std::ops::{Add, AddAssign, SubAssign};
 use thread_local::ThreadLocal;
 
 // Model prior parameters.
@@ -85,6 +88,99 @@ pub struct ModelPriors {
     pub enforce_connectivity: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountPair {
+    pub count: u32,
+    pub foreground_count: u32,
+}
+
+impl CountPair {
+    fn new(count: u32, foreground_count: u32) -> Self {
+        CountPair {
+            count,
+            foreground_count,
+        }
+    }
+
+    fn count(count: u32) -> Self {
+        CountPair {
+            count,
+            foreground_count: 0,
+        }
+    }
+}
+
+impl Add for CountPair {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        CountPair {
+            count: self.count + other.count,
+            foreground_count: self.foreground_count + other.foreground_count,
+        }
+    }
+}
+
+impl AddAssign for CountPair {
+    fn add_assign(&mut self, other: Self) {
+        self.count += other.count;
+        self.foreground_count += other.foreground_count;
+    }
+}
+
+impl SubAssign for CountPair {
+    fn sub_assign(&mut self, other: Self) {
+        self.count -= other.count;
+        self.foreground_count -= other.foreground_count;
+    }
+}
+
+impl Zero for CountPair {
+    fn zero() -> Self {
+        CountPair {
+            count: 0,
+            foreground_count: 0,
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.count == 0 && self.foreground_count == 0
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CountMatRowKey {
+    gene: u32,
+    layer: u32,
+}
+
+impl CountMatRowKey {
+    pub fn new(gene: u32, layer: u32) -> Self {
+        CountMatRowKey { gene, layer }
+    }
+}
+
+impl Add for CountMatRowKey {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        CountMatRowKey {
+            gene: self.gene + other.gene,
+            layer: self.layer + other.layer,
+        }
+    }
+}
+
+impl Zero for CountMatRowKey {
+    fn zero() -> Self {
+        CountMatRowKey { gene: 0, layer: 0 }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.gene == 0 && self.layer == 0
+    }
+}
+
 #[allow(non_snake_case)]
 pub struct ModelParams {
     // [ncell] total count for each cell
@@ -111,17 +207,24 @@ pub struct ModelParams {
     // pub transcript_state: Array1<TranscriptState>,
     // pub prev_transcript_state: Array1<TranscriptState>,
 
-    // [ncells, ngenes] foreground transcripts counts
-    foreground_counts: SparseMat<u32>,
+    // [ncells, (ngenes x nlayers)] transcripts counts, split into total
+    // transcript count in each cell and gene and layer.
+    counts: SparseMat<u32, CountMatRowKey>,
+
+    // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
+    foreground_counts: SparseMat<u32, u32>,
 
     // [nlayers, ngenes] background transcripts counts
+    unassigned_counts: Vec<ShardedVec<u32>>,
+
+    // [nlayers, ngenes]
     background_counts: Vec<ShardedVec<u32>>,
 
     // [ncells, nhidden]
-    pub cell_latent_counts: SparseMat<u32>,
+    pub cell_latent_counts: SparseMat<u32, u32>,
 
     // [ngenes, nhidden]
-    pub gene_latent_counts: SparseMat<u32>,
+    pub gene_latent_counts: SparseMat<u32, u32>,
 
     // Thread local [ngenes, nhidden] matrices for accumulation
     pub gene_latent_counts_tl: ThreadLocal<RefCell<Array2<u32>>>,
@@ -197,8 +300,10 @@ pub struct ModelParams {
     // // log(1 - ods_to_prob(θ))
     // log1mp: Array2<f32>,
 
-    // [ncells, ngenes] Poisson rates
-    pub λ: Array2<f32>,
+    // We should avoid ever computing this entire matrix, since it's a lot
+    // of memory and a big matrix multiply.
+    // // [ncells, ngenes] Poisson rates
+    // pub λ: Array2<f32>,
 
     // [ngenes, nlayers] background rate: rate at which halucinate transcripts
     // across the entire layer
@@ -206,10 +311,22 @@ pub struct ModelParams {
     pub logλ_bg: Array2<f32>,
 
     // [ngenes] confusion: rate at which we halucinate transcripts within cells
-    pub λ_c: Array1<f32>,
-
+    // pub λ_c: Array1<f32>,
     pub voxel_volume: f32,
 
     // time, which is incremented after every iteration
     t: u32,
+}
+
+impl ModelParams {
+    // Compute the Poisson rate for cell and gene pair.
+    pub fn λ(&self, cell: usize, gene: usize) -> f32 {
+        let φ_cell = self.φ.row(cell);
+        if gene < self.nunfactored {
+            φ_cell[gene]
+        } else {
+            let θ_g = self.θ.row(gene);
+            φ_cell.dot(&θ_g)
+        }
+    }
 }

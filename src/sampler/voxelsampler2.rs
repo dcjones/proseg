@@ -3,7 +3,7 @@ use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::{halfnormal_logpdf, lognormal_logpdf, normal_logpdf};
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
-use super::{ModelParams, ModelPriors};
+use super::{CountMatRowKey, CountPair, ModelParams, ModelPriors};
 use rand::{rng, Rng};
 use rayon::prelude::*;
 use std::f32;
@@ -403,13 +403,13 @@ impl VoxelSampler {
                     *surface_area -= other_cell_neighbors;
                 });
 
-            let counts_row = params.foreground_counts.row(current_cell as usize);
+            let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad.voxel_counts(voxel) {
-                counts_row_write.sub(key.gene as usize, count);
+                counts_row_write.sub(CountMatRowKey::new(key.gene as u32, k as u32), count);
             }
         } else {
-            let background_counts_k = &params.background_counts[k as usize];
+            let background_counts_k = &params.unassigned_counts[k as usize];
             for (key, &count) in quad.voxel_counts(voxel) {
                 background_counts_k.sub(key.gene as usize, count);
             }
@@ -429,13 +429,13 @@ impl VoxelSampler {
                     *surface_area += other_cell_neighbors;
                 });
 
-            let counts_row = params.foreground_counts.row(proposed_cell as usize);
+            let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad.voxel_counts(voxel) {
-                counts_row_write.add(key.gene as usize, count);
+                counts_row_write.add(CountMatRowKey::new(key.gene as u32, k as u32), count);
             }
         } else {
-            let background_counts_k = &params.background_counts[k as usize];
+            let background_counts_k = &params.unassigned_counts[k as usize];
             for (key, &count) in quad.voxel_counts(voxel) {
                 background_counts_k.add(key.gene as usize, count);
             }

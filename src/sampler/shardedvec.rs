@@ -1,6 +1,11 @@
+use ndarray::{Dimension, Ix1, NdProducer};
 use num::Zero;
 use std::ops::{AddAssign, SubAssign};
 use std::sync::{Arc, RwLock};
+
+// TODO:
+// - Make this generic on the number of shards
+// - Shards don't need to be in a Vec
 
 fn divrem(a: usize, b: usize) -> (usize, usize) {
     (a / b, a % b)
@@ -14,7 +19,7 @@ pub struct ShardedVec<T> {
 
 impl<T> ShardedVec<T>
 where
-    T: AddAssign + SubAssign + Clone + Zero,
+    T: AddAssign + SubAssign + Clone + Zero + Clone + Copy,
 {
     pub fn zeros(n: usize, shardsize: usize) -> Self {
         let num_shards = (n + shardsize - 1) / shardsize;
@@ -89,9 +94,22 @@ where
                 index, self.n
             );
         }
-        let shard_index = index / self.shardsize;
-        let mut shard = self.shards[shard_index].write().unwrap();
-        shard[index % self.shardsize] = value;
+
+        let (i, j) = divrem(index, self.shardsize);
+        let mut shard = self.shards[i].write().unwrap();
+        shard[j] = value;
+    }
+
+    pub fn copy_from(&mut self, other: &ShardedVec<T>) {
+        if self.shardsize != other.shardsize || self.shards.len() != other.shards.len() {
+            panic!("ShardedVecs have different shard sizes");
+        }
+
+        for (shard, other_shard) in self.shards.iter_mut().zip(other.shards.iter()) {
+            let mut shard = shard.write().unwrap();
+            let other_shard = other_shard.read().unwrap();
+            shard.copy_from_slice(&other_shard);
+        }
     }
 
     pub fn iter(&self) -> ShardedVecIterator<'_, T> {
@@ -109,7 +127,7 @@ pub struct ShardedVecIterator<'a, T> {
 
 impl<'a, T> Iterator for ShardedVecIterator<'a, T>
 where
-    T: AddAssign + SubAssign + Clone + Zero,
+    T: AddAssign + SubAssign + Clone + Copy + Zero,
 {
     type Item = T;
 
@@ -123,8 +141,3 @@ where
         }
     }
 }
-
-// TODO:
-// We are going to need the NdProduces trait to do zips in various places
-// See: https://docs.rs/ndarray/latest/ndarray/trait.NdProducer.html
-//
