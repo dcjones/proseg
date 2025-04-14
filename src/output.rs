@@ -233,6 +233,9 @@ pub fn write_metagene_loadings(
     }
 }
 
+// TODO: I should write a function to do the full matmul and output the results
+// just for debugcging.
+/*
 pub fn write_rates(
     output_path: &Option<String>,
     output_rates: &Option<String>,
@@ -260,6 +263,7 @@ pub fn write_rates(
         write_table(output_path, output_rates, output_rates_fmt, &batch);
     }
 }
+*/
 
 // pub fn write_component_params(
 //     output_component_params: &Option<String>,
