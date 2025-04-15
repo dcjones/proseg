@@ -1,5 +1,6 @@
 mod math;
 pub mod paramsampler;
+mod polyagamma;
 pub mod runvec;
 mod sampleset;
 mod shardedvec;
@@ -291,6 +292,11 @@ pub struct ModelParams {
 
     // [ncomponents, nhidden] φ gamma scale parameters
     pub sφ: Array2<f32>,
+
+    // [ncomponents, nhidden]
+    // posterior params for sampling sφ
+    μ_sφ: Array2<f32>,
+    τ_sφ: Array2<f32>,
 
     // Size of the upper block of θ that is the identity matrix
     nunfactored: usize,
