@@ -213,10 +213,6 @@ pub struct ModelParams {
     z0: f32,
     layer_depth: f32,
 
-    // [ntranscripts] current assignment of transcripts to background
-    // pub transcript_state: Array1<TranscriptState>,
-    // pub prev_transcript_state: Array1<TranscriptState>,
-
     // [ncells, (ngenes x nlayers)] transcripts counts, split into total
     // transcript count in each cell and gene and layer.
     counts: SparseMat<u32, CountMatRowKey>,
@@ -274,10 +270,6 @@ pub struct ModelParams {
     // [nhidden]: precompute φ_k.dot(cell_volume)
     φ_v_dot: Array1<f32>,
 
-    // For components as well???
-    // [ncells, nhidden] aux CRT variables for sampling rφ
-    // pub lφ: Array2<f32>,
-
     // [ncells, nhidden] aux CRT variables for sampling rφ
     pub lφ: Array2<u32>,
 
@@ -297,6 +289,9 @@ pub struct ModelParams {
     // posterior params for sampling sφ
     μ_sφ: Array2<f32>,
     τ_sφ: Array2<f32>,
+
+    // [ncomponent, nhidden] thread local temporary matrices for computing μ_sφ and τ_sφ in parallel
+    sφ_work_tl: ThreadLocal<RefCell<Array2<f32>>>,
 
     // Size of the upper block of θ that is the identity matrix
     nunfactored: usize,
