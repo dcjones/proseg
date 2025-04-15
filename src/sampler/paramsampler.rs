@@ -611,32 +611,48 @@ impl ParamSampler {
     }
 
     fn sample_sφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        // This is not parallelized because we are summing rows on component
-        // assignments. We'd need to use thread local temporaries to
-        // parallelize. If this is slow, that may be worth it.
-        //
-        // TODO: Ok, I think we just bite the bullet and use tl temporaries to bulid these.
+        let ncomponents = params.ncomponents();
+        let nhidden = params.nhidden();
 
         // compute posterior precision
-        params.τ_sφ.fill(priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            x.borrow_mut().fill(0.0);
+        }
         Zip::from(&params.z)
             .and(params.ωφ.outer_iter())
-            .for_each(|&z_c, ω_c| {
+            .par_for_each(|&z_c, ω_c| {
+                let mut τ_sφ_tl = params
+                    .sφ_work_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
+                    .borrow_mut();
+
                 let z_c = z_c as usize;
-                let mut τ_sφ_k = params.τ_sφ.row_mut(z_c);
+                let mut τ_sφ_k = τ_sφ_tl.row_mut(z_c);
                 τ_sφ_k.scaled_add(1.0, &ω_c);
             });
 
+        params.τ_sφ.fill(priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            params.τ_sφ.scaled_add(1.0, &x.borrow());
+        }
+
         // compute posterior means
-        params.μ_sφ.fill(priors.μφ * priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            x.borrow_mut().fill(0.0);
+        }
         Zip::indexed(&params.z)
             .and(&params.effective_cell_volume)
             .and(params.ωφ.outer_iter())
-            .for_each(|c, &z_c, &v_c, ω_c| {
+            .par_for_each(|c, &z_c, &v_c, ω_c| {
+                let mut μ_sφ_tl = params
+                    .sφ_work_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
+                    .borrow_mut();
+
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
                 let r_t = params.rφ.row(z_c);
-                let μ_sφ_t = params.μ_sφ.row_mut(z_c);
+                let μ_sφ_t = μ_sφ_tl.row_mut(z_c);
 
                 for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum) in
                     izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum)
@@ -645,11 +661,10 @@ impl ParamSampler {
                 }
             });
 
-        Zip::from(&mut params.μ_sφ)
-            .and(&params.τ_sφ)
-            .for_each(|μ_sφ_tk, &τ_sφ| {
-                *μ_sφ_tk *= τ_sφ;
-            });
+        params.μ_sφ.fill(priors.μφ * priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            params.μ_sφ.scaled_add(1.0, &x.borrow());
+        }
 
         Zip::from(&mut params.sφ)
             .and(&params.μ_sφ)
