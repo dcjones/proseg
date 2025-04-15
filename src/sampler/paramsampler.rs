@@ -1,6 +1,7 @@
 use std::u32;
 
-use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob};
+use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
+use super::polyagamma::PolyaGamma;
 use super::{ModelParams, ModelPriors};
 use itertools::{izip, Itertools};
 use libm::lgammaf;
@@ -143,9 +144,10 @@ impl ParamSampler {
         params: &mut ModelParams,
         sample_z: bool,
         burnin: bool,
+        purge_sparse_mats: bool,
     ) {
         let t0 = Instant::now();
-        self.sample_latent_counts(params);
+        self.sample_latent_counts(params, purge_sparse_mats);
         trace!("sample_latent_counts: {:?}", t0.elapsed());
 
         if sample_z {
@@ -477,31 +479,209 @@ impl ParamSampler {
     }
 
     fn sample_cell_scales(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        todo!();
+        // for each cell
+        Zip::indexed(&mut params.cell_scale)
+            .and(&mut params.effective_cell_volume)
+            .and(&params.log_cell_volume)
+            .and(&params.z)
+            .and(params.ωφ.outer_iter())
+            .into_par_iter()
+            .for_each_init(
+                || rng(),
+                |rng, (c, a_c, eff_v_c, &log_v_c, &z_c, ω_c)| {
+                    let z_c = z_c as usize;
+                    let x_c = params.cell_latent_counts.row(c);
+
+                    let τ = priors.τv + ω_c.sum();
+                    let σ2 = τ.recip();
+
+                    let mut μ = 0.0;
+                    for (&θ_k_sum, x_ck, &r_tk, &s_tk, &ω_ck) in izip!(
+                        &params.θksum,
+                        x_c.read().iter(),
+                        params.rφ.row(z_c),
+                        params.sφ.row(z_c),
+                        ω_c
+                    ) {
+                        μ += (x_ck as f32 - r_tk) / 2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c);
+                    }
+                    μ *= σ2;
+
+                    let log_a_c = μ + σ2.sqrt() * randn(rng);
+                    *a_c = log_a_c.exp();
+                    *eff_v_c = (log_a_c + log_v_c).exp();
+                },
+            );
     }
 
     fn sample_π(&self, params: &mut ModelParams) {
-        todo!();
+        let mut rng = rand::rng();
+        let mut π_sum = 0.0;
+        Zip::from(&mut params.π)
+            .and(&params.component_population)
+            .for_each(|π_t, pop_t| {
+                *π_t = Gamma::new(1.0 + *pop_t as f32, 1.0)
+                    .unwrap()
+                    .sample(&mut rng);
+                π_sum += *π_t;
+            });
+
+        // normalize to get dirichlet posterior
+        params.π.iter_mut().for_each(|π_t| *π_t /= π_sum);
     }
 
     fn sample_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        todo!();
+        // for each cell
+        Zip::indexed(params.lφ.outer_iter_mut()) // for every cell
+            .and(&params.z)
+            .into_par_iter()
+            .for_each_init(
+                || rng(),
+                |rng, (c, l_c, &z_c)| {
+                    let z_c = z_c as usize;
+                    let x_c = params.cell_latent_counts.row(c);
+
+                    for (l_ck, x_ck, &r_k) in izip!(l_c, x_c.read().iter(), &params.rφ.row(z_c)) {
+                        *l_ck = rand_crt(rng, x_ck, r_k);
+                    }
+                },
+            );
+
+        Zip::indexed(params.rφ.outer_iter_mut()) // for each component
+            .and(params.sφ.outer_iter())
+            .into_par_iter()
+            .for_each_init(
+                || rng(),
+                |rng, (t, r_t, s_t)| {
+                    Zip::from(r_t) // each hidden dim
+                        .and(s_t)
+                        .and(params.lφ.axis_iter(Axis(1)))
+                        .and(&params.θksum)
+                        .for_each(|r_tk, s_tk, l_k, θ_k_sum| {
+                            // summing elements of lφ in component t
+                            let lsum = l_k
+                                .iter()
+                                .zip(&params.z)
+                                .filter(|(_l_ck, z_c)| **z_c as usize == t)
+                                .map(|(l_ck, _z_c)| *l_ck)
+                                .sum::<u32>();
+
+                            let shape = priors.eφ + lsum as f32;
+
+                            let scale_inv = (1.0 / priors.fφ)
+                                + params
+                                    .z
+                                    .iter()
+                                    .zip(&params.effective_cell_volume)
+                                    .filter(|(z_c, _v_c)| **z_c as usize == t)
+                                    .map(|(_z_c, v_c)| (*s_tk * v_c * *θ_k_sum).ln_1p())
+                                    .sum::<f32>();
+                            let scale = scale_inv.recip();
+                            *r_tk = Gamma::new(shape, scale).unwrap().sample(rng);
+                            *r_tk = r_tk.max(2e-4);
+                        });
+                },
+            );
     }
 
     fn sample_ωck(&self, params: &mut ModelParams) {
-        todo!();
+        // for every cell
+        Zip::indexed(params.ωφ.outer_iter_mut()) // for every cell
+            .and(&params.z)
+            .and(&params.effective_cell_volume)
+            .into_par_iter()
+            .for_each_init(
+                || rng(),
+                |rng, (c, ω_c, &z_c, &v_c)| {
+                    let z_c = z_c as usize;
+                    let x_c = params.cell_latent_counts.row(c);
+
+                    for (ω_ck, x_ck, &r_k, &s_k, &θ_k_sum) in izip!(
+                        ω_c,
+                        x_c.read().iter(),
+                        params.rφ.row(z_c),
+                        params.sφ.row(z_c),
+                        &params.θksum
+                    ) {
+                        let ε = (s_k * v_c * θ_k_sum).ln();
+                        *ω_ck = PolyaGamma::new(x_ck as f32 + r_k, ε).sample(rng);
+                    }
+                },
+            );
     }
 
     fn sample_sφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        todo!();
+        // This is not parallelized because we are summing rows on component
+        // assignments. We'd need to use thread local temporaries to
+        // parallelize. If this is slow, that may be worth it.
+        //
+        // TODO: Ok, I think we just bite the bullet and use tl temporaries to bulid these.
+
+        // compute posterior precision
+        params.τ_sφ.fill(priors.τφ);
+        Zip::from(&params.z)
+            .and(params.ωφ.outer_iter())
+            .for_each(|&z_c, ω_c| {
+                let z_c = z_c as usize;
+                let mut τ_sφ_k = params.τ_sφ.row_mut(z_c);
+                τ_sφ_k.scaled_add(1.0, &ω_c);
+            });
+
+        // compute posterior means
+        params.μ_sφ.fill(priors.μφ * priors.τφ);
+        Zip::indexed(&params.z)
+            .and(&params.effective_cell_volume)
+            .and(params.ωφ.outer_iter())
+            .for_each(|c, &z_c, &v_c, ω_c| {
+                let z_c = z_c as usize;
+                let x_c = params.cell_latent_counts.row(c);
+                let r_t = params.rφ.row(z_c);
+                let μ_sφ_t = params.μ_sφ.row_mut(z_c);
+
+                for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum) in
+                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum)
+                {
+                    *μ_sφ_tk += (x_ck as f32 - r_tk) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
+                }
+            });
+
+        Zip::from(&mut params.μ_sφ)
+            .and(&params.τ_sφ)
+            .for_each(|μ_sφ_tk, &τ_sφ| {
+                *μ_sφ_tk *= τ_sφ;
+            });
+
+        Zip::from(&mut params.sφ)
+            .and(&params.μ_sφ)
+            .and(&params.τ_sφ)
+            .into_par_iter()
+            .for_each_init(
+                || rng(),
+                |rng, (s_tk, &μ_tk, &τ_tk)| {
+                    let σ2_tk = τ_tk.recip();
+                    let μ_tk = μ_tk * σ2_tk;
+                    *s_tk = (μ_tk + σ2_tk.sqrt() * randn(rng)).exp();
+                },
+            );
     }
 
-    fn sample_background_rates(&self, priors: &ModelPriors, params: &ModelParams) {
-        todo!();
-    }
+    fn sample_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        // TODO: worth doing ethier of these loops in parallel?
+        let mut rng = rng();
+        Zip::from(params.λ_bg.rows_mut())
+            .and(&params.background_counts)
+            .for_each(|λ_l, x_l| {
+                for (λ_lg, x_lg) in izip!(λ_l, x_l.iter()) {
+                    let α = priors.α_bg + x_lg as f32;
+                    let β = priors.β_bg + params.full_layer_volume;
+                    *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+                }
+            });
 
-    fn sample_transcript_positions(&self, priors: &ModelPriors, params: &ModelParams) {
-        // TODO: PRobably this should live in VoxelSampler, or maybe a different type entirely.
-        todo!();
+        Zip::from(&mut params.logλ_bg)
+            .and(&params.λ_bg)
+            .for_each(|logλ_bg, λ_bg| {
+                *logλ_bg = λ_bg.ln();
+            });
     }
 }
