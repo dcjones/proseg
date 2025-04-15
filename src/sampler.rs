@@ -186,9 +186,13 @@ pub struct ModelParams {
     // [ncell] total count for each cell
     pub cell_population: ShardedVec<usize>,
 
-    // [ncells] per-cell volumes
+    // [ncells] cell volume in voxel count
     pub cell_volume: ShardedVec<u32>,
+
+    // [ncells] cell volume in exposed voxel surface count
     pub cell_surface_area: ShardedVec<u32>,
+
+    // [ncells] cell volume in cubic microns
     pub log_cell_volume: Array1<f32>,
 
     // [ncells] cell_volume * cell_scale
@@ -244,6 +248,7 @@ pub struct ModelParams {
 
     // [ncomponents] component probabilities
     pub π: Array1<f32>,
+    pub log_π: Array1<f32>,
 
     // [ncomponents] number of cells assigned to each component
     component_population: Array1<u32>,
@@ -328,5 +333,9 @@ impl ModelParams {
             let θ_g = self.θ.row(gene);
             φ_cell.dot(&θ_g)
         }
+    }
+
+    pub fn ncomponents(&self) -> usize {
+        self.π.shape()[0]
     }
 }
