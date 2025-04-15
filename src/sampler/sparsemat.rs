@@ -2,9 +2,9 @@ use num::traits::{One, Zero};
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
 use std::collections::BTreeMap;
-use std::iter::{IntoIterator, Iterator};
+use std::iter::{IntoIterator, Iterator, Sum};
 use std::ops::Bound::{Excluded, Included};
-use std::ops::{AddAssign, SubAssign};
+use std::ops::{Add, AddAssign, SubAssign};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // This is a very specific sparse matirx implementation with the purpose
@@ -24,7 +24,7 @@ pub struct SparseMat<T, J> {
 
 impl<T, J> SparseMat<T, J>
 where
-    T: Zero,
+    T: Zero + Copy + AddAssign + Add + Sum,
     J: Copy,
 {
     pub fn zeros(m: usize, n: J, shardsize: usize) -> Self {
@@ -45,8 +45,12 @@ where
         SparseRow::new(self, i)
     }
 
+    pub fn par_rows(&self) -> SparseMatRowsParIter<'_, T, J> {
+        SparseMatRowsParIter { mat: self }
+    }
+
     pub fn rows(&self) -> SparseMatRowsIter<'_, T, J> {
-        SparseMatRowsIter { mat: self }
+        SparseMatRowsIter { mat: self, i: 0 }
     }
 
     // Zero by clearing the underlying BTreeMap
@@ -66,14 +70,44 @@ where
                 .for_each(|v| *v = T::zero());
         }
     }
+
+    pub fn sum(&self) -> T {
+        let mut accum = T::zero();
+        for shard in &self.shards {
+            accum += shard.read().unwrap().values().cloned().sum();
+        }
+        accum
+    }
 }
 
 pub struct SparseMatRowsIter<'a, T, J> {
+    i: usize,
+    mat: &'a SparseMat<T, J>,
+}
+
+impl<'a, T, J> Iterator for SparseMatRowsIter<'a, T, J>
+where
+    J: Copy,
+{
+    type Item = SparseRow<T, J>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i < self.mat.m {
+            let item = SparseRow::new(self.mat, self.i);
+            self.i += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
+
+pub struct SparseMatRowsParIter<'a, T, J> {
     mat: &'a SparseMat<T, J>,
 }
 
 // Parallel iterator implementations are just trivial delegations.
-impl<'a, T, J> ParallelIterator for SparseMatRowsIter<'a, T, J>
+impl<'a, T, J> ParallelIterator for SparseMatRowsParIter<'a, T, J>
 where
     T: Send + Sync,
     J: Send + Sync + Copy,
@@ -91,7 +125,7 @@ where
     }
 }
 
-impl<'a, T, J> IndexedParallelIterator for SparseMatRowsIter<'a, T, J>
+impl<'a, T, J> IndexedParallelIterator for SparseMatRowsParIter<'a, T, J>
 where
     T: Send + Sync,
     J: Send + Sync + Copy,
@@ -170,6 +204,14 @@ where
         SparseRowNonzeroIterator::new(self, self.i)
     }
 
+    pub fn iter_nonzeros_from(&'a self, from: J) -> SparseRowNonzeroIterator<'a, T, J> {
+        SparseRowNonzeroIterator::new_from(self, self.i, from)
+    }
+
+    pub fn iter_nonzeros_to(&'a self, to: J) -> SparseRowNonzeroIterator<'a, T, J> {
+        SparseRowNonzeroIterator::new_to(self, self.i, to)
+    }
+
     pub fn iter(&'a self) -> SparseRowIterator<'a, T, J> {
         SparseRowIterator::new(self, self.i)
     }
@@ -232,6 +274,24 @@ where
         let iter = row.shard.range((
             Included((i as u32, J::zero())),
             Excluded((i as u32 + 1, J::zero())),
+        ));
+
+        SparseRowNonzeroIterator { _row: row, iter }
+    }
+
+    fn new_from(row: &'a SparseRowReadLock<'a, T, J>, i: usize, from: J) -> Self {
+        let iter = row.shard.range((
+            Included((i as u32, from)),
+            Excluded((i as u32 + 1, J::zero())),
+        ));
+
+        SparseRowNonzeroIterator { _row: row, iter }
+    }
+
+    fn new_to(row: &'a SparseRowReadLock<'a, T, J>, i: usize, to: J) -> Self {
+        let iter = row.shard.range((
+            Included((i as u32, J::zero())),
+            Excluded((i as u32 + 1, to)),
         ));
 
         SparseRowNonzeroIterator { _row: row, iter }

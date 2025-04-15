@@ -181,6 +181,11 @@ impl Zero for CountMatRowKey {
     }
 }
 
+// In general, subscripts indicate dimension:
+//   t: component
+//   k: latent dim
+//   g: gene
+//   c: cell
 #[allow(non_snake_case)]
 pub struct ModelParams {
     // [ncell] total count for each cell
@@ -228,7 +233,7 @@ pub struct ModelParams {
     pub cell_latent_counts: SparseMat<u32, u32>,
 
     // [ngenes, nhidden]
-    pub gene_latent_counts: SparseMat<u32, u32>,
+    pub gene_latent_counts: Array2<u32>,
 
     // Thread local [ngenes, nhidden] matrices for accumulation
     pub gene_latent_counts_tl: ThreadLocal<RefCell<Array2<u32>>>,
@@ -337,5 +342,17 @@ impl ModelParams {
 
     pub fn ncomponents(&self) -> usize {
         self.π.shape()[0]
+    }
+
+    pub fn ncells(&self) -> usize {
+        self.φ.shape()[0]
+    }
+
+    pub fn ngenes(&self) -> usize {
+        self.θ.shape()[0]
+    }
+
+    pub fn nhidden(&self) -> usize {
+        self.θ.shape()[1]
     }
 }
