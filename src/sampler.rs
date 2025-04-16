@@ -262,7 +262,6 @@ impl ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
-        dbg!(ncells, ngenes, nlayers, nhidden, nunfactored);
         assert!(nhidden <= ngenes);
 
         let mut cell_voxel_count = ShardedVec::zeros(ncells, SHARDSIZE);

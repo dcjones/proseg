@@ -9,7 +9,6 @@ mod sampler;
 mod schemas;
 
 use core::f32;
-use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::warn;
 use rayon::current_num_threads;
@@ -20,7 +19,6 @@ use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 use output::*;
 
@@ -482,6 +480,8 @@ fn set_visiumhd_presets(args: &mut Args) {
 }
 
 fn main() {
+    env_logger::init();
+
     // // TODO: Just testing PG sampling
     // {
     //     let mut rng = rand::thread_rng();
@@ -565,12 +565,6 @@ fn main() {
         .initial_voxel_size
         .unwrap_or(DEFAULT_INITIAL_VOXEL_SIZE);
 
-    /* let (transcript_names,
-    mut transcripts,
-    mut nucleus_assignments,
-    mut cell_assignments,
-    mut nucleus_population) = */
-
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
     let mut dataset = read_transcripts_csv(
@@ -614,6 +608,12 @@ fn main() {
         args.nuclear_reassignment_prob,
         args.prior_seg_reassignment_prob,
     );
+
+    println!("Read dataset:");
+    println!("{:>9} transcripts", dataset.transcripts.len());
+    println!("{:>9} cells", voxels.ncells);
+    println!("{:>9} genes", dataset.ngenes());
+    println!("{:>9} fovs", dataset.fov_names.len());
 
     // Warn if any nucleus has extremely high population, which is likely
     // an error interpreting the file. (e.g. Misinterpreting the unassigned indicator as a cell)
@@ -700,6 +700,8 @@ fn main() {
         args.ncomponents,
         layer_volume,
     );
+
+    let param_sampler = ParamSampler::new();
 
     // TODO:
     //   Initialize VoxelSampler
