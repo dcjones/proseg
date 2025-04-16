@@ -118,6 +118,13 @@ where
             index: 0,
         }
     }
+
+    pub fn zero(&mut self) {
+        for shard in &self.shards {
+            let mut shard = shard.write().unwrap();
+            shard.fill(T::zero());
+        }
+    }
 }
 
 pub struct ShardedVecIterator<'a, T> {

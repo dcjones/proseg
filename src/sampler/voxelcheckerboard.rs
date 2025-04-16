@@ -2,9 +2,14 @@
 // sparse transcript vector.
 
 use super::sampleset::SampleSet;
+use super::shardedvec::ShardedVec;
+use super::sparsemat::SparseMat;
 use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
+use super::CountMatRowKey;
 
 use itertools::Itertools;
+use log::trace;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound::Included;
@@ -433,9 +438,20 @@ impl<'a> VoxelQuad {
 }
 
 pub struct VoxelCheckerboard {
-    // number of voxels in each direction
+    // number of voxels in each x/y direction
     quadsize: usize,
-    kmax: i32,
+
+    // number of cells (excluding any initialized without voxels)
+    pub ncells: usize,
+
+    // number of genes
+    pub ngenes: usize,
+
+    // maximum z layer
+    pub kmax: i32,
+
+    // volume of a single voxel
+    pub voxel_volume: f32,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
@@ -456,6 +472,7 @@ impl VoxelCheckerboard {
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
         let voxelsize_z = (zmax - zmin) / nzlayers as f32;
+        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
             let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
@@ -487,6 +504,9 @@ impl VoxelCheckerboard {
         let mut checkerboard = VoxelCheckerboard {
             quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
             kmax: (nzlayers - 1) as i32,
+            ncells: 0,
+            ngenes: dataset.ngenes(),
+            voxel_volume,
             quads: HashMap::new(),
         };
 
@@ -532,10 +552,11 @@ impl VoxelCheckerboard {
             let next_cell_id = used_cells.len() as CellIndex;
             used_cells.entry(vote_winner).or_insert(next_cell_id);
         }
-        println!("initialized voxel state: {:?}", t0.elapsed());
+        trace!("initialized voxel state: {:?}", t0.elapsed());
         dbg!(checkerboard.quads.len());
         dbg!(dataset.ncells);
         dbg!(used_cells.len());
+        checkerboard.ncells = used_cells.len();
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
@@ -740,6 +761,68 @@ impl VoxelCheckerboard {
                 f(neighbor_quad.write().unwrap().deref_mut())
             }
         }
+    }
+
+    pub fn compute_cell_volume_surface_area(
+        &self,
+        volume: &mut ShardedVec<u32>,
+        surface_area: &mut ShardedVec<u32>,
+    ) {
+        volume.zero();
+        surface_area.zero();
+
+        self.quads.par_iter().for_each(|((_u, _v), quad)| {
+            let quad = quad.read().unwrap();
+            for (&voxel, state) in &quad.states {
+                // We mirror state on the border. We need to skip these mirrored voxels to avoid double-counting.
+                if !quad.voxel_in_bounds(voxel) {
+                    continue;
+                }
+
+                if state.cell != BACKGROUND_CELL {
+                    volume.add(state.cell as usize, 1);
+
+                    let mut voxel_surface_area = 0;
+                    for neighbor in voxel.von_neumann_neighborhood() {
+                        let k = neighbor.k();
+                        let neighbor_cell = if k >= 0 && k <= quad.kmax {
+                            quad.get_voxel_cell(neighbor)
+                        } else {
+                            BACKGROUND_CELL
+                        };
+
+                        if state.cell != neighbor_cell {
+                            voxel_surface_area += 1;
+                        }
+                    }
+                    surface_area.add(state.cell as usize, voxel_surface_area);
+                }
+            }
+        });
+    }
+
+    pub fn compute_counts(&self, counts: &mut SparseMat<u32, CountMatRowKey>) {
+        counts.zero();
+        self.quads.par_iter().for_each(|((_u, _v), quad)| {
+            let quad = quad.read().unwrap();
+            for (
+                &VoxelCountKey {
+                    voxel,
+                    gene,
+                    offset: _offset,
+                },
+                &count,
+            ) in &quad.counts
+            {
+                let cell = quad.get_voxel_cell(voxel);
+                if cell != BACKGROUND_CELL {
+                    counts
+                        .row(cell as usize)
+                        .write()
+                        .add(CountMatRowKey::new(gene, voxel.k() as u32), count);
+                }
+            }
+        });
     }
 }
 

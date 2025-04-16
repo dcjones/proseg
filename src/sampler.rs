@@ -9,13 +9,22 @@ pub mod transcripts;
 pub mod voxelcheckerboard;
 pub mod voxelsampler2;
 
+use clustering::kmeans;
+use math::randn;
+use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use num::traits::Zero;
+use rand::{rng, Rng};
+use rayon::iter::IntoParallelRefIterator;
 use shardedvec::ShardedVec;
 use sparsemat::SparseMat;
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign, SubAssign};
 use thread_local::ThreadLocal;
+use voxelcheckerboard::VoxelCheckerboard;
+
+// Shard size used for sharded vectors and matrices
+const SHARDSIZE: usize = 256;
 
 // Model prior parameters.
 #[derive(Clone, Copy)]
@@ -52,10 +61,6 @@ pub struct ModelPriors {
     pub α_bg: f32,
     pub β_bg: f32,
 
-    // gamma prior for confusion rates
-    pub α_c: f32,
-    pub β_c: f32,
-
     pub σ_iiq: f32,
 
     // scaling factor for circle perimeters
@@ -81,72 +86,8 @@ pub struct ModelPriors {
     // prior precision on effective log cell volume
     pub τv: f32,
 
-    // bounds on z coordinate
-    pub zmin: f32,
-    pub zmax: f32,
-
     // whether to check if voxel updates break local connectivity
     pub enforce_connectivity: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CountPair {
-    pub count: u32,
-    pub foreground_count: u32,
-}
-
-impl CountPair {
-    fn new(count: u32, foreground_count: u32) -> Self {
-        CountPair {
-            count,
-            foreground_count,
-        }
-    }
-
-    fn count(count: u32) -> Self {
-        CountPair {
-            count,
-            foreground_count: 0,
-        }
-    }
-}
-
-impl Add for CountPair {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        CountPair {
-            count: self.count + other.count,
-            foreground_count: self.foreground_count + other.foreground_count,
-        }
-    }
-}
-
-impl AddAssign for CountPair {
-    fn add_assign(&mut self, other: Self) {
-        self.count += other.count;
-        self.foreground_count += other.foreground_count;
-    }
-}
-
-impl SubAssign for CountPair {
-    fn sub_assign(&mut self, other: Self) {
-        self.count -= other.count;
-        self.foreground_count -= other.foreground_count;
-    }
-}
-
-impl Zero for CountPair {
-    fn zero() -> Self {
-        CountPair {
-            count: 0,
-            foreground_count: 0,
-        }
-    }
-
-    fn is_zero(&self) -> bool {
-        self.count == 0 && self.foreground_count == 0
-    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,11 +130,8 @@ impl Zero for CountMatRowKey {
 //   c: cell
 #[allow(non_snake_case)]
 pub struct ModelParams {
-    // [ncell] total count for each cell
-    pub cell_population: ShardedVec<usize>,
-
     // [ncells] cell volume in voxel count
-    pub cell_volume: ShardedVec<u32>,
+    pub cell_voxel_count: ShardedVec<u32>,
 
     // [ncells] cell volume in exposed voxel surface count
     pub cell_surface_area: ShardedVec<u32>,
@@ -206,12 +144,6 @@ pub struct ModelParams {
 
     // [ncells] per-cell "effective" volume scaling factor
     pub cell_scale: Array1<f32>,
-
-    // area of the convex hull containing all transcripts
-    full_layer_volume: f32,
-
-    z0: f32,
-    layer_depth: f32,
 
     // [ncells, (ngenes x nlayers)] transcripts counts, split into total
     // transcript count in each cell and gene and layer.
@@ -261,6 +193,7 @@ pub struct ModelParams {
     // [ncomponents, nhidden]
     component_latent_counts: Array2<u32>,
 
+    // [ncomponents]
     μ_volume: Array1<f32>, // volume dist mean param by component
     σ_volume: Array1<f32>, // volume dist std param by component
 
@@ -279,6 +212,7 @@ pub struct ModelParams {
     // [ncomponents, nhidden] φ gamma shape parameters
     pub rφ: Array2<f32>,
 
+    // [ncomponents, nhidden]
     // for precomputing lgamma(rφ)
     lgamma_rφ: Array2<f32>,
 
@@ -293,43 +227,154 @@ pub struct ModelParams {
     // [ncomponent, nhidden] thread local temporary matrices for computing μ_sφ and τ_sφ in parallel
     sφ_work_tl: ThreadLocal<RefCell<Array2<f32>>>,
 
-    // Size of the upper block of θ that is the identity matrix
-    nunfactored: usize,
-
     // [ngenes, nhidden]: gene loadings in the latent space
     pub θ: Array2<f32>,
 
     // [nhidden]: Sums across the first axis of θ
     pub θksum: Array1<f32>,
 
-    // // [ncomponents, ngenes] NB p parameters.
-    // θ: Array2<f32>,
-
-    // // log(ods_to_prob(θ))
-    // logp: Array2<f32>,
-
-    // // log(1 - ods_to_prob(θ))
-    // log1mp: Array2<f32>,
-
-    // We should avoid ever computing this entire matrix, since it's a lot
-    // of memory and a big matrix multiply.
-    // // [ncells, ngenes] Poisson rates
-    // pub λ: Array2<f32>,
-
     // [ngenes, nlayers] background rate: rate at which halucinate transcripts
     // across the entire layer
     pub λ_bg: Array2<f32>,
     pub logλ_bg: Array2<f32>,
 
-    // [ngenes] confusion: rate at which we halucinate transcripts within cells
-    // pub λ_c: Array1<f32>,
+    // Size of the upper block of θ that is the identity matrix
+    nunfactored: usize,
+
+    // volume of a single voxel (in μm)
     pub voxel_volume: f32,
+
+    // volume of a single voxel layer (in μm)
+    layer_volume: f32,
 
     // time, which is incremented after every iteration
     t: u32,
 }
 
 impl ModelParams {
+    pub fn new(
+        voxels: &VoxelCheckerboard,
+        nhidden: usize,
+        nunfactored: usize,
+        ncomponents: usize,
+        layer_volume: f32,
+    ) -> ModelParams {
+        let ncells = voxels.ncells;
+        let ngenes = voxels.ngenes;
+        let nlayers = (voxels.kmax + 1) as usize;
+        dbg!(ncells, ngenes, nlayers, nhidden, nunfactored);
+        assert!(nhidden <= ngenes);
+
+        let mut cell_voxel_count = ShardedVec::zeros(ncells, SHARDSIZE);
+        let mut cell_surface_area = ShardedVec::zeros(ncells, SHARDSIZE);
+        voxels.compute_cell_volume_surface_area(&mut cell_voxel_count, &mut cell_surface_area);
+        let voxel_volume = voxels.voxel_volume;
+
+        let effective_cell_volume = cell_voxel_count
+            .iter()
+            .map(|count| count as f32 * voxels.voxel_volume)
+            .collect::<Array1<f32>>();
+
+        let log_cell_volume = effective_cell_volume.map(|v| v.ln());
+        let cell_scale = Array1::<f32>::ones(ncells);
+
+        let mut counts = SparseMat::zeros(
+            ncells,
+            CountMatRowKey::new(ngenes as u32, nlayers as u32),
+            SHARDSIZE,
+        );
+        voxels.compute_counts(&mut counts);
+
+        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, SHARDSIZE);
+        let unassigned_counts = (0..nlayers)
+            .map(|_layer| ShardedVec::zeros(ngenes, SHARDSIZE))
+            .collect::<Vec<_>>();
+        let background_counts = (0..nlayers)
+            .map(|_layer| ShardedVec::zeros(ngenes, SHARDSIZE))
+            .collect::<Vec<_>>();
+
+        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32, SHARDSIZE);
+        let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
+        let gene_latent_counts_tl = ThreadLocal::new();
+        let latent_counts = Array1::<u32>::zeros(nhidden);
+        let multinomial_rates = ThreadLocal::new();
+        let multinomial_sample = ThreadLocal::new();
+        let z_probs = ThreadLocal::new();
+        let z = initial_component_assignments(&counts, ncomponents);
+
+        let π = Array1::<f32>::zeros(ncomponents);
+        let log_π = Array1::<f32>::zeros(ncomponents);
+        let component_population = Array1::<u32>::zeros(ncomponents);
+        let component_volume = Array1::<f32>::zeros(ncomponents);
+        let component_latent_counts = Array2::<u32>::zeros((ncomponents, nhidden));
+        let μ_volume = Array1::<f32>::zeros(ncomponents);
+        let σ_volume = Array1::<f32>::zeros(ncomponents);
+
+        let φ = Array2::<f32>::zeros((ncells, nhidden));
+        let φ_v_dot = Array1::<f32>::zeros(nhidden);
+        let lφ = Array2::<u32>::zeros((ncells, nhidden));
+        let ωφ = Array2::<f32>::zeros((ncells, nhidden));
+        let rφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let lgamma_rφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let sφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let μ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let τ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let sφ_work_tl = ThreadLocal::new();
+
+        let θ = Array2::<f32>::zeros((ngenes, nhidden));
+        let θksum = Array1::<f32>::zeros(nhidden);
+
+        let λ_bg = Array2::<f32>::zeros((ngenes, nlayers));
+        let logλ_bg = Array2::<f32>::zeros((ngenes, nlayers));
+
+        let t = 0;
+
+        ModelParams {
+            cell_voxel_count,
+            cell_surface_area,
+            log_cell_volume,
+            effective_cell_volume,
+            cell_scale,
+            counts,
+            foreground_counts,
+            unassigned_counts,
+            background_counts,
+            cell_latent_counts,
+            gene_latent_counts,
+            gene_latent_counts_tl,
+            latent_counts,
+            multinomial_rates,
+            multinomial_sample,
+            z_probs,
+            z,
+            π,
+            log_π,
+            component_population,
+            component_volume,
+            component_latent_counts,
+            μ_volume,
+            σ_volume,
+            φ,
+            φ_v_dot,
+            lφ,
+            ωφ,
+            rφ,
+            lgamma_rφ,
+            sφ,
+            μ_sφ,
+            τ_sφ,
+            sφ_work_tl,
+            θ,
+            θksum,
+            λ_bg,
+            logλ_bg,
+            nunfactored,
+            voxel_volume,
+            layer_volume,
+            t,
+        }
+    }
+
     // Compute the Poisson rate for cell and gene pair.
     pub fn λ(&self, cell: usize, gene: usize) -> f32 {
         let φ_cell = self.φ.row(cell);
@@ -356,4 +401,79 @@ impl ModelParams {
     pub fn nhidden(&self) -> usize {
         self.θ.shape()[1]
     }
+}
+
+fn initial_component_assignments(
+    counts: &SparseMat<u32, CountMatRowKey>,
+    ncomponents: usize,
+) -> Array1<u32> {
+    let (
+        ncells,
+        CountMatRowKey {
+            gene: ngenes,
+            layer: _nlayers,
+        },
+    ) = counts.shape();
+    let ngenes = ngenes as usize;
+
+    const EMBEDDING_DIM: usize = 25;
+    let mut rng = rng();
+
+    // sample random projection
+    let mut proj = Array2::<f32>::from_shape_simple_fn((EMBEDDING_DIM, ngenes), || {
+        (EMBEDDING_DIM as f32).recip().sqrt() * randn(&mut rng)
+    });
+    for mut proj_i in proj.rows_mut() {
+        let norm = proj_i.map(|&proj_ij| proj_ij * proj_ij).sum().sqrt();
+        proj_i.map_inplace(|proj_ij| *proj_ij /= norm);
+    }
+
+    // normalize counts and project to low dimensionality
+    let mut embedding = Array2::<f32>::zeros((ncells, EMBEDDING_DIM));
+    const NORM_CONSTANT: f32 = 1e2;
+    let expr_row = ThreadLocal::new();
+    // for each cell
+    Zip::indexed(embedding.rows_mut()).par_for_each(|c, mut embedding_c| {
+        let mut expr_row = expr_row
+            .get_or(|| RefCell::new(Array1::<f32>::zeros(ngenes)))
+            .borrow_mut();
+        expr_row.fill(0.0);
+
+        // marginalize counts
+        let counts_c = counts.row(c);
+        for (
+            CountMatRowKey {
+                gene,
+                layer: _layer,
+            },
+            count,
+        ) in counts_c.read().iter_nonzeros()
+        {
+            expr_row[gene as usize] += count as f32;
+        }
+
+        // normalize
+        let row_sum = expr_row.sum();
+        expr_row.mapv_inplace(|x| (NORM_CONSTANT * x / row_sum).ln_1p());
+
+        // apply projection
+        general_mat_vec_mul(1.0, &proj, &expr_row, 0.0, &mut embedding_c);
+    });
+
+    // kmeans
+    let embedding: Vec<Vec<f32>> = embedding
+        .rows()
+        .into_iter()
+        .map(|row| row.iter().cloned().collect())
+        .collect();
+
+    const KMEANS_ITERATIONS: usize = 500;
+    let kmeans_results = kmeans(ncomponents, &embedding, KMEANS_ITERATIONS);
+    let z: Array1<u32> = kmeans_results
+        .membership
+        .iter()
+        .map(|z_c| *z_c as u32)
+        .collect();
+
+    z
 }

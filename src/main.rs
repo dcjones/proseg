@@ -11,8 +11,10 @@ mod schemas;
 use core::f32;
 use hull::convex_hull_area;
 use indicatif::{ProgressBar, ProgressStyle};
+use log::warn;
 use rayon::current_num_threads;
 use regex::Regex;
+use sampler::paramsampler::ParamSampler;
 use sampler::transcripts::{read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL};
 use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::{ModelParams, ModelPriors};
@@ -153,7 +155,7 @@ struct Args {
     detect_layers: bool,
 
     /// Number of layers of voxels in the z-axis used for segmentation
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 4)]
     voxel_layers: usize,
 
     /// Sampler schedule, indicating the number of iterations between doubling resolution.
@@ -162,7 +164,7 @@ struct Args {
 
     /// Whether to double the z-layers when doubling resolution
     #[arg(long, default_value_t = false)]
-    no_z_layer_doubling: bool,
+    double_z_layers: bool,
 
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
@@ -172,6 +174,10 @@ struct Args {
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
+
+    // Exponential pior on cell compactness. (larger numbers induce more compact cells)
+    #[arg(long, default_value_t = 10.0)]
+    cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
     #[arg(short, long, default_value_t = 1000)]
@@ -588,7 +594,8 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
-    dataset.normalize_z_coordinates();
+    let (zmin, zmax) = dataset.normalize_z_coordinates();
+    let zspan = zmax - zmin;
 
     // TODO: In various sharded data structures we assume cells index proximity
     // is correlated with spatial proximity. We may want to shuffle indexes so
@@ -599,7 +606,7 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
-    let voxelcheckerboard = VoxelCheckerboard::from_prior_transcript_assignments(
+    let voxels = VoxelCheckerboard::from_prior_transcript_assignments(
         &dataset,
         initial_voxel_size,
         args.quad_size,
@@ -612,9 +619,91 @@ fn main() {
     // an error interpreting the file. (e.g. Misinterpreting the unassigned indicator as a cell)
     dataset.prior_nuclei_populations().iter().for_each(|&p| {
         if p > 50000 {
-            eprintln!("Warning: nucleus with population {}", p);
+            warn!("Nucleus with large initial population: {}", p);
         }
     });
+
+    let μ_vol0 = 10.0 * 10.0 * 0.5 * zspan;
+    let priors = ModelPriors {
+        dispersion: args.dispersion,
+        burnin_dispersion: if args.variable_burnin_dispersion {
+            None
+        } else {
+            Some(args.burnin_dispersion)
+        },
+
+        use_cell_scales: args.use_scaled_cells,
+
+        min_cell_volume: 1e-6 * μ_vol0,
+
+        μ_μ_volume: (μ_vol0).ln(),
+        σ_μ_volume: 3.0_f32,
+        α_σ_volume: 0.1,
+        β_σ_volume: 0.1,
+
+        use_factorization: !args.no_factorization,
+
+        // TODO: mean/var ratio is always 1/fφ, but that doesn't seem like the whole
+        // story. Seems like it needs to change as a function of the dimensionality
+        // of the latent space.
+
+        // I also don't know if this "severe prior" approach is going to work in
+        // the long run because we may have far more cells. Needs more testing.
+        // eφ: 1000.0,
+        // fφ: 1.0,
+
+        // μφ: -20.0,
+        // τφ: 0.1,
+        αθ: 1e-1,
+
+        eφ: args.hyperparam_e_phi,
+        fφ: args.hyperparam_f_phi,
+
+        μφ: -args.hyperparam_neg_mu_phi,
+        τφ: args.hyperparam_tau_phi,
+
+        α_bg: 1.0,
+        β_bg: 1.0,
+
+        σ_iiq: args.cell_compactness,
+
+        perimeter_eta: 5.3,
+        perimeter_bound: args.perimeter_bound,
+
+        nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
+        nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
+
+        prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
+        prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
+
+        use_diffusion_model: !args.no_diffusion,
+        σ_diffusion_proposal: args.diffusion_proposal_sigma,
+        p_diffusion: args.diffusion_probability,
+        σ_diffusion_near: args.diffusion_sigma_near,
+        σ_diffusion_far: args.diffusion_sigma_far,
+
+        σ_z_diffusion_proposal: 0.2 * zspan,
+        σ_z_diffusion: 0.2 * zspan,
+
+        τv: 10.0,
+
+        enforce_connectivity: args.enforce_connectivity,
+    };
+
+    let full_volume = dataset.estimate_full_volume();
+    let layer_volume = full_volume / args.voxel_layers as f32;
+
+    let mut params = ModelParams::new(
+        &voxels,
+        args.nhidden,
+        args.nunfactored,
+        args.ncomponents,
+        layer_volume,
+    );
+
+    // TODO:
+    //   Initialize VoxelSampler
+    //   Initialize ParamSampler
 
     unimplemented!("proseg3: only initializing for now.");
 
