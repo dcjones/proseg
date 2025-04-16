@@ -7,7 +7,7 @@ mod shardedvec;
 mod sparsemat;
 pub mod transcripts;
 pub mod voxelcheckerboard;
-pub mod voxelsampler2;
+pub mod voxelsampler;
 
 use clustering::kmeans;
 use math::randn;
