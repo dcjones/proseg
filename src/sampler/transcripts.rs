@@ -121,7 +121,7 @@ impl TranscriptDataset {
         self.fovs.retain_masked(&mask);
     }
 
-    pub fn normalize_z_coordinates(&mut self) {
+    pub fn normalize_z_coordinates(&mut self) -> (f32, f32) {
         let xs = self.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
         let ys = self.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
         let mut zs = self.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
@@ -141,6 +141,8 @@ impl TranscriptDataset {
         for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
             run.value.z = *z;
         }
+
+        (zmin, zmax)
     }
 
     pub fn coordinate_span(&self) -> (f32, f32, f32, f32, f32, f32) {
@@ -164,25 +166,24 @@ impl TranscriptDataset {
         (min_x, max_x, min_y, max_y, min_z, max_z)
     }
 
-    pub fn estimate_full_area(&self, mean_nucleus_area: f32) -> f32 {
-        let (xmin, xmax, ymin, ymax, _, _) = self.coordinate_span();
+    pub fn estimate_full_volume(&self) -> f32 {
+        let (xmin, xmax, ymin, ymax, zmin, zmax) = self.coordinate_span();
 
-        const SCALE: f32 = 2.0;
-        let binsize = SCALE * mean_nucleus_area.sqrt();
+        const BINSIZE: f32 = 20.0;
 
-        let xbins = ((xmax - xmin) / binsize).ceil() as usize;
-        let ybins = ((ymax - ymin) / binsize).ceil() as usize;
+        let xbins = ((xmax - xmin) / BINSIZE).ceil() as usize;
+        let ybins = ((ymax - ymin) / BINSIZE).ceil() as usize;
 
         let mut occupied = Array2::from_elem((xbins, ybins), false);
 
         for run in self.transcripts.iter_runs() {
-            let xbin = ((run.value.x - xmin) / binsize).floor() as usize;
-            let ybin = ((run.value.y - ymin) / binsize).floor() as usize;
+            let xbin = ((run.value.x - xmin) / BINSIZE).floor() as usize;
+            let ybin = ((run.value.y - ymin) / BINSIZE).floor() as usize;
 
             occupied[[xbin, ybin]] = true;
         }
 
-        occupied.iter().filter(|&&x| x).count() as f32 * binsize * binsize
+        occupied.iter().filter(|&&x| x).count() as f32 * BINSIZE * BINSIZE * (zmax - zmin)
     }
 
     pub fn prior_nuclei_populations(&self) -> Array1<u32> {
@@ -193,6 +194,10 @@ impl TranscriptDataset {
             }
         }
         counts
+    }
+
+    pub fn ngenes(&self) -> usize {
+        self.gene_names.len()
     }
 }
 

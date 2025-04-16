@@ -364,7 +364,7 @@ pub fn write_cell_metadata(
             Field::new("cluster", DataType::UInt16, false),
             Field::new("volume", DataType::Float32, false),
             Field::new("scale", DataType::Float32, false),
-            Field::new("population", DataType::UInt64, false),
+            // Field::new("population", DataType::UInt64, false),
         ]);
 
         let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
@@ -418,7 +418,7 @@ pub fn write_cell_metadata(
             ),
             Arc::new(
                 params
-                    .cell_volume
+                    .cell_voxel_count
                     .iter()
                     .map(|v| v as f32 * params.voxel_volume)
                     .collect::<arrow::array::Float32Array>(),
@@ -430,13 +430,13 @@ pub fn write_cell_metadata(
                     .cloned()
                     .collect::<arrow::array::Float32Array>(),
             ),
-            Arc::new(
-                params
-                    .cell_population
-                    .iter()
-                    .map(|p| p as u64)
-                    .collect::<arrow::array::UInt64Array>(),
-            ),
+            // Arc::new(
+            //     params
+            //         .cell_population
+            //         .iter()
+            //         .map(|p| p as u64)
+            //         .collect::<arrow::array::UInt64Array>(),
+            // ),
         ];
 
         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();

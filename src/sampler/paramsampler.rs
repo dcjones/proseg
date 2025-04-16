@@ -3,12 +3,12 @@ use std::u32;
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::polyagamma::PolyaGamma;
 use super::{ModelParams, ModelPriors};
-use itertools::{izip, Itertools};
+use itertools::izip;
 use libm::lgammaf;
 use log::trace;
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use rand::{rng, Rng};
-use rand_distr::{Binomial, Distribution, Gamma, Normal, StandardNormal};
+use rand_distr::{Binomial, Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -19,8 +19,26 @@ const SIMPLE_PAR_ITER_MIN_LEN: usize = 64;
 pub struct ParamSampler {}
 
 impl ParamSampler {
-    fn sample(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        todo!("Call sampling functions one by one,");
+    fn sample(
+        &self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        burnin: bool,
+        purge_sparse_mats: bool,
+    ) {
+        let t0 = Instant::now();
+        self.sample_volume_params(priors, params);
+        trace!("sample_volume_params: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        self.sample_foreground_background(params, purge_sparse_mats);
+        trace!("sample_foreground_background: {:?}", t0.elapsed());
+
+        self.sample_factor_model(priors, params, true, burnin, purge_sparse_mats);
+
+        let t0 = Instant::now();
+        self.sample_background_rates(priors, params);
+        trace!("sample_background_rates: {:?}", t0.elapsed());
     }
 
     fn sample_volume_params(&self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -30,7 +48,7 @@ impl ParamSampler {
         params
             .log_cell_volume
             .iter_mut()
-            .zip(params.cell_volume.iter())
+            .zip(params.cell_voxel_count.iter())
             .par_bridge()
             .for_each(|(log_cell_volume_c, cell_volume_c)| {
                 *log_cell_volume_c = (cell_volume_c as f32 * params.voxel_volume).ln();
@@ -189,7 +207,7 @@ impl ParamSampler {
             params
                 .effective_cell_volume
                 .iter_mut()
-                .zip(params.cell_volume.iter())
+                .zip(params.cell_voxel_count.iter())
                 .for_each(|(ev, v)| {
                     *ev = (v as f32) * params.voxel_volume;
                 });
@@ -398,7 +416,7 @@ impl ParamSampler {
         for ((z_c, v_c), x_c) in params
             .z
             .iter()
-            .zip(params.cell_volume.iter())
+            .zip(params.cell_voxel_count.iter())
             .zip(params.cell_latent_counts.rows())
         {
             let z_c = *z_c as usize;
@@ -688,7 +706,7 @@ impl ParamSampler {
             .for_each(|λ_l, x_l| {
                 for (λ_lg, x_lg) in izip!(λ_l, x_l.iter()) {
                     let α = priors.α_bg + x_lg as f32;
-                    let β = priors.β_bg + params.full_layer_volume;
+                    let β = priors.β_bg + params.layer_volume;
                     *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                 }
             });
