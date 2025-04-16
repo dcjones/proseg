@@ -553,9 +553,6 @@ impl VoxelCheckerboard {
             used_cells.entry(vote_winner).or_insert(next_cell_id);
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
-        dbg!(checkerboard.quads.len());
-        dbg!(dataset.ncells);
-        dbg!(used_cells.len());
         checkerboard.ncells = used_cells.len();
 
         // re-assign cell indices so that there are no cells without any assigned voxel
@@ -602,7 +599,7 @@ impl VoxelCheckerboard {
                 });
             }
         }
-        println!("assigned cell priors: {:?}", t0.elapsed());
+        trace!("assigned cell priors: {:?}", t0.elapsed());
 
         // assign voxel counts
         let t0 = Instant::now();
@@ -619,7 +616,7 @@ impl VoxelCheckerboard {
             let count = quad.counts.entry(key).or_insert(0_u32);
             *count += run.len;
         }
-        println!("assigned voxel counts: {:?}", t0.elapsed());
+        trace!("assigned voxel counts: {:?}", t0.elapsed());
 
         // initialize edge voxel sets
         checkerboard.mirror_quad_edges();

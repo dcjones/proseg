@@ -19,6 +19,10 @@ const SIMPLE_PAR_ITER_MIN_LEN: usize = 64;
 pub struct ParamSampler {}
 
 impl ParamSampler {
+    pub fn new() -> ParamSampler {
+        ParamSampler {}
+    }
+
     fn sample(
         &self,
         priors: &ModelPriors,
