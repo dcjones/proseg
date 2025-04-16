@@ -41,6 +41,10 @@ where
         }
     }
 
+    pub fn shape(&self) -> (usize, J) {
+        (self.m, self.n)
+    }
+
     pub fn row(&self, i: usize) -> SparseRow<T, J> {
         SparseRow::new(self, i)
     }

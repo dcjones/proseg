@@ -3,7 +3,7 @@ use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::{halfnormal_logpdf, lognormal_logpdf, normal_logpdf};
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
-use super::{CountMatRowKey, CountPair, ModelParams, ModelPriors};
+use super::{CountMatRowKey, ModelParams, ModelPriors};
 use rand::{rng, Rng};
 use rayon::prelude::*;
 use std::f32;
@@ -20,12 +20,11 @@ fn count_matching_neighbors(
     let mut matching_neighbors = 0;
     let mut nonmatching_neighbors = 0;
     for neighbor_cell in neighbor_cells {
-        if let &Some(neighbor_cell) = neighbor_cell {
-            if neighbor_cell == cell {
-                matching_neighbors += 1;
-            } else {
-                nonmatching_neighbors += 1;
-            }
+        let neighbor_cell = neighbor_cell.unwrap_or(BACKGROUND_CELL);
+        if neighbor_cell == cell {
+            matching_neighbors += 1;
+        } else {
+            nonmatching_neighbors += 1;
         }
     }
     (matching_neighbors, nonmatching_neighbors)
@@ -285,7 +284,7 @@ impl VoxelSampler {
 
         if current_cell != BACKGROUND_CELL {
             let z = params.z[current_cell as usize];
-            let current_volume = params.cell_volume.get(current_cell as usize);
+            let current_volume = params.cell_voxel_count.get(current_cell as usize);
             let proposed_volume = current_volume - 1;
             let current_volume_μm = current_volume as f32 * params.voxel_volume;
             let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
@@ -306,6 +305,7 @@ impl VoxelSampler {
                 count_matching_neighbors(&proposal.neighbor_cells, current_cell);
             let proposed_surface_area =
                 current_surface_area + current_cell_neighbors - other_cell_neighbors;
+            // TODO: Blah. This is more complicated.
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
@@ -315,7 +315,7 @@ impl VoxelSampler {
 
         if proposed_cell != BACKGROUND_CELL {
             let z = params.z[proposed_cell as usize];
-            let current_volume = params.cell_volume.get(proposed_cell as usize);
+            let current_volume = params.cell_voxel_count.get(proposed_cell as usize);
             let proposed_volume = current_volume + 1;
             let current_volume_μm = current_volume as f32 * params.voxel_volume;
             let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
@@ -391,7 +391,7 @@ impl VoxelSampler {
         // Updating count matrices
         if current_cell != BACKGROUND_CELL {
             params
-                .cell_volume
+                .cell_voxel_count
                 .modify(current_cell as usize, |volume| *volume -= 1);
 
             let (current_cell_neighbors, other_cell_neighbors) =
@@ -417,7 +417,7 @@ impl VoxelSampler {
 
         if proposed_cell != BACKGROUND_CELL {
             params
-                .cell_volume
+                .cell_voxel_count
                 .modify(proposed_cell as usize, |volume| *volume += 1);
 
             let (proposed_cell_neighbors, other_cell_neighbors) =
