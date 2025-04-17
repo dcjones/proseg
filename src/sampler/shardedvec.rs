@@ -1,4 +1,3 @@
-use ndarray::{Dimension, Ix1, NdProducer};
 use num::Zero;
 use std::ops::{AddAssign, SubAssign};
 use std::sync::{Arc, RwLock};

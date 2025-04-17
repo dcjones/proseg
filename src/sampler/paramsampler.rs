@@ -39,7 +39,7 @@ impl ParamSampler {
         self.sample_foreground_background(params, purge_sparse_mats);
         trace!("sample_foreground_background: {:?}", t0.elapsed());
 
-        self.sample_factor_model(priors, params, true, burnin, purge_sparse_mats);
+        self.sample_factor_model(priors, params, sample_z, burnin, purge_sparse_mats);
 
         let t0 = Instant::now();
         self.sample_background_rates(priors, params);
@@ -410,8 +410,8 @@ impl ParamSampler {
                 *lc = glc.sum();
             });
 
-        let count = params.latent_counts.sum();
-        assert!(params.gene_latent_counts.sum() == count);
+        let count = params.latent_counts.mapv(|v| v as u64).sum();
+        assert!(params.gene_latent_counts.mapv(|v| v as u64).sum() == count);
         assert!(params.cell_latent_counts.sum() == count);
 
         // compute component-wise counts

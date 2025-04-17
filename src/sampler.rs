@@ -15,10 +15,13 @@ use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use num::traits::Zero;
 use rand::{rng, Rng};
-use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 use shardedvec::ShardedVec;
 use sparsemat::SparseMat;
 use std::cell::RefCell;
+use std::convert;
 use std::ops::{Add, AddAssign, SubAssign};
 use thread_local::ThreadLocal;
 use voxelcheckerboard::VoxelCheckerboard;
@@ -404,6 +407,52 @@ impl ModelParams {
             let θ_g = self.θ.row(gene);
             φ_cell.dot(&θ_g)
         }
+    }
+
+    pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
+        let mut ll = self
+            .foreground_counts
+            .par_rows()
+            .enumerate()
+            .map(|(c, x_c)| {
+                let v_c = self.effective_cell_volume[c];
+                let x_c = x_c.read();
+                let mut accum_c = 0.0;
+
+                for (g, x_cg) in x_c.iter_nonzeros() {
+                    let λ_cg = self.λ(c, g as usize);
+                    if x_cg > 0 {
+                        accum_c += (x_cg as f32) * λ_cg.ln();
+                    }
+                }
+                accum_c - v_c * self.φ.row(c).dot(&self.θksum)
+            })
+            .sum();
+
+        ll += self
+            .background_counts
+            .par_iter()
+            .zip(self.λ_bg.axis_iter(Axis(0)))
+            .map(|(x_l, λ_l)| {
+                let mut accum_l = 0.0;
+                for (x_lg, &λ_lg) in x_l.iter().zip(λ_l) {
+                    accum_l += (x_lg as f32) * λ_lg.ln() - λ_lg * self.layer_volume;
+                }
+                accum_l
+            })
+            .sum::<f32>();
+
+        // TODO: Do we want to include other parameter probabilities?
+
+        ll
+    }
+
+    pub fn nassigned(&self) -> usize {
+        self.counts.sum() as usize
+    }
+
+    pub fn nforeground(&self) -> usize {
+        self.foreground_counts.sum() as usize
     }
 
     pub fn ncomponents(&self) -> usize {
