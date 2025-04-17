@@ -4,9 +4,11 @@ use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 use super::math::halfnormal_logpdf;
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
+use log::trace;
 use rand::{rng, Rng};
 use rayon::prelude::*;
 use std::f32;
+use std::time::Instant;
 
 fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
     (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
@@ -55,14 +57,15 @@ impl VoxelSampler {
         }
     }
 
-    fn sample(
+    pub fn sample(
         &mut self,
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &ModelParams,
     ) {
-        let parity = self.t % 4;
+        let t0 = Instant::now();
 
+        let parity = self.t % 4;
         voxels
             .quads
             .par_iter()
@@ -93,6 +96,8 @@ impl VoxelSampler {
             });
 
         self.t += 1;
+
+        trace!("sample voxels: {:?}", t0.elapsed());
     }
 
     fn generate_proposal(&self, quad: &VoxelQuad) -> Option<Proposal> {
@@ -230,6 +235,7 @@ impl VoxelSampler {
         }
 
         let k = voxel.k();
+        // dbg!(k, params.λ_bg.shape(), self.kmax, quad.kmax);
         let λ_bg_k = params.λ_bg.column(k as usize);
         let φ_current = if current_cell == BACKGROUND_CELL {
             None

@@ -332,7 +332,7 @@ pub struct VoxelQuad {
 
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
 
-    kmax: i32,
+    pub kmax: i32,
     quadsize: usize,
 
     // quad coordinates
