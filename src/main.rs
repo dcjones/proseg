@@ -728,6 +728,7 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             it < args.burnin_samples,
+            args.check_consistency,
             &prog,
         );
     }
@@ -862,6 +863,7 @@ fn run_sampler(
     ntranscripts: usize,
     morphology_steps_per_iter: usize,
     burnin: bool,
+    check_consistency: bool,
     prog: &ProgressBar,
 ) {
     // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
@@ -880,6 +882,10 @@ fn run_sampler(
         perc_assigned = 100.0 * (nassigned as f32) / (ntranscripts as f32),
         perc_foreground = 100.0 * (nforeground as f32) / (ntranscripts as f32),
     ));
+
+    if check_consistency {
+        params.check_consistency(voxels);
+    }
 }
 
 /*
