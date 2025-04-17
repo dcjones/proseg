@@ -126,6 +126,25 @@ where
     }
 }
 
+impl<T> PartialEq for ShardedVec<T>
+where
+    T: AddAssign + SubAssign + Clone + Zero + Clone + Copy + PartialEq,
+{
+    fn eq(&self, other: &ShardedVec<T>) -> bool {
+        if self.n != other.n {
+            return false;
+        }
+
+        for (a_i, b_i) in self.iter().zip(other.iter()) {
+            if a_i != b_i {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
 pub struct ShardedVecIterator<'a, T> {
     vec: &'a ShardedVec<T>,
     index: usize,

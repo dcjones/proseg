@@ -822,33 +822,3 @@ impl VoxelCheckerboard {
         });
     }
 }
-
-// TODO: Ok, now we have to think about how we are actually sampling voxels.
-// I'm thinking I'm going to have rewrite everything in voxelsampler and sampler
-// gets turned into paramsampler
-
-// TODO: Data structure to hold a grid of `VoxelSets`
-// Design considerations:
-//   - Should this be sparse? Would we allow for empty quads? If so,
-//     we may need to lazily add quads if transcripts get moved there.
-//   - Write locks on all quads
-//   - Probably need to access specific voxels
-//   - Processing message passing between quads
-
-// TODO:
-//  Seems like the `lindel` crate is a good one to try
-//  to use to do the spacefill stuff.
-
-// TODO:
-//  After each iteration, we are going to have to aggregate
-//  a cell x gene matrix. We should think about how do that while
-//  avoiding tons of allocation or contention.
-//  I think this may be a good place to use try to use `dashmap`
-//  and just store a big COO matrix or CSR matrix.
-//
-
-// TODO:
-// Also have to think about how to message pass cell boundary updates
-// and transcript repo updates between VoxelSets. This may be another
-// case where we can use DashMap.
-//
