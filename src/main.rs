@@ -157,19 +157,26 @@ struct Args {
     #[arg(long, default_value_t = 4)]
     voxel_layers: usize,
 
-    /// Sampler schedule, indicating the number of iterations between doubling resolution.
-    #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
-    schedule: Vec<usize>,
+    // /// Sampler schedule, indicating the number of iterations between doubling resolution.
+    // #[arg(long, num_args=1.., value_delimiter=',', default_values_t=[150, 150, 300])]
+    // schedule: Vec<usize>,
+
+    // Number of initial burnin samples
+    #[arg(long, default_value_t = 100)]
+    burnin_samples: usize,
+
+    // Number of (post-burnin) samples to run
+    #[arg(long, default_value_t = 100)]
+    samples: usize,
 
     /// Whether to double the z-layers when doubling resolution
     #[arg(long, default_value_t = false)]
     double_z_layers: bool,
 
-    /// Number of samples at the end of the schedule used to compute
-    /// expectations and uncertainty
-    #[arg(long, default_value_t = 100)]
-    recorded_samples: usize,
-
+    // /// Number of samples at the end of the schedule used to compute
+    // /// expectations and uncertainty
+    // #[arg(long, default_value_t = 100)]
+    // recorded_samples: usize,
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
@@ -487,23 +494,6 @@ fn set_visiumhd_presets(args: &mut Args) {
 fn main() {
     env_logger::init();
 
-    // // TODO: Just testing PG sampling
-    // {
-    //     let mut rng = rand::thread_rng();
-    //     // let pg = PolyaGamma::new(1e-6, -80.0);
-    //     let mut rs = Vec::<f32>::new();
-    //     for _ in 0..100000 {
-    //         let pg = PolyaGamma::new(
-    //             rng.gen_range(1e-5..1000.0),
-    //             rng.gen_range(-50.0..50.0));
-    //         rs.push(pg.sample(&mut rng));
-    //     }
-    //     // dbg!(rs.iter().sum());
-    //     // dbg!(pg.mean());
-    //     // dbg!(pg.var());
-    //     panic!();
-    // }
-
     let mut args = Args::parse();
 
     if let Some(nthreads) = args.nthreads {
@@ -551,9 +541,9 @@ fn main() {
         set_visiumhd_presets(&mut args);
     }
 
-    if args.recorded_samples > *args.schedule.last().unwrap() {
-        panic!("recorded-samples must be <= the last entry in the schedule");
-    }
+    // if args.recorded_samples > *args.schedule.last().unwrap() {
+    //     panic!("recorded-samples must be <= the last entry in the schedule");
+    // }
 
     if args.use_cell_initialization {
         args.compartment_column = None;
@@ -609,7 +599,7 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
-    let voxels = VoxelCheckerboard::from_prior_transcript_assignments(
+    let mut voxels = VoxelCheckerboard::from_prior_transcript_assignments(
         &dataset,
         initial_voxel_size,
         args.quad_size,
@@ -712,344 +702,46 @@ fn main() {
     );
 
     let param_sampler = ParamSampler::new();
-    let voxel_sampler = VoxelSampler::new(0, args.voxel_layers as i32, args.ab_nihlo_bubble_prob);
+    let mut voxel_sampler =
+        VoxelSampler::new(0, args.voxel_layers as i32 - 1, args.ab_nihlo_bubble_prob);
 
-    // TODO: Just testing if I'm able to draw a sample
-    param_sampler.sample(&priors, &mut params, true, false);
+    const INIT_ITERATIONS: usize = 20;
 
-    // TODO:
-    //   Run param sample for a few iterations to get into a reasonable state
-    //   Main sampling loop (alternativwe between the two samplers)
-    //   Output
-    //
-    //   ...
-    //   Transcript position sampler
-
-    unimplemented!("proseg3: only initializing for now.");
-
-    /*
-    let mut ncells = dataset.nucleus_population.len();
-    filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
-    normalize_z_coordinates(&mut dataset);
-
-    // keep removing cells until we can initialize with every cell having at least one voxel
-    loop {
-        let prev_ncells = ncells;
-
-        filter_sparse_cells(
-            initial_voxel_size,
-            args.voxel_layers,
-            &dataset.transcripts,
-            &mut dataset.nucleus_assignments,
-            &mut dataset.cell_assignments,
-            &mut dataset.nucleus_population,
-            &mut dataset.original_cell_ids,
-        );
-        ncells = dataset.nucleus_population.len();
-        if ncells == prev_ncells {
-            break;
-        }
-    }
-
-    let ngenes = dataset.transcript_names.len();
-    let ncells = dataset.nucleus_population.len();
-    let ntranscripts = dataset.transcripts.len();
-
-    if args.nunfactored >= ngenes {
-        args.no_factorization = true;
-        args.nunfactored = ngenes;
-    }
-
-    let nucleus_areas =
-        compute_cell_areas(ncells, &dataset.transcripts, &dataset.nucleus_assignments);
-    let mean_nucleus_area = nucleus_areas.iter().sum::<f32>()
-        / nucleus_areas.iter().filter(|a| **a > 0.0).count() as f32;
-
-    if args.detect_layers {
-        const MAX_ZLAYERS: usize = 30;
-        let mut undetectable = false;
-        let mut zlayers = HashSet::new();
-        for t in &dataset.transcripts {
-            if t.z.round() == t.z {
-                zlayers.insert(t.z as i32);
-            } else {
-                undetectable = true;
-                break;
-            }
-        }
-
-        if !undetectable && zlayers.len() <= MAX_ZLAYERS {
-            args.nbglayers = zlayers.len();
-            println!("Detected {} z-layers", args.nbglayers);
-        }
-    }
-
-    let zmin = dataset
-        .transcripts
-        .iter()
-        .fold(f32::INFINITY, |zmin, t| zmin.min(t.z));
-    let zmax = dataset
-        .transcripts
-        .iter()
-        .fold(f32::NEG_INFINITY, |zmin, t| zmin.max(t.z));
-
-    let mut layer_depth = 1.01 * (zmax - zmin) / (args.nbglayers as f32);
-    if layer_depth == 0.0 {
-        layer_depth = 1.0;
-    }
-
-    println!("Read {} transcripts", ntranscripts);
-    println!("     {} cells", ncells);
-    println!("     {} genes", ngenes);
-
-    let (xmin, xmax, ymin, ymax, zmin, zmax) = coordinate_span(&dataset.transcripts);
-    let (xspan, yspan, mut zspan) = (xmax - xmin, ymax - ymin, zmax - zmin);
-    if zspan == 0.0 {
-        zspan = 1.0;
-    }
-
-    let full_area = estimate_full_area(&dataset.transcripts, mean_nucleus_area);
-    println!("Estimated full area: {}", full_area);
-    let full_volume = full_area * zspan;
-
-    let full_layer_volume = full_volume / (args.nbglayers as f32);
-    println!("Full volume: {}", full_volume);
-
-    // Find a reasonable grid size to use to chunk the data
-    let area = (xmax - xmin) * (ymax - ymin);
-
-    let cell_density = ncells as f32 / area;
-    let chunk_size = (args.cells_per_chunk as f32 / cell_density).sqrt();
-
-    let nchunks = |chunk_size: f32, xspan: f32, yspan: f32| {
-        ((xspan / chunk_size).ceil() as usize) * ((yspan / chunk_size).ceil() as usize)
-    };
-
-    println!(
-        "Using grid size {}. Chunks: {}",
-        chunk_size,
-        nchunks(chunk_size, xspan, yspan)
-    );
-
-    let min_cell_volume = 1e-6 * mean_nucleus_area * zspan;
-
-    let priors = ModelPriors {
-        dispersion: args.dispersion,
-        burnin_dispersion: if args.variable_burnin_dispersion {
-            None
-        } else {
-            Some(args.burnin_dispersion)
-        },
-
-        use_cell_scales: args.use_scaled_cells,
-
-        min_cell_volume,
-
-        μ_μ_volume: (2.0 * mean_nucleus_area * zspan).ln(),
-        σ_μ_volume: 3.0_f32,
-        α_σ_volume: 0.1,
-        β_σ_volume: 0.1,
-
-        use_factorization: !args.no_factorization,
-
-        // TODO: mean/var ratio is always 1/fφ, but that doesn't seem like the whole
-        // story. Seems like it needs to change as a function of the dimensionality
-        // of the latent space.
-
-        // I also don't know if this "severe prior" approach is going to work in
-        // the long run because we may have far more cells. Needs more testing.
-        // eφ: 1000.0,
-        // fφ: 1.0,
-
-        // μφ: -20.0,
-        // τφ: 0.1,
-        αθ: 1e-1,
-
-        eφ: args.hyperparam_e_phi,
-        fφ: args.hyperparam_f_phi,
-
-        μφ: -args.hyperparam_neg_mu_phi,
-        τφ: args.hyperparam_tau_phi,
-
-        α_bg: 1.0,
-        β_bg: 1.0,
-
-        α_c: 1.0,
-        β_c: 1.0,
-
-        perimeter_eta: 5.3,
-        perimeter_bound: args.perimeter_bound,
-
-        nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
-        nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
-
-        prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
-        prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
-
-        use_diffusion_model: !args.no_diffusion,
-        σ_diffusion_proposal: args.diffusion_proposal_sigma,
-        p_diffusion: args.diffusion_probability,
-        σ_diffusion_near: args.diffusion_sigma_near,
-        σ_diffusion_far: args.diffusion_sigma_far,
-
-        σ_z_diffusion_proposal: 0.2 * zspan,
-        σ_z_diffusion: 0.2 * zspan,
-
-        τv: 10.0,
-
-        zmin,
-        zmax,
-
-        enforce_connectivity: args.enforce_connectivity,
-    };
-
-    let mut params = ModelParams::new(
-        &priors,
-        full_layer_volume,
-        zmin,
-        layer_depth,
-        args.initial_perturbation_sd.unwrap_or(0.0),
-        &dataset.transcripts,
-        &dataset.nucleus_assignments,
-        &dataset.nucleus_population,
-        &dataset.cell_assignments,
-        args.ncomponents,
-        args.nhidden,
-        args.nunfactored,
-        args.nbglayers,
-        ncells,
-        ngenes,
-    );
-
-    let total_iterations = args.schedule.iter().sum::<usize>();
-    let mut prog = ProgressBar::new(total_iterations as u64);
+    let total_iterations = INIT_ITERATIONS + args.samples + args.burnin_samples;
+    let prog = ProgressBar::new(total_iterations as u64);
     prog.set_style(
         ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
             .unwrap()
             .progress_chars("##-"),
     );
 
-    let mut uncertainty = UncertaintyTracker::new();
-
-    let mut sampler = RefCell::new(VoxelSampler::new(
-        &priors,
-        &mut params,
-        &dataset.transcripts,
-        ngenes,
-        args.voxel_layers,
-        args.nbglayers,
-        zmin,
-        layer_depth,
-        initial_voxel_size,
-        chunk_size,
-    ));
-    sampler
-        .borrow_mut()
-        .initialize(&priors, &mut params, &dataset.transcripts);
-
-    let mut total_steps = 0;
-
-    if args.schedule.len() > 1 {
-        run_hexbin_sampler(
-            &mut prog,
-            sampler.get_mut(),
-            &priors,
-            &mut params,
-            &dataset.transcripts,
-            args.schedule[0],
-            args.morphology_steps_per_iter,
-            None,
-            &mut total_steps,
-            &args.monitor_cell_polygons,
-            args.monitor_cell_polygons_freq,
-            true,
-            true,
-            false,
-            &args.output_path,
-        );
-
-        for &niter in args.schedule[1..args.schedule.len() - 1].iter() {
-            if args.check_consistency {
-                sampler.borrow_mut().check_consistency(&priors, &mut params);
-            }
-
-            sampler.replace_with(|sampler| {
-                sampler.double_resolution(&params, !args.no_z_layer_doubling)
-            });
-            run_hexbin_sampler(
-                &mut prog,
-                sampler.get_mut(),
-                &priors,
-                &mut params,
-                &dataset.transcripts,
-                niter,
-                args.morphology_steps_per_iter,
-                None,
-                &mut total_steps,
-                &args.monitor_cell_polygons,
-                args.monitor_cell_polygons_freq,
-                true,
-                true,
-                false,
-                &args.output_path,
-            );
-        }
-        if args.check_consistency {
-            sampler.borrow_mut().check_consistency(&priors, &mut params);
-        }
-        sampler
-            .replace_with(|sampler| sampler.double_resolution(&params, !args.no_z_layer_doubling));
+    for _ in 0..INIT_ITERATIONS {
+        param_sampler.sample(&priors, &mut params, true, false, false);
+        prog.inc(1);
     }
 
-    run_hexbin_sampler(
-        &mut prog,
-        sampler.get_mut(),
-        &priors,
-        &mut params,
-        &dataset.transcripts,
-        *args.schedule.last().unwrap() - args.recorded_samples,
-        args.morphology_steps_per_iter,
-        None,
-        &mut total_steps,
-        &args.monitor_cell_polygons,
-        args.monitor_cell_polygons_freq,
-        true,
-        false,
-        false,
-        &args.output_path,
-    );
-
-    run_hexbin_sampler(
-        &mut prog,
-        sampler.get_mut(),
-        &priors,
-        &mut params,
-        &dataset.transcripts,
-        args.recorded_samples,
-        args.morphology_steps_per_iter,
-        Some(&mut uncertainty),
-        &mut total_steps,
-        &args.monitor_cell_polygons,
-        args.monitor_cell_polygons_freq,
-        true,
-        false,
-        false,
-        &args.output_path,
-    );
-
-    if args.check_consistency {
-        sampler.borrow_mut().check_consistency(&priors, &mut params);
+    // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
+    for _ in 0..args.burnin_samples {
+        param_sampler.sample(&priors, &mut params, true, true, false);
+        for _ in 0..args.morphology_steps_per_iter {
+            voxel_sampler.sample(&mut voxels, &priors, &params);
+        }
+        prog.inc(1);
     }
+
+    for _ in 0..args.samples {
+        param_sampler.sample(&priors, &mut params, false, true, false);
+        for _ in 0..args.morphology_steps_per_iter {
+            voxel_sampler.sample(&mut voxels, &priors, &params);
+        }
+        prog.inc(1);
+    }
+
     prog.finish();
 
-    uncertainty.finish(&params);
-    let (counts, cell_assignments) = uncertainty.max_posterior_transcript_counts_assignments(
-        &params,
-        &dataset.transcripts,
-        args.count_pr_cutoff,
-        args.foreground_pr_cutoff,
-    );
+    unimplemented!("proseg3: output not yet implemented.");
 
+    /*
     let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
     let cell_centroids = sampler.borrow().cell_centroids();
 

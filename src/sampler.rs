@@ -317,7 +317,13 @@ impl ModelParams {
 
         let mut rng = rng();
         let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
-        let φ_v_dot = Array1::<f32>::zeros(nhidden); // TODO: may have initialize this
+        let mut φ_v_dot = Array1::<f32>::zeros(nhidden); // TODO: may have initialize this
+        Zip::from(&mut φ_v_dot)
+            .and(φ.axis_iter(Axis(1)))
+            .for_each(|φ_v_dot_k, φ_k| {
+                *φ_v_dot_k = φ_k.dot(&effective_cell_volume);
+            });
+
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
@@ -331,7 +337,12 @@ impl ModelParams {
         θ.slice_mut(s![0..nunfactored, 0..nunfactored]).fill(1.0);
         θ.slice_mut(s![nunfactored.., nunfactored..])
             .mapv_inplace(|_v| randn(&mut rng).exp());
-        let θksum = Array1::<f32>::zeros(nhidden); // TODO: make have to initialize this
+        let mut θksum = Array1::<f32>::zeros(nhidden); // TODO: make have to initialize this
+        Zip::from(&mut θksum)
+            .and(θ.axis_iter(Axis(1)))
+            .for_each(|θksum, θ_k| {
+                *θksum = θ_k.sum();
+            });
 
         let λ_bg = Array2::<f32>::zeros((ngenes, nlayers));
         let logλ_bg = Array2::<f32>::zeros((ngenes, nlayers));

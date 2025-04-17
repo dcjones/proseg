@@ -28,6 +28,7 @@ impl ParamSampler {
         priors: &ModelPriors,
         params: &mut ModelParams,
         burnin: bool,
+        sample_z: bool,
         purge_sparse_mats: bool,
     ) {
         let t0 = Instant::now();
@@ -705,7 +706,7 @@ impl ParamSampler {
     fn sample_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
         // TODO: worth doing ethier of these loops in parallel?
         let mut rng = rng();
-        Zip::from(params.λ_bg.rows_mut())
+        Zip::from(params.λ_bg.columns_mut())
             .and(&params.background_counts)
             .for_each(|λ_l, x_l| {
                 for (λ_lg, x_lg) in izip!(λ_l, x_l.iter()) {
