@@ -23,7 +23,7 @@ impl ParamSampler {
         ParamSampler {}
     }
 
-    fn sample(
+    pub fn sample(
         &self,
         priors: &ModelPriors,
         params: &mut ModelParams,
@@ -43,6 +43,8 @@ impl ParamSampler {
         let t0 = Instant::now();
         self.sample_background_rates(priors, params);
         trace!("sample_background_rates: {:?}", t0.elapsed());
+
+        params.t += 1;
     }
 
     fn sample_volume_params(&self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -142,8 +144,8 @@ impl ParamSampler {
 
                     for (gene_layer, count) in row.read().iter_nonzeros() {
                         if gene_layer.gene != gene {
-                            λ_cg = params.λ(cell, gene as usize);
                             gene = gene_layer.gene;
+                            λ_cg = params.λ(cell, gene as usize);
                         }
                         let λ_bg = params.λ_bg[[gene as usize, gene_layer.layer as usize]];
 
@@ -171,7 +173,6 @@ impl ParamSampler {
         let t0 = Instant::now();
         self.sample_latent_counts(params, purge_sparse_mats);
         trace!("sample_latent_counts: {:?}", t0.elapsed());
-
         if sample_z {
             let t0 = Instant::now();
             self.sample_z(params);
@@ -258,7 +259,6 @@ impl ParamSampler {
                     ) {
                         *z_probs_t = *log_π_t as f64;
 
-                        // for every hidden dim
                         for (r_tk, lgamma_r_tk, s_tk, θ_k_sum, x_ck) in
                             izip!(r_t, lgamma_r_t, s_t, &params.θksum, x_c.iter())
                         {
