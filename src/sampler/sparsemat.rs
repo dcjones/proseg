@@ -1,3 +1,4 @@
+use num::traits::AsPrimitive;
 use num::traits::{One, Zero};
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
@@ -25,7 +26,7 @@ pub struct SparseMat<T, J> {
 
 impl<T, J> SparseMat<T, J>
 where
-    T: Zero + Copy + AddAssign + Add + Sum,
+    T: Zero + Copy + AddAssign + Add + Sum + AsPrimitive<u64>,
     J: Copy,
 {
     pub fn zeros(m: usize, n: J, shardsize: usize) -> Self {
@@ -76,11 +77,18 @@ where
         }
     }
 
-    pub fn sum(&self) -> T {
-        let mut accum = T::zero();
+    pub fn sum(&self) -> u64 {
+        let mut accum = 0;
         for shard in &self.shards {
-            accum += shard.read().unwrap().values().cloned().sum();
+            accum += shard
+                .read()
+                .unwrap()
+                .values()
+                .cloned()
+                .map(|x| x.as_())
+                .sum::<u64>();
         }
+
         accum
     }
 }
