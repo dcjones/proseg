@@ -13,16 +13,15 @@ use clustering::kmeans;
 use math::randn;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
-use num::traits::Zero;
+use num::traits::{One, Zero};
 use rand::{rng, Rng};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 use shardedvec::ShardedVec;
-use sparsemat::SparseMat;
+use sparsemat::{Increment, SparseMat};
 use std::cell::RefCell;
-use std::convert;
-use std::ops::{Add, AddAssign, SubAssign};
+use std::ops::{Add, AddAssign, Mul, SubAssign};
 use thread_local::ThreadLocal;
 use voxelcheckerboard::VoxelCheckerboard;
 
@@ -94,7 +93,7 @@ pub struct ModelPriors {
     pub enforce_connectivity: bool,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct CountMatRowKey {
     gene: u32,
     layer: u32,
@@ -117,6 +116,13 @@ impl Add for CountMatRowKey {
     }
 }
 
+impl AddAssign for CountMatRowKey {
+    fn add_assign(&mut self, other: Self) {
+        self.gene += other.gene;
+        self.layer += other.layer;
+    }
+}
+
 impl Zero for CountMatRowKey {
     fn zero() -> Self {
         CountMatRowKey { gene: 0, layer: 0 }
@@ -124,6 +130,22 @@ impl Zero for CountMatRowKey {
 
     fn is_zero(&self) -> bool {
         self.gene == 0 && self.layer == 0
+    }
+}
+
+impl Increment for CountMatRowKey {
+    fn inc(&self, bound: CountMatRowKey) -> CountMatRowKey {
+        if self.gene < bound.gene && self.layer + 1 == bound.layer {
+            CountMatRowKey {
+                layer: 0,
+                gene: self.gene + 1,
+            }
+        } else {
+            CountMatRowKey {
+                layer: self.layer + 1,
+                gene: self.gene,
+            }
+        }
     }
 }
 
@@ -469,6 +491,27 @@ impl ModelParams {
 
     pub fn nhidden(&self) -> usize {
         self.θ.shape()[1]
+    }
+
+    pub fn check_consistency(&self, voxels: &VoxelCheckerboard) {
+        let ncells = voxels.ncells;
+        let ngenes = voxels.ngenes;
+        let nlayers = (voxels.kmax + 1) as usize;
+
+        let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
+        let mut cell_surface_area = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
+        voxels.compute_cell_volume_surface_area(&mut cell_voxel_count, &mut cell_surface_area);
+
+        assert!(self.cell_voxel_count == cell_voxel_count);
+        assert!(self.cell_surface_area == cell_surface_area);
+
+        let mut counts = SparseMat::zeros(
+            ncells,
+            CountMatRowKey::new(ngenes as u32, nlayers as u32),
+            CELL_SHARDSIZE,
+        );
+        voxels.compute_counts(&mut counts);
+        assert!(self.counts == counts);
     }
 }
 

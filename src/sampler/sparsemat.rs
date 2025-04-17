@@ -1,5 +1,5 @@
 use num::traits::AsPrimitive;
-use num::traits::{One, Zero};
+use num::traits::Zero;
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
 use std::collections::BTreeMap;
@@ -93,6 +93,28 @@ where
     }
 }
 
+impl<T, J> PartialEq for SparseMat<T, J>
+where
+    T: Zero + Copy + AddAssign + Add + Sum + AsPrimitive<u64> + PartialEq + Debug,
+    J: Clone + Copy + Ord + Zero + AddAssign + Debug + Increment,
+{
+    fn eq(&self, other: &SparseMat<T, J>) -> bool {
+        if self.m != other.m || self.n != other.n {
+            return false;
+        }
+
+        for (a_i, b_i) in self.rows().zip(other.rows()) {
+            for (a_ij, b_ij) in a_i.read().iter().zip(b_i.read().iter()) {
+                if a_ij != b_ij {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
+
 pub struct SparseMatRowsIter<'a, T, J> {
     i: usize,
     mat: &'a SparseMat<T, J>,
@@ -168,6 +190,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct SparseRow<T, J> {
     shard: Arc<RwLock<BTreeMap<(u32, J), T>>>,
     n: J,
@@ -211,7 +234,7 @@ pub struct SparseRowReadLock<'a, T, J> {
 impl<'a, T, J> SparseRowReadLock<'a, T, J>
 where
     T: Clone + Copy,
-    J: Clone + Copy + Ord + Zero,
+    J: Clone + Copy + Ord + Zero + Debug,
 {
     pub fn iter_nonzeros(&'a self) -> SparseRowNonzeroIterator<'a, T, J> {
         SparseRowNonzeroIterator::new(self, self.i)
@@ -320,6 +343,16 @@ where
     }
 }
 
+pub trait Increment {
+    fn inc(&self, bound: Self) -> Self;
+}
+
+impl Increment for u32 {
+    fn inc(&self, _bound: Self) -> Self {
+        *self + 1
+    }
+}
+
 pub struct SparseRowIterator<'a, T, J> {
     _row: &'a SparseRowReadLock<'a, T, J>,
     j: J,
@@ -330,13 +363,15 @@ pub struct SparseRowIterator<'a, T, J> {
 
 impl<'a, T, J> SparseRowIterator<'a, T, J>
 where
-    J: Ord + Zero + Copy,
+    J: Ord + Zero + Copy + Debug,
 {
     fn new(row: &'a SparseRowReadLock<'a, T, J>, i: usize) -> Self {
-        let iter = row.shard.range((
-            Included((i as u32, J::zero())),
-            Excluded((i as u32 + 1, J::zero())),
-        ));
+        let iter = row
+            .shard
+            .range((Included((i as u32, J::zero())), Excluded((i as u32, row.n))));
+
+        // TODO: Fuuuck. This doesn't work because we can't actually increment our way to row.n
+        // So we need some interface other than AddAssign and One. What would that look like.
 
         SparseRowIterator {
             _row: row,
@@ -351,7 +386,7 @@ where
 impl<'a, T, J> Iterator for SparseRowIterator<'a, T, J>
 where
     T: Clone + Copy + Zero,
-    J: Clone + Copy + Eq + One + AddAssign + Ord,
+    J: Clone + Copy + Eq + AddAssign + Ord + Increment,
 {
     type Item = T;
 
@@ -368,10 +403,10 @@ where
                 panic!("Broken iterator assumptions.");
             };
 
-            self.j += J::one();
+            self.j = self.j.inc(self.n);
             Some(value)
         } else if self.j < self.n {
-            self.j += J::one();
+            self.j = self.j.inc(self.n);
             Some(T::zero())
         } else {
             self.buf = self.iter.next().map(|(&(_i, j), &v)| (j, v));
