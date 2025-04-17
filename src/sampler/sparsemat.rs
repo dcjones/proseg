@@ -2,6 +2,7 @@ use num::traits::{One, Zero};
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::iter::{IntoIterator, Iterator, Sum};
 use std::ops::Bound::{Excluded, Included};
 use std::ops::{Add, AddAssign, SubAssign};
@@ -272,31 +273,28 @@ pub struct SparseRowNonzeroIterator<'a, T, J> {
 
 impl<'a, T, J> SparseRowNonzeroIterator<'a, T, J>
 where
-    J: Ord + Zero,
+    J: Ord + Zero + Copy,
 {
     fn new(row: &'a SparseRowReadLock<'a, T, J>, i: usize) -> Self {
-        let iter = row.shard.range((
-            Included((i as u32, J::zero())),
-            Excluded((i as u32 + 1, J::zero())),
-        ));
+        let iter = row
+            .shard
+            .range((Included((i as u32, J::zero())), Excluded((i as u32, row.n))));
 
         SparseRowNonzeroIterator { _row: row, iter }
     }
 
     fn new_from(row: &'a SparseRowReadLock<'a, T, J>, i: usize, from: J) -> Self {
-        let iter = row.shard.range((
-            Included((i as u32, from)),
-            Excluded((i as u32 + 1, J::zero())),
-        ));
+        let iter = row
+            .shard
+            .range((Included((i as u32, from)), Excluded((i as u32, row.n))));
 
         SparseRowNonzeroIterator { _row: row, iter }
     }
 
     fn new_to(row: &'a SparseRowReadLock<'a, T, J>, i: usize, to: J) -> Self {
-        let iter = row.shard.range((
-            Included((i as u32, J::zero())),
-            Excluded((i as u32 + 1, to)),
-        ));
+        let iter = row
+            .shard
+            .range((Included((i as u32, J::zero())), Excluded((i as u32, to))));
 
         SparseRowNonzeroIterator { _row: row, iter }
     }
@@ -364,6 +362,9 @@ where
 
             self.j += J::one();
             Some(value)
+        } else if self.j < self.n {
+            self.j += J::one();
+            Some(T::zero())
         } else {
             self.buf = self.iter.next().map(|(&(_i, j), &v)| (j, v));
             self.next()

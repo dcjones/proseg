@@ -1,13 +1,12 @@
 use crate::sampler::transcripts::{CellIndex, BACKGROUND_CELL};
 use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
-use super::math::{halfnormal_logpdf, lognormal_logpdf, normal_logpdf};
+use super::math::halfnormal_logpdf;
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 use rand::{rng, Rng};
 use rayon::prelude::*;
 use std::f32;
-use std::thread::current;
 
 fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
     (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
@@ -47,7 +46,7 @@ pub struct VoxelSampler {
 }
 
 impl VoxelSampler {
-    fn new(kmin: i32, kmax: i32, bubble_formation_prob: f32) -> VoxelSampler {
+    pub fn new(kmin: i32, kmax: i32, bubble_formation_prob: f32) -> VoxelSampler {
         VoxelSampler {
             t: 0,
             kmin,

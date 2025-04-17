@@ -16,6 +16,7 @@ use regex::Regex;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcripts::{read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL};
 use sampler::voxelcheckerboard::VoxelCheckerboard;
+use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
 use std::cell::RefCell;
@@ -247,6 +248,10 @@ struct Args {
     /// Perturb initial transcript positions with this standard deviation
     #[arg(long, default_value = None)]
     initial_perturbation_sd: Option<f32>,
+
+    /// Probability of proposing ab nihlo bubble formation
+    #[arg(long, default_value_t = 0.05)]
+    ab_nihlo_bubble_prob: f32,
 
     /// Run time consuming checks to make sure data structures are in a consistent state
     #[arg(long, default_value_t = false)]
@@ -588,6 +593,10 @@ fn main() {
         args.coordinate_scale.unwrap_or(1.0),
     );
 
+    if args.nunfactored >= dataset.ngenes() {
+        args.no_factorization = true;
+    }
+
     let (zmin, zmax) = dataset.normalize_z_coordinates();
     let zspan = zmax - zmin;
 
@@ -695,6 +704,7 @@ fn main() {
 
     let mut params = ModelParams::new(
         &voxels,
+        &priors,
         args.nhidden,
         args.nunfactored,
         args.ncomponents,
@@ -702,10 +712,18 @@ fn main() {
     );
 
     let param_sampler = ParamSampler::new();
+    let voxel_sampler = VoxelSampler::new(0, args.voxel_layers as i32, args.ab_nihlo_bubble_prob);
+
+    // TODO: Just testing if I'm able to draw a sample
+    param_sampler.sample(&priors, &mut params, true, false);
 
     // TODO:
-    //   Initialize VoxelSampler
-    //   Initialize ParamSampler
+    //   Run param sample for a few iterations to get into a reasonable state
+    //   Main sampling loop (alternativwe between the two samplers)
+    //   Output
+    //
+    //   ...
+    //   Transcript position sampler
 
     unimplemented!("proseg3: only initializing for now.");
 

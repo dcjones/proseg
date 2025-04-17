@@ -24,7 +24,8 @@ use thread_local::ThreadLocal;
 use voxelcheckerboard::VoxelCheckerboard;
 
 // Shard size used for sharded vectors and matrices
-const SHARDSIZE: usize = 256;
+const CELL_SHARDSIZE: usize = 256;
+const GENE_SHARDSIZE: usize = 16;
 
 // Model prior parameters.
 #[derive(Clone, Copy)]
@@ -254,6 +255,7 @@ pub struct ModelParams {
 impl ModelParams {
     pub fn new(
         voxels: &VoxelCheckerboard,
+        priors: &ModelPriors,
         nhidden: usize,
         nunfactored: usize,
         ncomponents: usize,
@@ -262,10 +264,14 @@ impl ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
-        assert!(nhidden <= ngenes);
+        let (nhidden, nunfactored) = if priors.use_factorization {
+            (nhidden + nunfactored, nunfactored)
+        } else {
+            (ngenes, ngenes)
+        };
 
-        let mut cell_voxel_count = ShardedVec::zeros(ncells, SHARDSIZE);
-        let mut cell_surface_area = ShardedVec::zeros(ncells, SHARDSIZE);
+        let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
+        let mut cell_surface_area = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
         voxels.compute_cell_volume_surface_area(&mut cell_voxel_count, &mut cell_surface_area);
         let voxel_volume = voxels.voxel_volume;
 
@@ -280,19 +286,19 @@ impl ModelParams {
         let mut counts = SparseMat::zeros(
             ncells,
             CountMatRowKey::new(ngenes as u32, nlayers as u32),
-            SHARDSIZE,
+            CELL_SHARDSIZE,
         );
         voxels.compute_counts(&mut counts);
 
-        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, SHARDSIZE);
+        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
         let unassigned_counts = (0..nlayers)
-            .map(|_layer| ShardedVec::zeros(ngenes, SHARDSIZE))
+            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
             .collect::<Vec<_>>();
         let background_counts = (0..nlayers)
-            .map(|_layer| ShardedVec::zeros(ngenes, SHARDSIZE))
+            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
             .collect::<Vec<_>>();
 
-        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32, SHARDSIZE);
+        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32, CELL_SHARDSIZE);
         let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
         let gene_latent_counts_tl = ThreadLocal::new();
         let latent_counts = Array1::<u32>::zeros(nhidden);
@@ -306,22 +312,26 @@ impl ModelParams {
         let component_population = Array1::<u32>::zeros(ncomponents);
         let component_volume = Array1::<f32>::zeros(ncomponents);
         let component_latent_counts = Array2::<u32>::zeros((ncomponents, nhidden));
-        let μ_volume = Array1::<f32>::zeros(ncomponents);
-        let σ_volume = Array1::<f32>::zeros(ncomponents);
+        let μ_volume = Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume);
+        let σ_volume = Array1::<f32>::from_elem(ncomponents, priors.σ_μ_volume);
 
-        let φ = Array2::<f32>::zeros((ncells, nhidden));
-        let φ_v_dot = Array1::<f32>::zeros(nhidden);
+        let mut rng = rng();
+        let φ = Array2::<f32>::from_shape_simple_fn((ncells, nhidden), || randn(&mut rng).exp());
+        let φ_v_dot = Array1::<f32>::zeros(nhidden); // TODO: may have initialize this
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
-        let rφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
         let lgamma_rφ = Array2::<f32>::zeros((ncomponents, nhidden));
-        let sφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
         let μ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
         let τ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
         let sφ_work_tl = ThreadLocal::new();
 
-        let θ = Array2::<f32>::zeros((ngenes, nhidden));
-        let θksum = Array1::<f32>::zeros(nhidden);
+        let mut θ = Array2::<f32>::zeros((ngenes, nhidden));
+        θ.slice_mut(s![0..nunfactored, 0..nunfactored]).fill(1.0);
+        θ.slice_mut(s![nunfactored.., nunfactored..])
+            .mapv_inplace(|_v| randn(&mut rng).exp());
+        let θksum = Array1::<f32>::zeros(nhidden); // TODO: make have to initialize this
 
         let λ_bg = Array2::<f32>::zeros((ngenes, nlayers));
         let logλ_bg = Array2::<f32>::zeros((ngenes, nlayers));
