@@ -2,7 +2,6 @@
 
 use clap::Parser;
 
-mod hull;
 mod output;
 mod polygon_area;
 mod sampler;
@@ -14,14 +13,13 @@ use log::warn;
 use rayon::current_num_threads;
 use regex::Regex;
 use sampler::paramsampler::ParamSampler;
-use sampler::transcripts::{read_transcripts_csv, CellIndex, Transcript, BACKGROUND_CELL};
+use sampler::transcripts::read_transcripts_csv;
 use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
-use std::cell::RefCell;
 
-use output::*;
+// use output::*;
 
 const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 1.0;
 
@@ -582,6 +580,7 @@ fn main() {
         args.ignore_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
     );
+    dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
 
     if args.nunfactored >= dataset.ngenes() {
         args.no_factorization = true;
@@ -720,21 +719,18 @@ fn main() {
         prog.inc(1);
     }
 
-    // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
-    for _ in 0..args.burnin_samples {
-        param_sampler.sample(&priors, &mut params, true, true, false);
-        for _ in 0..args.morphology_steps_per_iter {
-            voxel_sampler.sample(&mut voxels, &priors, &params);
-        }
-        prog.inc(1);
-    }
-
-    for _ in 0..args.samples {
-        param_sampler.sample(&priors, &mut params, false, true, false);
-        for _ in 0..args.morphology_steps_per_iter {
-            voxel_sampler.sample(&mut voxels, &priors, &params);
-        }
-        prog.inc(1);
+    for it in 0..(args.burnin_samples + args.samples) {
+        run_sampler(
+            &param_sampler,
+            &mut voxel_sampler,
+            &mut voxels,
+            &priors,
+            &mut params,
+            dataset.transcripts.len(),
+            args.morphology_steps_per_iter,
+            it < args.burnin_samples,
+            &prog,
+        );
     }
 
     prog.finish();
@@ -856,6 +852,35 @@ fn main() {
         );
     }
     */
+}
+
+fn run_sampler(
+    param_sampler: &ParamSampler,
+    voxel_sampler: &mut VoxelSampler,
+    voxels: &mut VoxelCheckerboard,
+    priors: &ModelPriors,
+    params: &mut ModelParams,
+    ntranscripts: usize,
+    morphology_steps_per_iter: usize,
+    burnin: bool,
+    prog: &ProgressBar,
+) {
+    // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
+    param_sampler.sample(&priors, params, burnin, true, false);
+    for _ in 0..morphology_steps_per_iter {
+        voxel_sampler.sample(voxels, &priors, &params);
+    }
+    prog.inc(1);
+
+    let nassigned = params.nassigned();
+    let nforeground = params.nforeground();
+    prog.set_message(format!(
+        "log-likelihood: {ll} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
+        ll = params.log_likelihood(priors),
+        nassigned = nassigned,
+        perc_assigned = 100.0 * (nassigned as f32) / (ntranscripts as f32),
+        perc_foreground = 100.0 * (nforeground as f32) / (ntranscripts as f32),
+    ));
 }
 
 /*
