@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 //   spatially correlated.
 // - Efficient (read-only) iteration across rows: this is needed in various places in the sampler.
 pub struct SparseMat<T, J> {
-    shards: Vec<Arc<RwLock<BTreeMap<(u32, J), T>>>>,
+    pub shards: Vec<Arc<RwLock<BTreeMap<(u32, J), T>>>>,
     shardsize: usize,
     m: usize,
     n: J,
@@ -193,8 +193,8 @@ where
 #[derive(Debug)]
 pub struct SparseRow<T, J> {
     shard: Arc<RwLock<BTreeMap<(u32, J), T>>>,
-    n: J,
-    i: usize,
+    pub n: J,
+    pub i: usize,
 }
 
 impl<T, J> SparseRow<T, J>
@@ -304,7 +304,7 @@ pub struct SparseRowNonzeroIterator<'a, T, J> {
 
 impl<'a, T, J> SparseRowNonzeroIterator<'a, T, J>
 where
-    J: Ord + Zero + Copy,
+    J: Ord + Zero + Copy + Debug,
 {
     fn new(row: &'a SparseRowReadLock<'a, T, J>, i: usize) -> Self {
         let iter = row
@@ -355,29 +355,28 @@ impl Increment for u32 {
 
 pub struct SparseRowIterator<'a, T, J> {
     _row: &'a SparseRowReadLock<'a, T, J>,
-    j: J,
-    n: J,
-    buf: Option<(J, T)>,
+    pub j: J,
+    pub n: J,
+    pub buf: Option<(J, T)>,
     iter: std::collections::btree_map::Range<'a, (u32, J), T>,
 }
 
 impl<'a, T, J> SparseRowIterator<'a, T, J>
 where
     J: Ord + Zero + Copy + Debug,
+    T: Copy,
 {
     fn new(row: &'a SparseRowReadLock<'a, T, J>, i: usize) -> Self {
-        let iter = row
+        let mut iter = row
             .shard
             .range((Included((i as u32, J::zero())), Excluded((i as u32, row.n))));
-
-        // TODO: Fuuuck. This doesn't work because we can't actually increment our way to row.n
-        // So we need some interface other than AddAssign and One. What would that look like.
+        let buf = iter.next().map(|(&(_i, j), &v)| (j, v));
 
         SparseRowIterator {
             _row: row,
             j: J::zero(),
             n: row.n,
-            buf: None,
+            buf,
             iter,
         }
     }
@@ -409,8 +408,7 @@ where
             self.j = self.j.inc(self.n);
             Some(T::zero())
         } else {
-            self.buf = self.iter.next().map(|(&(_i, j), &v)| (j, v));
-            self.next()
+            panic!("Incorrect iterator.")
         }
     }
 }

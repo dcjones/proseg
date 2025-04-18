@@ -869,6 +869,7 @@ fn run_sampler(
 ) {
     // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
     param_sampler.sample(&priors, params, burnin, true, false);
+
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, &priors, &params);
     }
