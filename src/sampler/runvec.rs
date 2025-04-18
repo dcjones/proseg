@@ -4,7 +4,6 @@
 
 use num::{Integer, NumCast};
 use std::iter::Iterator;
-use std::mem::replace;
 use std::ops::{AddAssign, SubAssign};
 
 #[derive(Debug)]
@@ -104,6 +103,6 @@ where
         }
 
         self.len = newruns.len;
-        replace(&mut self.runs, newruns.runs);
+        self.runs = newruns.runs;
     }
 }

@@ -313,12 +313,12 @@ impl ModelParams {
             CountMatRowKey::new(ngenes as u32, nlayers as u32),
             CELL_SHARDSIZE,
         );
-        voxels.compute_counts(&mut counts);
-
-        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
-        let unassigned_counts = (0..nlayers)
+        let mut unassigned_counts = (0..nlayers)
             .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
             .collect::<Vec<_>>();
+        voxels.compute_counts(&mut counts, &mut unassigned_counts);
+
+        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
         let background_counts = (0..nlayers)
             .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
             .collect::<Vec<_>>();
@@ -359,7 +359,9 @@ impl ModelParams {
         let sφ_work_tl = ThreadLocal::new();
 
         let mut θ = Array2::<f32>::zeros((ngenes, nhidden));
-        θ.slice_mut(s![0..nunfactored, 0..nunfactored]).fill(1.0);
+        θ.slice_mut(s![0..nunfactored, 0..nunfactored])
+            .diag_mut()
+            .fill(1.0);
         θ.slice_mut(s![nunfactored.., nunfactored..])
             .mapv_inplace(|_v| randn(&mut rng).exp());
         let mut θksum = Array1::<f32>::zeros(nhidden); // TODO: make have to initialize this
@@ -510,8 +512,12 @@ impl ModelParams {
             CountMatRowKey::new(ngenes as u32, nlayers as u32),
             CELL_SHARDSIZE,
         );
-        voxels.compute_counts(&mut counts);
+        let mut unassigned_counts = (0..nlayers)
+            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+            .collect::<Vec<_>>();
+        voxels.compute_counts(&mut counts, &mut unassigned_counts);
         assert!(self.counts == counts);
+        assert!(self.unassigned_counts == unassigned_counts);
     }
 }
 

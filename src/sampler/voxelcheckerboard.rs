@@ -798,7 +798,11 @@ impl VoxelCheckerboard {
         });
     }
 
-    pub fn compute_counts(&self, counts: &mut SparseMat<u32, CountMatRowKey>) {
+    pub fn compute_counts(
+        &self,
+        counts: &mut SparseMat<u32, CountMatRowKey>,
+        unassigned_counts: &mut Vec<ShardedVec<u32>>,
+    ) {
         counts.zero();
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
             let quad = quad.read().unwrap();
@@ -817,6 +821,8 @@ impl VoxelCheckerboard {
                         .row(cell as usize)
                         .write()
                         .add(CountMatRowKey::new(gene, voxel.k() as u32), count);
+                } else {
+                    unassigned_counts[voxel.k() as usize].add(gene as usize, count);
                 }
             }
         });
