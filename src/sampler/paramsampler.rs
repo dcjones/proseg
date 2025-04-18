@@ -5,7 +5,7 @@ use super::polyagamma::PolyaGamma;
 use super::{ModelParams, ModelPriors};
 use itertools::izip;
 use libm::lgammaf;
-use log::trace;
+use log::{info, trace};
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use rand::{rng, Rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal};
@@ -155,12 +155,33 @@ impl ParamSampler {
                             .sample(rng) as u32;
                         let count_bg = count - count_fg;
 
+                        // if count_fg == 0 && count > 1 {
+                        //     dbg!((λ_cg, λ_bg, count, count_fg));
+                        // }
+
                         foreground_row.add(gene, count_fg);
                         params.background_counts[gene_layer.layer as usize]
                             .add(gene as usize, count_bg);
                     }
                 },
             );
+
+        let mut nunassigned = 0;
+        for x_l in &params.unassigned_counts {
+            for count in x_l.iter() {
+                nunassigned += count;
+            }
+        }
+
+        let mut nbackground = 0;
+        for x_l in &params.background_counts {
+            for count in x_l.iter() {
+                nbackground += count;
+            }
+        }
+        info!("sum(unassigned_counts): {}", nunassigned);
+        info!("sum(background_counts): {}", nbackground);
+        info!("sum(foreground_counts): {}", params.foreground_counts.sum());
     }
 
     fn sample_factor_model(
@@ -432,6 +453,8 @@ impl ParamSampler {
                 component_latent_counts_z[g as usize] += x_cg;
             }
         }
+
+        info!("component_population: {:?}", &params.component_population);
     }
 
     fn sample_θ(&self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -490,6 +513,7 @@ impl ParamSampler {
                         let shape = r_k + x_ck as f32;
                         let scale = s_k / (1.0 + s_k * v_c * θ_k_sum);
                         *φ_ck = Gamma::new(shape, scale).unwrap().sample(rng);
+}
                     }
                 },
             );
