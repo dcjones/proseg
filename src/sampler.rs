@@ -1,4 +1,5 @@
 mod math;
+pub mod onlinestats;
 pub mod paramsampler;
 mod polyagamma;
 pub mod runvec;
@@ -14,6 +15,7 @@ use math::randn;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
 use num::traits::{One, Zero};
+use onlinestats::CountQuantileEstimator;
 use rand::{rng, Rng};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
@@ -178,6 +180,10 @@ pub struct ModelParams {
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     foreground_counts: SparseMat<u32, u32>,
 
+    // [ncells, ngenes] upper and lower credible intervals for cell-by-gene counts
+    foreground_counts_lower: CountQuantileEstimator,
+    foreground_counts_upper: CountQuantileEstimator,
+
     // [nlayers, ngenes] background transcripts counts
     unassigned_counts: Vec<ShardedVec<u32>>,
 
@@ -319,6 +325,10 @@ impl ModelParams {
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
 
         let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
+        let foreground_counts_lower =
+            CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
+        let foreground_counts_upper =
+            CountQuantileEstimator::new(ncells, ngenes, 0.95, CELL_SHARDSIZE);
         let background_counts = (0..nlayers)
             .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
             .collect::<Vec<_>>();
@@ -384,6 +394,8 @@ impl ModelParams {
             cell_scale,
             counts,
             foreground_counts,
+            foreground_counts_lower,
+            foreground_counts_upper,
             unassigned_counts,
             background_counts,
             cell_latent_counts,

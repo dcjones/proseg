@@ -12,6 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::warn;
 use rayon::current_num_threads;
 use regex::Regex;
+use sampler::onlinestats::CountQuantileEstimator;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcripts::read_transcripts_csv;
 use sampler::voxelcheckerboard::VoxelCheckerboard;
@@ -148,7 +149,7 @@ struct Args {
     nbglayers: usize,
 
     /// Detect the number of z-layers from the data when it's discrete
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     detect_layers: bool,
 
     /// Number of layers of voxels in the z-axis used for segmentation
@@ -184,7 +185,7 @@ struct Args {
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
-    #[arg(short, long, default_value_t = 1000)]
+    #[arg(short, long, default_value_t = 2000)]
     morphology_steps_per_iter: usize,
 
     #[arg(long, default_value_t = 0.1)]

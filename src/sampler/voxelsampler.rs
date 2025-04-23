@@ -291,14 +291,17 @@ impl VoxelSampler {
             let z = params.z[current_cell as usize];
             let current_volume = params.cell_voxel_count.get(current_cell as usize);
             let proposed_volume = current_volume - 1;
-            let current_volume_μm = current_volume as f32 * params.voxel_volume;
-            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
+            let log_current_volume_μm = (current_volume as f32 * params.voxel_volume).ln();
+            let log_proposed_volume_μm = (proposed_volume as f32 * params.voxel_volume).ln();
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
             let σ_vol_z = params.σ_volume[z as usize];
-            δ += ((current_volume_μm - μ_vol_z).powi(2) - (proposed_volume_μm - μ_vol_z).powi(2))
-                / σ_vol_z;
+            δ += ((log_current_volume_μm - μ_vol_z).powi(2)
+                - (log_proposed_volume_μm - μ_vol_z).powi(2))
+                / (2.0 * σ_vol_z.powi(2))
+                + log_current_volume_μm
+                - log_proposed_volume_μm;
 
             let current_surface_area = params.cell_surface_area.get(current_cell as usize);
             δ -= halfnormal_logpdf(
@@ -322,14 +325,18 @@ impl VoxelSampler {
             let z = params.z[proposed_cell as usize];
             let current_volume = params.cell_voxel_count.get(proposed_cell as usize);
             let proposed_volume = current_volume + 1;
-            let current_volume_μm = current_volume as f32 * params.voxel_volume;
-            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
+            let log_current_volume_μm = (current_volume as f32 * params.voxel_volume).ln();
+            let log_proposed_volume_μm = (proposed_volume as f32 * params.voxel_volume).ln();
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
             let σ_vol_z = params.σ_volume[z as usize];
-            δ += ((current_volume_μm - μ_vol_z).powi(2) - (proposed_volume_μm - μ_vol_z).powi(2))
-                / σ_vol_z;
+
+            δ += ((log_current_volume_μm - μ_vol_z).powi(2)
+                - (log_proposed_volume_μm - μ_vol_z).powi(2))
+                / (2.0 * σ_vol_z.powi(2))
+                + log_current_volume_μm
+                - log_proposed_volume_μm;
 
             let current_surface_area = params.cell_surface_area.get(proposed_cell as usize);
             δ -= halfnormal_logpdf(
