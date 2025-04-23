@@ -18,15 +18,15 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 //   spatially correlated.
 // - Efficient (read-only) iteration across rows: this is needed in various places in the sampler.
 pub struct SparseMat<T, J> {
-    pub shards: Vec<Arc<RwLock<BTreeMap<(u32, J), T>>>>,
+    shards: Vec<Arc<RwLock<BTreeMap<(u32, J), T>>>>,
     shardsize: usize,
-    m: usize,
-    n: J,
+    pub m: usize,
+    pub n: J,
 }
 
 impl<T, J> SparseMat<T, J>
 where
-    T: Zero + Copy + AddAssign + Add + Sum + AsPrimitive<u64>,
+    T: Copy,
     J: Copy,
 {
     pub fn zeros(m: usize, n: J, shardsize: usize) -> Self {
@@ -65,18 +65,13 @@ where
             shard.write().unwrap().clear();
         }
     }
+}
 
-    // Zero by setting everything to zero without changing the data structure
-    pub fn zero(&mut self) {
-        for shard in self.shards.iter_mut() {
-            shard
-                .write()
-                .unwrap()
-                .values_mut()
-                .for_each(|v| *v = T::zero());
-        }
-    }
-
+impl<T, J> SparseMat<T, J>
+where
+    T: Zero + Copy + AddAssign + Add + Sum + AsPrimitive<u64>,
+    J: Copy,
+{
     pub fn sum(&self) -> u64 {
         let mut accum = 0;
         for shard in &self.shards {
@@ -90,6 +85,17 @@ where
         }
 
         accum
+    }
+
+    // Zero by setting everything to zero without changing the data structure
+    pub fn zero(&mut self) {
+        for shard in self.shards.iter_mut() {
+            shard
+                .write()
+                .unwrap()
+                .values_mut()
+                .for_each(|v| *v = T::zero());
+        }
     }
 }
 
@@ -253,6 +259,20 @@ where
     }
 }
 
+impl<'a, T, J> SparseRowReadLock<'a, T, J>
+where
+    T: Clone + Copy + Zero,
+    J: Clone + Copy + Ord + Zero + Debug,
+{
+    pub fn get(&self, j: J) -> T {
+        assert!(j < self.n);
+        self.shard
+            .get(&(self.i as u32, j))
+            .map(|&v| v)
+            .unwrap_or(T::zero())
+    }
+}
+
 // impl<'a, T, J> IntoIterator for &'a SparseRowReadLock<'a, T, J>
 // where
 //     T: Clone + Copy,
@@ -267,15 +287,15 @@ where
 // }
 
 pub struct SparseRowWriteLock<'a, T, J> {
-    shard: RwLockWriteGuard<'a, BTreeMap<(u32, J), T>>,
-    n: J,
-    i: usize,
+    pub shard: RwLockWriteGuard<'a, BTreeMap<(u32, J), T>>,
+    pub n: J,
+    pub i: usize,
 }
 
 impl<'a, T, J> SparseRowWriteLock<'a, T, J>
 where
     T: AddAssign + SubAssign + Zero + Eq,
-    J: Ord,
+    J: Ord + Copy + Debug + Zero,
 {
     pub fn sub(&mut self, j: J, delta: T) {
         assert!(j < self.n);
@@ -294,6 +314,31 @@ where
         assert!(j < self.n);
         let count = self.shard.entry((self.i as u32, j)).or_insert(T::zero());
         *count += delta;
+    }
+}
+
+impl<'a, T, J> SparseRowWriteLock<'a, T, J>
+where
+    J: Ord + Copy + Debug + Zero,
+{
+    pub fn update<F, G>(&mut self, j: J, insert_fn: F, update_fn: G)
+    where
+        F: FnOnce() -> T,
+        G: FnOnce(&mut T),
+    {
+        assert!(j < self.n);
+        let key = (self.i as u32, j);
+        let count = self.shard.entry(key).or_insert_with(insert_fn);
+        update_fn(count);
+    }
+}
+
+impl<'a, T, J> SparseRowWriteLock<'a, T, J>
+where
+    J: Ord + Copy + Debug + Zero,
+{
+    pub fn iter_nonzeros_mut(&mut self) -> SparseRowMutNonzeroIterator<'_, T, J> {
+        SparseRowMutNonzeroIterator::new(self, self.i)
     }
 }
 
@@ -410,5 +455,34 @@ where
         } else {
             panic!("Incorrect iterator.")
         }
+    }
+}
+
+pub struct SparseRowMutNonzeroIterator<'a, T, J> {
+    pub iter: std::collections::btree_map::RangeMut<'a, (u32, J), T>,
+}
+
+impl<'a, T, J> SparseRowMutNonzeroIterator<'a, T, J>
+where
+    J: Ord + Zero + Copy + Debug,
+{
+    fn new(row: &'a mut SparseRowWriteLock<'_, T, J>, i: usize) -> Self {
+        let iter = row
+            .shard
+            .range_mut((Included((i as u32, J::zero())), Excluded((i as u32, row.n))));
+
+        SparseRowMutNonzeroIterator { iter }
+    }
+}
+
+impl<'a, T, J> Iterator for SparseRowMutNonzeroIterator<'a, T, J>
+where
+    T: Clone + Copy,
+    J: Clone + Copy,
+{
+    type Item = (J, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(&(_i, j), v)| (j, v))
     }
 }
