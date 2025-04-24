@@ -6,15 +6,20 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
 use ndarray::{Array1, Array2, Axis};
+use num::traits::Zero;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::sampler::onlinestats::CountMeanEstimator;
+use super::sampler::runvec::RunVec;
+use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
 use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::ModelParams;
@@ -95,67 +100,119 @@ pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
         panic!("Unknown file format for filename: {}", filename);
     }
 }
+//
+// TODO: We should really just write sparse matrices in 10Xs h5 format (or maybe
+// just mtx.gz to avoid the hdf5 dependency). but maybe we try to keep these
+// outputs for reverse compatibility.
 
-pub fn write_counts(
+// pub fn write_counts(
+//     output_path: &Option<String>,
+//     output_counts: &Option<String>,
+//     output_counts_fmt: OutputFormat,
+//     gene_names: &[String],
+//     counts: &SparseMat<u32, u32>,
+// ) {
+//     if let Some(output_counts) = output_counts {
+//         let schema = Schema::new(
+//             gene_names
+//                 .iter()
+//                 .map(|name| Field::new(name, DataType::UInt32, false))
+//                 .collect::<Vec<Field>>(),
+//         );
+
+//         let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+//         for row in counts.rows() {
+//             let row_lock = row.read();
+//             columns.push(Arc::new(
+//                 row_lock.iter().collect::<arrow::array::UInt32Array>(),
+//             ));
+//         }
+
+//         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+
+//         write_table(output_path, output_counts, output_counts_fmt, &batch);
+//     }
+// }
+
+pub fn write_sparse_mtx<T>(
     output_path: &Option<String>,
-    output_counts: &Option<String>,
-    output_counts_fmt: OutputFormat,
-    transcript_names: &[String],
-    counts: &Array2<u32>,
-) {
-    if let Some(output_counts) = output_counts {
-        let schema = Schema::new(
-            transcript_names
-                .iter()
-                .map(|name| Field::new(name, DataType::UInt32, false))
-                .collect::<Vec<Field>>(),
-        );
+    filename: &Option<String>,
+    mat: &SparseMat<T, u32>,
+) where
+    T: Copy + Clone + Zero + PartialEq + Display,
+{
+    if filename.is_none() {
+        return;
+    }
+    let filename = filename.as_ref().unwrap();
 
-        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
-        for row in counts.rows() {
-            columns.push(Arc::new(
-                row.iter().cloned().collect::<arrow::array::UInt32Array>(),
-            ));
+    let file = if let Some(output_path) = output_path {
+        File::create(Path::new(output_path).join(filename)).unwrap()
+    } else {
+        File::create(filename).unwrap()
+    };
+    let mut encoder = GzEncoder::new(file, Compression::default());
+
+    // count the true number of nonzeros
+    let mut nnzs = 0;
+    for x_c in mat.rows() {
+        for (_g, est) in x_c.read().iter_nonzeros() {
+            if est != T::zero() {
+                nnzs += 1;
+            }
         }
+    }
 
-        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+    write!(
+        &mut encoder,
+        "%MatrixMarket matrix coordinate real general\n{} {} {}\n",
+        mat.m, mat.n, nnzs
+    )
+    .unwrap();
 
-        write_table(output_path, output_counts, output_counts_fmt, &batch);
+    for (c, x_c) in mat.rows().enumerate() {
+        for (g, est) in x_c.read().iter_nonzeros() {
+            if est != T::zero() {
+                // TODO: Blah.
+                write!(&mut encoder, "{} {} {:.2}\n", c + 1, g + 1, est).unwrap();
+            }
+        }
     }
 }
 
-pub fn write_expected_counts(
-    output_path: &Option<String>,
-    output_expected_counts: &Option<String>,
-    output_expected_counts_fmt: OutputFormat,
-    transcript_names: &[String],
-    ecounts: &Array2<f32>,
-) {
-    if let Some(output_expected_counts) = output_expected_counts {
-        let schema = Schema::new(
-            transcript_names
-                .iter()
-                .map(|name| Field::new(name, DataType::Float32, false))
-                .collect::<Vec<Field>>(),
-        );
+// pub fn write_expected_counts(
+//     output_path: &Option<String>,
+//     output_expected_counts: &Option<String>,
+//     output_expected_counts_fmt: OutputFormat,
+//     gene_names: &[String],
+//     ecounts: &CountMeanEstimator,
+// ) {
+//     if let Some(output_expected_counts) = output_expected_counts {
+//         let schema = Schema::new(
+//             gene_names
+//                 .iter()
+//                 .map(|name| Field::new(name, DataType::Float32, false))
+//                 .collect::<Vec<Field>>(),
+//         );
 
-        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
-        for row in ecounts.rows() {
-            columns.push(Arc::new(
-                row.iter().cloned().collect::<arrow::array::Float32Array>(),
-            ));
-        }
+//         let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+//         for row in ecounts.estimates.rows() {
+//             let row_lock = row.read();
+//             columns.push(Arc::new(
+//                 row_lock.iter().collect::<arrow::array::Float32Array>(),
+//             ));
+//         }
 
-        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+//         let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        write_table(
-            output_path,
-            output_expected_counts,
-            output_expected_counts_fmt,
-            &batch,
-        );
-    }
-}
+//         write_table(
+//             output_path,
+//             output_expected_counts,
+//             output_expected_counts_fmt,
+//             &batch,
+//         );
+//     }
+// }
 
 pub fn write_metagene_rates(
     output_path: &Option<String>,
@@ -306,52 +363,25 @@ pub fn write_rates(
 //     }
 // }
 
-// Assign cells to fovs by finding the most common transcript fov of the
-// assigned transcripts.
-fn cell_fov_vote(
-    ncells: usize,
-    nfovs: usize,
-    cell_assignments: &[(u32, f32)],
-    fovs: &[u32],
-) -> Vec<u32> {
-    let mut fov_votes = Array2::<u32>::zeros((ncells, nfovs));
-    for (fov, (cell, _)) in fovs.iter().zip(cell_assignments) {
-        if *cell != BACKGROUND_CELL {
-            fov_votes[[*cell as usize, *fov as usize]] += 1;
-        }
-    }
-
-    fov_votes
-        .outer_iter()
-        .map(|votes| {
-            let mut winner = u32::MAX;
-            let mut winner_count: u32 = 0;
-            for (fov, count) in votes.iter().enumerate() {
-                if *count > winner_count {
-                    winner_count = *count;
-                    winner = fov as u32;
-                }
-            }
-            winner
-        })
-        .collect::<Vec<u32>>()
-}
-
 pub fn write_cell_metadata(
     output_path: &Option<String>,
     output_cell_metadata: &Option<String>,
     output_cell_metadata_fmt: OutputFormat,
     params: &ModelParams,
-    cell_centroids: &[(f32, f32, f32)],
-    cell_assignments: &[(u32, f32)],
+    cell_centroids: &Array2<f32>,
     original_cell_ids: &Vec<String>,
-    fovs: &[u32],
+    // fovs: &RunVec<usize, u32>,
     fov_names: &[String],
 ) {
-    // TODO: write factorization
-    let ncells = cell_centroids.len();
-    let nfovs = fov_names.len();
-    let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
+    let ncells = cell_centroids.shape()[0];
+    // let nfovs = fov_names.len();
+
+    // TODO: I can no longer do this because I don't know what transcripts are
+    // assigned to what fovs. I think the solution if I really want to do this
+    // is to work out fov bounds from the transcripts then see what bound each
+    // cell centroid is in.
+    // let cell_fovs = cell_fov_vote(ncells, nfovs, cell_assignments, fovs);
+    //
 
     if let Some(output_cell_metadata) = output_cell_metadata {
         let schema = Schema::new(vec![
@@ -360,9 +390,10 @@ pub fn write_cell_metadata(
             Field::new("centroid_x", DataType::Float32, false),
             Field::new("centroid_y", DataType::Float32, false),
             Field::new("centroid_z", DataType::Float32, false),
-            Field::new("fov", DataType::Utf8, true),
+            // Field::new("fov", DataType::Utf8, true),
             Field::new("cluster", DataType::UInt16, false),
             Field::new("volume", DataType::Float32, false),
+            Field::new("surface_area", DataType::UInt32, false),
             Field::new("scale", DataType::Float32, false),
             // Field::new("population", DataType::UInt64, false),
         ]);
@@ -381,34 +412,37 @@ pub fn write_cell_metadata(
             ),
             Arc::new(
                 cell_centroids
-                    .iter()
-                    .map(|(x, _, _)| *x)
+                    .rows()
+                    .into_iter()
+                    .map(|row| row[0])
                     .collect::<arrow::array::Float32Array>(),
             ),
             Arc::new(
                 cell_centroids
-                    .iter()
-                    .map(|(_, y, _)| *y)
+                    .rows()
+                    .into_iter()
+                    .map(|row| row[1])
                     .collect::<arrow::array::Float32Array>(),
             ),
             Arc::new(
                 cell_centroids
-                    .iter()
-                    .map(|(_, _, z)| *z)
+                    .rows()
+                    .into_iter()
+                    .map(|row| row[2])
                     .collect::<arrow::array::Float32Array>(),
             ),
-            Arc::new(
-                cell_fovs
-                    .iter()
-                    .map(|fov| {
-                        if *fov == u32::MAX {
-                            None
-                        } else {
-                            Some(fov_names[*fov as usize].clone())
-                        }
-                    })
-                    .collect::<arrow::array::StringArray>(),
-            ),
+            // Arc::new(
+            //     cell_fovs
+            //         .iter()
+            //         .map(|fov| {
+            //             if *fov == u32::MAX {
+            //                 None
+            //             } else {
+            //                 Some(fov_names[*fov as usize].clone())
+            //             }
+            //         })
+            //         .collect::<arrow::array::StringArray>(),
+            // ),
             Arc::new(
                 params
                     .z
@@ -422,6 +456,12 @@ pub fn write_cell_metadata(
                     .iter()
                     .map(|v| v as f32 * params.voxel_volume)
                     .collect::<arrow::array::Float32Array>(),
+            ),
+            Arc::new(
+                params
+                    .cell_surface_area
+                    .iter()
+                    .collect::<arrow::array::UInt32Array>(),
             ),
             Arc::new(
                 params

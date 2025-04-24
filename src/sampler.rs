@@ -5,7 +5,7 @@ mod polyagamma;
 pub mod runvec;
 mod sampleset;
 mod shardedvec;
-mod sparsemat;
+pub mod sparsemat;
 pub mod transcripts;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
@@ -178,12 +178,12 @@ pub struct ModelParams {
     counts: SparseMat<u32, CountMatRowKey>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
-    foreground_counts: SparseMat<u32, u32>,
+    pub foreground_counts: SparseMat<u32, u32>,
 
     // [ncells, ngenes] upper and lower credible intervals for cell-by-gene counts
     foreground_counts_lower: CountQuantileEstimator,
     foreground_counts_upper: CountQuantileEstimator,
-    foreground_counts_mean: CountMeanEstimator,
+    pub foreground_counts_mean: CountMeanEstimator,
 
     // [nlayers, ngenes] background transcripts counts
     unassigned_counts: Vec<ShardedVec<u32>>,
