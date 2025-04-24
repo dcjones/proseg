@@ -5,10 +5,11 @@ use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
 use super::sparsemat::SparseMat;
 use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
-use super::CountMatRowKey;
+use super::{CountMatRowKey, ModelParams};
 
 use itertools::Itertools;
 use log::trace;
+use ndarray::{Array1, Array2};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap};
@@ -453,6 +454,16 @@ pub struct VoxelCheckerboard {
     // volume of a single voxel
     pub voxel_volume: f32,
 
+    // kept for coordinate transforms back to microns
+    xmin: f32,
+    ymin: f32,
+    zmin: f32,
+    voxelsize: f32,
+    voxelsize_z: f32,
+
+    // boolean mask of cells from initialization that are used in inference
+    pub used_cell_mask: Vec<bool>,
+
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
     //
@@ -507,6 +518,12 @@ impl VoxelCheckerboard {
             ncells: 0,
             ngenes: dataset.ngenes(),
             voxel_volume,
+            xmin,
+            ymin,
+            zmin,
+            voxelsize,
+            voxelsize_z,
+            used_cell_mask: vec![false; dataset.ncells],
             quads: HashMap::new(),
         };
 
@@ -528,6 +545,7 @@ impl VoxelCheckerboard {
                     );
                     let next_cell_id = used_cells.len() as CellIndex;
                     used_cells.entry(vote_winner).or_insert(next_cell_id);
+                    checkerboard.used_cell_mask[vote_winner as usize] = true;
                 }
                 vote_winner = cell;
                 vote_winner_count = count;
@@ -826,5 +844,37 @@ impl VoxelCheckerboard {
                 }
             }
         });
+    }
+
+    pub fn cell_centroids(&self, params: &ModelParams) -> Array2<f32> {
+        let mut centroids = Array2::zeros((self.ncells, 3));
+
+        self.quads.values().for_each(|quad| {
+            let quad_lock = quad.read().unwrap();
+            for (voxel, state) in quad_lock.states.iter() {
+                if state.cell != BACKGROUND_CELL {
+                    let [i, j, k] = voxel.coords();
+
+                    let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+                    let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+                    let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
+
+                    let mut centroids_c = centroids.row_mut(state.cell as usize);
+                    centroids_c[0] += x;
+                    centroids_c[1] += y;
+                    centroids_c[2] += z;
+                }
+            }
+        });
+
+        centroids
+            .rows_mut()
+            .into_iter()
+            .zip(params.cell_voxel_count.iter())
+            .for_each(|(mut centroids_c, voxel_count_c)| {
+                centroids_c /= voxel_count_c as f32;
+            });
+
+        centroids
     }
 }

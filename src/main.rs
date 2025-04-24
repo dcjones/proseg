@@ -19,7 +19,7 @@ use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
 
-// use output::*;
+use output::*;
 
 const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 1.0;
 
@@ -274,7 +274,7 @@ struct Args {
     output_maxpost_counts_fmt: OutputFormat,
 
     /// Output a matrix of expected transcript counts per cell
-    #[arg(long, default_value = "expected-counts.csv.gz")]
+    #[arg(long, default_value = "expected-counts.mtx.gz")]
     output_expected_counts: Option<String>,
 
     /// Output a matrix of estimated Poisson expression rates per cell
@@ -733,53 +733,43 @@ fn main() {
             &prog,
         );
     }
-
     prog.finish();
 
-    unimplemented!("proseg3: output not yet implemented.");
-
-    /*
-    let ecounts = uncertainty.expected_counts(&params, &dataset.transcripts);
-    let cell_centroids = sampler.borrow().cell_centroids();
-
-    write_expected_counts(
+    write_sparse_mtx(
         &args.output_path,
         &args.output_expected_counts,
-        args.output_expected_counts_fmt,
-        &dataset.transcript_names,
-        &ecounts,
+        &params.foreground_counts_mean.estimates,
     );
-    write_counts(
+
+    write_sparse_mtx(
         &args.output_path,
-        &args.output_maxpost_counts,
-        args.output_maxpost_counts_fmt,
-        &dataset.transcript_names,
-        &counts,
+        &args.output_expected_counts,
+        &params.foreground_counts,
     );
-    write_rates(
-        &args.output_path,
-        &args.output_rates,
-        args.output_rates_fmt,
-        &params,
-        &dataset.transcript_names,
-    );
-    // write_component_params(
-    //     &args.output_component_params,
-    //     args.output_component_params_fmt,
-    //     &params,
-    //     &dataset.transcript_names,
-    // );
+
+    let cell_centroids = voxels.cell_centroids(&params);
+    let original_cell_ids = dataset
+        .original_cell_ids
+        .iter()
+        .zip(voxels.used_cell_mask.iter())
+        .filter_map(|(id, &mask)| if mask { Some(id.clone()) } else { None })
+        .collect::<Vec<_>>();
+
     write_cell_metadata(
         &args.output_path,
         &args.output_cell_metadata,
         args.output_cell_metadata_fmt,
         &params,
         &cell_centroids,
-        &cell_assignments,
-        &dataset.original_cell_ids,
-        &dataset.fovs,
+        &original_cell_ids,
         &dataset.fov_names,
     );
+
+    unimplemented!("proseg3: output not yet implemented.");
+
+    /*
+    let cell_centroids = sampler.borrow().cell_centroids();
+
     write_transcript_metadata(
         &args.output_path,
         &args.output_transcript_metadata,
