@@ -168,5 +168,41 @@ impl CountQuantileEstimator {
     }
 }
 
+pub struct CountMeanEstimator {
+    pub estimates: SparseMat<f32, u32>,
+    t: usize, // iteration number
+}
+
+impl CountMeanEstimator {
+    pub fn new(m: usize, n: usize, shardsize: usize) -> Self {
+        CountMeanEstimator {
+            estimates: SparseMat::zeros(m, n as u32, shardsize),
+            t: 0,
+        }
+    }
+
+    pub fn update<T>(&mut self, counts: &SparseMat<T, u32>)
+    where
+        T: AsPrimitive<f32> + Sync + Send + Zero,
+    {
+        self.t += 1;
+        let t = self.t as f32;
+        self.estimates
+            .par_rows()
+            .zip(counts.par_rows())
+            .for_each(|(estimates_c, counts_c)| {
+                let counts_c_lock = counts_c.read();
+                let mut estimates_c_lock = estimates_c.write();
+                for (gene, count_cg) in counts_c_lock.iter_nonzeros() {
+                    estimates_c_lock.update(
+                        gene,
+                        || 0.0,
+                        |est| *est += (count_cg.as_() - *est) / self.t as f32,
+                    );
+                }
+            });
+    }
+}
+
 // TODO:
 // Need a similar object for tracking mean estimates (or should we use posterior medians???)

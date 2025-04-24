@@ -52,6 +52,9 @@ impl ParamSampler {
             params
                 .foreground_counts_upper
                 .update(&params.foreground_counts);
+            params
+                .foreground_counts_mean
+                .update(&params.foreground_counts);
         }
 
         params.t += 1;
