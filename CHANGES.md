@@ -1,4 +1,9 @@
 
+# 2.0.4
+  - Fix potential empty cells when large number of voxel layers are used.
+  - Remove `--double-z-layers` which was always true, and add `--no-z-layer-doubling` to turn it off.
+
+
 # 2.0.3
   - Fix crash on data with fewer than 300 genes.
   - Output corresponding original cell ids to the cell metadata table.

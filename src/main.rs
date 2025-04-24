@@ -164,8 +164,8 @@ struct Args {
     schedule: Vec<usize>,
 
     /// Whether to double the z-layers when doubling resolution
-    #[arg(long, default_value_t = true)]
-    double_z_layers: bool,
+    #[arg(long, default_value_t = false)]
+    no_z_layer_doubling: bool,
 
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
@@ -608,6 +608,7 @@ fn main() {
 
     let mut ncells = dataset.nucleus_population.len();
     filter_cellfree_transcripts(&mut dataset, ncells, args.max_transcript_nucleus_distance);
+    normalize_z_coordinates(&mut dataset);
 
     // keep removing cells until we can initialize with every cell having at least one voxel
     loop {
@@ -661,7 +662,6 @@ fn main() {
         }
     }
 
-    normalize_z_coordinates(&mut dataset);
     let zmin = dataset
         .transcripts
         .iter()
@@ -851,8 +851,9 @@ fn main() {
                 sampler.borrow_mut().check_consistency(&priors, &mut params);
             }
 
-            sampler
-                .replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
+            sampler.replace_with(|sampler| {
+                sampler.double_resolution(&params, !args.no_z_layer_doubling)
+            });
             run_hexbin_sampler(
                 &mut prog,
                 sampler.get_mut(),
@@ -874,7 +875,8 @@ fn main() {
         if args.check_consistency {
             sampler.borrow_mut().check_consistency(&priors, &mut params);
         }
-        sampler.replace_with(|sampler| sampler.double_resolution(&params, args.double_z_layers));
+        sampler
+            .replace_with(|sampler| sampler.double_resolution(&params, !args.no_z_layer_doubling));
     }
 
     run_hexbin_sampler(
