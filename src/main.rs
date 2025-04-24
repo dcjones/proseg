@@ -130,8 +130,8 @@ struct Args {
     ignore_z_coord: bool,
 
     /// Filter out transcripts with quality values below this threshold
-    #[arg(long, default_value_t = 0.0_f32)]
-    min_qv: f32,
+    #[arg(long, default_value = None)]
+    min_qv: Option<f32>,
 
     /// Target number of cells per chunk in the parallelization scheme
     /// Smaller number enabled more parallelization, but too small a number
@@ -388,6 +388,7 @@ fn set_xenium_presets(args: &mut Args) {
     args.cell_id_unassigned
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
+    args.min_qv.get_or_insert(20.0);
     args.excluded_genes.get_or_insert(String::from(
         "^(Deprecated|NegControl|Unassigned|Intergenic)",
     ));
@@ -581,7 +582,7 @@ fn main() {
         &expect_arg(args.x_column, "x-column"),
         &expect_arg(args.y_column, "y-column"),
         &expect_arg(args.z_column, "z-column"),
-        args.min_qv,
+        args.min_qv.unwrap_or(0.0),
         args.ignore_z_coord,
         args.coordinate_scale.unwrap_or(1.0),
     );
