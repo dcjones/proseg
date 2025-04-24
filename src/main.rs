@@ -12,7 +12,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::warn;
 use rayon::current_num_threads;
 use regex::Regex;
-use sampler::onlinestats::CountQuantileEstimator;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcripts::read_transcripts_csv;
 use sampler::voxelcheckerboard::VoxelCheckerboard;
