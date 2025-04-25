@@ -1,6 +1,6 @@
-use super::voxelsampler::{Voxel, VoxelLayout};
-use std::collections::{HashMap, HashSet};
+use super::voxelcheckerboard::Voxel;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::collections::{HashMap, HashSet};
 
 use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::BooleanOps;
@@ -142,7 +142,6 @@ fn simplify_polygon(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     simplified_polygon
 }
 
-
 fn remove_polygon_loops(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     // basically just do a traversal of the polygon, keeping track of
     // when we visit each node, and excise any loops.
@@ -151,13 +150,12 @@ fn remove_polygon_loops(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     for (k, p) in polygon.iter().enumerate() {
         if k == polygon.len() - 1 {
             loopless_polygon.push(*p);
-
         } else {
             match visited.entry(*p) {
                 Occupied(entry) => {
                     // Erase the loop
                     loopless_polygon.truncate((entry.get() + 1) as usize);
-                },
+                }
                 Vacant(entry) => {
                     entry.insert(loopless_polygon.len() as u32);
                     loopless_polygon.push(*p);
@@ -169,8 +167,6 @@ fn remove_polygon_loops(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
     return loopless_polygon;
 }
 
-
-
 impl PolygonBuilder {
     pub fn new() -> Self {
         PolygonBuilder {
@@ -181,7 +177,7 @@ impl PolygonBuilder {
 
     pub fn cell_voxels_to_polygons(
         &mut self,
-        layout: &VoxelLayout,
+        voxel_corner_to_world_pos: impl Fn(Voxel) -> (f32, f32, f32),
         voxels: &HashSet<Voxel>,
     ) -> Vec<(i32, MultiPolygon<f32>)> {
         // if we store edges in in μm, we run the risk of failing line up points
@@ -193,14 +189,15 @@ impl PolygonBuilder {
         let mut kmin = i32::MAX;
         let mut kmax = i32::MIN;
         for voxel in voxels {
-            kmin = kmin.min(voxel.k);
-            kmax = kmax.max(voxel.k);
+            let k = voxel.k();
+            kmin = kmin.min(k);
+            kmax = kmax.max(k);
 
             for neighbor in voxel.von_neumann_neighborhood_xy() {
-                if !voxels.contains(&neighbor) {
+                if !neighbor.is_oob() && !voxels.contains(&neighbor) {
                     let edge = voxel.edge_xy(&neighbor);
-                    self.edges.push((voxel.k, edge.0, edge.1));
-                    self.edges.push((voxel.k, edge.1, edge.0));
+                    self.edges.push((k, edge.0, edge.1));
+                    self.edges.push((k, edge.1, edge.0));
                 }
             }
         }
@@ -330,8 +327,7 @@ impl PolygonBuilder {
                     let polygon: Vec<(f32, f32)> = polygon
                         .iter()
                         .map(|v| {
-                            let (x, y, _z) =
-                                layout.voxel_corner_to_world_pos(Voxel::new(v.0, v.1, 0));
+                            let (x, y, _z) = voxel_corner_to_world_pos(Voxel::new(v.0, v.1, 0));
                             (x, y)
                         })
                         .collect();

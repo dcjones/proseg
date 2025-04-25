@@ -2,6 +2,7 @@ mod math;
 pub mod onlinestats;
 pub mod paramsampler;
 mod polyagamma;
+mod polygons;
 pub mod runvec;
 mod sampleset;
 mod shardedvec;
