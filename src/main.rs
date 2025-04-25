@@ -790,28 +790,28 @@ fn main() {
         &params.θ,
     );
 
-    // if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
-    //     let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
-    //     write_cell_multipolygons(
-    //         &args.output_path,
-    //         &args.output_union_cell_polygons,
-    //         cell_flattened_polygons,
-    //     );
-    //     write_cell_layered_multipolygons(
-    //         &args.output_path,
-    //         &args.output_cell_polygon_layers,
-    //         cell_polygons,
-    //     );
-    // }
+    if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
+        let (cell_polygons, cell_flattened_polygons) = voxels.cell_polygons();
+        write_cell_multipolygons(
+            &args.output_path,
+            &args.output_union_cell_polygons,
+            cell_flattened_polygons,
+        );
+        write_cell_layered_multipolygons(
+            &args.output_path,
+            &args.output_cell_polygon_layers,
+            cell_polygons,
+        );
+    }
 
-    // if args.output_cell_polygons.is_some() {
-    //     let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
-    //     write_cell_multipolygons(
-    //         &args.output_path,
-    //         &args.output_cell_polygons,
-    //         consensus_cell_polygons,
-    //     );
-    // }
+    if args.output_cell_polygons.is_some() {
+        let consensus_cell_polygons = voxels.consensus_cell_polygons();
+        write_cell_multipolygons(
+            &args.output_path,
+            &args.output_cell_polygons,
+            consensus_cell_polygons,
+        );
+    }
 }
 
 fn run_sampler(
