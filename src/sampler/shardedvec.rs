@@ -21,7 +21,7 @@ where
     T: AddAssign + SubAssign + Clone + Zero + Clone + Copy,
 {
     pub fn zeros(n: usize, shardsize: usize) -> Self {
-        let num_shards = (n + shardsize - 1) / shardsize;
+        let num_shards = n.div_ceil(shardsize);
         let shards = (0..num_shards)
             .map(|_| Arc::new(RwLock::new(vec![T::zero(); shardsize])))
             .collect();
@@ -46,7 +46,7 @@ where
         let (i, j) = divrem(index, self.shardsize);
         let shard_index = i;
         let shard = self.shards[shard_index].read().unwrap();
-        shard[j].clone()
+        shard[j]
     }
 
     pub fn modify(&self, index: usize, f: impl FnOnce(&mut T)) {
@@ -150,7 +150,7 @@ pub struct ShardedVecIterator<'a, T> {
     index: usize,
 }
 
-impl<'a, T> Iterator for ShardedVecIterator<'a, T>
+impl<T> Iterator for ShardedVecIterator<'_, T>
 where
     T: AddAssign + SubAssign + Clone + Copy + Zero,
 {

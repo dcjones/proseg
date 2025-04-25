@@ -60,6 +60,7 @@ impl P2Values {
         }
 
         // adjust marker heights
+        #[allow(clippy::needless_range_loop)]
         for i in 1..4 {
             let delta = dn[i] - self.n[i];
             if (delta >= 1.0 && self.n[i + 1] - self.n[i] > 1.0)
@@ -80,11 +81,9 @@ impl P2Values {
                 } else {
                     // linear prediction
                     if delta.is_positive() {
-                        self.h[i] +=
-                            (self.h[i + 1] - self.h[i]) / (self.n[i + 1] - self.n[i]) as f32;
+                        self.h[i] += (self.h[i + 1] - self.h[i]) / (self.n[i + 1] - self.n[i]);
                     } else {
-                        self.h[i] -=
-                            (self.h[i] - self.h[i - 1]) / (self.n[i] - self.n[i - 1]) as f32;
+                        self.h[i] -= (self.h[i] - self.h[i - 1]) / (self.n[i] - self.n[i - 1]);
                     }
                 }
 
@@ -153,11 +152,9 @@ impl CountQuantileEstimator {
 
                 // update estimates where there is no entry
                 for (gene, count_cg) in counts_c_lock.iter_nonzeros() {
-                    estimates_c_lock.update(
-                        gene,
-                        || P2Values::new(),
-                        |est| est.update(self.t, &self.dn, count_cg.as_()),
-                    );
+                    estimates_c_lock.update(gene, P2Values::new, |est| {
+                        est.update(self.t, &self.dn, count_cg.as_())
+                    });
                 }
             });
 

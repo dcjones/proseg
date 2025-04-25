@@ -81,7 +81,7 @@ where
         T: 'a,
     {
         for value in other.into_iter() {
-            self.insert(value.clone());
+            self.insert(*value);
         }
     }
 

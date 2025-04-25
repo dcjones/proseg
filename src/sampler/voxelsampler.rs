@@ -80,7 +80,7 @@ impl VoxelSampler {
             .for_each(|quad| {
                 let mut quad = quad.write().unwrap();
 
-                let proposal = self.generate_proposal(&*quad);
+                let proposal = self.generate_proposal(&quad);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
                     // In that case we should just regenerate, but we have to be careful we
@@ -89,9 +89,9 @@ impl VoxelSampler {
                 }
                 let proposal = proposal.unwrap();
 
-                let logu = self.evaluate_proposal(&*quad, priors, params, proposal);
+                let logu = self.evaluate_proposal(&quad, priors, params, proposal);
                 if rng().random::<f32>().ln() < logu {
-                    self.accept_proposal(voxels, &mut *quad, params, proposal);
+                    self.accept_proposal(voxels, &mut quad, params, proposal);
                 }
             });
 
@@ -116,7 +116,7 @@ impl VoxelSampler {
         }
 
         let mut proposed_cell = quad.get_voxel_cell(source);
-        let current_state = quad.get_voxel_state(target).map(|&state| state);
+        let current_state = quad.get_voxel_state(target).copied();
         let current_cell = current_state
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
@@ -418,7 +418,7 @@ impl VoxelSampler {
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad.voxel_counts(voxel) {
-                counts_row_write.sub(CountMatRowKey::new(key.gene as u32, k as u32), count);
+                counts_row_write.sub(CountMatRowKey::new(key.gene, k as u32), count);
             }
         } else {
             let background_counts_k = &params.unassigned_counts[k as usize];
@@ -444,7 +444,7 @@ impl VoxelSampler {
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad.voxel_counts(voxel) {
-                counts_row_write.add(CountMatRowKey::new(key.gene as u32, k as u32), count);
+                counts_row_write.add(CountMatRowKey::new(key.gene, k as u32), count);
             }
         } else {
             let background_counts_k = &params.unassigned_counts[k as usize];
