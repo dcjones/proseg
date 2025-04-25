@@ -801,6 +801,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sampler(
     param_sampler: &ParamSampler,
     voxel_sampler: &mut VoxelSampler,
@@ -814,10 +815,10 @@ fn run_sampler(
     prog: &ProgressBar,
 ) {
     // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
-    param_sampler.sample(&priors, params, burnin, true, false);
+    param_sampler.sample(priors, params, burnin, true, false);
 
     for _ in 0..morphology_steps_per_iter {
-        voxel_sampler.sample(voxels, &priors, &params);
+        voxel_sampler.sample(voxels, priors, params);
     }
     prog.inc(1);
 

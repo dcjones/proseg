@@ -173,7 +173,7 @@ pub fn write_sparse_mtx<T>(
         for (g, est) in x_c.read().iter_nonzeros() {
             if est != T::zero() {
                 // TODO: Blah.
-                write!(&mut encoder, "{} {} {:.2}\n", c + 1, g + 1, est).unwrap();
+                writeln!(&mut encoder, "{} {} {:.2}", c + 1, g + 1, est).unwrap();
             }
         }
     }
@@ -268,7 +268,7 @@ pub fn write_metagene_loadings(
         columns.push(Arc::new(
             transcript_names
                 .iter()
-                .map(|gene| Some(gene))
+                .map(Some)
                 .collect::<arrow::array::StringArray>(),
         ));
 
@@ -368,7 +368,7 @@ pub fn write_cell_metadata(
     output_cell_metadata_fmt: OutputFormat,
     params: &ModelParams,
     cell_centroids: &Array2<f32>,
-    original_cell_ids: &Vec<String>,
+    original_cell_ids: &[String],
     // fovs: &RunVec<usize, u32>,
     // fov_names: &[String],
 ) {

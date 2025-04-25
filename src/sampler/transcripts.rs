@@ -14,7 +14,7 @@ use std::fs::File;
 use std::str;
 
 pub type CellIndex = u32;
-pub const BACKGROUND_CELL: CellIndex = std::u32::MAX;
+pub const BACKGROUND_CELL: CellIndex = u32::MAX;
 
 // Should probably rearrange this...
 use super::super::output::infer_format_from_filename;
@@ -51,7 +51,7 @@ impl TranscriptDataset {
         // Current heuristic is just to select the highest expression genes.
         let mut gene_counts = Array1::<u32>::zeros(self.gene_names.len());
         for transcript_run in self.transcripts.iter_runs() {
-            gene_counts[transcript_run.value.gene as usize] += transcript_run.len as u32;
+            gene_counts[transcript_run.value.gene as usize] += transcript_run.len;
         }
 
         let mut ord = (0..self.gene_names.len()).collect::<Vec<_>>();
@@ -146,12 +146,12 @@ impl TranscriptDataset {
     }
 
     pub fn coordinate_span(&self) -> (f32, f32, f32, f32, f32, f32) {
-        let mut min_x = std::f32::MAX;
-        let mut max_x = std::f32::MIN;
-        let mut min_y = std::f32::MAX;
-        let mut max_y = std::f32::MIN;
-        let mut min_z = std::f32::MAX;
-        let mut max_z = std::f32::MIN;
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
 
         for run in self.transcripts.iter_runs() {
             let t = &run.value;
@@ -558,13 +558,13 @@ fn read_xenium_transcripts_parquet(
     ignore_z_column: bool,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
-    let input_file = File::open(&filename).expect(&format!("Unable to open '{}'.", &filename));
+    let input_file =
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
     let schema = builder.schema().as_ref().clone();
-    let rdr = builder.build().expect(&format!(
-        "Unable to read parquet data from frobm {}",
-        filename
-    ));
+    let rdr = builder
+        .build()
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {}", filename));
 
     // Xenium parquet files can use i32 or i64 indexes in their string arrays,
     // so we have to dynamically dispatch here.

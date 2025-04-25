@@ -9,6 +9,8 @@ use std::ops::Bound::{Excluded, Included};
 use std::ops::{Add, AddAssign, SubAssign};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+type SparseMatShard<T, J> = RwLock<BTreeMap<(u32, J), T>>;
+
 // This is a very specific sparse matirx implementation with the purpose
 // of storing cell-by-gene count matrices that get updated during sampling.
 // Towards that end we have the following goals:
@@ -18,7 +20,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 //   spatially correlated.
 // - Efficient (read-only) iteration across rows: this is needed in various places in the sampler.
 pub struct SparseMat<T, J> {
-    shards: Vec<Arc<RwLock<BTreeMap<(u32, J), T>>>>,
+    shards: Vec<Arc<SparseMatShard<T, J>>>,
     shardsize: usize,
     pub m: usize,
     pub n: J,
@@ -30,7 +32,7 @@ where
     J: Copy,
 {
     pub fn zeros(m: usize, n: J, shardsize: usize) -> Self {
-        let nshards = (m + shardsize - 1) / shardsize;
+        let nshards = m.div_ceil(shardsize);
         let mut shards = Vec::with_capacity(nshards);
         for _ in 0..nshards {
             shards.push(Arc::new(RwLock::new(BTreeMap::new())));
@@ -126,7 +128,7 @@ pub struct SparseMatRowsIter<'a, T, J> {
     mat: &'a SparseMat<T, J>,
 }
 
-impl<'a, T, J> Iterator for SparseMatRowsIter<'a, T, J>
+impl<T, J> Iterator for SparseMatRowsIter<'_, T, J>
 where
     J: Copy,
 {
@@ -148,7 +150,7 @@ pub struct SparseMatRowsParIter<'a, T, J> {
 }
 
 // Parallel iterator implementations are just trivial delegations.
-impl<'a, T, J> ParallelIterator for SparseMatRowsParIter<'a, T, J>
+impl<T, J> ParallelIterator for SparseMatRowsParIter<'_, T, J>
 where
     T: Send + Sync,
     J: Send + Sync + Copy,
@@ -166,7 +168,7 @@ where
     }
 }
 
-impl<'a, T, J> IndexedParallelIterator for SparseMatRowsParIter<'a, T, J>
+impl<T, J> IndexedParallelIterator for SparseMatRowsParIter<'_, T, J>
 where
     T: Send + Sync,
     J: Send + Sync + Copy,
@@ -259,7 +261,7 @@ where
     }
 }
 
-impl<'a, T, J> SparseRowReadLock<'a, T, J>
+impl<T, J> SparseRowReadLock<'_, T, J>
 where
     T: Clone + Copy + Zero,
     J: Clone + Copy + Ord + Zero + Debug,
@@ -268,7 +270,7 @@ where
         assert!(j < self.n);
         self.shard
             .get(&(self.i as u32, j))
-            .map(|&v| v)
+            .copied()
             .unwrap_or(T::zero())
     }
 }
@@ -292,7 +294,7 @@ pub struct SparseRowWriteLock<'a, T, J> {
     pub i: usize,
 }
 
-impl<'a, T, J> SparseRowWriteLock<'a, T, J>
+impl<T, J> SparseRowWriteLock<'_, T, J>
 where
     T: AddAssign + SubAssign + Zero + Eq,
     J: Ord + Copy + Debug + Zero,
@@ -317,7 +319,7 @@ where
     }
 }
 
-impl<'a, T, J> SparseRowWriteLock<'a, T, J>
+impl<T, J> SparseRowWriteLock<'_, T, J>
 where
     J: Ord + Copy + Debug + Zero,
 {
@@ -333,7 +335,7 @@ where
     }
 }
 
-impl<'a, T, J> SparseRowWriteLock<'a, T, J>
+impl<T, J> SparseRowWriteLock<'_, T, J>
 where
     J: Ord + Copy + Debug + Zero,
 {
@@ -376,7 +378,7 @@ where
     }
 }
 
-impl<'a, T, J> Iterator for SparseRowNonzeroIterator<'a, T, J>
+impl<T, J> Iterator for SparseRowNonzeroIterator<'_, T, J>
 where
     T: Clone + Copy,
     J: Clone + Copy,
@@ -427,7 +429,7 @@ where
     }
 }
 
-impl<'a, T, J> Iterator for SparseRowIterator<'a, T, J>
+impl<T, J> Iterator for SparseRowIterator<'_, T, J>
 where
     T: Clone + Copy + Zero,
     J: Clone + Copy + Eq + AddAssign + Ord + Increment,
@@ -438,13 +440,15 @@ where
         if self.j == self.n {
             None
         } else if let Some((j_buf, item_buf)) = self.buf {
-            let value = if self.j < j_buf {
-                T::zero()
-            } else if self.j == j_buf {
-                self.buf = self.iter.next().map(|(&(_i, j), &v)| (j, v));
-                item_buf
-            } else {
-                panic!("Broken iterator assumptions.");
+            let value = match self.j.cmp(&j_buf) {
+                std::cmp::Ordering::Less => T::zero(),
+                std::cmp::Ordering::Equal => {
+                    self.buf = self.iter.next().map(|(&(_i, j), &v)| (j, v));
+                    item_buf
+                }
+                std::cmp::Ordering::Greater => {
+                    panic!("Broken iterator assumptions.");
+                }
             };
 
             self.j = self.j.inc(self.n);
