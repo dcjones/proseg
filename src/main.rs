@@ -3,7 +3,6 @@
 use clap::Parser;
 
 mod output;
-mod polygon_area;
 mod sampler;
 mod schemas;
 
@@ -293,10 +292,6 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_expected_counts_fmt: OutputFormat,
 
-    /// Output cell convex hulls
-    #[arg(long, default_value = None)]
-    output_cell_hulls: Option<String>,
-
     /// Output cell metadata
     #[arg(long, default_value = "cell-metadata.csv.gz")]
     output_cell_metadata: Option<String>,
@@ -359,10 +354,6 @@ struct Args {
     /// How frequently to output cell polygons during monitoring
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
-
-    /// Use connectivity checks to prevent cells from having any disconnected voxels
-    #[arg(long, default_value_t = true)]
-    enforce_connectivity: bool,
 
     #[arg(long, default_value_t = 300)]
     nunfactored: usize,
@@ -632,8 +623,7 @@ fn main() {
 
         use_cell_scales: args.use_scaled_cells,
 
-        min_cell_volume: 1e-6 * μ_vol0,
-
+        // min_cell_volume: 1e-6 * μ_vol0,
         μ_μ_volume: (μ_vol0).ln(),
         σ_μ_volume: 3.0_f32,
         α_σ_volume: 0.1,
@@ -665,27 +655,24 @@ fn main() {
 
         σ_iiq: args.cell_compactness,
 
-        perimeter_eta: 5.3,
-        perimeter_bound: args.perimeter_bound,
+        // perimeter_eta: 5.3,
+        // perimeter_bound: args.perimeter_bound,
 
-        nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
-        nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
+        // nuclear_reassignment_log_prob: args.nuclear_reassignment_prob.ln(),
+        // nuclear_reassignment_1mlog_prob: (1.0 - args.nuclear_reassignment_prob).ln(),
 
-        prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
-        prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
+        // prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
+        // prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
 
-        use_diffusion_model: !args.no_diffusion,
-        σ_diffusion_proposal: args.diffusion_proposal_sigma,
-        p_diffusion: args.diffusion_probability,
-        σ_diffusion_near: args.diffusion_sigma_near,
-        σ_diffusion_far: args.diffusion_sigma_far,
+        // use_diffusion_model: !args.no_diffusion,
+        // σ_diffusion_proposal: args.diffusion_proposal_sigma,
+        // p_diffusion: args.diffusion_probability,
+        // σ_diffusion_near: args.diffusion_sigma_near,
+        // σ_diffusion_far: args.diffusion_sigma_far,
 
-        σ_z_diffusion_proposal: 0.2 * zspan,
-        σ_z_diffusion: 0.2 * zspan,
-
+        // σ_z_diffusion_proposal: 0.2 * zspan,
+        // σ_z_diffusion: 0.2 * zspan,
         τv: 10.0,
-
-        enforce_connectivity: args.enforce_connectivity,
     };
 
     let full_volume = dataset.estimate_full_volume();
@@ -762,7 +749,7 @@ fn main() {
         &params,
         &cell_centroids,
         &original_cell_ids,
-        &dataset.fov_names,
+        // &dataset.fov_names,
     );
 
     write_gene_metadata(
