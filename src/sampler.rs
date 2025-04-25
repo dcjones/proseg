@@ -459,8 +459,8 @@ impl ModelParams {
                 let mut accum_c = 0.0;
 
                 for (g, x_cg) in x_c.iter_nonzeros() {
-                    let λ_cg = self.λ(c, g as usize);
                     if x_cg > 0 {
+                        let λ_cg = self.λ(c, g as usize);
                         accum_c += (x_cg as f32) * λ_cg.ln();
                     }
                 }
@@ -471,7 +471,7 @@ impl ModelParams {
         ll += self
             .background_counts
             .par_iter()
-            .zip(self.λ_bg.axis_iter(Axis(0)))
+            .zip(self.λ_bg.axis_iter(Axis(1)))
             .map(|(x_l, λ_l)| {
                 let mut accum_l = 0.0;
                 for (x_lg, &λ_lg) in x_l.iter().zip(λ_l) {
