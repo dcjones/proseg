@@ -1,22 +1,28 @@
 // Data structures for maintaining a set of voxels each with an associated
 // sparse transcript vector.
 
+use super::polygons::{union_all_into_multipolygon, PolygonBuilder};
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
 use super::sparsemat::SparseMat;
 use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
 use super::{CountMatRowKey, ModelParams};
 
-use itertools::Itertools;
+use geo::geometry::{MultiPolygon, Polygon};
 use log::trace;
 use ndarray::{Array1, Array2};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound::Included;
 use std::ops::DerefMut;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
+use thread_local::ThreadLocal;
+
+pub type CellPolygon = MultiPolygon<f32>;
+pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
 // Store a voxel offset in compact form
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
@@ -87,7 +93,7 @@ const OOB_VOXEL: u64 = 0xffffffffffffffff;
 
 // TODO: we could just u32 for coordinates.
 impl Voxel {
-    fn new(i: i32, j: i32, k: i32) -> Voxel {
+    pub fn new(i: i32, j: i32, k: i32) -> Voxel {
         if i < 0
             || (i as u64) >= (1 << 24)
             || j < 0
@@ -172,6 +178,12 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
+    pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
+        let [i, j, k] = self.coords();
+        [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
+            .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
+
     pub fn moore_neighborhood(&self) -> [Voxel; 26] {
         let [i, j, k] = self.coords();
         [
@@ -206,6 +218,28 @@ impl Voxel {
             (1, -1, 1),
         ]
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
+
+    // Gives the line segment defining the edge between two voxels bordering on
+    // the xy plane. (Panics if the voxels don't border.)
+    pub fn edge_xy(&self, other: &Voxel) -> ((i32, i32), (i32, i32)) {
+        let [i_a, j_a, k_a] = self.coords();
+        let [i_b, j_b, k_b] = other.coords();
+
+        if k_a != k_b {
+            dbg!(((i_a, j_a, k_a), (j_b, j_b, k_b)));
+        }
+
+        assert!(k_a == k_b);
+        assert!((i_a - i_b).abs() + (j_a - j_b).abs() == 1);
+
+        let i0 = i_a.max(i_b);
+        let j0 = j_a.max(j_b);
+
+        let i1 = i0 + (j_b - j_a).abs();
+        let j1 = j0 + (i_b - i_a).abs();
+
+        ((i0, j0), (i1, j1))
     }
 }
 
@@ -448,6 +482,9 @@ pub struct VoxelCheckerboard {
     // number of genes
     pub ngenes: usize,
 
+    // number of voxel z layers
+    nzlayers: usize,
+
     // maximum z layer
     pub kmax: i32,
 
@@ -517,6 +554,7 @@ impl VoxelCheckerboard {
             kmax: (nzlayers - 1) as i32,
             ncells: 0,
             ngenes: dataset.ngenes(),
+            nzlayers,
             voxel_volume,
             xmin,
             ymin,
@@ -876,5 +914,155 @@ impl VoxelCheckerboard {
             });
 
         centroids
+    }
+
+    pub fn cell_polygons(&self) -> (Vec<CellPolygonLayers>, Vec<CellPolygon>) {
+        let mut cell_voxels = vec![HashSet::new(); self.ncells];
+        self.quads.values().for_each(|quad| {
+            quad.read()
+                .unwrap()
+                .states
+                .iter()
+                .for_each(|(&voxel, &state)| {
+                    if state.cell != BACKGROUND_CELL {
+                        cell_voxels[state.cell as usize].insert(voxel);
+                    }
+                });
+        });
+
+        let voxel_corner_to_world_pos = |voxel: Voxel| -> (f32, f32, f32) {
+            let [i, j, k] = voxel.coords();
+            (
+                self.xmin + (i as f32) * self.voxelsize,
+                self.ymin + (j as f32) * self.voxelsize,
+                self.zmin + (k as f32) * self.voxelsize_z,
+            )
+        };
+
+        let polygon_builder = ThreadLocal::new();
+        let cell_polygons: Vec<Vec<(i32, MultiPolygon<f32>)>> = cell_voxels
+            .par_iter()
+            .map(|voxels| {
+                let mut polygon_builder = polygon_builder
+                    .get_or(|| RefCell::new(PolygonBuilder::new()))
+                    .borrow_mut();
+
+                polygon_builder.cell_voxels_to_polygons(voxel_corner_to_world_pos, voxels)
+            })
+            .collect();
+
+        let cell_flattened_polygons: Vec<_> = cell_polygons
+            .par_iter()
+            .map(|polys| {
+                let mut flat_polys: Vec<Polygon<f32>> = Vec::new();
+                for (_k, poly) in polys {
+                    flat_polys.extend(poly.iter().cloned());
+                }
+                union_all_into_multipolygon(flat_polys, true)
+            })
+            .collect();
+
+        (cell_polygons, cell_flattened_polygons)
+    }
+
+    pub fn consensus_cell_polygons(&self) -> Vec<CellPolygon> {
+        let mut voxel_votes = HashMap::new();
+        let mut top_voxel: HashMap<CellIndex, (Voxel, u32)> = HashMap::new();
+        self.quads.values().for_each(|quad| {
+            let quad_lock = quad.read().unwrap();
+            quad_lock.states.iter().for_each(|(&voxel, &state)| {
+                let cell = state.cell;
+                if cell == BACKGROUND_CELL || !quad_lock.voxel_in_bounds(voxel) {
+                    return;
+                }
+                let [i, j, _k] = voxel.coords();
+
+                let transcript_count = quad_lock
+                    .voxel_counts(voxel)
+                    .fold(0, |accum, (_key, &count)| accum + count);
+
+                voxel_votes
+                    .entry((i, j))
+                    .or_insert_with(|| Vec::with_capacity(self.nzlayers))
+                    .push((cell, transcript_count));
+
+                top_voxel
+                    .entry(cell)
+                    .and_modify(|e| {
+                        if transcript_count > e.1 {
+                            *e = (Voxel::new(i, j, 0), transcript_count)
+                        }
+                    })
+                    .or_insert((Voxel::new(i, j, 0), transcript_count));
+            })
+        });
+
+        let mut cell_voxels = vec![HashSet::new(); self.ncells];
+        for ((voxel_i, voxel_j), mut votes) in voxel_votes {
+            votes.sort();
+
+            let mut winner = BACKGROUND_CELL;
+            let mut winner_count = 0;
+
+            let mut i = 0;
+            while i < votes.len() {
+                let mut count = 0;
+                let mut j = i;
+                while j < votes.len() && votes[j].0 == votes[i].0 {
+                    count += votes[j].1;
+                    j += 1;
+                }
+
+                if count > winner_count || winner == BACKGROUND_CELL {
+                    winner = votes[i].0;
+                    winner_count = count;
+                }
+                i = j;
+            }
+
+            assert!(winner != BACKGROUND_CELL);
+            cell_voxels[winner as usize].insert(Voxel::new(voxel_i, voxel_j, 0));
+        }
+
+        // Issues arise with some downstream tools (e.g. xeniumranger) if there
+        // are empty cell polygons, which can happen with this consensus approach.
+        // Here we try to fix those cases by including at least on voxel.
+        for (cell, voxels) in cell_voxels.iter_mut().enumerate() {
+            if voxels.is_empty() {
+                let cell = cell as u32;
+                voxels.insert(top_voxel[&cell].0);
+            }
+        }
+
+        let voxel_corner_to_world_pos = |voxel: Voxel| -> (f32, f32, f32) {
+            let [i, j, k] = voxel.coords();
+            (
+                self.xmin + (i as f32) * self.voxelsize,
+                self.ymin + (j as f32) * self.voxelsize,
+                self.zmin + (k as f32) * self.voxelsize_z,
+            )
+        };
+
+        let polygon_builder = ThreadLocal::new();
+        let cell_polygons: Vec<CellPolygon> = cell_voxels
+            .par_iter()
+            .map(|voxels| {
+                let mut polygon_builder = polygon_builder
+                    .get_or(|| RefCell::new(PolygonBuilder::new()))
+                    .borrow_mut();
+
+                let polygons =
+                    polygon_builder.cell_voxels_to_polygons(voxel_corner_to_world_pos, voxels);
+                if polygons.is_empty() {
+                    CellPolygon::new(vec![])
+                } else {
+                    assert!(polygons.len() == 1);
+                    let (_k, polygon) = polygons.first().unwrap();
+                    polygon.clone()
+                }
+            })
+            .collect();
+
+        cell_polygons
     }
 }
