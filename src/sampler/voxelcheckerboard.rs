@@ -270,12 +270,10 @@ impl Ord for Voxel {
             } else {
                 self.j() < other.j()
             }
+        } else if less_msb(xi, xk) {
+            self.k() < other.k()
         } else {
-            if less_msb(xi, xk) {
-                self.k() < other.k()
-            } else {
-                self.i() < other.i()
-            }
+            self.i() < other.i()
         };
 
         if islt {
@@ -378,7 +376,7 @@ pub struct VoxelQuad {
 impl VoxelQuad {
     // Initialize empty voxel set
     fn new(kmax: i32, quadsize: usize, u: u32, v: u32) -> VoxelQuad {
-        return VoxelQuad {
+        VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
             mismatch_edges: SampleSet::new(),
@@ -386,7 +384,7 @@ impl VoxelQuad {
             quadsize,
             u,
             v,
-        };
+        }
     }
 
     pub fn get_voxel_state(&self, voxel: Voxel) -> Option<&VoxelState> {
@@ -588,11 +586,9 @@ impl VoxelCheckerboard {
                 vote_winner = cell;
                 vote_winner_count = count;
                 current_voxel = voxel;
-            } else {
-                if count > vote_winner_count {
-                    vote_winner = cell;
-                    vote_winner_count = count;
-                }
+            } else if count > vote_winner_count {
+                vote_winner = cell;
+                vote_winner_count = count;
             }
         }
         if !current_voxel.is_oob() {
@@ -639,11 +635,9 @@ impl VoxelCheckerboard {
                 vote_winner = cell;
                 vote_winner_count = count;
                 current_voxel = voxel;
-            } else {
-                if count > vote_winner_count {
-                    vote_winner = cell;
-                    vote_winner_count = count;
-                }
+            } else if count > vote_winner_count {
+                vote_winner = cell;
+                vote_winner_count = count;
             }
         }
         if !current_voxel.is_oob() {
@@ -743,7 +737,7 @@ impl VoxelCheckerboard {
                 for (voxel, state) in &quad.states {
                     let [i, j, _k] = voxel.coords();
                     if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
-                        neighbor_quad.states.insert(voxel.clone(), state.clone());
+                        neighbor_quad.states.insert(*voxel, *state);
                     }
                 }
             });
@@ -786,7 +780,7 @@ impl VoxelCheckerboard {
 
     pub fn for_each_quad_neighbor<F>(&self, u: u32, v: u32, f: F)
     where
-        F: Fn(&mut VoxelQuad) -> (),
+        F: Fn(&mut VoxelQuad),
     {
         let offsets = [
             (-1, -1),
@@ -857,7 +851,7 @@ impl VoxelCheckerboard {
     pub fn compute_counts(
         &self,
         counts: &mut SparseMat<u32, CountMatRowKey>,
-        unassigned_counts: &mut Vec<ShardedVec<u32>>,
+        unassigned_counts: &mut [ShardedVec<u32>],
     ) {
         counts.zero();
         self.quads.par_iter().for_each(|((_u, _v), quad)| {

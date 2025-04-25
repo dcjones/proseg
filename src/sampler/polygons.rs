@@ -19,11 +19,11 @@ use itertools::Itertools;
 //   To reduce the jagged edges:
 
 fn drop_interiors(multipoly: MultiPolygon<f32>) -> MultiPolygon<f32> {
-    return MultiPolygon::from_iter(
+    MultiPolygon::from_iter(
         multipoly
             .iter()
             .map(|poly| Polygon::new(poly.exterior().clone(), vec![])),
-    );
+    )
 }
 
 // taken from: https://github.com/a-b-street/abstreet
@@ -164,7 +164,7 @@ fn remove_polygon_loops(polygon: Vec<VoxelIJ>) -> Vec<VoxelIJ> {
         }
     }
 
-    return loopless_polygon;
+    loopless_polygon
 }
 
 impl PolygonBuilder {
