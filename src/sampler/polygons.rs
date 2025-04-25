@@ -2,8 +2,8 @@ use super::voxelcheckerboard::Voxel;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet};
 
-use geo::geometry::{LineString, MultiPolygon, Polygon};
 use geo::BooleanOps;
+use geo::geometry::{LineString, MultiPolygon, Polygon};
 // use geo::algorithm::simplify::Simplify;
 // use geo::SimplifyVw;
 use itertools::Itertools;
@@ -248,6 +248,10 @@ impl PolygonBuilder {
                         let adjacent_edges_visited = &mut visited_k[first..last];
 
                         // we have either an unambiguous path or we are at the corner of two voxels
+                        // TODO: Uh oh, this assertion occasionally fails.
+                        if !(adjacent_edges.len() == 2 || adjacent_edges.len() == 4) {
+                            dbg!((nvisited, nedges, adjacent_edges.len()));
+                        }
                         assert!(adjacent_edges.len() == 2 || adjacent_edges.len() == 4);
 
                         if adjacent_edges.len() == 2 {

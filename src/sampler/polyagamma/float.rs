@@ -1,11 +1,11 @@
 use libm::{erfc, erfcf, lgamma_r, lgammaf_r};
-use num::{traits::float, NumCast};
+use num::{NumCast, traits::float};
 use std::ops::{AddAssign, MulAssign, SubAssign};
 
 // Wrapping the num_traits Float trait to add more special functions.
 pub trait Float: float::Float + AddAssign + SubAssign + MulAssign {
     // fn erf(self) -> Self;
-    fn erfc(self) -> Self;
+    fn erfc_(self) -> Self;
     fn lgamma(self) -> Self;
     fn as_usize(self) -> usize {
         <usize as NumCast>::from(self).unwrap()
@@ -24,7 +24,7 @@ impl Float for f32 {
     //     erff(self)
     // }
 
-    fn erfc(self) -> Self {
+    fn erfc_(self) -> Self {
         erfcf(self)
     }
 
@@ -41,7 +41,7 @@ impl Float for f64 {
     //     erf(self)
     // }
 
-    fn erfc(self) -> Self {
+    fn erfc_(self) -> Self {
         erfc(self)
     }
 
