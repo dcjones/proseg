@@ -5,7 +5,7 @@ use arrow::error::ArrowError;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use geo::MultiPolygon;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::Array2;
 use num::traits::Zero;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
@@ -17,13 +17,12 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::sampler::onlinestats::CountMeanEstimator;
 use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
-use super::sampler::transcripts::BACKGROUND_CELL;
 use super::sampler::ModelParams;
-use crate::schemas::{transcript_metadata_schema, OutputFormat};
+// use crate::schemas::{transcript_metadata_schema, OutputFormat};
+use crate::schemas::OutputFormat;
 
 pub fn write_table(
     output_path: &Option<String>,
@@ -371,7 +370,7 @@ pub fn write_cell_metadata(
     cell_centroids: &Array2<f32>,
     original_cell_ids: &Vec<String>,
     // fovs: &RunVec<usize, u32>,
-    fov_names: &[String],
+    // fov_names: &[String],
 ) {
     let ncells = cell_centroids.shape()[0];
     // let nfovs = fov_names.len();

@@ -32,7 +32,7 @@ where
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub fn _len(&self) -> usize {
         self.n
     }
 
@@ -86,7 +86,7 @@ where
         shard[j] -= value;
     }
 
-    pub fn set(&self, index: usize, value: T) {
+    pub fn _set(&self, index: usize, value: T) {
         if index >= self.n {
             panic!(
                 "Index {} is out of bounds for ShardedVec of length {}",

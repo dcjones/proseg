@@ -15,25 +15,25 @@ pub fn odds_to_prob(q: f32) -> f32 {
     q / (1.0 + q)
 }
 
-pub fn relerr(a: f32, b: f32) -> f32 {
-    ((a - b) / a).abs()
-}
+// pub fn relerr(a: f32, b: f32) -> f32 {
+//     ((a - b) / a).abs()
+// }
 
 // // Partial Student-T log-pdf (just the terms that don't cancel out when doing MH sampling)
 // pub fn studentt_logpdf_part(σ2: f32, df: f32, x2: f32) -> f32 {
 //     return -((df + 1.0) / 2.0) * ((x2 / σ2) / df).ln_1p();
 // }
 
-const SQRT_TWO_PI: f32 = 2.506_628_3_f32;
+// const SQRT_TWO_PI: f32 = 2.506_628_3_f32;
 const LN_SQRT_TWO_PI: f32 = 0.918_938_5_f32;
 
-pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
-    (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
-}
+// pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
+//     (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
+// }
 
-pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
-    -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI
-}
+// pub fn normal_x2_logpdf(σ: f32, x2: f32) -> f32 {
+//     -x2 / (2.0 * σ.powi(2)) - σ.ln() - LN_SQRT_TWO_PI
+// }
 
 // pub fn gamma_logpdf(shape: f32, scale: f32, x: f32) -> f32 {
 //     return
@@ -73,10 +73,10 @@ pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     -LN_SQRT_TWO_PI - σ.ln() - ((x - μ) / σ).powi(2) / 2.0
 }
 
-pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
-    let xln = x.ln();
-    -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0
-}
+// pub fn lognormal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
+//     let xln = x.ln();
+//     -LN_SQRT_TWO_PI - σ.ln() - xln - ((xln - μ) / σ).powi(2) / 2.0
+// }
 
 pub fn randn(rng: &mut ThreadRng) -> f32 {
     return rng.sample::<f32, StandardNormal>(StandardNormal);

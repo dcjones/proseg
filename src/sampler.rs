@@ -15,16 +15,14 @@ use clustering::kmeans;
 use math::randn;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{s, Array1, Array2, Axis, Zip};
-use num::traits::{One, Zero};
+use num::traits::Zero;
 use onlinestats::{CountMeanEstimator, CountQuantileEstimator};
-use rand::{rng, Rng};
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use rand::rng;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use shardedvec::ShardedVec;
 use sparsemat::{Increment, SparseMat};
 use std::cell::RefCell;
-use std::ops::{Add, AddAssign, Mul, SubAssign};
+use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
 use voxelcheckerboard::VoxelCheckerboard;
 
@@ -40,7 +38,7 @@ pub struct ModelPriors {
 
     pub use_cell_scales: bool,
 
-    pub min_cell_volume: f32,
+    // pub min_cell_volume: f32,
 
     // params for normal prior
     pub μ_μ_volume: f32,
@@ -69,31 +67,28 @@ pub struct ModelPriors {
 
     pub σ_iiq: f32,
 
-    // scaling factor for circle perimeters
-    pub perimeter_eta: f32,
-    pub perimeter_bound: f32,
+    // // scaling factor for circle perimeters
+    // pub perimeter_eta: f32,
+    // pub perimeter_bound: f32,
 
-    pub nuclear_reassignment_log_prob: f32,
-    pub nuclear_reassignment_1mlog_prob: f32,
+    // pub nuclear_reassignment_log_prob: f32,
+    // pub nuclear_reassignment_1mlog_prob: f32,
 
-    pub prior_seg_reassignment_log_prob: f32,
-    pub prior_seg_reassignment_1mlog_prob: f32,
+    // pub prior_seg_reassignment_log_prob: f32,
+    // pub prior_seg_reassignment_1mlog_prob: f32,
 
-    // mixture between diffusion prior components
-    pub use_diffusion_model: bool,
-    pub p_diffusion: f32,
-    pub σ_diffusion_proposal: f32,
-    pub σ_diffusion_near: f32,
-    pub σ_diffusion_far: f32,
+    // // mixture between diffusion prior components
+    // pub use_diffusion_model: bool,
+    // pub p_diffusion: f32,
+    // pub σ_diffusion_proposal: f32,
+    // pub σ_diffusion_near: f32,
+    // pub σ_diffusion_far: f32,
 
-    pub σ_z_diffusion_proposal: f32,
-    pub σ_z_diffusion: f32,
+    // pub σ_z_diffusion_proposal: f32,
+    // pub σ_z_diffusion: f32,
 
     // prior precision on effective log cell volume
     pub τv: f32,
-
-    // whether to check if voxel updates break local connectivity
-    pub enforce_connectivity: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -449,7 +444,7 @@ impl ModelParams {
         }
     }
 
-    pub fn log_likelihood(&self, priors: &ModelPriors) -> f32 {
+    pub fn log_likelihood(&self, _priors: &ModelPriors) -> f32 {
         let mut ll = self
             .foreground_counts
             .par_rows()
@@ -499,7 +494,7 @@ impl ModelParams {
         self.π.shape()[0]
     }
 
-    pub fn ncells(&self) -> usize {
+    pub fn _ncells(&self) -> usize {
         self.φ.shape()[0]
     }
 

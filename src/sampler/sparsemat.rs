@@ -1,10 +1,10 @@
 use num::traits::AsPrimitive;
 use num::traits::Zero;
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, Map, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::iter::{IntoIterator, Iterator, Sum};
+use std::iter::{Iterator, Sum};
 use std::ops::Bound::{Excluded, Included};
 use std::ops::{Add, AddAssign, SubAssign};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};

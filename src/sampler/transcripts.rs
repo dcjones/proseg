@@ -342,7 +342,7 @@ fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     excluded_genes: Option<Regex>,
     gene_column: &str,
-    id_column: Option<String>,
+    _id_column: Option<String>,
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
     fov_column: Option<String>,
@@ -372,7 +372,7 @@ where
     } else {
         find_column(headers, z_column)
     };
-    let id_col = id_column.map(|id_column| find_column(headers, &id_column));
+    // let id_col = id_column.map(|id_column| find_column(headers, &id_column));
 
     let cell_id_col = find_column(headers, cell_id_column);
     let compartment_col =
@@ -624,7 +624,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
     gene_col_name: &str,
-    id_col_name: &str,
+    _id_col_name: &str,
     compartment_col_name: &str,
     compartment_nuclear: u8,
     fov_col_name: &str,
@@ -643,7 +643,7 @@ where
     for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
 {
     let gene_col_idx = schema.index_of(gene_col_name).unwrap();
-    let id_col_idx = schema.index_of(id_col_name).unwrap();
+    // let id_col_idx = schema.index_of(id_col_name).unwrap();
     let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
     let fov_col_idx = schema.index_of(fov_col_name).unwrap();
@@ -670,11 +670,11 @@ where
             .downcast_ref::<T>()
             .unwrap();
 
-        let id_col = rec_batch
-            .column(id_col_idx)
-            .as_any()
-            .downcast_ref::<arrow::array::UInt64Array>()
-            .unwrap();
+        // let id_col = rec_batch
+        //     .column(id_col_idx)
+        //     .as_any()
+        //     .downcast_ref::<arrow::array::UInt64Array>()
+        //     .unwrap();
 
         let compartment_col = rec_batch
             .column(compartment_col_idx)
@@ -718,9 +718,8 @@ where
             .downcast_ref::<arrow::array::Float32Array>()
             .unwrap();
 
-        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in izip!(
+        for (transcript, compartment, cell_id, fov, x, y, z, qv) in izip!(
             transcript_col,
-            id_col,
             compartment_col,
             cell_id_col,
             fov_col,
@@ -730,7 +729,7 @@ where
             qv_col
         ) {
             let transcript = transcript.unwrap();
-            let transcript_id = id.unwrap();
+            // let transcript_id = id.unwrap();
             let compartment = compartment.unwrap();
             let cell_id = cell_id.unwrap();
             let fov = fov.unwrap();

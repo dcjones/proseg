@@ -1,9 +1,6 @@
 use num::{cast::AsPrimitive, Signed, Zero};
 use rayon::prelude::*;
 use std::f32;
-use std::ops::Bound::{Excluded, Included};
-
-use crate::sampler::sparsemat::{SparseRowMutNonzeroIterator, SparseRowNonzeroIterator};
 
 use super::sparsemat::SparseMat;
 
@@ -100,14 +97,14 @@ impl P2Values {
         }
     }
 
-    pub fn estimate(&self) -> f32 {
-        self.h[2]
-    }
+    // pub fn estimate(&self) -> f32 {
+    //     self.h[2]
+    // }
 }
 
 // Estimating transcript count quantiles using the P² algorithm
 pub struct CountQuantileEstimator {
-    pub estimates: SparseMat<P2Values, u32>,
+    estimates: SparseMat<P2Values, u32>,
     dn: [f32; 5], // "desired" positions
     quantile: f32,
     t: usize, // iteration number
@@ -197,7 +194,7 @@ impl CountMeanEstimator {
                     estimates_c_lock.update(
                         gene,
                         || 0.0,
-                        |est| *est += (count_cg.as_() - *est) / self.t as f32,
+                        |est| *est += (count_cg.as_() - *est) / t,
                     );
                 }
             });
