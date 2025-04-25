@@ -10,14 +10,14 @@ use super::{CountMatRowKey, ModelParams};
 
 use geo::geometry::{MultiPolygon, Polygon};
 use log::trace;
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound::Included;
 use std::ops::DerefMut;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -32,52 +32,52 @@ pub struct VoxelOffset {
     offset: u32,
 }
 
-// interpret the lower 12-bits of the u32 as an i12
-// and convert to an i32
-fn i12_to_i32(u: u32) -> i32 {
-    // if u & 0x800 != 0 {
-    //     u = 0xFFFFF000 | u
-    // }
-    // u as i32
+// // interpret the lower 12-bits of the u32 as an i12
+// // and convert to an i32
+// fn i12_to_i32(u: u32) -> i32 {
+//     // if u & 0x800 != 0 {
+//     //     u = 0xFFFFF000 | u
+//     // }
+//     // u as i32
 
-    // exploiting signed integer shift behavior
-    (((u & 0xFFF) as i32) << 20) >> 20
-}
+//     // exploiting signed integer shift behavior
+//     (((u & 0xFFF) as i32) << 20) >> 20
+// }
 
 // interpret the lower 8-bits of the u32 as an i8
 // and convert to an i32
-fn i8_to_i32(u: u32) -> i32 {
-    // if u & 0x80 != 0 {
-    //     u = 0xFFFFFF00 | u
-    // }
-    // u as i32
+// fn i8_to_i32(u: u32) -> i32 {
+//     // if u & 0x80 != 0 {
+//     //     u = 0xFFFFFF00 | u
+//     // }
+//     // u as i32
 
-    // exploiting signed integer shift behavior
-    (((u & 0xFF) as i32) << 24) >> 24
-}
+//     // exploiting signed integer shift behavior
+//     (((u & 0xFF) as i32) << 24) >> 24
+// }
 
 impl VoxelOffset {
-    fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
-        VoxelOffset {
-            offset: ((di as u32 & 0xFFF) << 20) | ((dj as u32 & 0xFFF) << 8) | (dk as u32 & 0xFF),
-        }
-    }
+    // fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
+    //     VoxelOffset {
+    //         offset: ((di as u32 & 0xFFF) << 20) | ((dj as u32 & 0xFFF) << 8) | (dk as u32 & 0xFF),
+    //     }
+    // }
 
     fn zero() -> VoxelOffset {
         VoxelOffset { offset: 0 }
     }
 
-    fn di(&self) -> i32 {
-        i12_to_i32((self.offset >> 20) & 0xFFF)
-    }
+    // fn di(&self) -> i32 {
+    //     i12_to_i32((self.offset >> 20) & 0xFFF)
+    // }
 
-    fn dj(&self) -> i32 {
-        i12_to_i32((self.offset >> 8) & 0xFFF)
-    }
+    // fn dj(&self) -> i32 {
+    //     i12_to_i32((self.offset >> 8) & 0xFFF)
+    // }
 
-    fn dk(&self) -> i32 {
-        i8_to_i32(self.offset & 0xFF)
-    }
+    // fn dk(&self) -> i32 {
+    //     i8_to_i32(self.offset & 0xFF)
+    // }
 }
 
 // Index of a single voxel
@@ -111,9 +111,9 @@ impl Voxel {
         }
     }
 
-    pub fn zero() -> Voxel {
-        Voxel::new(0, 0, 0)
-    }
+    // pub fn zero() -> Voxel {
+    //     Voxel::new(0, 0, 0)
+    // }
 
     pub fn oob() -> Voxel {
         Voxel { index: OOB_VOXEL }
@@ -127,9 +127,9 @@ impl Voxel {
         [self.i(), self.j(), self.k()]
     }
 
-    fn u32_coords(&self) -> [u32; 3] {
-        [self.i() as u32, self.j() as u32, self.k() as u32]
-    }
+    // fn u32_coords(&self) -> [u32; 3] {
+    //     [self.i() as u32, self.j() as u32, self.k() as u32]
+    // }
 
     pub fn i(&self) -> i32 {
         ((self.index >> 48) & 0xFFFFFF) as i32
@@ -143,27 +143,27 @@ impl Voxel {
         (self.index & 0xFFFF) as i32
     }
 
-    fn offset(&self, d: VoxelOffset) -> Voxel {
-        self.offset_coords(d.di(), d.dj(), d.dk())
-    }
+    // fn offset(&self, d: VoxelOffset) -> Voxel {
+    //     self.offset_coords(d.di(), d.dj(), d.dk())
+    // }
 
-    fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
-        let new_i = self.i() + di;
-        let new_j = self.j() + dj;
-        let new_k = self.k() + dk;
+    // fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
+    //     let new_i = self.i() + di;
+    //     let new_j = self.j() + dj;
+    //     let new_k = self.k() + dk;
 
-        if new_i < 0
-            || new_i >= (1 << 24)
-            || new_j < 0
-            || new_j >= (1 << 24)
-            || new_k < 0
-            || new_k >= (1 << 16)
-        {
-            return Voxel { index: OOB_VOXEL };
-        }
+    //     if new_i < 0
+    //         || new_i >= (1 << 24)
+    //         || new_j < 0
+    //         || new_j >= (1 << 24)
+    //         || new_k < 0
+    //         || new_k >= (1 << 16)
+    //     {
+    //         return Voxel { index: OOB_VOXEL };
+    //     }
 
-        Voxel::new(new_i, new_j, new_k)
-    }
+    //     Voxel::new(new_i, new_j, new_k)
+    // }
 
     pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         let [i, j, k] = self.coords();
@@ -184,41 +184,41 @@ impl Voxel {
             .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    pub fn moore_neighborhood(&self) -> [Voxel; 26] {
-        let [i, j, k] = self.coords();
-        [
-            // top layer
-            (-1, 0, -1),
-            (0, 0, -1),
-            (1, 0, -1),
-            (-1, 1, -1),
-            (0, 1, -1),
-            (1, 1, -1),
-            (-1, -1, -1),
-            (0, -1, -1),
-            (1, -1, -1),
-            // middle layer
-            (-1, 0, 0),
-            (1, 0, 0),
-            (-1, 1, 0),
-            (0, 1, 0),
-            (1, 1, 0),
-            (-1, -1, 0),
-            (0, -1, 0),
-            (1, -1, 0),
-            // bottom layer
-            (-1, 0, 1),
-            (0, 0, 1),
-            (1, 0, 1),
-            (-1, 1, 1),
-            (0, 1, 1),
-            (1, 1, 1),
-            (-1, -1, 1),
-            (0, -1, 1),
-            (1, -1, 1),
-        ]
-        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    }
+    // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
+    //     let [i, j, k] = self.coords();
+    //     [
+    //         // top layer
+    //         (-1, 0, -1),
+    //         (0, 0, -1),
+    //         (1, 0, -1),
+    //         (-1, 1, -1),
+    //         (0, 1, -1),
+    //         (1, 1, -1),
+    //         (-1, -1, -1),
+    //         (0, -1, -1),
+    //         (1, -1, -1),
+    //         // middle layer
+    //         (-1, 0, 0),
+    //         (1, 0, 0),
+    //         (-1, 1, 0),
+    //         (0, 1, 0),
+    //         (1, 1, 0),
+    //         (-1, -1, 0),
+    //         (0, -1, 0),
+    //         (1, -1, 0),
+    //         // bottom layer
+    //         (-1, 0, 1),
+    //         (0, 0, 1),
+    //         (1, 0, 1),
+    //         (-1, 1, 1),
+    //         (0, 1, 1),
+    //         (1, 1, 1),
+    //         (-1, -1, 1),
+    //         (0, -1, 1),
+    //         (1, -1, 1),
+    //     ]
+    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    // }
 
     // Gives the line segment defining the edge between two voxels bordering on
     // the xy plane. (Panics if the voxels don't border.)
@@ -701,21 +701,21 @@ impl VoxelCheckerboard {
             .unwrap()
     }
 
-    fn quad_bounds(&self, index: (u32, u32)) -> (Voxel, Voxel) {
-        let min_ij = Voxel::new(
-            index.0 as i32 * self.quadsize as i32,
-            index.1 as i32 * self.quadsize as i32,
-            0,
-        );
+    // fn quad_bounds(&self, index: (u32, u32)) -> (Voxel, Voxel) {
+    //     let min_ij = Voxel::new(
+    //         index.0 as i32 * self.quadsize as i32,
+    //         index.1 as i32 * self.quadsize as i32,
+    //         0,
+    //     );
 
-        let max_ij = Voxel::new(
-            (index.0 + 1) as i32 * self.quadsize as i32 - 1,
-            (index.1 + 1) as i32 * self.quadsize as i32 - 1,
-            0,
-        );
+    //     let max_ij = Voxel::new(
+    //         (index.0 + 1) as i32 * self.quadsize as i32 - 1,
+    //         (index.1 + 1) as i32 * self.quadsize as i32 - 1,
+    //         0,
+    //     );
 
-        (min_ij, max_ij)
-    }
+    //     (min_ij, max_ij)
+    // }
 
     // fn read_quad(&mut self, voxel: Voxel) -> RwLockReadGuard<VoxelQuad> {
     //     self.quads
@@ -741,7 +741,7 @@ impl VoxelCheckerboard {
             self.for_each_quad_neighbor(u, v, |neighbor_quad| {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
                 for (voxel, state) in &quad.states {
-                    let [i, j, k] = voxel.coords();
+                    let [i, j, _k] = voxel.coords();
                     if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
                         neighbor_quad.states.insert(voxel.clone(), state.clone());
                     }
