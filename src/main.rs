@@ -765,84 +765,53 @@ fn main() {
         &dataset.fov_names,
     );
 
-    unimplemented!("proseg3: output not yet implemented.");
-
-    /*
-    let cell_centroids = sampler.borrow().cell_centroids();
-
-    write_transcript_metadata(
-        &args.output_path,
-        &args.output_transcript_metadata,
-        args.output_transcript_metadata_fmt,
-        &dataset.transcripts,
-        &params.transcript_positions,
-        &dataset.transcript_names,
-        &cell_assignments,
-        &params.transcript_state,
-        &dataset.qvs,
-        &dataset.fovs,
-        &dataset.fov_names,
-    );
     write_gene_metadata(
         &args.output_path,
         &args.output_gene_metadata,
         args.output_gene_metadata_fmt,
         &params,
-        &dataset.transcript_names,
-        &ecounts,
+        &dataset.gene_names,
+        &dataset.transcripts,
+        &params.foreground_counts_mean.estimates,
     );
+
     write_metagene_rates(
         &args.output_path,
         &args.output_metagene_rates,
         args.output_metagene_rates_fmt,
         &params.φ,
     );
+
     write_metagene_loadings(
         &args.output_path,
         &args.output_metagene_loadings,
         args.output_metagene_loadings_fmt,
-        &dataset.transcript_names,
+        &dataset.gene_names,
         &params.θ,
     );
-    write_voxels(
-        &args.output_path,
-        &args.output_cell_voxels,
-        args.output_cell_voxels_fmt,
-        &sampler.borrow(),
-    );
 
-    if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
-        let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
-        write_cell_multipolygons(
-            &args.output_path,
-            &args.output_union_cell_polygons,
-            cell_flattened_polygons,
-        );
-        write_cell_layered_multipolygons(
-            &args.output_path,
-            &args.output_cell_polygon_layers,
-            cell_polygons,
-        );
-    }
+    // if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
+    //     let (cell_polygons, cell_flattened_polygons) = sampler.borrow().cell_polygons();
+    //     write_cell_multipolygons(
+    //         &args.output_path,
+    //         &args.output_union_cell_polygons,
+    //         cell_flattened_polygons,
+    //     );
+    //     write_cell_layered_multipolygons(
+    //         &args.output_path,
+    //         &args.output_cell_polygon_layers,
+    //         cell_polygons,
+    //     );
+    // }
 
-    if args.output_cell_polygons.is_some() {
-        let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
-        write_cell_multipolygons(
-            &args.output_path,
-            &args.output_cell_polygons,
-            consensus_cell_polygons,
-        );
-    }
-
-    if let Some(output_cell_hulls) = args.output_cell_hulls {
-        params.write_cell_hulls(
-            &dataset.transcripts,
-            &counts,
-            &args.output_path,
-            &output_cell_hulls,
-        );
-    }
-    */
+    // if args.output_cell_polygons.is_some() {
+    //     let consensus_cell_polygons = sampler.borrow().consensus_cell_polygons();
+    //     write_cell_multipolygons(
+    //         &args.output_path,
+    //         &args.output_cell_polygons,
+    //         consensus_cell_polygons,
+    //     );
+    // }
 }
 
 fn run_sampler(
@@ -879,107 +848,3 @@ fn run_sampler(
         params.check_consistency(voxels);
     }
 }
-
-/*
-#[allow(clippy::too_many_arguments)]
-fn run_hexbin_sampler(
-    prog: &mut ProgressBar,
-    sampler: &mut VoxelSampler,
-    priors: &ModelPriors,
-    params: &mut ModelParams,
-    transcripts: &Vec<Transcript>,
-    niter: usize,
-    local_steps_per_iter: usize,
-    mut uncertainty: Option<&mut UncertaintyTracker>,
-    total_steps: &mut usize,
-    monitor_cell_polygons: &Option<String>,
-    monitor_cell_polygons_freq: usize,
-    sample_cell_regions: bool,
-    burnin: bool,
-    hillclimb: bool,
-    output_path: &Option<String>,
-) {
-    sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
-    let mut proposal_stats = ProposalStats::new();
-
-    for _ in 0..niter {
-        // sampler.check_perimeter_bounds(priors);
-
-        // let t0 = std::time::Instant::now();
-        if sample_cell_regions {
-            // let t0 = std::time::Instant::now();
-            for _ in 0..local_steps_per_iter {
-                sampler.sample_cell_regions(
-                    priors,
-                    params,
-                    &mut proposal_stats,
-                    hillclimb,
-                    &mut uncertainty,
-                );
-            }
-            // println!("Sample cell regions: {:?}", t0.elapsed());
-        }
-        // println!("Sample cell regions: {:?}", t0.elapsed());
-
-        // let t0 = std::time::Instant::now();
-        sampler.sample_global_params(priors, params, transcripts, &mut uncertainty, burnin);
-        // println!("Sample global parameters: {:?}", t0.elapsed());
-
-        let nassigned = params.nassigned();
-        let nforeground = params.nforeground();
-        prog.inc(1);
-        prog.set_message(format!(
-            "log-likelihood: {ll} | assigned: {nassigned} / {n} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
-            ll = params.log_likelihood(priors),
-            nassigned = nassigned,
-            n = transcripts.len(),
-            perc_assigned = 100.0 * (nassigned as f32) / (transcripts.len() as f32),
-            perc_foreground = 100.0 * (nforeground as f32) / (transcripts.len() as f32),
-        ));
-
-        // println!("Log likelihood: {}", params.log_likelihood());
-
-        // let empty_cell_count = params.cell_population.iter().filter(|p| **p == 0).count();
-        // println!("Empty cells: {}", empty_cell_count);
-
-        // dbg!(&proposal_stats);
-        // dbg!(sampler.mismatch_edge_stats());
-        proposal_stats.reset();
-
-        // if i % 100 == 0 {
-        //     println!("Iteration {} ({} unassigned transcripts)", i, params.nunassigned());
-        // }
-
-        if *total_steps % monitor_cell_polygons_freq == 0 {
-            if let Some(basename) = monitor_cell_polygons {
-                let filename = format!("{}-{:04}.geojson.gz", basename, *total_steps);
-                let (cell_polygons, _cell_flattened_polygons) = sampler.cell_polygons();
-                write_cell_layered_multipolygons(output_path, &Some(filename), cell_polygons);
-            }
-        }
-
-        *total_steps += 1;
-    }
-}
-
-fn compute_cell_areas(
-    ncells: usize,
-    transcripts: &[Transcript],
-    cell_assignments: &[CellIndex],
-) -> Vec<f32> {
-    let mut vertices: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ncells];
-    for (&c, &t) in cell_assignments.iter().zip(transcripts.iter()) {
-        if c != BACKGROUND_CELL {
-            vertices[c as usize].push((t.x, t.y));
-        }
-    }
-
-    let mut hull = Vec::new();
-    let areas = vertices
-        .iter_mut()
-        .map(|vs| convex_hull_area(vs, &mut hull))
-        .collect();
-
-    areas
-}
-*/
