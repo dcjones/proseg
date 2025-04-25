@@ -363,7 +363,7 @@ fn bounding_kernel<T: Float>(pr: &Parameters<T>) -> T {
  */
 #[replace_float_literals(T::from(literal).unwrap())]
 fn log_norm_cdf<T: Float>(x: T) -> T {
-    (-0.5 * (x / T::SQRT_2).erfc()).ln_1p()
+    (-0.5 * (x / T::SQRT_2).erfc_()).ln_1p()
 }
 
 /*
