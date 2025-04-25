@@ -602,86 +602,57 @@ pub fn write_transcript_metadata(
         );
     }
 }
+*/
 
 pub fn write_gene_metadata(
     output_path: &Option<String>,
     output_gene_metadata: &Option<String>,
     output_gene_metadata_fmt: OutputFormat,
     params: &ModelParams,
-    transcript_names: &[String],
-    expected_counts: &Array2<f32>,
+    gene_names: &[String],
+    transcripts: &RunVec<u32, Transcript>,
+    expected_counts: &SparseMat<f32, u32>,
 ) {
-    // TODO: write factorization
+    let ngenes = gene_names.len();
+    let mut total_gene_counts = vec![0; ngenes];
+    for transcript_run in transcripts.iter_runs() {
+        total_gene_counts[transcript_run.value.gene as usize] += transcript_run.len as usize;
+    }
+
+    let mut gene_expected_counts = vec![0_f32; ngenes];
+    for x_c in expected_counts.rows() {
+        for (g, x_cg) in x_c.read().iter_nonzeros() {
+            gene_expected_counts[g as usize] += x_cg;
+        }
+    }
+
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),
             Field::new("total_count", DataType::UInt64, false),
             Field::new("expected_assigned_count", DataType::Float32, false),
-            // Field::new("dispersion", DataType::Float32, false),
         ];
 
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
             Arc::new(
-                transcript_names
+                gene_names
                     .iter()
                     .map(|s| Some(s.clone()))
                     .collect::<arrow::array::StringArray>(),
             ),
             Arc::new(
-                params
-                    .total_gene_counts
-                    .sum_axis(Axis(1))
+                total_gene_counts
                     .iter()
                     .map(|x| *x as u64)
                     .collect::<arrow::array::UInt64Array>(),
             ),
             Arc::new(
-                expected_counts
-                    .sum_axis(Axis(1))
+                gene_expected_counts
                     .iter()
                     .cloned()
                     .collect::<arrow::array::Float32Array>(),
             ),
-            // Arc::new(array::Float32Array::from_values(
-            //     params.r.iter().cloned(),
-            // ))
         ];
-
-        // // cell type dispersions
-        // schema_fields.push(Field::new("dispersion", DataType::Float32, false));
-        // columns.push(Arc::new(
-        //     params
-        //         .r
-        //         .iter()
-        //         .cloned()
-        //         .collect::<arrow::array::Float32Array>(),
-        // ));
-
-        // // cell type rates
-        // for i in 0..params.ncomponents() {
-        //     schema_fields.push(Field::new(&format!("λ_{}", i), DataType::Float32, false));
-        //
-
-        //     let mut λ_component = Array1::<f32>::from_elem(params.ngenes(), 0_f32);
-        //     let mut count = 0;
-        //     Zip::from(&params.z)
-        //         .and(params.λ.columns())
-        //         .for_each(|&z, λ| {
-        //             if i == z as usize {
-        //                 Zip::from(&mut λ_component).and(λ).for_each(|a, b| *a += b);
-        //                 count += 1;
-        //             }
-        //         });
-        //     λ_component /= count as f32;
-        //
-
-        //     columns.push(Arc::new(
-        //         λ_component
-        //             .iter()
-        //             .cloned()
-        //             .collect::<arrow::array::Float32Array>(),
-        //     ));
-        // }
 
         // background rates
         for i in 0..params.nlayers() {
@@ -707,7 +678,6 @@ pub fn write_gene_metadata(
         );
     }
 }
-*/
 
 /*
 pub fn write_voxels(
