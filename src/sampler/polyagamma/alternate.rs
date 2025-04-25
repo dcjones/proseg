@@ -100,9 +100,9 @@ impl Parameters {
         } else if !update {
             self.lambda_z = PGM_PI2_8;
             self.log_lambda_z = self.lambda_z.ln();
-            p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc();
+            p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc_();
         } else {
-            p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc();
+            p = self.hlog2.exp() * (h / (2.0 * self.t).sqrt()).erfc_();
         }
 
         let q = (h * (PGM_LOGPI_2 - self.log_lambda_z)).exp()
@@ -117,7 +117,7 @@ impl Parameters {
         let b = self.z * st * SQRT2_INV;
         let ez = (self.h * self.z).exp() as f32;
 
-        0.5f32 * (((a - b) as f32).erfc() + ez * ((b + a) as f32).erfc() * ez)
+        0.5f32 * (((a - b) as f32).erfc_() + ez * ((b + a) as f32).erfc_() * ez)
     }
 
     fn random_jacobi_star<R: Rng>(&mut self, rng: &mut R) -> f64 {

@@ -54,7 +54,7 @@ pub fn upper_incomplete_gamma<T: Float>(p: T, x: T, normalized: bool) -> T {
                 k += 1.0;
             }
 
-            return sqrt_x.erfc() + (-x).exp() * one_sqrtpi * sum / sqrt_x;
+            return sqrt_x.erfc_() + (-x).exp() * one_sqrtpi * sum / sqrt_x;
         }
     }
 
@@ -69,11 +69,7 @@ pub fn upper_incomplete_gamma<T: Float>(p: T, x: T, normalized: bool) -> T {
 
     if normalized {
         let out = f * (-x + p * x.ln() - pgm_lgamma(p)).exp();
-        if x_smaller {
-            1.0 - out
-        } else {
-            out
-        }
+        if x_smaller { 1.0 - out } else { out }
     } else if x_smaller {
         let lgam = pgm_lgamma(p);
         let exp_lgam = if lgam >= pgm_max_exp_t {
