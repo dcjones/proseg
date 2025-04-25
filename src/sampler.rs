@@ -510,6 +510,10 @@ impl ModelParams {
         self.θ.shape()[1]
     }
 
+    pub fn nlayers(&self) -> usize {
+        self.background_counts.len()
+    }
+
     pub fn check_consistency(&self, voxels: &VoxelCheckerboard) {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
