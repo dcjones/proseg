@@ -1,4 +1,4 @@
-use super::voxelcheckerboard::Voxel;
+use super::voxelcheckerboard::{Voxel, von_neumann_neighborhood_xy_offsets};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet};
 
@@ -193,9 +193,11 @@ impl PolygonBuilder {
             kmin = kmin.min(k);
             kmax = kmax.max(k);
 
-            for neighbor in voxel.von_neumann_neighborhood_xy() {
-                if !neighbor.is_oob() && !voxels.contains(&neighbor) {
-                    let edge = voxel.edge_xy(&neighbor);
+            for neighbor_offset in von_neumann_neighborhood_xy_offsets() {
+                let neighbor = voxel.offset(neighbor_offset);
+
+                if neighbor.is_oob() || !voxels.contains(&neighbor) {
+                    let edge = voxel.offset_edge_xy(neighbor_offset);
                     self.edges.push((k, edge.0, edge.1));
                     self.edges.push((k, edge.1, edge.0));
                 }
@@ -248,9 +250,10 @@ impl PolygonBuilder {
                         let adjacent_edges_visited = &mut visited_k[first..last];
 
                         // we have either an unambiguous path or we are at the corner of two voxels
-                        // TODO: Uh oh, this assertion occasionally fails.
+                        // TODO: Uh oh, this assertion occasionally fails. I have to remember how this code works :(
+                        // May have something to do with oob
                         if !(adjacent_edges.len() == 2 || adjacent_edges.len() == 4) {
-                            dbg!((nvisited, nedges, adjacent_edges.len()));
+                            dbg!((nvisited, nedges, adjacent_edges.len(), u, v));
                         }
                         assert!(adjacent_edges.len() == 2 || adjacent_edges.len() == 4);
 

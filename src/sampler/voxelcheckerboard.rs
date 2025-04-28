@@ -1,11 +1,11 @@
 // Data structures for maintaining a set of voxels each with an associated
 // sparse transcript vector.
 
-use super::polygons::{union_all_into_multipolygon, PolygonBuilder};
+use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
 use super::sparsemat::SparseMat;
-use super::transcripts::{CellIndex, TranscriptDataset, BACKGROUND_CELL};
+use super::transcripts::{BACKGROUND_CELL, CellIndex, TranscriptDataset};
 use super::{CountMatRowKey, ModelParams};
 
 use geo::geometry::{MultiPolygon, Polygon};
@@ -32,52 +32,56 @@ pub struct VoxelOffset {
     offset: u32,
 }
 
-// // interpret the lower 12-bits of the u32 as an i12
-// // and convert to an i32
-// fn i12_to_i32(u: u32) -> i32 {
-//     // if u & 0x800 != 0 {
-//     //     u = 0xFFFFF000 | u
-//     // }
-//     // u as i32
+// interpret the lower 12-bits of the u32 as an i12
+// and convert to an i32
+fn i12_to_i32(u: u32) -> i32 {
+    // if u & 0x800 != 0 {
+    //     u = 0xFFFFF000 | u
+    // }
+    // u as i32
 
-//     // exploiting signed integer shift behavior
-//     (((u & 0xFFF) as i32) << 20) >> 20
-// }
+    // exploiting signed integer shift behavior
+    (((u & 0xFFF) as i32) << 20) >> 20
+}
 
 // interpret the lower 8-bits of the u32 as an i8
 // and convert to an i32
-// fn i8_to_i32(u: u32) -> i32 {
-//     // if u & 0x80 != 0 {
-//     //     u = 0xFFFFFF00 | u
-//     // }
-//     // u as i32
+fn i8_to_i32(u: u32) -> i32 {
+    // if u & 0x80 != 0 {
+    //     u = 0xFFFFFF00 | u
+    // }
+    // u as i32
 
-//     // exploiting signed integer shift behavior
-//     (((u & 0xFF) as i32) << 24) >> 24
-// }
+    // exploiting signed integer shift behavior
+    (((u & 0xFF) as i32) << 24) >> 24
+}
 
 impl VoxelOffset {
-    // fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
-    //     VoxelOffset {
-    //         offset: ((di as u32 & 0xFFF) << 20) | ((dj as u32 & 0xFFF) << 8) | (dk as u32 & 0xFF),
-    //     }
-    // }
+    fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
+        VoxelOffset {
+            offset: ((di as u32 & 0xFFF) << 20) | ((dj as u32 & 0xFFF) << 8) | (dk as u32 & 0xFF),
+        }
+    }
 
     fn zero() -> VoxelOffset {
         VoxelOffset { offset: 0 }
     }
 
-    // fn di(&self) -> i32 {
-    //     i12_to_i32((self.offset >> 20) & 0xFFF)
-    // }
+    fn di(&self) -> i32 {
+        i12_to_i32((self.offset >> 20) & 0xFFF)
+    }
 
-    // fn dj(&self) -> i32 {
-    //     i12_to_i32((self.offset >> 8) & 0xFFF)
-    // }
+    fn dj(&self) -> i32 {
+        i12_to_i32((self.offset >> 8) & 0xFFF)
+    }
 
-    // fn dk(&self) -> i32 {
-    //     i8_to_i32(self.offset & 0xFF)
-    // }
+    fn dk(&self) -> i32 {
+        i8_to_i32(self.offset & 0xFF)
+    }
+
+    pub fn coords(&self) -> [i32; 3] {
+        [self.di(), self.dj(), self.dk()]
+    }
 }
 
 // Index of a single voxel
@@ -143,27 +147,24 @@ impl Voxel {
         (self.index & 0xFFFF) as i32
     }
 
-    // fn offset(&self, d: VoxelOffset) -> Voxel {
-    //     self.offset_coords(d.di(), d.dj(), d.dk())
-    // }
+    pub fn offset(&self, d: VoxelOffset) -> Voxel {
+        self.offset_coords(d.di(), d.dj(), d.dk())
+    }
 
-    // fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
-    //     let new_i = self.i() + di;
-    //     let new_j = self.j() + dj;
-    //     let new_k = self.k() + dk;
+    fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
+        let new_i = self.i() + di;
+        let new_j = self.j() + dj;
+        let new_k = self.k() + dk;
 
-    //     if new_i < 0
-    //         || new_i >= (1 << 24)
-    //         || new_j < 0
-    //         || new_j >= (1 << 24)
-    //         || new_k < 0
-    //         || new_k >= (1 << 16)
-    //     {
-    //         return Voxel { index: OOB_VOXEL };
-    //     }
+        if !(0..(1 << 24)).contains(&new_i)
+            || !(0..(1 << 24)).contains(&new_j)
+            || !(0..(1 << 16)).contains(&new_k)
+        {
+            return Voxel { index: OOB_VOXEL };
+        }
 
-    //     Voxel::new(new_i, new_j, new_k)
-    // }
+        Voxel::new(new_i, new_j, new_k)
+    }
 
     pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         let [i, j, k] = self.coords();
@@ -178,11 +179,11 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
-        let [i, j, k] = self.coords();
-        [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
-            .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    }
+    // pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
+    //     let [i, j, k] = self.coords();
+    //     [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
+    //         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    // }
 
     // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
     //     let [i, j, k] = self.coords();
@@ -220,27 +221,50 @@ impl Voxel {
     //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     // }
 
+    // // Gives the line segment defining the edge between two voxels bordering on
+    // // the xy plane. (Panics if the voxels don't border.)
+    // pub fn edge_xy(&self, other: Voxel) -> ((i32, i32), (i32, i32)) {
+    //     let [i_a, j_a, k_a] = self.coords();
+    //     let [i_b, j_b, k_b] = other.coords();
+
+    //     if k_a != k_b {
+    //         dbg!(((i_a, j_a, k_a), (j_b, j_b, k_b)));
+    //     }
+
+    //     assert!(k_a == k_b);
+    //     assert!((i_a - i_b).abs() + (j_a - j_b).abs() == 1);
+
+    //     let i0 = i_a.max(i_b);
+    //     let j0 = j_a.max(j_b);
+
+    //     let i1 = i0 + (j_b - j_a).abs();
+    //     let j1 = j0 + (i_b - i_a).abs();
+
+    //     ((i0, j0), (i1, j1))
+    // }
+
     // Gives the line segment defining the edge between two voxels bordering on
     // the xy plane. (Panics if the voxels don't border.)
-    pub fn edge_xy(&self, other: &Voxel) -> ((i32, i32), (i32, i32)) {
-        let [i_a, j_a, k_a] = self.coords();
-        let [i_b, j_b, k_b] = other.coords();
+    pub fn offset_edge_xy(&self, offset: VoxelOffset) -> ((i32, i32), (i32, i32)) {
+        let [i, j, _k] = self.coords();
 
-        if k_a != k_b {
-            dbg!(((i_a, j_a, k_a), (j_b, j_b, k_b)));
-        }
+        let [di, dj, dk] = offset.coords();
 
-        assert!(k_a == k_b);
-        assert!((i_a - i_b).abs() + (j_a - j_b).abs() == 1);
+        assert!(dk == 0);
+        assert!(di.abs() + dj.abs() == 1);
 
-        let i0 = i_a.max(i_b);
-        let j0 = j_a.max(j_b);
+        let i0 = i.max(i + di);
+        let j0 = j.max(j + dj);
 
-        let i1 = i0 + (j_b - j_a).abs();
-        let j1 = j0 + (i_b - i_a).abs();
+        let i1 = i0 + dj.abs();
+        let j1 = j0 + di.abs();
 
         ((i0, j0), (i1, j1))
     }
+}
+
+pub fn von_neumann_neighborhood_xy_offsets() -> [VoxelOffset; 4] {
+    [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)].map(|(di, dj, dk)| VoxelOffset::new(di, dj, dk))
 }
 
 // Z-order curve comparison function. Following from:
