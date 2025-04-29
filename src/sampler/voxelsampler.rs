@@ -291,8 +291,15 @@ impl VoxelSampler {
             let z = params.z[current_cell as usize];
             let current_volume = params.cell_voxel_count.get(current_cell as usize);
             let proposed_volume = current_volume - 1;
-            let log_current_volume_μm = (current_volume as f32 * params.voxel_volume).ln();
-            let log_proposed_volume_μm = (proposed_volume as f32 * params.voxel_volume).ln();
+            let current_volume_μm = current_volume as f32 * params.voxel_volume;
+            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
+            let log_current_volume_μm = current_volume_μm.ln();
+            let log_proposed_volume_μm = proposed_volume_μm.ln();
+
+            // poisson point process normalization
+            let scale = params.cell_scale[current_cell as usize];
+            let volume_delta = proposed_volume_μm - current_volume_μm;
+            δ += scale * volume_delta * params.φ.row(current_cell as usize).dot(&params.θksum);
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
@@ -324,8 +331,15 @@ impl VoxelSampler {
             let z = params.z[proposed_cell as usize];
             let current_volume = params.cell_voxel_count.get(proposed_cell as usize);
             let proposed_volume = current_volume + 1;
-            let log_current_volume_μm = (current_volume as f32 * params.voxel_volume).ln();
-            let log_proposed_volume_μm = (proposed_volume as f32 * params.voxel_volume).ln();
+            let current_volume_μm = current_volume as f32 * params.voxel_volume;
+            let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
+            let log_current_volume_μm = current_volume_μm.ln();
+            let log_proposed_volume_μm = proposed_volume_μm.ln();
+
+            // poisson point process normalization
+            let scale = params.cell_scale[proposed_cell as usize];
+            let volume_delta = proposed_volume_μm - current_volume_μm;
+            δ += scale * volume_delta * params.φ.row(proposed_cell as usize).dot(&params.θksum);
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
