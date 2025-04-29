@@ -1,11 +1,11 @@
-use crate::sampler::transcripts::{CellIndex, BACKGROUND_CELL};
+use crate::sampler::transcripts::{BACKGROUND_CELL, CellIndex};
 use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::halfnormal_logpdf;
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 use log::trace;
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use rayon::prelude::*;
 use std::f32;
 use std::time::Instant;
@@ -313,11 +313,10 @@ impl VoxelSampler {
                 count_matching_neighbors(&proposal.neighbor_cells, current_cell);
             let proposed_surface_area =
                 current_surface_area + current_cell_neighbors - other_cell_neighbors;
-            // TODO: Blah. This is more complicated.
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(proposed_surface_area, current_volume),
+                inv_isoperimetric_quotient(proposed_surface_area, proposed_volume),
             );
         }
 
@@ -331,7 +330,6 @@ impl VoxelSampler {
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
             let σ_vol_z = params.σ_volume[z as usize];
-
             δ += ((log_current_volume_μm - μ_vol_z).powi(2)
                 - (log_proposed_volume_μm - μ_vol_z).powi(2))
                 / (2.0 * σ_vol_z.powi(2))
@@ -351,7 +349,7 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(proposed_surface_area, current_volume),
+                inv_isoperimetric_quotient(proposed_surface_area, proposed_volume),
             );
         }
 
