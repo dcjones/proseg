@@ -1,7 +1,7 @@
-use rand::rngs::ThreadRng;
 use rand::Rng;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
+use rand::rngs::ThreadRng;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::hash::Hash;
 
 // A set you can sample random elements from.
@@ -83,6 +83,10 @@ where
         for value in other.into_iter() {
             self.insert(*value);
         }
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<T> {
+        self.vec.iter()
     }
 
     // fn contains(&self, value: &T) -> bool {
