@@ -181,11 +181,11 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    // pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
-    //     let [i, j, k] = self.coords();
-    //     [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
-    //         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    // }
+    pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
+        let [i, j, k] = self.coords();
+        [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
+            .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
 
     // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
     //     let [i, j, k] = self.coords();
@@ -433,6 +433,31 @@ impl VoxelQuad {
             .get(&voxel)
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL)
+    }
+
+    // If the given voxel in is bounds of this quad and is a bubble (i.e. von
+    // neummann neighborhood all share the same state, that differs from voxel's),
+    // return Some((voxel_cell, neighbor_cell)), otherwise returns None.
+    pub fn is_bubble(&self, voxel: Voxel) -> Option<(CellIndex, CellIndex)> {
+        if !self.voxel_in_bounds(voxel) {
+            return None;
+        }
+
+        let cell = self.get_voxel_cell(voxel);
+
+        let neighbor_cells = voxel
+            .von_neumann_neighborhood_xy()
+            .map(|neighbor| self.get_voxel_cell(neighbor));
+        let neighbor_cell = neighbor_cells[0];
+        if !neighbor_cells.iter().all(|&c| c == neighbor_cell) {
+            return None;
+        }
+
+        if cell != neighbor_cell {
+            Some((cell, neighbor_cell))
+        } else {
+            None
+        }
     }
 
     // Inclusive bounds: (min_i, max_i, min_j, max_j)
@@ -1117,5 +1142,28 @@ impl VoxelCheckerboard {
 
         // need to reubild edge sets
         self.build_edge_sets();
+    }
+
+    pub fn pop_bubbles(&mut self) {
+        self.quads.par_iter().for_each(|(_quad_pos, quad)| {
+            let mut quad_lock = quad.write().unwrap();
+            let mut bubbles = HashSet::new();
+
+            for edge in quad_lock.mismatch_edges.iter() {
+                if let Some((cell, neighbor_cell)) = quad_lock.is_bubble(edge.a) {
+                    if cell == BACKGROUND_CELL {
+                        bubbles.insert((edge.a, neighbor_cell));
+                    }
+                } else if let Some((cell, neighbor_cell)) = quad_lock.is_bubble(edge.b) {
+                    if cell == BACKGROUND_CELL {
+                        bubbles.insert((edge.b, neighbor_cell));
+                    }
+                }
+            }
+
+            for (voxel, neighbor_cell) in bubbles {
+                quad_lock.update_voxel_cell(voxel, BACKGROUND_CELL, neighbor_cell);
+            }
+        });
     }
 }
