@@ -8,7 +8,7 @@ mod schemas;
 
 use core::f32;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::warn;
+use log::{trace, warn};
 use rayon::current_num_threads;
 use regex::Regex;
 use sampler::paramsampler::ParamSampler;
@@ -17,6 +17,7 @@ use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
+use std::time::Instant;
 
 use output::*;
 
@@ -75,6 +76,10 @@ struct Args {
     /// Name of column containing the transcript ID
     #[arg(long, default_value = None)]
     transcript_id_column: Option<String>,
+
+    /// Expand initialized cells outward by this many voxels.
+    #[arg(long, default_value_t = 5)]
+    expand_initialized_cells: usize,
 
     /// Name of column containing the x coordinate
     #[arg(short, long, default_value = None)]
@@ -142,14 +147,6 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     nhidden: usize,
 
-    /// Number of z-axis layers used to model background expression
-    #[arg(long, default_value_t = 4)]
-    nbglayers: usize,
-
-    /// Detect the number of z-layers from the data when it's discrete
-    #[arg(long, default_value_t = true)]
-    detect_layers: bool,
-
     /// Number of layers of voxels in the z-axis used for segmentation
     #[arg(long, default_value_t = 4)]
     voxel_layers: usize,
@@ -159,11 +156,11 @@ struct Args {
     // schedule: Vec<usize>,
 
     // Number of initial burnin samples
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     burnin_samples: usize,
 
     // Number of (post-burnin) samples to run
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     samples: usize,
 
     /// Whether to double the z-layers when doubling resolution
@@ -179,11 +176,11 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (larger numbers induce more compact cells)
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 1.3)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
-    #[arg(short, long, default_value_t = 2000)]
+    #[arg(short, long, default_value_t = 4000)]
     morphology_steps_per_iter: usize,
 
     #[arg(long, default_value_t = 0.1)]
@@ -471,7 +468,6 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
     args.initial_voxel_size = Some(1.0);
     args.voxel_layers = 1;
-    args.nbglayers = 1;
     args.ignore_z_coord = true;
 
     // TODO: This is the resolution on the one dataset I have. It probably
@@ -502,7 +498,9 @@ fn main() {
         + (args.visiumhd as u8)
         > 1
     {
-        panic!("At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope, --visiumhd can be set");
+        panic!(
+            "At most one of --xenium, --cosmx, --cosmx-micron, --merfish, --merscope, --visiumhd can be set"
+        );
     }
 
     if args.xenium {
@@ -597,6 +595,9 @@ fn main() {
         args.nuclear_reassignment_prob,
         args.prior_seg_reassignment_prob,
     );
+
+    voxels.expand_cells_n(args.expand_initialized_cells);
+    voxels.pop_bubbles();
 
     println!("Read dataset:");
     println!("{:>9} transcripts", dataset.transcripts.len());
@@ -742,6 +743,7 @@ fn main() {
         .filter_map(|(id, &mask)| if mask { Some(id.clone()) } else { None })
         .collect::<Vec<_>>();
 
+    let t0 = Instant::now();
     write_cell_metadata(
         &args.output_path,
         &args.output_cell_metadata,
@@ -751,7 +753,9 @@ fn main() {
         &original_cell_ids,
         // &dataset.fov_names,
     );
+    trace!("write_cell_metadata: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     write_gene_metadata(
         &args.output_path,
         &args.output_gene_metadata,
@@ -761,14 +765,18 @@ fn main() {
         &dataset.transcripts,
         &params.foreground_counts_mean.estimates,
     );
+    trace!("write_gene_metadata: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     write_metagene_rates(
         &args.output_path,
         &args.output_metagene_rates,
         args.output_metagene_rates_fmt,
         &params.φ,
     );
+    trace!("write_metagene_rates: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     write_metagene_loadings(
         &args.output_path,
         &args.output_metagene_loadings,
@@ -776,7 +784,9 @@ fn main() {
         &dataset.gene_names,
         &params.θ,
     );
+    trace!("write_metagene_loadings: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
         let (cell_polygons, cell_flattened_polygons) = voxels.cell_polygons();
         write_cell_multipolygons(
@@ -790,7 +800,9 @@ fn main() {
             cell_polygons,
         );
     }
+    trace!("write polygons layers: {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     if args.output_cell_polygons.is_some() {
         let consensus_cell_polygons = voxels.consensus_cell_polygons();
         write_cell_multipolygons(
@@ -799,6 +811,7 @@ fn main() {
             consensus_cell_polygons,
         );
     }
+    trace!("write consensus polygons: {:?}", t0.elapsed());
 }
 
 #[allow(clippy::too_many_arguments)]

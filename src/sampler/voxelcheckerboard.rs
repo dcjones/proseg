@@ -1112,7 +1112,7 @@ impl VoxelCheckerboard {
     }
 
     // Copy occupied voxel states to unoccupied neighbors
-    pub fn expand_cells(&mut self) {
+    fn expand_cells(&mut self) {
         self.quads.par_iter().for_each(|(_quad_pos, quad)| {
             let mut quad_lock = quad.write().unwrap();
 
@@ -1139,8 +1139,12 @@ impl VoxelCheckerboard {
                 quad_lock.set_voxel_cell(neighbor, cell);
             }
         });
+    }
 
-        // need to reubild edge sets
+    pub fn expand_cells_n(&mut self, n: usize) {
+        for _ in 0..n {
+            self.expand_cells();
+        }
         self.build_edge_sets();
     }
 
