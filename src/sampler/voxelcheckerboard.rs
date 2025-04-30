@@ -11,6 +11,8 @@ use super::{CountMatRowKey, ModelParams};
 use geo::geometry::{MultiPolygon, Polygon};
 use log::trace;
 use ndarray::Array2;
+use rand::rng;
+use rand::seq::SliceRandom;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
@@ -444,9 +446,9 @@ impl VoxelQuad {
     }
 
     pub fn voxel_in_bounds(&self, voxel: Voxel) -> bool {
-        let [i, j, _k] = voxel.coords();
+        let [i, j, k] = voxel.coords();
         let (min_i, max_i, min_j, max_j) = self.bounds();
-        min_i <= i && i <= max_i && min_j <= j && j <= max_j
+        min_i <= i && i <= max_i && min_j <= j && j <= max_j && 0 <= k && k <= self.kmax
     }
 
     pub fn update_voxel_cell(
@@ -1082,5 +1084,38 @@ impl VoxelCheckerboard {
             .collect();
 
         cell_polygons
+    }
+
+    // Copy occupied voxel states to unoccupied neighbors
+    pub fn expand_cells(&mut self) {
+        self.quads.par_iter().for_each(|(_quad_pos, quad)| {
+            let mut quad_lock = quad.write().unwrap();
+
+            let mut state_changes = Vec::new();
+            quad_lock.states.iter().for_each(|(voxel, state)| {
+                if state.cell == BACKGROUND_CELL {
+                    return;
+                }
+
+                for neighbor in voxel.von_neumann_neighborhood() {
+                    if !neighbor.is_oob()
+                        && quad_lock.voxel_in_bounds(neighbor)
+                        && quad_lock.get_voxel_cell(neighbor) == BACKGROUND_CELL
+                    {
+                        state_changes.push((neighbor, state.cell));
+                    }
+                }
+            });
+
+            let mut rng = rng();
+            state_changes.shuffle(&mut rng);
+
+            for (neighbor, cell) in state_changes {
+                quad_lock.set_voxel_cell(neighbor, cell);
+            }
+        });
+
+        // need to reubild edge sets
+        self.build_edge_sets();
     }
 }
