@@ -7,14 +7,16 @@ pub mod runvec;
 mod sampleset;
 mod shardedvec;
 pub mod sparsemat;
+pub mod transcriptrepo;
 pub mod transcripts;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
 use clustering::kmeans;
+use dashmap::DashMap;
 use math::randn;
 use ndarray::linalg::general_mat_vec_mul;
-use ndarray::{s, Array1, Array2, Axis, Zip};
+use ndarray::{Array1, Array2, Axis, Zip, s};
 use num::traits::Zero;
 use onlinestats::{CountMeanEstimator, CountQuantileEstimator};
 use rand::rng;
@@ -262,6 +264,9 @@ pub struct ModelParams {
     // [nhidden]: Sums across the first axis of θ
     pub θksum: Array1<f32>,
 
+    // memoization of the ModelParams::λ method
+    λ: DashMap<(u32, u32), f32>,
+
     // [ngenes, nlayers] background rate: rate at which halucinate transcripts
     // across the entire layer
     pub λ_bg: Array2<f32>,
@@ -379,6 +384,7 @@ impl ModelParams {
                 *θksum = θ_k.sum();
             });
 
+        let λ = DashMap::new();
         let λ_bg = Array2::<f32>::zeros((ngenes, nlayers));
         let logλ_bg = Array2::<f32>::zeros((ngenes, nlayers));
 
@@ -424,6 +430,7 @@ impl ModelParams {
             sφ_work_tl,
             θ,
             θksum,
+            λ,
             λ_bg,
             logλ_bg,
             nunfactored,
@@ -435,13 +442,20 @@ impl ModelParams {
 
     // Compute the Poisson rate for cell and gene pair.
     pub fn λ(&self, cell: usize, gene: usize) -> f32 {
+        if let Some(λ_cg) = self.λ.get(&(cell as u32, gene as u32)) {
+            return *λ_cg;
+        }
+
         let φ_cell = self.φ.row(cell);
-        if gene < self.nunfactored {
+        let λ_cg = if gene < self.nunfactored {
             φ_cell[gene]
         } else {
             let θ_g = self.θ.row(gene);
             φ_cell.dot(&θ_g)
-        }
+        };
+        self.λ.insert((cell as u32, gene as u32), λ_cg);
+
+        λ_cg
     }
 
     pub fn log_likelihood(&self, _priors: &ModelPriors) -> f32 {
