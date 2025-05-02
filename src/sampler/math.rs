@@ -26,7 +26,7 @@ pub fn odds_to_prob(q: f32) -> f32 {
 
 // const SQRT_TWO_PI: f32 = 2.506_628_3_f32;
 const LN_SQRT_TWO_PI: f32 = 0.918_938_5_f32;
-const SQRT_2_DIV_SQRT_PI: f32 = 0.797_884_560_802_865_5_f32;
+const SQRT_2_DIV_SQRT_PI: f32 = 0.797_884_6_f32;
 
 // pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
 //     (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
