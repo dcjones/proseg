@@ -79,15 +79,13 @@ pub struct ModelPriors {
     // pub prior_seg_reassignment_log_prob: f32,
     // pub prior_seg_reassignment_1mlog_prob: f32,
 
-    // // mixture between diffusion prior components
-    // pub use_diffusion_model: bool,
-    // pub p_diffusion: f32,
-    // pub σ_diffusion_proposal: f32,
-    // pub σ_diffusion_near: f32,
-    // pub σ_diffusion_far: f32,
+    // mixture between diffusion prior components
+    pub use_diffusion_model: bool,
+    pub p_diffusion: f32,
 
     // pub σ_z_diffusion_proposal: f32,
-    // pub σ_z_diffusion: f32,
+    pub σ_xy_diffusion: f32,
+    pub σ_z_diffusion: f32,
 
     // prior precision on effective log cell volume
     pub τv: f32,
