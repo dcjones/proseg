@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound::Included;
-use std::ops::DerefMut;
+use std::ops::{Add, DerefMut};
 use std::sync::{RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -59,7 +59,7 @@ fn i8_to_i32(u: u32) -> i32 {
 }
 
 impl VoxelOffset {
-    fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
+    pub fn new(di: i32, dj: i32, dk: i32) -> VoxelOffset {
         VoxelOffset {
             offset: ((di as u32 & 0xFFF) << 20) | ((dj as u32 & 0xFFF) << 8) | (dk as u32 & 0xFF),
         }
@@ -86,6 +86,17 @@ impl VoxelOffset {
     }
 }
 
+impl Add for VoxelOffset {
+    type Output = VoxelOffset;
+
+    fn add(self, other: VoxelOffset) -> VoxelOffset {
+        let [di_a, dj_a, dk_a] = self.coords();
+        let [di_b, dj_b, dk_b] = other.coords();
+
+        VoxelOffset::new(di_a + di_b, dj_a + dj_b, dk_a + dk_b)
+    }
+}
+
 // Index of a single voxel
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Voxel {
@@ -96,6 +107,16 @@ pub struct Voxel {
 
 // Using a special value to represent any out of bound voxel.
 const OOB_VOXEL: u64 = 0xffffffffffffffff;
+
+pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
+    (0, 0, 0),
+    (-1, 0, 0),
+    (1, 0, 0),
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+];
 
 // TODO: we could just u32 for coordinates.
 impl Voxel {
@@ -153,7 +174,7 @@ impl Voxel {
         self.offset_coords(d.di(), d.dj(), d.dk())
     }
 
-    fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
+    pub fn offset_coords(&self, di: i32, dj: i32, dk: i32) -> Voxel {
         let new_i = self.i() + di;
         let new_j = self.j() + dj;
         let new_k = self.k() + dk;
@@ -389,6 +410,8 @@ pub struct VoxelQuad {
     // voxel set. We also have to keep track of repositioned transcripts here.
     pub counts: BTreeMap<VoxelCountKey, u32>,
 
+    pub counts_deltas: Vec<(VoxelCountKey, u32)>,
+
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
 
     pub kmax: i32,
@@ -405,6 +428,7 @@ impl VoxelQuad {
         VoxelQuad {
             states: BTreeMap::new(),
             counts: BTreeMap::new(),
+            counts_deltas: Vec::new(),
             mismatch_edges: SampleSet::new(),
             kmax,
             quadsize,
@@ -500,6 +524,11 @@ impl VoxelQuad {
             }
         }
     }
+
+    pub fn apply_counts_deltas(&mut self) {
+        // TODO: We have to figure what to do with deltas that are
+        // cross-quad.
+    }
 }
 
 impl<'a> VoxelQuad {
@@ -523,7 +552,7 @@ impl<'a> VoxelQuad {
 
 pub struct VoxelCheckerboard {
     // number of voxels in each x/y direction
-    quadsize: usize,
+    pub quadsize: usize,
 
     // number of cells (excluding any initialized without voxels)
     pub ncells: usize,
@@ -544,8 +573,8 @@ pub struct VoxelCheckerboard {
     xmin: f32,
     ymin: f32,
     zmin: f32,
-    voxelsize: f32,
-    voxelsize_z: f32,
+    pub voxelsize: f32,
+    pub voxelsize_z: f32,
 
     // boolean mask of cells from initialization that are used in inference
     pub used_cell_mask: Vec<bool>,
@@ -556,6 +585,10 @@ pub struct VoxelCheckerboard {
     // We also need to keep track of whether indexe parities to
     // do staggered updates. So how do we want to organize this.
     pub quads: HashMap<(u32, u32), RwLock<VoxelQuad>>,
+
+    // Set of keys in `quads`. This is obviously redundant, but a
+    // contrivance to avoid multiple borrows of quads in some places.
+    pub quads_coords: HashSet<(u32, u32)>,
 }
 
 impl VoxelCheckerboard {
@@ -612,6 +645,7 @@ impl VoxelCheckerboard {
             voxelsize_z,
             used_cell_mask: vec![false; dataset.ncells],
             quads: HashMap::new(),
+            quads_coords: HashSet::new(),
         };
 
         // assign voxels based on vote winners
@@ -657,6 +691,7 @@ impl VoxelCheckerboard {
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
         checkerboard.ncells = used_cells.len();
+        checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
@@ -1169,5 +1204,63 @@ impl VoxelCheckerboard {
                 quad_lock.update_voxel_cell(voxel, BACKGROUND_CELL, neighbor_cell);
             }
         });
+    }
+
+    pub fn merge_counts_deltas(&mut self, params: &mut ModelParams) {
+        // Move any counts delta that is in the wrong quad to the correct one
+        for key in self.quads.keys() {
+            let quad = &self.quads[key];
+            let mut quad_lock = quad.write().unwrap();
+            let quad_lock_ref = quad_lock.deref_mut();
+            let (min_i, max_i, min_j, max_j) = quad_lock_ref.bounds();
+
+            for (key, count_delta) in quad_lock_ref.counts_deltas.iter_mut() {
+                let neighbor_key = self.quad_index(key.voxel);
+                let neighbor_quad = &self.quads[&neighbor_key];
+                let [i, j, _k] = key.voxel.coords();
+
+                if i < min_i || i > max_i || j < min_j || j > max_j {
+                    neighbor_quad
+                        .write()
+                        .unwrap()
+                        .counts_deltas
+                        .push((*key, *count_delta));
+                    *count_delta = 0;
+                }
+            }
+        }
+
+        // now we can update quads in parallel
+        self.quads.par_iter().for_each(|(_key, quad)| {
+            let mut quad_lock = quad.write().unwrap();
+            let quad_lock_ref = quad_lock.deref_mut();
+            for (key, count_delta) in quad_lock_ref.counts_deltas.drain(..) {
+                if count_delta != 0 {
+                    quad_lock_ref
+                        .counts
+                        .entry(key)
+                        .and_modify(|count| *count += count_delta)
+                        .or_insert(count_delta);
+
+                    let cell = quad_lock_ref
+                        .states
+                        .get(&key.voxel)
+                        .map(|state| state.cell)
+                        .unwrap_or(BACKGROUND_CELL);
+
+                    let k = key.voxel.k();
+                    if cell == BACKGROUND_CELL {
+                        params.background_counts[k as usize].add(key.gene as usize, count_delta);
+                    } else {
+                        let counts_c = params.counts.row(cell as usize);
+                        counts_c
+                            .write()
+                            .sub(CountMatRowKey::new(key.gene, k as u32), count_delta);
+                    }
+                }
+            }
+
+            quad_lock_ref.counts_deltas.clear();
+        })
     }
 }

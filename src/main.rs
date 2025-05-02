@@ -222,17 +222,9 @@ struct Args {
     #[arg(long, default_value_t = 0.2)]
     diffusion_probability: f32,
 
-    /// Stddev of the proposal distribution for transcript repositioning
-    #[arg(long, default_value_t = 4.0)]
-    diffusion_proposal_sigma: f32,
-
-    /// Stddev parameter for repositioning of non-diffused transcripts
-    #[arg(long, default_value_t = 0.5)]
-    diffusion_sigma_near: f32,
-
     /// Stddev parameter for repositioning of diffused transcripts
-    #[arg(long, default_value_t = 4.0)]
-    diffusion_sigma_far: f32,
+    #[arg(long, default_value_t = 2.0)]
+    diffusion_sigma: f32,
 
     /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
@@ -664,15 +656,10 @@ fn main() {
 
         // prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
         // prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
-
-        // use_diffusion_model: !args.no_diffusion,
-        // σ_diffusion_proposal: args.diffusion_proposal_sigma,
-        // p_diffusion: args.diffusion_probability,
-        // σ_diffusion_near: args.diffusion_sigma_near,
-        // σ_diffusion_far: args.diffusion_sigma_far,
-
-        // σ_z_diffusion_proposal: 0.2 * zspan,
-        // σ_z_diffusion: 0.2 * zspan,
+        use_diffusion_model: !args.no_diffusion,
+        p_diffusion: args.diffusion_probability,
+        σ_xy_diffusion: args.diffusion_sigma,
+        σ_z_diffusion: 0.2 * zspan,
         τv: 10.0,
     };
 

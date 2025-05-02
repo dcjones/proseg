@@ -4,8 +4,8 @@ use super::{ModelParams, ModelPriors};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
-use ndarray::{s, Array1, Array2, Axis, Zip};
-use rand::{rng, Rng};
+use ndarray::{Array1, Array2, Axis, Zip, s};
+use rand::{Rng, rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -240,6 +240,8 @@ impl ParamSampler {
                     *ev = (v as f32) * params.voxel_volume;
                 });
         }
+
+        params.λ.clear();
     }
 
     fn sample_z(&self, params: &mut ModelParams) {
