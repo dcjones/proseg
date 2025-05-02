@@ -396,6 +396,9 @@ impl ParamSampler {
                                 break;
                             }
                         }
+
+                        // make sure we didn't lose anything
+                        assert!(s == 0);
                     }
 
                     // add to cell marginal

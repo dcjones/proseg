@@ -1,4 +1,4 @@
-// Data structures for maintaining a set of voxels each with an associated
+// Data structures for maintaining a set of voxels each with an associated:
 // sparse transcript vector.
 
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
@@ -523,11 +523,6 @@ impl VoxelQuad {
                     .insert(UndirectedVoxelPair::new(voxel, neighbor));
             }
         }
-    }
-
-    pub fn apply_counts_deltas(&mut self) {
-        // TODO: We have to figure what to do with deltas that are
-        // cross-quad.
     }
 }
 
@@ -1250,17 +1245,15 @@ impl VoxelCheckerboard {
 
                     let k = key.voxel.k();
                     if cell == BACKGROUND_CELL {
-                        params.background_counts[k as usize].add(key.gene as usize, count_delta);
+                        params.unassigned_counts[k as usize].add(key.gene as usize, count_delta);
                     } else {
                         let counts_c = params.counts.row(cell as usize);
                         counts_c
                             .write()
-                            .sub(CountMatRowKey::new(key.gene, k as u32), count_delta);
+                            .add(CountMatRowKey::new(key.gene, k as u32), count_delta);
                     }
                 }
             }
-
-            quad_lock_ref.counts_deltas.clear();
-        })
+        });
     }
 }

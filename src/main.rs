@@ -8,10 +8,11 @@ mod schemas;
 
 use core::f32;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{trace, warn};
+use log::{info, trace, warn};
 use rayon::current_num_threads;
 use regex::Regex;
 use sampler::paramsampler::ParamSampler;
+use sampler::transcriptrepo::TranscriptRepo;
 use sampler::transcripts::read_transcripts_csv;
 use sampler::voxelcheckerboard::VoxelCheckerboard;
 use sampler::voxelsampler::VoxelSampler;
@@ -679,6 +680,8 @@ fn main() {
     let mut voxel_sampler =
         VoxelSampler::new(0, args.voxel_layers as i32 - 1, args.ab_nihlo_bubble_prob);
 
+    let transcript_repo = TranscriptRepo::new();
+
     const INIT_ITERATIONS: usize = 20;
 
     let total_iterations = INIT_ITERATIONS + args.samples + args.burnin_samples;
@@ -698,6 +701,7 @@ fn main() {
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
+            &transcript_repo,
             &mut voxels,
             &priors,
             &mut params,
@@ -805,6 +809,7 @@ fn main() {
 fn run_sampler(
     param_sampler: &ParamSampler,
     voxel_sampler: &mut VoxelSampler,
+    transcript_repo: &TranscriptRepo,
     voxels: &mut VoxelCheckerboard,
     priors: &ModelPriors,
     params: &mut ModelParams,
@@ -820,6 +825,18 @@ fn run_sampler(
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, priors, params);
     }
+
+    if !burnin && priors.use_diffusion_model {
+        let t0 = Instant::now();
+        transcript_repo.sample(voxels, priors, params);
+        info!("repo transcripts: {:?}", t0.elapsed());
+    }
+
+    // TODO:
+    // At what cadence do we do transcript repo?
+    // Maybe we add floating point `morphology_sample_cadence` and `transcript_repo_cadence`.
+    // then work it out from there? Then we have to support
+
     prog.inc(1);
 
     let nassigned = params.nassigned();
