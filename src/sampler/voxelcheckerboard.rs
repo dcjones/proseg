@@ -686,7 +686,6 @@ impl VoxelCheckerboard {
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
         checkerboard.ncells = used_cells.len();
-        checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
@@ -748,6 +747,7 @@ impl VoxelCheckerboard {
             *count += run.len;
         }
         trace!("assigned voxel counts: {:?}", t0.elapsed());
+        checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
         // initialize edge voxel sets
         checkerboard.mirror_quad_edges();
