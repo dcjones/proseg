@@ -15,6 +15,9 @@ use super::{CountMatRowKey, ModelParams, ModelPriors};
 use rand::rng;
 use rand::rngs::ThreadRng;
 
+const REPO_NEIGHBORHOOD: [(i32, i32, i32); 7] = VON_NEUMANN_AND_SELF_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 27] = MOORE_AND_SELF_OFFSETS;
+
 pub struct TranscriptRepo {}
 
 impl TranscriptRepo {
@@ -95,7 +98,7 @@ fn quad_transcript_repo(
 
         let t0 = Instant::now();
         let λ_bg = params.λ_bg[[gene, k as usize]];
-        let neighbor_probs = VON_NEUMANN_AND_SELF_OFFSETS.map(|(di, dj, dk)| {
+        let neighbor_probs = REPO_NEIGHBORHOOD.map(|(di, dj, dk)| {
             let neighbor = voxel.offset_coords(di, dj, dk);
             let k = neighbor.k();
             if neighbor.is_oob() || k < 0 || k > quad.kmax {
@@ -129,11 +132,11 @@ fn quad_transcript_repo(
             let mut sq_dist_prob = priors.p_diffusion
                 * halfnormal_x2_pdf(
                     priors.σ_xy_diffusion,
-                    sq_dist_xy as f32 / (voxelsize * voxelsize),
+                    sq_dist_xy as f32 * (voxelsize * voxelsize),
                 )
                 * halfnormal_x2_pdf(
                     priors.σ_z_diffusion,
-                    sq_dist_z as f32 / (voxelsize_z * voxelsize_z),
+                    sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
                 );
             if sq_dist_xy == 0 && sq_dist_z == 0 {
                 sq_dist_prob += 1.0 - priors.p_diffusion;
@@ -155,14 +158,11 @@ fn quad_transcript_repo(
             let mut ρ = 1.0;
             let mut s = *count;
 
-            for (step, (&(di, dj, dk), p)) in VON_NEUMANN_AND_SELF_OFFSETS
-                .iter()
-                .zip(neighbor_probs)
-                .enumerate()
+            for (step, (&(di, dj, dk), p)) in
+                REPO_NEIGHBORHOOD.iter().zip(neighbor_probs).enumerate()
             {
                 let p = p as f64 / sum_probs;
-
-                let diffused_count = if step == VON_NEUMANN_AND_SELF_OFFSETS.len() - 1 {
+                let diffused_count = if step == REPO_NEIGHBORHOOD.len() - 1 {
                     s
                 } else if ρ > 0.0 {
                     let r = (p / ρ).min(1.0);
