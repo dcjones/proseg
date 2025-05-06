@@ -440,17 +440,17 @@ impl ModelParams {
 
     // Compute the Poisson rate for cell and gene pair.
     pub fn λ(&self, cell: usize, gene: usize) -> f32 {
+        if gene < self.nunfactored {
+            return self.φ[[cell, gene]];
+        }
+
         if let Some(λ_cg) = self.λ.get(&(cell as u32, gene as u32)) {
             return *λ_cg;
         }
 
-        let φ_cell = self.φ.row(cell);
-        let λ_cg = if gene < self.nunfactored {
-            φ_cell[gene]
-        } else {
-            let θ_g = self.θ.row(gene);
-            φ_cell.dot(&θ_g)
-        };
+        let φ_c = self.φ.row(cell);
+        let θ_g = self.θ.row(gene);
+        let λ_cg = φ_c.dot(&θ_g);
         self.λ.insert((cell as u32, gene as u32), λ_cg);
 
         λ_cg
