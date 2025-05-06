@@ -3,7 +3,7 @@ use rand_distr::{Binomial, Distribution};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;
 use std::ops::DerefMut;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::math::halfnormal_x2_pdf;
 use super::transcripts::BACKGROUND_CELL;
@@ -67,6 +67,9 @@ fn quad_transcript_repo(
 ) {
     quad.counts_deltas.clear();
 
+    let mut compute_probs_elapsed = Duration::ZERO;
+    let mut multinomial_sampling_elapsed = Duration::ZERO;
+
     for (
         VoxelCountKey {
             voxel,
@@ -90,6 +93,7 @@ fn quad_transcript_repo(
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
 
+        let t0 = Instant::now();
         let λ_bg = params.λ_bg[[gene, k as usize]];
         let neighbor_probs = VON_NEUMANN_AND_SELF_OFFSETS.map(|(di, dj, dk)| {
             let neighbor = voxel.offset_coords(di, dj, dk);
@@ -137,13 +141,15 @@ fn quad_transcript_repo(
 
             sq_dist_prob * λ
         });
-        assert!(neighbor_probs[neighbor_probs.len() - 1] > 0.0);
+        assert!(neighbor_probs[0] > 0.0);
+        compute_probs_elapsed += t0.elapsed();
 
         let sum_probs = neighbor_probs.iter().map(|v| *v as f64).sum::<f64>();
         if sum_probs == 0.0 {
             continue;
         }
 
+        let t0 = Instant::now();
         // multinomial sampling (by sampling from Binomial marginals)
         {
             let mut ρ = 1.0;
@@ -199,7 +205,13 @@ fn quad_transcript_repo(
             }
             assert!(s == 0);
         }
+        multinomial_sampling_elapsed += t0.elapsed();
     }
+
+    info!(
+        "transcript repo timings: {:?}",
+        (compute_probs_elapsed, multinomial_sampling_elapsed)
+    );
 
     // Clear out any zeros
     quad.counts.retain(|_key, count| *count > 0);
