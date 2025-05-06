@@ -375,22 +375,23 @@ impl ParamSampler {
                     // rates: normalized element-wise product
                     multinomial_rates.assign(&φ_c.slice(s![params.nunfactored..]));
                     *multinomial_rates *= &θ_g.slice(s![params.nunfactored..]);
-                    let rate_norm = multinomial_rates.sum();
-                    *multinomial_rates /= rate_norm;
 
+                    let rate_norm = multinomial_rates.fold(0.0, |accum, v| accum + *v as f64);
                     // multinomial sampling
                     {
                         let mut ρ = 1.0;
                         let mut s = x_cg;
-                        for (p, x) in izip!(multinomial_rates.iter(), multinomial_sample.iter_mut())
+                        for (&p, x) in
+                            izip!(multinomial_rates.iter(), multinomial_sample.iter_mut())
                         {
+                            let p = p as f64 / rate_norm;
                             if ρ > 0.0 {
-                                *x = Binomial::new(s as u64, ((*p / ρ) as f64).min(1.0))
+                                *x = Binomial::new(s as u64, (p / ρ).min(1.0))
                                     .unwrap()
                                     .sample(rng) as u32;
                             }
                             s -= *x;
-                            ρ -= *p;
+                            ρ -= p;
 
                             if s == 0 {
                                 break;
@@ -404,7 +405,7 @@ impl ParamSampler {
                     // add to cell marginal
                     for (k, &count) in multinomial_sample.iter().enumerate() {
                         if count > 0 {
-                            cell_latent_counts_c.add(k as u32, count);
+                            cell_latent_counts_c.add((params.nunfactored + k) as u32, count);
                         }
                     }
 
