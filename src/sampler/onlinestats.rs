@@ -1,4 +1,4 @@
-use num::{cast::AsPrimitive, Signed, Zero};
+use num::{Signed, Zero, cast::AsPrimitive};
 use rayon::prelude::*;
 use std::f32;
 
@@ -187,16 +187,19 @@ impl CountMeanEstimator {
             .for_each(|(estimates_c, counts_c)| {
                 let counts_c_lock = counts_c.read();
                 let mut estimates_c_lock = estimates_c.write();
-                for (gene, count_cg) in counts_c_lock.iter_nonzeros() {
-                    estimates_c_lock.update(
-                        gene,
-                        || 0.0,
-                        |est| *est += (count_cg.as_() - *est) / t,
-                    );
+                for (gene, count_cg) in counts_c_lock.iter().enumerate() {
+                    if count_cg.is_zero() {
+                        estimates_c_lock.update_if_present(gene as u32, |est| {
+                            *est += (count_cg.as_() - *est) / t
+                        });
+                    } else {
+                        estimates_c_lock.update(
+                            gene as u32,
+                            || 0.0,
+                            |est| *est += (count_cg.as_() - *est) / t,
+                        );
+                    }
                 }
             });
     }
 }
-
-// TODO:
-// Need a similar object for tracking mean estimates (or should we use posterior medians???)
