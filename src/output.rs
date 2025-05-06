@@ -2,25 +2,27 @@ use arrow::array::RecordBatch;
 use arrow::csv;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use geo::MultiPolygon;
 use ndarray::Array2;
 use num::traits::Zero;
+use ordered_float::OrderedFloat;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::sampler::ModelParams;
 use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
-use super::sampler::ModelParams;
 // use crate::schemas::{transcript_metadata_schema, OutputFormat};
 use crate::schemas::OutputFormat;
 
@@ -751,6 +753,9 @@ pub fn write_cell_multipolygons(
         };
         let mut encoder = GzEncoder::new(file, Compression::default());
 
+        // memoize conversion of voxel coordinates to string for efficiency
+        let mut coord_strings: HashMap<OrderedFloat<f32>, String> = HashMap::new();
+
         writeln!(
             encoder,
             "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
@@ -781,7 +786,16 @@ pub fn write_cell_multipolygons(
 
                 let ncoords = poly.exterior().coords().count();
                 for (j, coord) in poly.exterior().coords().enumerate() {
-                    write!(encoder, "              [{}, {}]", coord.x, coord.y).unwrap();
+                    let x_str = coord_strings
+                        .entry(OrderedFloat(coord.x))
+                        .or_insert_with(|| coord.x.to_string());
+                    write!(encoder, "              [{}, ", x_str).unwrap();
+
+                    let y_str = coord_strings
+                        .entry(OrderedFloat(coord.y))
+                        .or_insert_with(|| coord.y.to_string());
+                    write!(encoder, "{}]", y_str).unwrap();
+
                     if j < ncoords - 1 {
                         writeln!(encoder, ",").unwrap();
                     } else {
@@ -823,6 +837,9 @@ pub fn write_cell_layered_multipolygons(
         };
         let mut encoder = GzEncoder::new(file, Compression::default());
 
+        // memoize conversion of voxel coordinates to string for efficiency
+        let mut coord_strings: HashMap<OrderedFloat<f32>, String> = HashMap::new();
+
         writeln!(
             encoder,
             "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": ["
@@ -860,7 +877,16 @@ pub fn write_cell_layered_multipolygons(
 
                     let ncoords = poly.exterior().coords().count();
                     for (j, coord) in poly.exterior().coords().enumerate() {
-                        write!(encoder, "              [{}, {}]", coord.x, coord.y).unwrap();
+                        let x_str = coord_strings
+                            .entry(OrderedFloat(coord.x))
+                            .or_insert_with(|| coord.x.to_string());
+                        write!(encoder, "              [{}, ", x_str).unwrap();
+
+                        let y_str = coord_strings
+                            .entry(OrderedFloat(coord.y))
+                            .or_insert_with(|| coord.y.to_string());
+                        write!(encoder, "{}]", y_str).unwrap();
+
                         if j < ncoords - 1 {
                             writeln!(encoder, ",").unwrap();
                         } else {
