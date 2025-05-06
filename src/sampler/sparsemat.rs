@@ -333,6 +333,17 @@ where
         let count = self.shard.entry(key).or_insert_with(insert_fn);
         update_fn(count);
     }
+
+    pub fn update_if_present<G>(&mut self, j: J, update_fn: G)
+    where
+        G: FnOnce(&mut T),
+    {
+        assert!(j < self.n);
+        let key = (self.i as u32, j);
+        if let Some(count) = self.shard.get_mut(&key) {
+            update_fn(count);
+        }
+    }
 }
 
 impl<T, J> SparseRowWriteLock<'_, T, J>
