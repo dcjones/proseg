@@ -722,7 +722,7 @@ fn main() {
 
     write_sparse_mtx(
         &args.output_path,
-        &args.output_expected_counts,
+        &args.output_maxpost_counts,
         &params.foreground_counts,
     );
 
@@ -819,8 +819,7 @@ fn run_sampler(
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
-    // TODO: De we ever need to purge sparse mats? Maybe we should every few iterations.
-    param_sampler.sample(priors, params, burnin, true, false);
+    param_sampler.sample(priors, params, burnin, true, true);
 
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, priors, params);

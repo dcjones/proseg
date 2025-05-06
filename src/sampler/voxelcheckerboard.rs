@@ -9,6 +9,7 @@ use super::transcripts::{BACKGROUND_CELL, CellIndex, TranscriptDataset};
 use super::{CountMatRowKey, ModelParams};
 
 use geo::geometry::{MultiPolygon, Polygon};
+use log::info;
 use log::trace;
 use ndarray::Array2;
 use rand::rng;
@@ -117,6 +118,39 @@ pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
     (0, 0, -1),
     (0, 0, 1),
 ];
+
+// pub const MOORE_AND_SELF_OFFSETS: [(i32, i32, i32); 27] = [
+//     (0, 0, 0),
+//     // top layer
+//     (-1, 0, -1),
+//     (0, 0, -1),
+//     (1, 0, -1),
+//     (-1, 1, -1),
+//     (0, 1, -1),
+//     (1, 1, -1),
+//     (-1, -1, -1),
+//     (0, -1, -1),
+//     (1, -1, -1),
+//     // middle layer
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     // bottom layer
+//     (-1, 0, 1),
+//     (0, 0, 1),
+//     (1, 0, 1),
+//     (-1, 1, 1),
+//     (0, 1, 1),
+//     (1, 1, 1),
+//     (-1, -1, 1),
+//     (0, -1, 1),
+//     (1, -1, 1),
+// ];
 
 // TODO: we could just u32 for coordinates.
 impl Voxel {
@@ -1203,6 +1237,7 @@ impl VoxelCheckerboard {
 
     pub fn merge_counts_deltas(&mut self, params: &mut ModelParams) {
         // Move any counts delta that is in the wrong quad to the correct one
+        let t0 = Instant::now();
         for key in self.quads.keys() {
             let quad = &self.quads[key];
             let mut quad_lock = quad.write().unwrap();
@@ -1224,8 +1259,10 @@ impl VoxelCheckerboard {
                 }
             }
         }
+        info!("merge counts cleanup: {:?}", t0.elapsed());
 
         // now we can update quads in parallel
+        let t0 = Instant::now();
         self.quads.par_iter().for_each(|(_key, quad)| {
             let mut quad_lock = quad.write().unwrap();
             let quad_lock_ref = quad_lock.deref_mut();
@@ -1255,5 +1292,6 @@ impl VoxelCheckerboard {
                 }
             }
         });
+        info!("merge counts merge: {:?}", t0.elapsed());
     }
 }
