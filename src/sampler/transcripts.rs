@@ -2,8 +2,8 @@ use arrow;
 use csv;
 use flate2::read::MultiGzDecoder;
 use itertools::izip;
-use kiddo::float::kdtree::KdTree;
 use kiddo::SquaredEuclidean;
+use kiddo::float::kdtree::KdTree;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 use ndarray::{Array1, Array2, Zip};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
@@ -169,7 +169,7 @@ impl TranscriptDataset {
     pub fn estimate_full_volume(&self) -> f32 {
         let (xmin, xmax, ymin, ymax, zmin, zmax) = self.coordinate_span();
 
-        const BINSIZE: f32 = 20.0;
+        const BINSIZE: f32 = 10.0;
 
         let xbins = ((xmax - xmin) / BINSIZE).ceil() as usize;
         let ybins = ((ymax - ymin) / BINSIZE).ceil() as usize;
