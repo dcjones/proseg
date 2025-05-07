@@ -1,10 +1,11 @@
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
+use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
-use ndarray::{Array1, Array2, Axis, Zip, s};
+use ndarray::{Array2, Axis, Zip, s};
 use rand::{Rng, rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -38,7 +39,9 @@ impl ParamSampler {
         self.sample_foreground_background(params, purge_sparse_mats);
         trace!("sample_foreground_background: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         self.sample_factor_model(priors, params, sample_z, burnin, purge_sparse_mats);
+        info!("sample_factor_model: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         self.sample_background_rates(priors, params);
@@ -313,6 +316,7 @@ impl ParamSampler {
     }
 
     fn sample_latent_counts(&self, params: &mut ModelParams, purge: bool) {
+        let t0 = Instant::now();
         if purge {
             params.cell_latent_counts.clear();
         } else {
@@ -326,21 +330,19 @@ impl ParamSampler {
 
         let ngenes = params.ngenes();
         let nhidden = params.nhidden();
+        info!("sample_latent_counts: init: {:?}", t0.elapsed());
 
+        let t0 = Instant::now();
         params
             .cell_latent_counts
             .par_rows()
             .zip(params.foreground_counts.par_rows())
             .zip(params.φ.outer_iter())
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, ((cell_latent_counts_c, x_c), φ_c)| {
-                let mut multinomial_rates = params
-                    .multinomial_rates
-                    .get_or(|| RefCell::new(Array1::zeros(nhidden - params.nunfactored)))
-                    .borrow_mut();
-
-                let mut multinomial_sample = params
-                    .multinomial_sample
-                    .get_or(|| RefCell::new(Array1::zeros(nhidden - params.nunfactored)))
+                let mut multinomial = params
+                    .multinomials
+                    .get_or(|| RefCell::new(Multinomial::with_k(nhidden - params.nunfactored)))
                     .borrow_mut();
 
                 let mut gene_latent_counts_tl = params
@@ -368,54 +370,28 @@ impl ParamSampler {
                         continue;
                     }
 
-                    multinomial_sample.fill(0);
-
-                    // rates: normalized element-wise product
-                    multinomial_rates.assign(&φ_c.slice(s![params.nunfactored..]));
-                    *multinomial_rates *= &θ_g.slice(s![params.nunfactored..]);
-
-                    let rate_norm = multinomial_rates.fold(0.0, |accum, v| accum + *v as f64);
-                    // multinomial sampling
-                    {
-                        let mut ρ = 1.0;
-                        let mut s = x_cg;
-                        for (&p, x) in
-                            izip!(multinomial_rates.iter(), multinomial_sample.iter_mut())
-                        {
-                            let p = p as f64 / rate_norm;
-                            if ρ > 0.0 {
-                                *x = Binomial::new(s as u64, (p / ρ).min(1.0))
-                                    .unwrap()
-                                    .sample(rng) as u32;
-                            }
-                            s -= *x;
-                            ρ -= p;
-
-                            if s == 0 {
-                                break;
-                            }
-                        }
-
-                        // make sure we didn't lose anything
-                        assert!(s == 0);
+                    for (k, outcome, &φ_ck, &θ_gk) in izip!(
+                        params.nunfactored..nhidden,
+                        multinomial.outcomes.iter_mut(),
+                        &φ_c.slice(s![params.nunfactored..]),
+                        &θ_g.slice(s![params.nunfactored..])
+                    ) {
+                        outcome.prob = φ_ck * θ_gk;
+                        outcome.index = k as u32;
                     }
-
-                    // add to cell marginal
-                    for (k, &count) in multinomial_sample.iter().enumerate() {
-                        if count > 0 {
-                            cell_latent_counts_c.add((params.nunfactored + k) as u32, count);
-                        }
-                    }
-
-                    // add to gene marginal
+                    multinomial.n = x_cg;
                     let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
-                    gene_latent_counts_g
-                        .slice_mut(s![params.nunfactored..])
-                        .scaled_add(1, &multinomial_sample);
+
+                    multinomial.sample(rng, |k, x| {
+                        cell_latent_counts_c.add(k as u32, x);
+                        gene_latent_counts_g[k] += x;
+                    });
                 }
             });
+        info!("sample_latent_counts: sample: {:?}", t0.elapsed());
 
         // accumulate from thread locate matrices
+        let t0 = Instant::now();
         params.gene_latent_counts.fill(0);
         for x in params.gene_latent_counts_tl.iter_mut() {
             params.gene_latent_counts.scaled_add(1, &x.borrow());
@@ -450,6 +426,7 @@ impl ParamSampler {
                 component_latent_counts_z[g as usize] += x_cg;
             }
         }
+        info!("sample_latent_counts: accumulation: {:?}", t0.elapsed());
 
         info!("component_population: {:?}", &params.component_population);
     }
