@@ -32,6 +32,8 @@ use voxelcheckerboard::VoxelCheckerboard;
 const CELL_SHARDSIZE: usize = 256;
 const GENE_SHARDSIZE: usize = 16;
 
+const RAYON_CELL_MIN_LEN: usize = 200;
+
 // Model prior parameters.
 #[derive(Clone, Copy)]
 pub struct ModelPriors {

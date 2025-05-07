@@ -1,6 +1,6 @@
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::polyagamma::PolyaGamma;
-use super::{ModelParams, ModelPriors};
+use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -140,6 +140,7 @@ impl ParamSampler {
             .par_rows()
             .zip(params.foreground_counts.par_rows())
             .enumerate()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (cell, (row, foreground_row))| {
                 let mut foreground_row = foreground_row.write();
 
@@ -158,32 +159,28 @@ impl ParamSampler {
                         .sample(rng) as u32;
                     let count_bg = count - count_fg;
 
-                    // if count_fg == 0 && count > 1 {
-                    //     dbg!((λ_cg, λ_bg, count, count_fg));
-                    // }
-
                     foreground_row.add(gene, count_fg);
                     params.background_counts[gene_layer.layer as usize]
                         .add(gene as usize, count_bg);
                 }
             });
 
-        let mut nunassigned = 0;
-        for x_l in &params.unassigned_counts {
-            for count in x_l.iter() {
-                nunassigned += count;
-            }
-        }
+        // let mut nunassigned = 0;
+        // for x_l in &params.unassigned_counts {
+        //     for count in x_l.iter() {
+        //         nunassigned += count;
+        //     }
+        // }
 
-        let mut nbackground = 0;
-        for x_l in &params.background_counts {
-            for count in x_l.iter() {
-                nbackground += count;
-            }
-        }
-        info!("sum(unassigned_counts): {}", nunassigned);
-        info!("sum(background_counts): {}", nbackground);
-        info!("sum(foreground_counts): {}", params.foreground_counts.sum());
+        // let mut nbackground = 0;
+        // for x_l in &params.background_counts {
+        //     for count in x_l.iter() {
+        //         nbackground += count;
+        //     }
+        // }
+        // info!("sum(unassigned_counts): {}", nunassigned);
+        // info!("sum(background_counts): {}", nbackground);
+        // info!("sum(foreground_counts): {}", params.foreground_counts.sum());
     }
 
     fn sample_factor_model(
