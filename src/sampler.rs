@@ -1,4 +1,5 @@
 mod math;
+mod multinomial;
 pub mod onlinestats;
 pub mod paramsampler;
 mod polyagamma;
@@ -15,6 +16,7 @@ pub mod voxelsampler;
 use clustering::kmeans;
 use dashmap::DashMap;
 use math::randn;
+use multinomial::Multinomial;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, Axis, Zip, s};
 use num::traits::Zero;
@@ -202,8 +204,7 @@ pub struct ModelParams {
     pub latent_counts: Array1<u32>,
 
     // [nhidden] thread local storage for sampling latent counts
-    pub multinomial_rates: ThreadLocal<RefCell<Array1<f32>>>,
-    pub multinomial_sample: ThreadLocal<RefCell<Array1<u32>>>,
+    pub multinomials: ThreadLocal<RefCell<Multinomial>>,
 
     // [ncells, ncomponents] space for sampling component assignments
     pub z_probs: ThreadLocal<RefCell<Vec<f64>>>,
@@ -340,8 +341,7 @@ impl ModelParams {
         let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
         let gene_latent_counts_tl = ThreadLocal::new();
         let latent_counts = Array1::<u32>::zeros(nhidden);
-        let multinomial_rates = ThreadLocal::new();
-        let multinomial_sample = ThreadLocal::new();
+        let multinomials = ThreadLocal::new();
         let z_probs = ThreadLocal::new();
         let z = initial_component_assignments(&counts, ncomponents);
 
@@ -407,8 +407,7 @@ impl ModelParams {
             gene_latent_counts,
             gene_latent_counts_tl,
             latent_counts,
-            multinomial_rates,
-            multinomial_sample,
+            multinomials,
             z_probs,
             z,
             π,
