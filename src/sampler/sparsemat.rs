@@ -1,7 +1,9 @@
+// use super::RAYON_CELL_MIN_LEN;
 use num::traits::AsPrimitive;
 use num::traits::Zero;
 use rayon::iter::plumbing::{Consumer, ProducerCallback, UnindexedConsumer};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::iter::{Iterator, Sum};
@@ -60,12 +62,27 @@ where
     pub fn rows(&self) -> SparseMatRowsIter<'_, T, J> {
         SparseMatRowsIter { mat: self, i: 0 }
     }
+}
 
-    // Zero by clearing the underlying BTreeMap
+impl<T, J> SparseMat<T, J>
+where
+    T: Send + Sync + Copy + Zero,
+    J: Send + Sync + Copy,
+{
     pub fn clear(&mut self) {
-        for shard in self.shards.iter_mut() {
+        self.shards.par_iter().for_each(|shard| {
             shard.write().unwrap().clear();
-        }
+        });
+    }
+
+    pub fn zero(&mut self) {
+        self.shards.par_iter().for_each(|shard| {
+            shard
+                .write()
+                .unwrap()
+                .values_mut()
+                .for_each(|v| *v = T::zero());
+        });
     }
 }
 
@@ -87,17 +104,6 @@ where
         }
 
         accum
-    }
-
-    // Zero by setting everything to zero without changing the data structure
-    pub fn zero(&mut self) {
-        for shard in self.shards.iter_mut() {
-            shard
-                .write()
-                .unwrap()
-                .values_mut()
-                .for_each(|v| *v = T::zero());
-        }
     }
 }
 
