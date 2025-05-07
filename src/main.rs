@@ -157,21 +157,22 @@ struct Args {
     // schedule: Vec<usize>,
 
     // Number of initial burnin samples
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 100)]
     burnin_samples: usize,
 
     // Number of (post-burnin) samples to run
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 300)]
     samples: usize,
 
     /// Whether to double the z-layers when doubling resolution
     #[arg(long, default_value_t = false)]
     double_z_layers: bool,
 
-    // /// Number of samples at the end of the schedule used to compute
-    // /// expectations and uncertainty
-    // #[arg(long, default_value_t = 100)]
-    // recorded_samples: usize,
+    /// Number of samples at the end of the schedule used to compute
+    /// expectations and uncertainty
+    #[arg(long, default_value_t = 100)]
+    recorded_samples: usize,
+
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
@@ -183,12 +184,6 @@ struct Args {
     /// Number of sub-iterations sampling cell morphology per overall iteration
     #[arg(short, long, default_value_t = 4000)]
     morphology_steps_per_iter: usize,
-
-    #[arg(long, default_value_t = 0.1)]
-    count_pr_cutoff: f32,
-
-    #[arg(long, default_value_t = 0.9)]
-    foreground_pr_cutoff: f32,
 
     #[arg(long, default_value_t = 1.3_f32)]
     perimeter_bound: f32,
@@ -521,9 +516,9 @@ fn main() {
         set_visiumhd_presets(&mut args);
     }
 
-    // if args.recorded_samples > *args.schedule.last().unwrap() {
-    //     panic!("recorded-samples must be <= the last entry in the schedule");
-    // }
+    if args.recorded_samples > args.samples {
+        panic!("recorded-samples must be <= samplese");
+    }
 
     if args.use_cell_initialization {
         args.compartment_column = None;
@@ -693,7 +688,7 @@ fn main() {
     );
 
     for _ in 0..INIT_ITERATIONS {
-        param_sampler.sample(&priors, &mut params, true, false, false);
+        param_sampler.sample(&priors, &mut params, true, false, false, false);
         prog.inc(1);
     }
 
@@ -708,6 +703,7 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             it < args.burnin_samples,
+            it >= (args.burnin_samples + args.samples) - args.recorded_samples,
             args.check_consistency,
             &prog,
         );
@@ -777,32 +773,41 @@ fn main() {
     );
     trace!("write_metagene_loadings: {:?}", t0.elapsed());
 
-    let t0 = Instant::now();
     if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
+        let t0 = Instant::now();
         let (cell_polygons, cell_flattened_polygons) = voxels.cell_polygons();
+        info!("generating polygon layers: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         write_cell_multipolygons(
             &args.output_path,
             &args.output_union_cell_polygons,
             cell_flattened_polygons,
         );
+        info!("write union polygons: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         write_cell_layered_multipolygons(
             &args.output_path,
             &args.output_cell_polygon_layers,
             cell_polygons,
         );
+        info!("write polygon layers: {:?}", t0.elapsed());
     }
-    trace!("write polygons layers: {:?}", t0.elapsed());
 
-    let t0 = Instant::now();
     if args.output_cell_polygons.is_some() {
+        let t0 = Instant::now();
         let consensus_cell_polygons = voxels.consensus_cell_polygons();
+        info!("generate consensus polygons: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
         write_cell_multipolygons(
             &args.output_path,
             &args.output_cell_polygons,
             consensus_cell_polygons,
         );
+        info!("write consensus polygons: {:?}", t0.elapsed());
     }
-    trace!("write consensus polygons: {:?}", t0.elapsed());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -816,10 +821,11 @@ fn run_sampler(
     ntranscripts: usize,
     morphology_steps_per_iter: usize,
     burnin: bool,
+    record_samples: bool,
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
-    param_sampler.sample(priors, params, burnin, true, true);
+    param_sampler.sample(priors, params, burnin, record_samples, true, true);
 
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, priors, params);

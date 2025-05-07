@@ -26,6 +26,7 @@ impl ParamSampler {
         priors: &ModelPriors,
         params: &mut ModelParams,
         burnin: bool,
+        record_samples: bool,
         sample_z: bool,
         purge_sparse_mats: bool,
     ) {
@@ -43,7 +44,7 @@ impl ParamSampler {
         self.sample_background_rates(priors, params);
         trace!("sample_background_rates: {:?}", t0.elapsed());
 
-        if !burnin {
+        if !burnin && record_samples {
             params
                 .foreground_counts_lower
                 .update(&params.foreground_counts);
