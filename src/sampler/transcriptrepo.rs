@@ -1,4 +1,4 @@
-use log::info;
+use log::trace;
 use rand_distr::{Binomial, Distribution};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;
@@ -49,11 +49,11 @@ impl TranscriptRepo {
                     voxels.voxelsize_z,
                 );
             });
-        info!("transcript repo: compute deltas: {:?}", t0.elapsed());
+        trace!("transcript repo: compute deltas: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         voxels.merge_counts_deltas(params);
-        info!("transcript repo: merge deltas: {:?}", t0.elapsed());
+        trace!("transcript repo: merge deltas: {:?}", t0.elapsed());
     }
 }
 
@@ -208,7 +208,7 @@ fn quad_transcript_repo(
         multinomial_sampling_elapsed += t0.elapsed();
     }
 
-    info!(
+    trace!(
         "transcript repo timings: {:?}",
         (compute_probs_elapsed, multinomial_sampling_elapsed)
     );
