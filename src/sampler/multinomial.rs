@@ -9,7 +9,6 @@ pub struct MultinomialOutcome {
 
 pub struct Multinomial {
     pub outcomes: Vec<MultinomialOutcome>,
-    pub n: u32,
 }
 
 // Idea here is to speed up sampling sparse multinomial vectors by sorting the outcome
@@ -24,17 +23,14 @@ impl Multinomial {
                 };
                 k
             ],
-            n: 0,
         }
     }
 
-    pub fn sample<R, F>(&mut self, rng: &mut R, mut nonzero_sample: F)
+    pub fn sample<R, F>(&mut self, rng: &mut R, n: u32, mut nonzero_sample: F)
     where
         R: Rng,
         F: FnMut(usize, u32),
     {
-        // TODO: We could also use a heap here to avoid fulling sorting in most cases.
-
         // sort in descending order by probability
         self.outcomes
             .sort_unstable_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap());
@@ -45,7 +41,7 @@ impl Multinomial {
             .fold(0.0, |accum, outcome| accum + outcome.prob as f64);
 
         let mut ρ = 1.0;
-        let mut s = self.n;
+        let mut s = n;
         for outcome in self.outcomes.iter() {
             let p = outcome.prob as f64 / norm;
             let mut x = 0;

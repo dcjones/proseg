@@ -11,6 +11,10 @@ use rand_distr::StandardNormal;
 //     x * x
 // }
 
+pub fn logistic(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
 pub fn odds_to_prob(q: f32) -> f32 {
     q / (1.0 + q)
 }
