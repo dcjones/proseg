@@ -379,10 +379,9 @@ impl ParamSampler {
                         outcome.prob = φ_ck * θ_gk;
                         outcome.index = k as u32;
                     }
-                    multinomial.n = x_cg;
-                    let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
 
-                    multinomial.sample(rng, |k, x| {
+                    let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
+                    multinomial.sample(rng, x_cg, |k, x| {
                         cell_latent_counts_c.add(k as u32, x);
                         gene_latent_counts_g[k] += x;
                     });

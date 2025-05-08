@@ -14,7 +14,7 @@ use regex::Regex;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcriptrepo::TranscriptRepo;
 use sampler::transcripts::read_transcripts_csv;
-use sampler::voxelcheckerboard::VoxelCheckerboard;
+use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
@@ -77,6 +77,17 @@ struct Args {
     /// Name of column containing the transcript ID
     #[arg(long, default_value = None)]
     transcript_id_column: Option<String>,
+
+    /// Cellpose cell masks matrix in .npy format.
+    #[arg(long, default_value = None)]
+    cellpose_masks: Option<String>,
+
+    /// Cellpose cell probability matrix in .npy format.
+    #[arg(long, default_value = None)]
+    cellpose_cellprobs: Option<String>,
+
+    #[arg(long, default_value_t = 0.9)]
+    cellpose_cellprob_discount: f32,
 
     /// Expand initialized cells outward by this many voxels.
     #[arg(long, default_value_t = 5)]
@@ -575,14 +586,31 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
-    let mut voxels = VoxelCheckerboard::from_prior_transcript_assignments(
-        &dataset,
-        initial_voxel_size,
-        args.quad_size,
-        args.voxel_layers,
-        args.nuclear_reassignment_prob,
-        args.prior_seg_reassignment_prob,
-    );
+    let mut voxels = if args.cellpose_masks.is_some() && args.cellpose_cellprobs.is_some() {
+        // TODO: I'm hardcoding the standard Xenium transformation until I decide
+        // how best to add arguments to capture this
+        let pixel_transform = PixelTransform::scale(0.2125);
+
+        VoxelCheckerboard::from_cellpose_masks(
+            &dataset,
+            &args.cellpose_masks.unwrap(),
+            &args.cellpose_cellprobs.unwrap(),
+            args.cellpose_cellprob_discount,
+            initial_voxel_size,
+            args.quad_size,
+            args.voxel_layers,
+            &pixel_transform,
+        )
+    } else {
+        VoxelCheckerboard::from_prior_transcript_assignments(
+            &dataset,
+            initial_voxel_size,
+            args.quad_size,
+            args.voxel_layers,
+            args.nuclear_reassignment_prob,
+            args.prior_seg_reassignment_prob,
+        )
+    };
 
     voxels.expand_cells_n(args.expand_initialized_cells);
     voxels.pop_bubbles();
@@ -723,6 +751,8 @@ fn main() {
     );
 
     let cell_centroids = voxels.cell_centroids(&params);
+
+    // TODO: This isn't going to work with cellpose masks
     let original_cell_ids = dataset
         .original_cell_ids
         .iter()

@@ -600,7 +600,12 @@ fn initial_component_assignments(
 
         // normalize
         let row_sum = expr_row.sum();
-        expr_row.mapv_inplace(|x| (NORM_CONSTANT * x / row_sum).ln_1p());
+        if row_sum == 0.0 {
+            let c = (NORM_CONSTANT / ngenes as f32).ln_1p();
+            expr_row.fill(c);
+        } else {
+            expr_row.mapv_inplace(|x| (NORM_CONSTANT * x / row_sum).ln_1p());
+        }
 
         // apply projection
         general_mat_vec_mul(1.0, &proj, &expr_row, 0.0, &mut embedding_c);
