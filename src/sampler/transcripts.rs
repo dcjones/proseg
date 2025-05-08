@@ -145,6 +145,16 @@ impl TranscriptDataset {
         (zmin, zmax)
     }
 
+    pub fn z_mean(&self) -> f32 {
+        let z_sum = self
+            .transcripts
+            .iter_runs()
+            .map(|run| run.len as f64 * run.value.z as f64)
+            .sum::<f64>();
+        let z_mean = z_sum / self.transcripts.len as f64;
+        z_mean as f32
+    }
+
     pub fn coordinate_span(&self) -> (f32, f32, f32, f32, f32, f32) {
         let mut min_x = f32::MAX;
         let mut max_x = f32::MIN;
