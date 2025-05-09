@@ -607,8 +607,8 @@ fn main() {
             initial_voxel_size,
             args.quad_size,
             args.voxel_layers,
-            args.nuclear_reassignment_prob,
-            args.prior_seg_reassignment_prob,
+            1.0 - args.nuclear_reassignment_prob,
+            1.0 - args.prior_seg_reassignment_prob,
         )
     };
 

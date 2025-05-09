@@ -28,6 +28,7 @@ use sparsemat::{Increment, SparseMat};
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
+use transcripts::BACKGROUND_CELL;
 use voxelcheckerboard::VoxelCheckerboard;
 
 // Shard size used for sharded vectors and matrices
@@ -441,6 +442,10 @@ impl ModelParams {
 
     // Compute the Poisson rate for cell and gene pair.
     pub fn λ(&self, cell: usize, gene: usize) -> f32 {
+        if cell as u32 == BACKGROUND_CELL {
+            return 0.0;
+        }
+
         if gene < self.nunfactored {
             return self.φ[[cell, gene]];
         }

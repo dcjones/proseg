@@ -221,32 +221,23 @@ impl VoxelSampler {
         // should be assigned to
         if prior_prob != 0.0 {
             let prior_log_prob = prior_prob.ln();
+            let prior_log_1m_prob = (-prior_prob).ln_1p();
+
             if current_cell == prior_cell {
                 δ -= prior_log_prob;
             } else {
-                δ += prior_log_prob;
+                δ -= prior_log_1m_prob;
             }
 
             if proposed_cell == prior_cell {
                 δ += prior_log_prob;
             } else {
-                δ -= prior_log_prob;
+                δ += prior_log_1m_prob;
             }
         }
 
         let k = voxel.k();
-        // dbg!(k, params.λ_bg.shape(), self.kmax, quad.kmax);
         let λ_bg_k = params.λ_bg.column(k as usize);
-        let φ_current = if current_cell == BACKGROUND_CELL {
-            None
-        } else {
-            Some(params.φ.row(current_cell as usize))
-        };
-        let φ_proposed = if proposed_cell == BACKGROUND_CELL {
-            None
-        } else {
-            Some(params.φ.row(proposed_cell as usize))
-        };
         for (
             &VoxelCountKey {
                 voxel: _,
@@ -260,27 +251,8 @@ impl VoxelSampler {
                 continue;
             }
 
-            let λ_current_g = φ_current
-                .map(|φ_current| {
-                    if (gene as usize) < params.nunfactored {
-                        φ_current[gene as usize]
-                    } else {
-                        let θ_g = params.θ.row(gene as usize);
-                        φ_current.dot(&θ_g)
-                    }
-                })
-                .unwrap_or(0.0);
-
-            let λ_proposed_g = φ_proposed
-                .map(|φ_proposed| {
-                    if (gene as usize) < params.nunfactored {
-                        φ_proposed[gene as usize]
-                    } else {
-                        let θ_g = params.θ.row(gene as usize);
-                        φ_proposed.dot(&θ_g)
-                    }
-                })
-                .unwrap_or(0.0);
+            let λ_current_g = params.λ(current_cell as usize, gene as usize);
+            let λ_proposed_g = params.λ(proposed_cell as usize, gene as usize);
 
             let λ_bg = λ_bg_k[gene as usize];
             δ -= (count as f32) * (λ_current_g + λ_bg).ln();
