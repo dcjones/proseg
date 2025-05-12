@@ -30,6 +30,7 @@ impl TranscriptRepo {
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &mut ModelParams,
+        hillclimb: bool,
     ) {
         let t0 = Instant::now();
         voxels
@@ -47,6 +48,7 @@ impl TranscriptRepo {
                     voxels.quadsize as u32,
                     voxels.voxelsize,
                     voxels.voxelsize_z,
+                    hillclimb,
                 );
             });
         trace!("transcript repo: compute deltas: {:?}", t0.elapsed());
@@ -67,6 +69,7 @@ fn quad_transcript_repo(
     quadsize: u32,
     voxelsize: f32,
     voxelsize_z: f32,
+    _hillclimb: bool,
 ) {
     quad.counts_deltas.clear();
 
@@ -131,26 +134,46 @@ fn quad_transcript_repo(
 
             let mut sq_dist_prob = priors.p_diffusion
                 * halfnormal_x2_pdf(
-                    priors.σ_xy_diffusion,
+                    priors.σ_xy_diffusion_far,
                     sq_dist_xy as f32 * (voxelsize * voxelsize),
                 )
                 * halfnormal_x2_pdf(
                     priors.σ_z_diffusion,
                     sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
                 );
-            if sq_dist_xy == 0 && sq_dist_z == 0 {
-                sq_dist_prob += 1.0 - priors.p_diffusion;
-            }
+
+            sq_dist_prob += (1.0 - priors.p_diffusion)
+                * halfnormal_x2_pdf(
+                    priors.σ_xy_diffusion_near,
+                    sq_dist_xy as f32 * (voxelsize * voxelsize),
+                )
+                * halfnormal_x2_pdf(
+                    priors.σ_z_diffusion,
+                    sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
+                );
 
             sq_dist_prob * λ
         });
         assert!(neighbor_probs[0] > 0.0);
         compute_probs_elapsed += t0.elapsed();
 
+        // TODO: Unclear if hillclimbing makes sense in repo
+        // if hillclimb {
+        //     let max_idx = neighbor_probs
+        //         .iter()
+        //         .enumerate()
+        //         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        //         .map(|(idx, _)| idx)
+        //         .unwrap_or(0);
+
+        //     for (i, p) in neighbor_probs.iter_mut().enumerate() {
+        //         if i != max_idx {
+        //             *p = 0.0;
+        //         }
+        //     }
+        // }
+
         let sum_probs = neighbor_probs.iter().map(|v| *v as f64).sum::<f64>();
-        if sum_probs == 0.0 {
-            continue;
-        }
 
         let t0 = Instant::now();
         // multinomial sampling (by sampling from Binomial marginals)
