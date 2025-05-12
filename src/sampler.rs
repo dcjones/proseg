@@ -89,7 +89,8 @@ pub struct ModelPriors {
     pub p_diffusion: f32,
 
     // pub σ_z_diffusion_proposal: f32,
-    pub σ_xy_diffusion: f32,
+    pub σ_xy_diffusion_near: f32,
+    pub σ_xy_diffusion_far: f32,
     pub σ_z_diffusion: f32,
 
     // prior precision on effective log cell volume

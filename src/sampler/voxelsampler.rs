@@ -62,6 +62,7 @@ impl VoxelSampler {
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &ModelParams,
+        hillclimb: bool,
     ) {
         let t0 = Instant::now();
 
@@ -90,7 +91,13 @@ impl VoxelSampler {
                 let proposal = proposal.unwrap();
 
                 let logu = self.evaluate_proposal(&quad, priors, params, proposal);
-                if rng().random::<f32>().ln() < logu {
+                let s = if hillclimb {
+                    0.0
+                } else {
+                    rng().random::<f32>().ln()
+                };
+
+                if s < logu {
                     self.accept_proposal(voxels, &mut quad, params, proposal);
                 }
             });
