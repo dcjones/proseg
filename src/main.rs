@@ -86,6 +86,18 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_cellprobs: Option<String>,
 
+    // Affine x-coordinate transformation to transform mask pixels to slide microns.
+    #[arg(long, value_delimiter = ' ', num_args = 3)]
+    cellpose_x_transform: Option<Vec<f32>>,
+
+    // Affine y-coordinate transformation to transform mask pixels to slide microns.
+    #[arg(long, value_delimiter = ' ', num_args = 3)]
+    cellpose_y_transform: Option<Vec<f32>>,
+
+    // Scale in microns per pixel
+    #[arg(long, default_value = None)]
+    cellpose_scale: Option<f32>,
+
     #[arg(long, default_value_t = 0.9)]
     cellpose_cellprob_discount: f32,
 
@@ -403,6 +415,14 @@ fn set_xenium_presets(args: &mut Args) {
         "^(Deprecated|NegControl|Unassigned|Intergenic)",
     ));
 
+    // This seems pretty consistent, but seems possible it could change
+    if args.cellpose_scale.is_none()
+        && args.cellpose_x_transform.is_none()
+        && args.cellpose_y_transform.is_none()
+    {
+        args.cellpose_scale = Some(0.2125);
+    }
+
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
 }
@@ -595,12 +615,35 @@ fn main() {
 
     // We are going to try to initialize at full resolution.
     let mut voxels = if args.cellpose_masks.is_some() && args.cellpose_cellprobs.is_some() {
-        // TODO: I'm hardcoding the standard Xenium transformation until I decide
-        // how best to add arguments to capture this
-        let pixel_transform = PixelTransform::scale(0.2125);
+        if args.cellpose_scale.is_some()
+            && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
+        {
+            panic!(
+                "Maskt transform must be supplied with either --cellpose-scale or both of --cellpose-x-transform, --cellpose-y-transform"
+            );
+        }
+
+        let pixel_transform = if let Some(cellpose_scale) = args.cellpose_scale {
+            PixelTransform::scale(cellpose_scale)
+        } else {
+            let cellpose_x_transform = args.cellpose_x_transform.unwrap();
+            let cellpose_y_transform = args.cellpose_y_transform.unwrap();
+
+            let tx = [
+                cellpose_x_transform[0],
+                cellpose_x_transform[1],
+                cellpose_x_transform[2],
+            ];
+            let ty = [
+                cellpose_y_transform[0],
+                cellpose_y_transform[1],
+                cellpose_y_transform[2],
+            ];
+            PixelTransform { tx, ty }
+        };
 
         VoxelCheckerboard::from_cellpose_masks(
-            &dataset,
+            &mut dataset,
             &args.cellpose_masks.unwrap(),
             &args.cellpose_cellprobs.unwrap(),
             args.cellpose_cellprob_discount,
