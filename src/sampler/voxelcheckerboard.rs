@@ -35,8 +35,8 @@ pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
 // Simple affine transform matrix to map pixel coordinates onto slide microns
 pub struct PixelTransform {
-    tx: [f32; 3],
-    ty: [f32; 3],
+    pub tx: [f32; 3],
+    pub ty: [f32; 3],
 }
 
 impl PixelTransform {
@@ -855,7 +855,7 @@ impl VoxelCheckerboard {
 
     #[allow(clippy::too_many_arguments)]
     pub fn from_cellpose_masks(
-        dataset: &TranscriptDataset,
+        dataset: &mut TranscriptDataset,
         masks_filename: &str,
         cellprob_filename: &str,
         cellprob_discount: f32,
@@ -895,6 +895,7 @@ impl VoxelCheckerboard {
 
         let t0 = Instant::now();
         let mut cell_votes: BTreeMap<(Voxel, CellIndex), f32> = BTreeMap::new();
+
         Zip::indexed(&masks)
             .and(&cellprobs)
             .for_each(|(i, j), &masks_ij, &cellprobs_ij| {
@@ -902,7 +903,7 @@ impl VoxelCheckerboard {
                     return;
                 }
 
-                let (x, y) = pixel_transform.transform(i, j);
+                let (x, y) = pixel_transform.transform(j, i);
                 let voxel = coords_to_voxel(x, y, zmid);
                 let cell = masks_ij - 1;
                 let prior = logistic(cellprobs_ij);
@@ -913,9 +914,6 @@ impl VoxelCheckerboard {
         trace!("Voting on voxel states: {:?}", t0.elapsed());
 
         // save memory where we can
-        let masks_ncells = masks.fold(0, |max_cell, cell| max_cell.max(*cell)) as usize;
-        dbg!(masks_ncells);
-
         drop(masks);
         drop(cellprobs);
 
@@ -931,7 +929,7 @@ impl VoxelCheckerboard {
             zmin,
             voxelsize,
             voxelsize_z,
-            used_cell_mask: vec![false; masks_ncells],
+            used_cell_mask: vec![false; 0],
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
         };
@@ -955,7 +953,6 @@ impl VoxelCheckerboard {
                     );
                     let next_cell_id = used_cells.len() as CellIndex;
                     used_cells.entry(vote_winner).or_insert(next_cell_id);
-                    checkerboard.used_cell_mask[vote_winner as usize] = true;
                 }
                 vote_winner = cell;
                 vote_winner_prior_sum = prior_sum;
@@ -982,7 +979,23 @@ impl VoxelCheckerboard {
         }
 
         checkerboard.ncells = used_cells.len();
-        dbg!(checkerboard.ncells);
+
+        // Rewrite original ids
+        let mut cell_id_pairs: Vec<_> = used_cells
+            .iter()
+            .map(|(original_cell_id, cell_id)| (*cell_id, *original_cell_id))
+            .collect();
+        dbg!(used_cells.len());
+        dbg!(cell_id_pairs.len());
+        cell_id_pairs.sort();
+        dataset.original_cell_ids.clear();
+        dataset.original_cell_ids.extend(
+            cell_id_pairs
+                .iter()
+                .map(|(_, original_cell_id)| (original_cell_id + 1).to_string()),
+        );
+        checkerboard.used_cell_mask = vec![true; used_cells.len()];
+        dbg!(dataset.original_cell_ids.len());
 
         checkerboard.quads.values().for_each(|quad| {
             let mut quad_lock = quad.write().unwrap();
