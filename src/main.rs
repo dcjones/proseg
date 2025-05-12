@@ -168,12 +168,16 @@ struct Args {
     // schedule: Vec<usize>,
 
     // Number of initial burnin samples
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     burnin_samples: usize,
 
     // Number of (post-burnin) samples to run
-    #[arg(long, default_value_t = 300)]
+    #[arg(long, default_value_t = 200)]
     samples: usize,
+
+    // Number of optimization iterations to run after sampling
+    #[arg(long, default_value_t = 50)]
+    hillclimb: usize,
 
     /// Whether to double the z-layers when doubling resolution
     #[arg(long, default_value_t = false)]
@@ -229,9 +233,13 @@ struct Args {
     #[arg(long, default_value_t = 0.2)]
     diffusion_probability: f32,
 
-    /// Stddev parameter for repositioning of diffused transcripts
+    /// Stddev parameter for repositioning of un-diffused transcripts
     #[arg(long, default_value_t = 2.0)]
-    diffusion_sigma: f32,
+    diffusion_sigma_near: f32,
+    ///
+    /// Stddev parameter for repositioning of diffused transcripts
+    #[arg(long, default_value_t = 4.0)]
+    diffusion_sigma_far: f32,
 
     /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
@@ -682,7 +690,8 @@ fn main() {
         // prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
         use_diffusion_model: !args.no_diffusion,
         p_diffusion: args.diffusion_probability,
-        σ_xy_diffusion: args.diffusion_sigma,
+        σ_xy_diffusion_near: args.diffusion_sigma_near,
+        σ_xy_diffusion_far: args.diffusion_sigma_far,
         σ_z_diffusion: 0.2 * zspan,
         τv: 10.0,
     };
@@ -707,7 +716,7 @@ fn main() {
 
     const INIT_ITERATIONS: usize = 20;
 
-    let total_iterations = INIT_ITERATIONS + args.samples + args.burnin_samples;
+    let total_iterations = INIT_ITERATIONS + args.samples + args.burnin_samples + args.hillclimb;
     let prog = ProgressBar::new(total_iterations as u64);
     prog.set_style(
         ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
@@ -716,11 +725,11 @@ fn main() {
     );
 
     for _ in 0..INIT_ITERATIONS {
-        param_sampler.sample(&priors, &mut params, true, false, false, false);
+        param_sampler.sample(&priors, &mut params, true, false, false, false, false);
         prog.inc(1);
     }
 
-    for it in 0..(args.burnin_samples + args.samples) {
+    for it in 0..(args.burnin_samples + args.samples + args.hillclimb) {
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -731,7 +740,10 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             it < args.burnin_samples,
-            it >= (args.burnin_samples + args.samples) - args.recorded_samples,
+            it >= args.burnin_samples + args.samples,
+            // TODO: I guess whether we record dependns on our intentions. We should probably
+            // not record the hillclimbing iterations.
+            it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
             args.check_consistency,
             &prog,
         );
@@ -851,19 +863,28 @@ fn run_sampler(
     ntranscripts: usize,
     morphology_steps_per_iter: usize,
     burnin: bool,
+    hillclimb: bool,
     record_samples: bool,
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
-    param_sampler.sample(priors, params, burnin, record_samples, true, true);
+    param_sampler.sample(
+        priors,
+        params,
+        burnin,
+        hillclimb,
+        record_samples,
+        true,
+        true,
+    );
 
     for _ in 0..morphology_steps_per_iter {
-        voxel_sampler.sample(voxels, priors, params);
+        voxel_sampler.sample(voxels, priors, params, hillclimb);
     }
 
     if !burnin && priors.use_diffusion_model {
         let t0 = Instant::now();
-        transcript_repo.sample(voxels, priors, params);
+        transcript_repo.sample(voxels, priors, params, hillclimb);
         info!("repo transcripts: {:?}", t0.elapsed());
     }
 

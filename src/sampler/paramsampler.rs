@@ -22,11 +22,13 @@ impl ParamSampler {
         ParamSampler {}
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn sample(
         &self,
         priors: &ModelPriors,
         params: &mut ModelParams,
         burnin: bool,
+        _hillclimb: bool,
         record_samples: bool,
         sample_z: bool,
         purge_sparse_mats: bool,
