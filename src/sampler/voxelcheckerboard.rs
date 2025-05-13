@@ -853,31 +853,78 @@ impl VoxelCheckerboard {
         }
     }
 
+    fn tally_cellpose_pixels_with_probs(
+        cellprob_filename: &str,
+        masks: &Array2<u32>,
+        pixel_transform: &PixelTransform,
+        cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
+        coords_to_voxel: impl Fn(f32, f32, f32) -> Voxel,
+        zmid: f32,
+    ) {
+        let cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
+            |_err| panic!("Unable to read cellpose cellprob from {}. Make sure it an npy file (possibly gzipped) containing a float32 matrix", cellprob_filename)
+        );
+        assert!(masks.shape() == cellprobs.shape());
+
+        Zip::indexed(masks)
+            .and(&cellprobs)
+            .for_each(|(i, j), &masks_ij, &cellprobs_ij| {
+                if masks_ij == 0 {
+                    return;
+                }
+
+                let (x, y) = pixel_transform.transform(j, i);
+                let voxel = coords_to_voxel(x, y, zmid);
+                let cell = masks_ij - 1;
+                let prior = logistic(cellprobs_ij);
+
+                let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
+                *vote += prior;
+            });
+    }
+
+    fn tally_cellpose_pixels_without_probs(
+        prior: f32,
+        masks: &Array2<u32>,
+        pixel_transform: &PixelTransform,
+        cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
+        coords_to_voxel: impl Fn(f32, f32, f32) -> Voxel,
+        zmid: f32,
+    ) {
+        Zip::indexed(masks).for_each(|(i, j), &masks_ij| {
+            if masks_ij == 0 {
+                return;
+            }
+
+            let (x, y) = pixel_transform.transform(j, i);
+            let voxel = coords_to_voxel(x, y, zmid);
+            let cell = masks_ij - 1;
+
+            let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
+            *vote += prior;
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn from_cellpose_masks(
         dataset: &mut TranscriptDataset,
         masks_filename: &str,
-        cellprob_filename: &str,
+        cellprob_filename: &Option<String>,
         cellprob_discount: f32,
         voxelsize: f32,
         quadsize: f32,
         nzlayers: usize,
         pixel_transform: &PixelTransform,
+        cellprior: f32,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
             |_err| panic!("Unable to read cellpose masks from {}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix", masks_filename)
         );
-        let cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
-            |_err| panic!("Unable to read cellpose cellprob from {}. Make sure it an npy file (possibly gzipped) containing a float32 matrix", cellprob_filename)
-        );
-        assert!(masks.shape() == cellprobs.shape());
         info!(
             "Read {} by {} cellpose mask.",
             masks.shape()[0],
             masks.shape()[1]
         );
-
-        // TODO: I could make cellprobs optional.
 
         let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
         let voxelsize_z = (zmax - zmin) / nzlayers as f32;
@@ -896,26 +943,29 @@ impl VoxelCheckerboard {
         let t0 = Instant::now();
         let mut cell_votes: BTreeMap<(Voxel, CellIndex), f32> = BTreeMap::new();
 
-        Zip::indexed(&masks)
-            .and(&cellprobs)
-            .for_each(|(i, j), &masks_ij, &cellprobs_ij| {
-                if masks_ij == 0 {
-                    return;
-                }
-
-                let (x, y) = pixel_transform.transform(j, i);
-                let voxel = coords_to_voxel(x, y, zmid);
-                let cell = masks_ij - 1;
-                let prior = logistic(cellprobs_ij);
-
-                let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
-                *vote += prior;
-            });
+        if let Some(cellprob_filename) = cellprob_filename {
+            Self::tally_cellpose_pixels_with_probs(
+                cellprob_filename,
+                &masks,
+                pixel_transform,
+                &mut cell_votes,
+                coords_to_voxel,
+                zmid,
+            );
+        } else {
+            Self::tally_cellpose_pixels_without_probs(
+                cellprior,
+                &masks,
+                pixel_transform,
+                &mut cell_votes,
+                coords_to_voxel,
+                zmid,
+            );
+        }
         trace!("Voting on voxel states: {:?}", t0.elapsed());
 
         // save memory where we can
         drop(masks);
-        drop(cellprobs);
 
         let mut checkerboard = VoxelCheckerboard {
             quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
