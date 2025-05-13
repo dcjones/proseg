@@ -555,6 +555,10 @@ fn main() {
         set_visiumhd_presets(&mut args);
     }
 
+    if args.visiumhd && args.cellpose_masks.is_none() {
+        panic!("Visium HD input must be initialized with cellpose masks.");
+    }
+
     if args.recorded_samples > args.samples {
         panic!("recorded-samples must be <= samplese");
     }
@@ -609,11 +613,15 @@ fn main() {
     }
 
     let (zmin, zmax) = dataset.normalize_z_coordinates();
-    let zspan = zmax - zmin;
+    let mut zspan = zmax - zmin;
 
     if zspan == 0.0 && args.voxel_layers != 1 {
         println!("Z-coordinate span is zero. Setting voxel layers to 1.");
         args.voxel_layers = 1;
+    }
+
+    if zspan == 0.0 {
+        zspan = 1.0;
     }
 
     // TODO: In various sharded data structures we assume cells index proximity
@@ -630,13 +638,19 @@ fn main() {
             && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
         {
             panic!(
-                "Maskt transform must be supplied with either --cellpose-scale or both of --cellpose-x-transform, --cellpose-y-transform"
+                "Cellpose mask transform must be supplied with either --cellpose-scale or both of --cellpose-x-transform, --cellpose-y-transform"
             );
         }
 
         let pixel_transform = if let Some(cellpose_scale) = args.cellpose_scale {
             PixelTransform::scale(cellpose_scale)
         } else {
+            if args.cellpose_x_transform.is_none() || args.cellpose_x_transform.is_none() {
+                panic!(
+                    "Cellpose mask transform must be supplied with either --cellpose-scale or both of --cellpose-x-transform, --cellpose-y-transform"
+                );
+            }
+
             let cellpose_x_transform = args.cellpose_x_transform.unwrap();
             let cellpose_y_transform = args.cellpose_y_transform.unwrap();
 

@@ -667,7 +667,12 @@ impl VoxelCheckerboard {
         cellprior: f32,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
-        let voxelsize_z = (zmax - zmin) / nzlayers as f32;
+
+        let voxelsize_z = if zmin == zmax {
+            1.0
+        } else {
+            (zmax - zmin) / nzlayers as f32
+        };
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
@@ -939,7 +944,11 @@ impl VoxelCheckerboard {
         );
 
         let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
-        let voxelsize_z = (zmax - zmin) / nzlayers as f32;
+        let voxelsize_z = if zmin == zmax {
+            1.0
+        } else {
+            (zmax - zmin) / nzlayers as f32
+        };
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
         let zmid = dataset.z_mean();
 
@@ -1052,8 +1061,6 @@ impl VoxelCheckerboard {
             .iter()
             .map(|(original_cell_id, cell_id)| (*cell_id, *original_cell_id))
             .collect();
-        dbg!(used_cells.len());
-        dbg!(cell_id_pairs.len());
         cell_id_pairs.sort();
         dataset.original_cell_ids.clear();
         dataset.original_cell_ids.extend(
@@ -1062,7 +1069,6 @@ impl VoxelCheckerboard {
                 .map(|(_, original_cell_id)| (original_cell_id + 1).to_string()),
         );
         checkerboard.used_cell_mask = vec![true; used_cells.len()];
-        dbg!(dataset.original_cell_ids.len());
 
         checkerboard.quads.values().for_each(|quad| {
             let mut quad_lock = quad.write().unwrap();

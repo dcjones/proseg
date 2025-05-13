@@ -349,7 +349,10 @@ impl ModelParams {
 
         let π = Array1::<f32>::zeros(ncomponents);
         let log_π = Array1::<f32>::zeros(ncomponents);
-        let component_population = Array1::<u32>::zeros(ncomponents);
+        let mut component_population = Array1::<u32>::zeros(ncomponents);
+        for z_c in z.iter() {
+            component_population[*z_c as usize] += 1;
+        }
         let component_volume = Array1::<f32>::zeros(ncomponents);
         let component_latent_counts = Array2::<u32>::zeros((ncomponents, nhidden));
         let μ_volume = Array1::<f32>::from_elem(ncomponents, priors.μ_μ_volume);
