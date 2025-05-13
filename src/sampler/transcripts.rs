@@ -1,7 +1,8 @@
 use arrow;
 use csv;
-use flate2::read::MultiGzDecoder;
+use flate2::read::{GzDecoder, MultiGzDecoder};
 use itertools::izip;
+use json;
 use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
@@ -11,6 +12,7 @@ use rand::Rng;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
+use std::path::Path;
 use std::str;
 
 pub type CellIndex = u32;
@@ -122,9 +124,21 @@ impl TranscriptDataset {
     }
 
     pub fn normalize_z_coordinates(&mut self) -> (f32, f32) {
-        let xs = self.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
-        let ys = self.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
-        let mut zs = self.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
+        let xs = self
+            .transcripts
+            .iter_runs()
+            .map(|run| run.value.x)
+            .collect::<Vec<_>>();
+        let ys = self
+            .transcripts
+            .iter_runs()
+            .map(|run| run.value.y)
+            .collect::<Vec<_>>();
+        let mut zs = self
+            .transcripts
+            .iter_runs()
+            .map(|run| run.value.z)
+            .collect::<Vec<_>>();
 
         regress_out_tilt(&xs, &ys, &mut zs);
 
@@ -208,6 +222,175 @@ impl TranscriptDataset {
 
     pub fn ngenes(&self) -> usize {
         self.gene_names.len()
+    }
+}
+
+fn read_visium_features_tsv(filename: &str) -> Vec<String> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .from_reader(GzDecoder::new(File::open(filename).unwrap()));
+
+    let mut genes = Vec::new();
+    for result in rdr.records() {
+        let row = result.unwrap();
+        // TODO: row[0] is ensembl id, row[2] is gene type
+        // We may wan to keep this info
+        genes.push(row[1].to_string());
+    }
+
+    genes
+}
+
+fn read_visium_barcodes_tsv(filename: &str) -> Vec<String> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .from_reader(GzDecoder::new(File::open(filename).unwrap()));
+
+    let mut barcodes = Vec::new();
+    for result in rdr.records() {
+        let row = result.unwrap();
+        barcodes.push(row[0].to_string());
+    }
+
+    barcodes
+}
+
+fn read_visium_tissue_positions_parquet(filename: &str) -> HashMap<String, (f32, f32)> {
+    let input_file =
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
+    let schema = builder.schema().as_ref().clone();
+    let rdr = builder
+        .build()
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {}", filename));
+
+    let barcode_col_idx = schema.index_of("barcode").unwrap();
+    let row_px_col_idx = schema.index_of("pxl_row_in_fullres").unwrap();
+    let col_px_col_idx = schema.index_of("pxl_col_in_fullres").unwrap();
+
+    let mut barcode_positions = HashMap::new();
+    for rec_batch in rdr {
+        let rec_batch = rec_batch.expect("Unable to read record batch.");
+
+        let barcodes = rec_batch
+            .column(barcode_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+
+        let row_pxs = rec_batch
+            .column(row_px_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+
+        let col_pxs = rec_batch
+            .column(col_px_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+
+        for (barcode, row_px, col_px) in izip!(barcodes, row_pxs, col_pxs) {
+            barcode_positions.insert(
+                barcode.unwrap().to_string(),
+                (row_px.unwrap() as f32, col_px.unwrap() as f32),
+            );
+        }
+    }
+
+    barcode_positions
+}
+
+fn read_visium_scalefactors(filename: &str) -> f32 {
+    let file = File::open(filename).unwrap();
+    let json_str = std::io::read_to_string(file).unwrap();
+    let parsed = json::parse(&json_str).unwrap();
+
+    parsed["microns_per_pixel"].as_f32().unwrap()
+}
+
+pub fn read_visium_data(path: &str) -> TranscriptDataset {
+    const SQUARE_DIR: &str = "square_002um";
+    const MATRIX_DIR: &str = "raw_feature_bc_matrix";
+
+    let path = Path::new(path);
+
+    let gene_names = read_visium_features_tsv(
+        path.join(SQUARE_DIR)
+            .join(MATRIX_DIR)
+            .join("features.tsv.gz")
+            .to_str()
+            .unwrap(),
+    );
+
+    let barcodes = read_visium_barcodes_tsv(
+        path.join(SQUARE_DIR)
+            .join(MATRIX_DIR)
+            .join("barcodes.tsv.gz")
+            .to_str()
+            .unwrap(),
+    );
+
+    let barcode_positions = read_visium_tissue_positions_parquet(
+        path.join(SQUARE_DIR)
+            .join("spatial")
+            .join("tissue_positions.parquet")
+            .to_str()
+            .unwrap(),
+    );
+
+    let microns_per_pixel = read_visium_scalefactors(
+        path.join(SQUARE_DIR)
+            .join("spatial")
+            .join("scalefactors_json.json")
+            .to_str()
+            .unwrap(),
+    );
+
+    // read count matrix
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .comment(Some(b'%'))
+        .delimiter(b' ')
+        .from_reader(GzDecoder::new(
+            File::open(path.join(SQUARE_DIR).join(MATRIX_DIR).join("matrix.mtx.gz")).unwrap(),
+        ));
+
+    let headers = rdr.headers().unwrap();
+    let ngenes = headers[0].parse::<usize>().unwrap();
+    assert_eq!(ngenes, gene_names.len());
+
+    let nsquares = headers[1].parse::<usize>().unwrap();
+    assert_eq!(nsquares, barcodes.len());
+
+    let nnz = headers[2].parse::<usize>().unwrap();
+    let mut transcripts = RunVec::with_run_capacity(nnz);
+    for result in rdr.records() {
+        let row = result.unwrap();
+
+        // "-1" beacuse mtx is 1-based indexing
+        let gene = (row[0].parse::<usize>().unwrap() - 1) as u32;
+        let square = row[1].parse::<usize>().unwrap() - 1;
+        let count = row[2].parse::<usize>().unwrap() as u32;
+
+        let (row_px, col_px) = barcode_positions[&barcodes[square]];
+
+        let y = row_px * microns_per_pixel;
+        let x = col_px * microns_per_pixel;
+
+        transcripts.push_run(Transcript { x, y, z: 0.0, gene }, count);
+    }
+
+    TranscriptDataset {
+        transcripts,
+        priorseg: RunVec::new(),
+        fovs: RunVec::new(),
+        gene_names,
+        fov_names: Vec::new(),
+        original_cell_ids: Vec::new(),
+        ncells: 0,
     }
 }
 
@@ -885,6 +1068,11 @@ where
 fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     assert!(xs.len() == ys.len());
     assert!(xs.len() == zs.len());
+
+    // If all z values are the same, return early (nothing to regress out)
+    if zs.is_empty() || zs.iter().all(|&z| z == zs[0]) {
+        return;
+    }
 
     // downsample transcript positions
     let max_points: usize = 1_000_000;
