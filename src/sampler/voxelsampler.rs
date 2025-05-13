@@ -212,34 +212,32 @@ impl VoxelSampler {
 
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
-        let (current_cell, prior_cell, prior_prob) =
+        let (current_cell, prior_cell, log_prior_prob, log_1m_prior_prob) =
             if let Some(current_state) = proposal.current_state {
                 (
                     current_state.cell,
                     current_state.prior_cell,
-                    current_state.prior,
+                    current_state.log_prior.to_f32(),
+                    current_state.log_1m_prior.to_f32(),
                 )
             } else {
-                (BACKGROUND_CELL, BACKGROUND_CELL, 0.0)
+                (BACKGROUND_CELL, BACKGROUND_CELL, f32::NAN, f32::NAN)
             };
 
         // voxel prior penalties
         // prior_prob = 0, in cases where our prior in neutral on what the voxel
         // should be assigned to
-        if prior_prob != 0.0 {
-            let prior_log_prob = prior_prob.ln();
-            let prior_log_1m_prob = (-prior_prob).ln_1p();
-
+        if log_prior_prob.is_finite() {
             if current_cell == prior_cell {
-                δ -= prior_log_prob;
+                δ -= log_prior_prob;
             } else {
-                δ -= prior_log_1m_prob;
+                δ -= log_1m_prior_prob;
             }
 
             if proposed_cell == prior_cell {
-                δ += prior_log_prob;
+                δ += log_prior_prob;
             } else {
-                δ += prior_log_1m_prob;
+                δ += log_1m_prior_prob;
             }
         }
 
