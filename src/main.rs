@@ -98,7 +98,7 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_scale: Option<f32>,
 
-    #[arg(long, default_value_t = 0.9)]
+    #[arg(long, default_value_t = 0.75)]
     cellpose_cellprob_discount: f32,
 
     /// Expand initialized cells outward by this many voxels.
@@ -553,6 +553,12 @@ fn main() {
 
     if args.visiumhd {
         set_visiumhd_presets(&mut args);
+
+        // TODO: This is going to require a whole different code path to read
+        //
+        // - matrix.mtx.gz
+        // - features.tsv.gz
+        //
     }
 
     if args.recorded_samples > args.samples {
@@ -614,7 +620,7 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
-    let mut voxels = if args.cellpose_masks.is_some() && args.cellpose_cellprobs.is_some() {
+    let mut voxels = if args.cellpose_masks.is_some() {
         if args.cellpose_scale.is_some()
             && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
         {
@@ -645,12 +651,13 @@ fn main() {
         VoxelCheckerboard::from_cellpose_masks(
             &mut dataset,
             &args.cellpose_masks.unwrap(),
-            &args.cellpose_cellprobs.unwrap(),
+            &args.cellpose_cellprobs,
             args.cellpose_cellprob_discount,
             initial_voxel_size,
             args.quad_size,
             args.voxel_layers,
             &pixel_transform,
+            1.0 - args.prior_seg_reassignment_prob,
         )
     } else {
         VoxelCheckerboard::from_prior_transcript_assignments(
