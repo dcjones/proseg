@@ -108,16 +108,16 @@ impl ParamSampler {
                 params.σ_volume[z as usize] += (params.μ_volume[z as usize] - log_volume).powi(2);
             });
 
+        let mut rng = rng();
         Zip::from(&mut params.σ_volume)
             .and(&params.component_population)
-            .into_par_iter()
-            .for_each_init(rng, |rng, (σ, &pop)| {
+            .for_each(|σ, &pop| {
                 *σ = Gamma::new(
                     priors.α_σ_volume + (pop as f32) / 2.0,
                     (priors.β_σ_volume + *σ / 2.0).recip(),
                 )
                 .unwrap()
-                .sample(rng)
+                .sample(&mut rng)
                 .recip()
                 .sqrt();
             });
