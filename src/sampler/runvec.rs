@@ -2,6 +2,7 @@
 // - Generic on run length type (our runs will always fit in u32s, so we want to
 // save space)
 
+use num::cast::AsPrimitive;
 use num::{Integer, NumCast};
 use std::iter::Iterator;
 use std::ops::{AddAssign, SubAssign};
@@ -47,12 +48,19 @@ where
 
 impl<I, T> RunVec<I, T>
 where
-    I: Integer + NumCast + AddAssign + SubAssign + Copy,
+    I: Integer + NumCast + AddAssign + SubAssign + Copy + AsPrimitive<usize>,
     T: Copy + PartialEq,
 {
     pub fn new() -> Self {
         RunVec {
             runs: Vec::new(),
+            len: 0,
+        }
+    }
+
+    pub fn with_run_capacity(nruns: usize) -> Self {
+        RunVec {
+            runs: Vec::with_capacity(nruns),
             len: 0,
         }
     }
@@ -71,6 +79,19 @@ where
             value,
         });
         self.len += 1;
+    }
+
+    pub fn push_run(&mut self, value: T, len: I) {
+        if let Some(last) = self.runs.last_mut() {
+            if last.value == value {
+                last.len += len;
+                self.len += len.as_();
+                return;
+            }
+        }
+
+        self.runs.push(Run { len, value });
+        self.len += len.as_();
     }
 
     pub fn len(&self) -> usize {

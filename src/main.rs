@@ -13,7 +13,7 @@ use rayon::current_num_threads;
 use regex::Regex;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcriptrepo::TranscriptRepo;
-use sampler::transcripts::read_transcripts_csv;
+use sampler::transcripts::{read_transcripts_csv, read_visium_data};
 use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
@@ -553,12 +553,6 @@ fn main() {
 
     if args.visiumhd {
         set_visiumhd_presets(&mut args);
-
-        // TODO: This is going to require a whole different code path to read
-        //
-        // - matrix.mtx.gz
-        // - features.tsv.gz
-        //
     }
 
     if args.recorded_samples > args.samples {
@@ -582,27 +576,33 @@ fn main() {
 
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
-    let mut dataset = read_transcripts_csv(
-        &args.transcript_csv,
-        excluded_genes,
-        &expect_arg(args.gene_column, "gene-column"),
-        args.transcript_id_column,
-        args.compartment_column,
-        args.compartment_nuclear,
-        args.fov_column,
-        args.cell_assignment_column,
-        args.cell_assignment_unassigned,
-        &expect_arg(args.cell_id_column, "cell-id-column"),
-        &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
-        args.qv_column,
-        &expect_arg(args.x_column, "x-column"),
-        &expect_arg(args.y_column, "y-column"),
-        &expect_arg(args.z_column, "z-column"),
-        args.min_qv.unwrap_or(0.0),
-        args.ignore_z_coord,
-        args.coordinate_scale.unwrap_or(1.0),
-    );
-    dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
+    let mut dataset = if args.visiumhd {
+        read_visium_data(&args.transcript_csv)
+    } else {
+        read_transcripts_csv(
+            &args.transcript_csv,
+            excluded_genes,
+            &expect_arg(args.gene_column, "gene-column"),
+            args.transcript_id_column,
+            args.compartment_column,
+            args.compartment_nuclear,
+            args.fov_column,
+            args.cell_assignment_column,
+            args.cell_assignment_unassigned,
+            &expect_arg(args.cell_id_column, "cell-id-column"),
+            &expect_arg(args.cell_id_unassigned, "cell-id-unassigned"),
+            args.qv_column,
+            &expect_arg(args.x_column, "x-column"),
+            &expect_arg(args.y_column, "y-column"),
+            &expect_arg(args.z_column, "z-column"),
+            args.min_qv,
+            args.ignore_z_coord,
+            args.coordinate_scale.unwrap_or(1.0),
+        )
+    };
+    if dataset.ncells > 0 {
+        dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
+    }
 
     if args.nunfactored >= dataset.ngenes() {
         args.no_factorization = true;
@@ -610,6 +610,11 @@ fn main() {
 
     let (zmin, zmax) = dataset.normalize_z_coordinates();
     let zspan = zmax - zmin;
+
+    if zspan == 0.0 && args.voxel_layers != 1 {
+        println!("Z-coordinate span is zero. Setting voxel layers to 1.");
+        args.voxel_layers = 1;
+    }
 
     // TODO: In various sharded data structures we assume cells index proximity
     // is correlated with spatial proximity. We may want to shuffle indexes so
