@@ -11,6 +11,7 @@ use super::{CountMatRowKey, ModelParams};
 
 use flate2::read::GzDecoder;
 use geo::geometry::{MultiPolygon, Polygon};
+use half::f16;
 use log::info;
 use log::trace;
 use ndarray::{Array2, Zip};
@@ -456,7 +457,8 @@ pub struct VoxelCountKey {
 pub struct VoxelState {
     pub cell: CellIndex,
     pub prior_cell: CellIndex,
-    pub prior: f32,
+    pub log_prior: f16,    // log(p)
+    pub log_1m_prior: f16, // log(1-p)
 }
 
 impl VoxelState {
@@ -464,7 +466,8 @@ impl VoxelState {
         VoxelState {
             cell,
             prior_cell: BACKGROUND_CELL,
-            prior: 0.0,
+            log_prior: f16::NAN,
+            log_1m_prior: f16::NAN,
         }
     }
 }
@@ -712,6 +715,8 @@ impl VoxelCheckerboard {
         };
 
         // assign voxels based on vote winners
+        let log_nucprior = f16::from_f32(nucprior.ln());
+        let log_1m_nucprior = f16::from_f32((1.0 - nucprior).ln());
         let mut used_cells = HashMap::new();
         let mut current_voxel = Voxel::oob();
         let mut vote_winner = BACKGROUND_CELL;
@@ -724,7 +729,8 @@ impl VoxelCheckerboard {
                         VoxelState {
                             cell: vote_winner,
                             prior_cell: vote_winner,
-                            prior: nucprior,
+                            log_prior: log_nucprior,
+                            log_1m_prior: log_1m_nucprior,
                         },
                     );
                     let next_cell_id = used_cells.len() as CellIndex;
@@ -745,7 +751,8 @@ impl VoxelCheckerboard {
                 VoxelState {
                     cell: vote_winner,
                     prior_cell: vote_winner,
-                    prior: nucprior,
+                    log_prior: log_nucprior,
+                    log_1m_prior: log_1m_nucprior,
                 },
             );
 
@@ -766,6 +773,8 @@ impl VoxelCheckerboard {
         }
 
         // assign cell priors, by once again voting
+        let log_cellprior = f16::from_f32(cellprior.ln());
+        let log_1m_cellprior = f16::from_f32((1.0 - cellprior).ln());
         let mut current_voxel = Voxel::oob();
         let mut vote_winner = BACKGROUND_CELL;
         let mut vote_winner_count: u32 = 0;
@@ -776,7 +785,8 @@ impl VoxelCheckerboard {
                         checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
                             cell: BACKGROUND_CELL,
                             prior_cell: vote_winner,
-                            prior: cellprior,
+                            log_prior: log_cellprior,
+                            log_1m_prior: log_1m_cellprior,
                         });
                     }
                 }
@@ -793,7 +803,8 @@ impl VoxelCheckerboard {
                 checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
                     cell: BACKGROUND_CELL,
                     prior_cell: vote_winner,
-                    prior: cellprior,
+                    log_prior: log_cellprior,
+                    log_1m_prior: log_1m_cellprior,
                 });
             }
         }
@@ -855,6 +866,7 @@ impl VoxelCheckerboard {
 
     fn tally_cellpose_pixels_with_probs(
         cellprob_filename: &str,
+        cellprob_discount: f32,
         masks: &Array2<u32>,
         pixel_transform: &PixelTransform,
         cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
@@ -879,7 +891,7 @@ impl VoxelCheckerboard {
                 let prior = logistic(cellprobs_ij);
 
                 let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
-                *vote += prior;
+                *vote += cellprob_discount * prior;
             });
     }
 
@@ -946,6 +958,7 @@ impl VoxelCheckerboard {
         if let Some(cellprob_filename) = cellprob_filename {
             Self::tally_cellpose_pixels_with_probs(
                 cellprob_filename,
+                cellprob_discount,
                 &masks,
                 pixel_transform,
                 &mut cell_votes,
@@ -993,12 +1006,14 @@ impl VoxelCheckerboard {
         for ((voxel, cell), prior_sum) in cell_votes {
             if voxel != current_voxel {
                 if !current_voxel.is_oob() {
+                    let prior = prior_sum / pixels_per_voxel;
                     checkerboard.insert_state(
                         current_voxel,
                         VoxelState {
                             cell: vote_winner,
                             prior_cell: vote_winner,
-                            prior: prior_sum / pixels_per_voxel,
+                            log_prior: f16::from_f32(prior.ln()),
+                            log_1m_prior: f16::from_f32((1.0 - prior).ln()),
                         },
                     );
                     let next_cell_id = used_cells.len() as CellIndex;
@@ -1015,12 +1030,14 @@ impl VoxelCheckerboard {
         trace!("Set voxel states: {:?}", t0.elapsed());
 
         if !current_voxel.is_oob() {
+            let prior = vote_winner_prior_sum / pixels_per_voxel;
             checkerboard.insert_state(
                 current_voxel,
                 VoxelState {
                     cell: vote_winner,
                     prior_cell: vote_winner,
-                    prior: vote_winner_prior_sum / pixels_per_voxel,
+                    log_prior: f16::from_f32(prior.ln()),
+                    log_1m_prior: f16::from_f32((1.0 - prior).ln()),
                 },
             );
 
@@ -1055,11 +1072,6 @@ impl VoxelCheckerboard {
                 let cell = *used_cells.get(&state.cell).unwrap();
                 state.cell = cell;
                 state.prior_cell = cell;
-            }
-
-            // divide by pixel count to get averaged voxel priors
-            for state in quad_lock.states.values_mut() {
-                state.prior = cellprob_discount * (state.prior / pixels_per_voxel);
             }
 
             // copy the state along the z-axis
