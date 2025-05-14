@@ -166,7 +166,7 @@ pub fn write_sparse_mtx<T>(
 
     write!(
         &mut encoder,
-        "%MatrixMarket matrix coordinate real general\n{} {} {}\n",
+        "%%MatrixMarket matrix coordinate real general\n{} {} {}\n",
         mat.m, mat.n, nnzs
     )
     .unwrap();
@@ -174,7 +174,6 @@ pub fn write_sparse_mtx<T>(
     for (c, x_c) in mat.rows().enumerate() {
         for (g, est) in x_c.read().iter_nonzeros() {
             if est != T::zero() {
-                // TODO: Blah.
                 writeln!(&mut encoder, "{} {} {:.2}", c + 1, g + 1, est).unwrap();
             }
         }
