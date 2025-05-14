@@ -330,6 +330,19 @@ impl ModelParams {
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
 
         let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
+
+        // Initializing with everything assigned as foreground
+        counts
+            .par_rows()
+            .zip(foreground_counts.par_rows())
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each_init(rng, |_rng, (row, foreground_row)| {
+                let mut foreground_row = foreground_row.write();
+                for (gene_layer, count) in row.read().iter_nonzeros() {
+                    foreground_row.add(gene_layer.gene, count);
+                }
+            });
+
         let foreground_counts_lower =
             CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
         let foreground_counts_upper =
