@@ -819,17 +819,21 @@ fn main() {
     }
     prog.finish();
 
+    let t0 = Instant::now();
     write_sparse_mtx(
         &args.output_path,
         &args.output_expected_counts,
         &params.foreground_counts_mean.estimates,
     );
+    trace!("write_sparse_mtx (expected counts): {:?}", t0.elapsed());
 
+    let t0 = Instant::now();
     write_sparse_mtx(
         &args.output_path,
         &args.output_maxpost_counts,
         &params.foreground_counts,
     );
+    trace!("write_sparse_mtx (max post counts): {:?}", t0.elapsed());
 
     let cell_centroids = voxels.cell_centroids(&params);
 

@@ -207,7 +207,9 @@ impl TranscriptDataset {
             occupied[[xbin, ybin]] = true;
         }
 
-        occupied.iter().filter(|&&x| x).count() as f32 * BINSIZE * BINSIZE * (zmax - zmin)
+        let zspan = if zmin == zmax { 1.0 } else { zmax - zmin };
+
+        occupied.iter().filter(|&&x| x).count() as f32 * BINSIZE * BINSIZE * zspan
     }
 
     pub fn prior_nuclei_populations(&self) -> Array1<u32> {
