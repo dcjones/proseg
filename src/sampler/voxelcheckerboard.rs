@@ -22,6 +22,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem::drop;
@@ -35,6 +36,7 @@ pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
 
 // Simple affine transform matrix to map pixel coordinates onto slide microns
+#[derive(Debug)]
 pub struct PixelTransform {
     pub tx: [f32; 3],
     pub ty: [f32; 3],
@@ -1015,7 +1017,7 @@ impl VoxelCheckerboard {
         for ((voxel, cell), prior_sum) in cell_votes {
             if voxel != current_voxel {
                 if !current_voxel.is_oob() {
-                    let prior = prior_sum / pixels_per_voxel;
+                    let prior = (prior_sum / pixels_per_voxel).min(0.99);
                     checkerboard.insert_state(
                         current_voxel,
                         VoxelState {
@@ -1039,7 +1041,7 @@ impl VoxelCheckerboard {
         trace!("Set voxel states: {:?}", t0.elapsed());
 
         if !current_voxel.is_oob() {
-            let prior = vote_winner_prior_sum / pixels_per_voxel;
+            let prior = (vote_winner_prior_sum / pixels_per_voxel).min(0.99);
             checkerboard.insert_state(
                 current_voxel,
                 VoxelState {
@@ -1070,6 +1072,8 @@ impl VoxelCheckerboard {
         );
         checkerboard.used_cell_mask = vec![true; used_cells.len()];
 
+        let mut minprior = f32::INFINITY;
+        let mut maxprior = f32::NEG_INFINITY;
         checkerboard.quads.values().for_each(|quad| {
             let mut quad_lock = quad.write().unwrap();
 
@@ -1078,6 +1082,10 @@ impl VoxelCheckerboard {
                 let cell = *used_cells.get(&state.cell).unwrap();
                 state.cell = cell;
                 state.prior_cell = cell;
+
+                let prior = state.log_prior.to_f32().exp();
+                minprior = minprior.min(prior);
+                maxprior = maxprior.max(prior);
             }
 
             // copy the state along the z-axis
