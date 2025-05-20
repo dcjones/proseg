@@ -677,6 +677,7 @@ fn main() {
             args.voxel_layers,
             &pixel_transform,
             1.0 - args.prior_seg_reassignment_prob,
+            args.expand_initialized_cells,
         )
     } else {
         VoxelCheckerboard::from_prior_transcript_assignments(
@@ -686,11 +687,9 @@ fn main() {
             args.voxel_layers,
             1.0 - args.nuclear_reassignment_prob,
             1.0 - args.prior_seg_reassignment_prob,
+            args.expand_initialized_cells,
         )
     };
-
-    voxels.expand_cells_n(args.expand_initialized_cells);
-    voxels.pop_bubbles();
 
     println!("Read dataset:");
     println!("{:>9} transcripts", dataset.transcripts.len());
@@ -798,7 +797,32 @@ fn main() {
         prog.inc(1);
     }
 
-    for it in 0..(args.burnin_samples + args.samples + args.hillclimb) {
+    // TODO: We are going to have re-introduce the schedule mechanism, unless we just want to fix 2 micron as the burnin
+    // resolution and 1 micron as sampling resolution. (Of course, not for visium...)
+
+    for it in 0..args.burnin_samples {
+        run_sampler(
+            &param_sampler,
+            &mut voxel_sampler,
+            &transcript_repo,
+            &mut voxels,
+            &priors,
+            &mut params,
+            dataset.transcripts.len(),
+            args.morphology_steps_per_iter,
+            it < args.burnin_samples,
+            it >= args.burnin_samples + args.samples,
+            // TODO: I guess whether we record dependns on our intentions. We should probably
+            // not record the hillclimbing iterations.
+            it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
+            args.check_consistency,
+            &prog,
+        );
+    }
+
+    let mut voxels = voxels.double_resolution(&mut params, &dataset);
+
+    for it in args.burnin_samples..(args.burnin_samples + args.samples + args.hillclimb) {
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -979,6 +1003,7 @@ fn run_sampler(
     ));
 
     if check_consistency {
+        voxels.check_mirrored_quad_edges();
         params.check_consistency(voxels);
     }
 }

@@ -18,7 +18,7 @@ use ndarray::{Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
 use rand::rng;
 use rand::seq::SliceRandom;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -28,7 +28,7 @@ use std::io::{BufReader, Read};
 use std::mem::drop;
 use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut};
-use std::sync::{RwLock, RwLockWriteGuard};
+use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -52,6 +52,9 @@ impl PixelTransform {
 
     fn transform(&self, i: usize, j: usize) -> (f32, f32) {
         let (i, j) = (i as f32, j as f32);
+
+        // probably makes more sense to consider the pixel center
+        let (i, j) = (i + 0.5, j + 0.5);
 
         (
             i * self.tx[0] + j * self.tx[1] + self.tx[2],
@@ -212,6 +215,16 @@ impl Voxel {
     // pub fn zero() -> Voxel {
     //     Voxel::new(0, 0, 0)
     // }
+
+    fn subvoxels_xy(&self) -> [Voxel; 4] {
+        let [i, j, k] = self.coords();
+        [
+            Voxel::new(2 * i, 2 * j, k),
+            Voxel::new(2 * i + 1, 2 * j, k),
+            Voxel::new(2 * i, 2 * j + 1, k),
+            Voxel::new(2 * i + 1, 2 * j + 1, k),
+        ]
+    }
 
     pub fn oob() -> Voxel {
         Voxel { index: OOB_VOXEL }
@@ -455,7 +468,7 @@ pub struct VoxelCountKey {
     pub offset: VoxelOffset,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoxelState {
     pub cell: CellIndex,
     pub prior_cell: CellIndex,
@@ -516,7 +529,18 @@ impl VoxelQuad {
 
     pub fn set_voxel_cell(&mut self, voxel: Voxel, cell: CellIndex) {
         if cell == BACKGROUND_CELL {
-            self.states.remove(&voxel);
+            let mut remove = false;
+            if let Some(state) = self.states.get_mut(&voxel) {
+                // Don't remove the state if it's being used to store a prior
+                if state.log_prior.is_finite() {
+                    state.cell = cell;
+                } else {
+                    remove = true;
+                }
+            }
+            if remove {
+                self.states.remove(&voxel);
+            }
         } else {
             self.states
                 .entry(voxel)
@@ -667,6 +691,7 @@ impl VoxelCheckerboard {
         nzlayers: usize,
         nucprior: f32,
         cellprior: f32,
+        expansion: usize,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
 
@@ -678,8 +703,8 @@ impl VoxelCheckerboard {
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).round().max(0.0) as i32;
+            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
+            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
             let k = (((z - zmin) / voxelsize_z) as i32)
                 .min(nzlayers as i32 - 1)
                 .max(0);
@@ -835,10 +860,7 @@ impl VoxelCheckerboard {
         trace!("assigned voxel counts: {:?}", t0.elapsed());
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
-        // initialize edge voxel sets
-        checkerboard.mirror_quad_edges();
-        checkerboard.build_edge_sets();
-
+        checkerboard.finish_initialization(expansion);
         checkerboard
     }
 
@@ -935,6 +957,7 @@ impl VoxelCheckerboard {
         nzlayers: usize,
         pixel_transform: &PixelTransform,
         cellprior: f32,
+        expansion: usize,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
             |_err| panic!("Unable to read cellpose masks from {}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix", masks_filename)
@@ -1119,11 +1142,15 @@ impl VoxelCheckerboard {
 
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
-        // initialize edge voxel sets
-        checkerboard.mirror_quad_edges();
-        checkerboard.build_edge_sets();
-
+        checkerboard.finish_initialization(expansion);
         checkerboard
+    }
+
+    fn finish_initialization(&mut self, expansion: usize) {
+        self.expand_cells_n(expansion);
+        self.pop_bubbles();
+        self.mirror_quad_edges();
+        self.build_edge_sets();
     }
 
     fn quad_index(&self, voxel: Voxel) -> (u32, u32) {
@@ -1201,8 +1228,32 @@ impl VoxelCheckerboard {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
                 for (voxel, state) in &quad.states {
                     let [i, j, _k] = voxel.coords();
-                    if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
+                    if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
                         neighbor_quad.states.insert(*voxel, *state);
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn check_mirrored_quad_edges(&self) {
+        for (&(u, v), quad) in &self.quads {
+            let quad = quad.read().unwrap();
+            self.for_each_quad_neighbor(u, v, |neighbor_quad| {
+                let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
+                for (voxel, state) in &quad.states {
+                    let [i, j, _k] = voxel.coords();
+
+                    if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
+                        if state.cell == BACKGROUND_CELL
+                            && !neighbor_quad.states.contains_key(voxel)
+                        {
+                            continue;
+                        }
+
+                        let mirrored_state = neighbor_quad.states.get(voxel).unwrap();
+                        assert!(mirrored_state.cell == state.cell);
+                        assert!(mirrored_state.prior_cell == state.prior_cell);
                     }
                 }
             });
@@ -1555,14 +1606,14 @@ impl VoxelCheckerboard {
         });
     }
 
-    pub fn expand_cells_n(&mut self, n: usize) {
+    fn expand_cells_n(&mut self, n: usize) {
         for _ in 0..n {
             self.expand_cells();
         }
         self.build_edge_sets();
     }
 
-    pub fn pop_bubbles(&mut self) {
+    fn pop_bubbles(&mut self) {
         self.quads.par_iter().for_each(|(_quad_pos, quad)| {
             let mut quad_lock = quad.write().unwrap();
             let mut bubbles = HashSet::new();
@@ -1643,5 +1694,90 @@ impl VoxelCheckerboard {
             }
         });
         info!("merge counts merge: {:?}", t0.elapsed());
+    }
+
+    pub fn double_resolution(
+        mut self,
+        params: &mut ModelParams,
+        dataset: &TranscriptDataset,
+    ) -> VoxelCheckerboard {
+        let quadsize = 2 * self.quadsize;
+        let voxelsize = 0.5 * self.voxelsize;
+        let voxelsize_z = self.voxelsize_z;
+        let voxel_volume = 0.25 * self.voxel_volume;
+
+        let quads = Mutex::new(HashMap::new());
+
+        self.quads.par_drain().for_each(|((u, v), old_quad)| {
+            let mut new_quad = VoxelQuad::new(self.kmax, quadsize, u, v);
+
+            let old_quad_lock = old_quad.read().unwrap();
+            old_quad_lock.states.iter().for_each(|(voxel, state)| {
+                for subvoxel in voxel.subvoxels_xy() {
+                    // excluding mirrored edge states
+                    if new_quad.voxel_in_bounds(subvoxel) {
+                        new_quad.states.insert(subvoxel, *state);
+                    }
+                }
+            });
+
+            quads.lock().unwrap().insert((u, v), RwLock::new(new_quad));
+        });
+
+        let quads = quads.into_inner().unwrap();
+        let quads_coords = quads.keys().cloned().collect();
+
+        let mut new_checkerboard = VoxelCheckerboard {
+            quadsize,
+            kmax: self.kmax,
+            ncells: self.ncells,
+            ngenes: dataset.ngenes(),
+            nzlayers: self.nzlayers,
+            voxel_volume,
+            xmin: self.xmin,
+            ymin: self.ymin,
+            zmin: self.zmin,
+            voxelsize,
+            voxelsize_z,
+            used_cell_mask: self.used_cell_mask,
+            quads,
+            quads_coords,
+        };
+
+        let coords_to_voxel = |x: f32, y: f32, z: f32| {
+            let i = ((x - self.xmin) / voxelsize).floor().max(0.0) as i32;
+            let j = ((y - self.ymin) / voxelsize).floor().max(0.0) as i32;
+            let k = (((z - self.zmin) / voxelsize_z) as i32)
+                .min(self.nzlayers as i32 - 1)
+                .max(0);
+            Voxel::new(i, j, k)
+        };
+
+        for run in dataset.transcripts.iter_runs() {
+            let transcript = &run.value;
+            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+
+            let mut quad = new_checkerboard.write_quad(voxel);
+            let count = quad.counts.entry(key).or_insert(0_u32);
+            *count += run.len;
+        }
+
+        // initialize edge voxel sets
+        new_checkerboard.mirror_quad_edges();
+        new_checkerboard.build_edge_sets();
+
+        new_checkerboard.compute_cell_volume_surface_area(
+            &mut params.cell_voxel_count,
+            &mut params.cell_surface_area,
+        );
+
+        params.voxel_volume *= 0.25;
+
+        new_checkerboard
     }
 }
