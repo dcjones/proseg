@@ -382,9 +382,13 @@ impl VoxelSampler {
         // Update neighboring quads to mirror voxel states on the edge
         let (u, v) = (quad.u, quad.v);
         let [i, j, k] = proposal.voxel.coords();
+
+        let (min_i, max_i, min_j, max_j) = quad.bounds();
+        assert!((min_i..max_i + 1).contains(&i) && (min_j..max_j + 1).contains(&j));
+
         voxels.for_each_quad_neighbor(u, v, |neighbor_quad| {
             let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
-            if i + 1 == min_i || i - 1 == max_i || j + 1 == min_j || j - 1 == max_j {
+            if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
                 neighbor_quad.update_voxel_cell(voxel, current_cell, proposed_cell);
             }
         });
@@ -397,6 +401,7 @@ impl VoxelSampler {
 
             let (current_cell_neighbors, other_cell_neighbors) =
                 count_matching_neighbors(&proposal.neighbor_cells, current_cell);
+
             params
                 .cell_surface_area
                 .modify(current_cell as usize, |surface_area| {

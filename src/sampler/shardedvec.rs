@@ -1,4 +1,5 @@
 use num::Zero;
+use std::clone::Clone;
 use std::ops::{AddAssign, SubAssign};
 use std::sync::{Arc, RwLock};
 
@@ -14,6 +15,23 @@ pub struct ShardedVec<T> {
     shards: Vec<Arc<RwLock<Vec<T>>>>,
     shardsize: usize,
     n: usize,
+}
+
+impl<T> Clone for ShardedVec<T>
+where
+    T: AddAssign + SubAssign + Clone + Zero + Clone + Copy,
+{
+    fn clone(&self) -> Self {
+        Self {
+            shards: self
+                .shards
+                .iter()
+                .map(|shard| Arc::new(RwLock::new(shard.read().unwrap().clone())))
+                .collect(),
+            shardsize: self.shardsize,
+            n: self.n,
+        }
+    }
 }
 
 impl<T> ShardedVec<T>
@@ -32,9 +50,9 @@ where
         }
     }
 
-    pub fn _len(&self) -> usize {
-        self.n
-    }
+    // pub fn len(&self) -> usize {
+    //     self.n
+    // }
 
     pub fn get(&self, index: usize) -> T {
         if index >= self.n {
@@ -61,6 +79,13 @@ where
         let mut shard = self.shards[shard_index].write().unwrap();
         f(&mut shard[j]);
     }
+
+    // pub fn map_inplace(&self, f: impl Fn(&mut T)) {
+    //     for shard in self.shards.iter() {
+    //         let mut shard = shard.write().unwrap();
+    //         shard.iter_mut().for_each(&f);
+    //     }
+    // }
 
     pub fn add(&self, index: usize, value: T) {
         if index >= self.n {
