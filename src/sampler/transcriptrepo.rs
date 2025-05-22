@@ -5,24 +5,41 @@ use std::collections::HashSet;
 use std::ops::DerefMut;
 use std::time::{Duration, Instant};
 
-use super::math::halfnormal_x2_pdf;
+use super::math::{
+    halfnormal_x2_pdf, normal_dist_inter_voxel_marginal, normal_dist_intra_voxel_marginal,
+};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{
-    VON_NEUMANN_AND_SELF_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
+    RADIUS2_AND_SELF_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
 };
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
 use rand::rng;
 use rand::rngs::ThreadRng;
 
-const REPO_NEIGHBORHOOD: [(i32, i32, i32); 7] = VON_NEUMANN_AND_SELF_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 7] = VON_NEUMANN_AND_SELF_OFFSETS;
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 27] = MOORE_AND_SELF_OFFSETS;
+const REPO_NEIGHBORHOOD: [(i32, i32, i32); 15] = RADIUS2_AND_SELF_OFFSETS;
 
-pub struct TranscriptRepo {}
+pub struct TranscriptRepo {
+    prior_near: VoxelDiffusionPrior,
+    prior_far: VoxelDiffusionPrior,
+}
 
 impl TranscriptRepo {
-    pub fn new() -> Self {
-        TranscriptRepo {}
+    pub fn new(priors: &ModelPriors, voxelsize: f32) -> Self {
+        const EPS: f32 = 1e-5;
+        TranscriptRepo {
+            prior_near: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS),
+            prior_far: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS),
+        }
+    }
+
+    pub fn set_voxel_size(&mut self, priors: &ModelPriors, voxelsize: f32) {
+        self.prior_near =
+            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, self.prior_near.eps);
+        self.prior_far =
+            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, self.prior_far.eps);
     }
 
     pub fn sample(
@@ -43,6 +60,8 @@ impl TranscriptRepo {
                     rng,
                     priors,
                     params,
+                    &self.prior_near,
+                    &self.prior_far,
                     quad_lock_ref,
                     &voxels.quads_coords,
                     voxels.quadsize as u32,
@@ -64,6 +83,8 @@ fn quad_transcript_repo(
     rng: &mut ThreadRng,
     priors: &ModelPriors,
     params: &ModelParams,
+    prior_near: &VoxelDiffusionPrior,
+    prior_far: &VoxelDiffusionPrior,
     quad: &mut VoxelQuad,
     quads_coords: &HashSet<(u32, u32)>,
     quadsize: u32,
@@ -129,28 +150,18 @@ fn quad_transcript_repo(
             let dj = dj + dj0;
             let dk = dk + dk0;
 
-            let sq_dist_xy = di * di + dj * dj;
+            // We should also probably replace this with a discretized distribution
             let sq_dist_z = dk * dk;
+            let z_prob = halfnormal_x2_pdf(
+                priors.σ_z_diffusion,
+                sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
+            );
 
-            let mut sq_dist_prob = priors.p_diffusion
-                * halfnormal_x2_pdf(
-                    priors.σ_xy_diffusion_far,
-                    sq_dist_xy as f32 * (voxelsize * voxelsize),
-                )
-                * halfnormal_x2_pdf(
-                    priors.σ_z_diffusion,
-                    sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
-                );
-
-            sq_dist_prob += (1.0 - priors.p_diffusion)
-                * halfnormal_x2_pdf(
-                    priors.σ_xy_diffusion_near,
-                    sq_dist_xy as f32 * (voxelsize * voxelsize),
-                )
-                * halfnormal_x2_pdf(
-                    priors.σ_z_diffusion,
-                    sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
-                );
+            let sq_dist_prob = priors.p_diffusion
+                * prior_far.prob(di)
+                * prior_far.prob(dj)
+                * z_prob
+                + (1.0 - priors.p_diffusion) * prior_near.prob(di) * prior_near.prob(dj) * z_prob;
 
             sq_dist_prob * λ
         });
@@ -238,4 +249,42 @@ fn quad_transcript_repo(
 
     // Clear out any zeros
     quad.counts.retain(|_key, count| *count > 0);
+}
+
+struct VoxelDiffusionPrior {
+    eps: f32,
+    pmf: Vec<f32>,
+}
+
+// Simple memoized discrete distance prior
+impl VoxelDiffusionPrior {
+    fn new(voxelsize: f32, σ: f32, eps: f32) -> VoxelDiffusionPrior {
+        let mut pmf = Vec::new();
+
+        let mut d = 0;
+        loop {
+            let p = if d > 0 {
+                let d_min = (d - 1) as f32 * voxelsize;
+                normal_dist_inter_voxel_marginal(d_min, voxelsize, σ)
+            } else {
+                normal_dist_intra_voxel_marginal(voxelsize, σ)
+            };
+            pmf.push(p);
+            if p < eps {
+                break;
+            }
+            d += 1;
+        }
+
+        VoxelDiffusionPrior { eps, pmf }
+    }
+
+    fn prob(&self, d: i32) -> f32 {
+        let dist = d.unsigned_abs() as usize;
+        if dist < self.pmf.len() {
+            self.pmf[dist]
+        } else {
+            self.eps
+        }
+    }
 }
