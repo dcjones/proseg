@@ -780,7 +780,7 @@ fn main() {
     let mut voxel_sampler =
         VoxelSampler::new(0, args.voxel_layers as i32 - 1, args.ab_nihlo_bubble_prob);
 
-    let transcript_repo = TranscriptRepo::new();
+    let mut transcript_repo = TranscriptRepo::new(&priors, voxels.voxelsize);
 
     const INIT_ITERATIONS: usize = 20;
 
@@ -821,6 +821,7 @@ fn main() {
     }
 
     let mut voxels = voxels.double_resolution(&mut params, &dataset);
+    transcript_repo.set_voxel_size(&priors, voxels.voxelsize);
 
     for it in args.burnin_samples..(args.burnin_samples + args.samples + args.hillclimb) {
         run_sampler(
