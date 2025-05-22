@@ -22,7 +22,8 @@ use std::time::Instant;
 
 use output::*;
 
-const DEFAULT_INITIAL_VOXEL_SIZE: f32 = 1.0;
+const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
+const DEFAULT_VOXEL_SIZE: f32 = 1.0;
 
 #[derive(Parser)]
 #[command(version)]
@@ -225,9 +226,13 @@ struct Args {
     #[arg(long, default_value=None)]
     coordinate_scale: Option<f32>,
 
-    /// Initial size x/y size of voxels.
+    /// Size x/y size of voxels during initial burn-in phase.
     #[arg(long, default_value=None)]
-    initial_voxel_size: Option<f32>,
+    burnin_voxel_size: Option<f32>,
+
+    /// Size x/y size of voxels.
+    #[arg(long, default_value=None)]
+    voxel_size: Option<f32>,
 
     /// Size of quads in voxel checkerboard
     #[arg(long, default_value_t = 150.0)]
@@ -264,10 +269,6 @@ struct Args {
     /// Fixed dispersion parameter throughout sampling
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
-
-    /// Perturb initial transcript positions with this standard deviation
-    #[arg(long, default_value = None)]
-    initial_perturbation_sd: Option<f32>,
 
     /// Probability of proposing ab nihlo bubble formation
     #[arg(long, default_value_t = 0.05)]
@@ -493,14 +494,10 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.z_column.get_or_insert(String::from("z")); // ignored
     args.cell_id_column.get_or_insert(String::from("cell"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.initial_voxel_size = Some(1.0);
+    args.burnin_voxel_size = Some(2.0);
+    args.voxel_size = Some(2.0);
     args.voxel_layers = 1;
     args.ignore_z_coord = true;
-
-    // TODO: This is the resolution on the one dataset I have. It probably
-    // doesn't generalize.
-    args.coordinate_scale.get_or_insert(1.0 / 3.08);
-    args.initial_perturbation_sd.get_or_insert(1.0);
 }
 
 fn main() {
@@ -574,9 +571,18 @@ fn main() {
         arg.unwrap_or_else(|| panic!("Missing required argument: --{}", argname))
     }
 
-    let initial_voxel_size = args
-        .initial_voxel_size
-        .unwrap_or(DEFAULT_INITIAL_VOXEL_SIZE);
+    let burnin_voxel_size = args.burnin_voxel_size.unwrap_or(DEFAULT_BURNIN_VOXEL_SIZE);
+    let voxel_size = args.burnin_voxel_size.unwrap_or(DEFAULT_VOXEL_SIZE);
+    if voxel_size > burnin_voxel_size {
+        panic!("Voxel size must be less than or equal to burnin voxel size");
+    }
+
+    // We arrive at voxel size by doubling resolution k times, so the ratio has to be a power of two.
+    let voxel_double_count = (voxel_size / burnin_voxel_size).log2();
+    if voxel_double_count.fract().abs() > 1e-5 {
+        panic!("Ratio between voxel size and burnin voxel size must be a power of two");
+    }
+    let voxel_double_count = voxel_double_count as u32;
 
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
@@ -672,7 +678,7 @@ fn main() {
             &args.cellpose_masks.unwrap(),
             &args.cellpose_cellprobs,
             args.cellpose_cellprob_discount,
-            initial_voxel_size,
+            burnin_voxel_size,
             args.quad_size,
             args.voxel_layers,
             &pixel_transform,
@@ -682,7 +688,7 @@ fn main() {
     } else {
         VoxelCheckerboard::from_prior_transcript_assignments(
             &dataset,
-            initial_voxel_size,
+            burnin_voxel_size,
             args.quad_size,
             args.voxel_layers,
             1.0 - args.nuclear_reassignment_prob,
@@ -797,9 +803,6 @@ fn main() {
         prog.inc(1);
     }
 
-    // TODO: We are going to have re-introduce the schedule mechanism, unless we just want to fix 2 micron as the burnin
-    // resolution and 1 micron as sampling resolution. (Of course, not for visium...)
-
     for it in 0..args.burnin_samples {
         run_sampler(
             &param_sampler,
@@ -820,7 +823,14 @@ fn main() {
         );
     }
 
-    let mut voxels = voxels.double_resolution(&mut params, &dataset);
+    let mut voxels = if voxel_double_count == 0 {
+        voxels
+    } else {
+        (0..voxel_double_count).fold(voxels, |voxels, _| {
+            voxels.double_resolution(&mut params, &dataset)
+        })
+    };
+
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize);
 
     for it in args.burnin_samples..(args.burnin_samples + args.samples + args.hillclimb) {
