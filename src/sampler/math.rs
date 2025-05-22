@@ -1,7 +1,8 @@
-use libm::lgammaf;
+use libm::{erff, lgammaf};
 use rand::Rng;
 use rand::rngs::ThreadRng;
 use rand_distr::StandardNormal;
+use std::f32;
 
 // pub fn logit(p: f32) -> f32 {
 //     return p.ln() - (1.0 - p).ln();
@@ -68,11 +69,13 @@ pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
     }
 }
 
-// const SQRT2: f32 = 1.4142135623730951_f32;
-
-// pub fn normal_cdf(μ: f32, σ: f32, x: f32) -> f32 {
+// fn normal_cdf(μ: f32, σ: f32, x: f32) -> f32 {
 //     return 0.5 * (1.0 + erff((x - μ) / (SQRT2 * σ)));
 // }
+
+fn std_normal_cdf(σ: f32, x: f32) -> f32 {
+    0.5 * (1.0 + erff(x / (f32::consts::SQRT_2 * σ)))
+}
 
 pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     -LN_SQRT_TWO_PI - σ.ln() - ((x - μ) / σ).powi(2) / 2.0
@@ -93,4 +96,29 @@ pub fn halfnormal_logpdf(σ: f32, x: f32) -> f32 {
 
 pub fn halfnormal_x2_pdf(σ: f32, x2: f32) -> f32 {
     (SQRT_2_DIV_SQRT_PI / σ) * (-x2 / (2.0 * σ.powi(2))).exp()
+}
+
+// This is a Normal prior over transcript diffusion distance, integrating out
+// uncertain transcript positions, given we have only voxel positions. The math
+// is not remotely obvious, you'll just have to trust me.
+pub fn normal_dist_inter_voxel_marginal(d_min: f32, s: f32, σ: f32) -> f32 {
+    let a = normal_dist_inter_voxel_marginal_part(d_min, d_min + s, s, σ);
+    let b = s * (std_normal_cdf(σ, d_min + 2.0 * s) - std_normal_cdf(σ, d_min + s))
+        - normal_dist_inter_voxel_marginal_part(d_min + s, d_min + 2.0 * s, s, σ);
+    a + b
+}
+
+fn normal_dist_inter_voxel_marginal_part(d_from: f32, d_to: f32, s: f32, σ: f32) -> f32 {
+    let mut result = s * std_normal_cdf(σ, d_to) - (s / 2.0);
+    let sqrt2_sigma = f32::consts::SQRT_2 * σ;
+    result += 0.5 * (d_from * erff(d_from / sqrt2_sigma) - d_to * erff(d_to / sqrt2_sigma));
+    result += 0.5
+        * (sqrt2_sigma / f32::consts::PI.sqrt())
+        * ((-(d_from / sqrt2_sigma).powi(2)).exp() - (-(d_to / sqrt2_sigma).powi(2)).exp());
+    result
+}
+
+pub fn normal_dist_intra_voxel_marginal(s: f32, σ: f32) -> f32 {
+    2.0 * s * (std_normal_cdf(σ, s) - std_normal_cdf(σ, 0.0))
+        - 2.0 * normal_dist_inter_voxel_marginal_part(0.0, s, s, σ)
 }
