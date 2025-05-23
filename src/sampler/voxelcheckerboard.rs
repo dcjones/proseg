@@ -1417,9 +1417,15 @@ impl VoxelCheckerboard {
 
         self.quads.values().for_each(|quad| {
             let quad_lock = quad.read().unwrap();
+            let (i_min, i_max, j_min, j_max) = quad_lock.bounds();
             for (voxel, state) in quad_lock.states.iter() {
                 if state.cell != BACKGROUND_CELL {
                     let [i, j, k] = voxel.coords();
+
+                    // don't count mirrored edge states
+                    if i < i_min || i > i_max || j < j_min || j > j_max {
+                        continue;
+                    }
 
                     let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
                     let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
