@@ -276,7 +276,7 @@ impl VoxelSampler {
             // poisson point process normalization
             let scale = params.cell_scale[current_cell as usize];
             let volume_delta = proposed_volume_μm - current_volume_μm;
-            δ += scale * volume_delta * params.φ.row(current_cell as usize).dot(&params.θksum);
+            δ -= scale * volume_delta * params.φ.row(current_cell as usize).dot(&params.θksum);
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
@@ -316,7 +316,7 @@ impl VoxelSampler {
             // poisson point process normalization
             let scale = params.cell_scale[proposed_cell as usize];
             let volume_delta = proposed_volume_μm - current_volume_μm;
-            δ += scale * volume_delta * params.φ.row(proposed_cell as usize).dot(&params.θksum);
+            δ -= scale * volume_delta * params.φ.row(proposed_cell as usize).dot(&params.θksum);
 
             // Simplification of log(N(proposed_volume, μ, σ)) - log(N(current_volume, μ, σ))
             let μ_vol_z = params.μ_volume[z as usize];
