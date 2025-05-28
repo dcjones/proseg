@@ -304,6 +304,27 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
+    pub fn radius2_neighborhood(&self) -> [Voxel; 14] {
+        let [i, j, k] = self.coords();
+        [
+            (0, -2, 0),
+            (-1, -1, 0),
+            (0, -1, 0),
+            (1, -1, 0),
+            (-2, 0, 0),
+            (-1, 0, 0),
+            (1, 0, 0),
+            (2, 0, 0),
+            (-1, 1, 0),
+            (0, 1, 0),
+            (1, 1, 0),
+            (0, 2, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+        ]
+        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
+
     pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
         let [i, j, k] = self.coords();
         [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
@@ -1364,7 +1385,8 @@ impl VoxelCheckerboard {
                     volume.add(state.cell as usize, 1);
 
                     let mut voxel_surface_area = 0;
-                    for neighbor in voxel.von_neumann_neighborhood() {
+                    // for neighbor in voxel.von_neumann_neighborhood() {
+                    for neighbor in voxel.radius2_neighborhood() {
                         let k = neighbor.k();
                         let neighbor_cell = if k >= 0 && k <= quad.kmax {
                             quad.get_voxel_cell(neighbor)
