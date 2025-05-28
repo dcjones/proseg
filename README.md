@@ -7,6 +7,14 @@ currently supported.
 
 ![](https://github.com/dcjones/proseg/blob/main/figure.png)
 
+Read the paper:
+
+Jones, D.C., Elz, A.E., Hadadianpour, A. et al. **Cell simulation as cell segmentation.** Nat Methods (2025). [https://doi.org/10.1038/s41592-025-02697-0](https://doi.org/10.1038/s41592-025-02697-0)
+
+Or the Research Brief:
+
+**Confronting the challenge of cell segmentation in spatial transcriptomics.** Nat Methods (2025). [https://doi.org/10.1038/s41592-025-02717-z](https://doi.org/10.1038/s41592-025-02717-z)
+
 
 # Installing
 
