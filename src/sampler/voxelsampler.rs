@@ -15,20 +15,28 @@ fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
 }
 
 fn count_matching_neighbors(
-    neighbor_cells: &[Option<CellIndex>; 6],
-    cell: CellIndex,
-) -> (u32, u32) {
-    let mut matching_neighbors = 0;
-    let mut nonmatching_neighbors = 0;
+    neighbor_cells: &[Option<CellIndex>; 14],
+    current_cell: CellIndex,
+    proposed_cell: CellIndex,
+) -> (u32, u32, u32) {
+    let mut current_cell_neighbors = 0;
+    let mut proposed_cell_neighbors = 0;
+    let mut other_neighbors = 0;
     for neighbor_cell in neighbor_cells {
         let neighbor_cell = neighbor_cell.unwrap_or(BACKGROUND_CELL);
-        if neighbor_cell == cell {
-            matching_neighbors += 1;
+        if neighbor_cell == current_cell {
+            current_cell_neighbors += 1;
+        } else if neighbor_cell == proposed_cell {
+            proposed_cell_neighbors += 1;
         } else {
-            nonmatching_neighbors += 1;
+            other_neighbors += 1;
         }
     }
-    (matching_neighbors, nonmatching_neighbors)
+    (
+        current_cell_neighbors,
+        proposed_cell_neighbors,
+        other_neighbors,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +46,9 @@ struct Proposal {
     proposed_cell: CellIndex,
     log_proposal_imbalance: f32,
     neighbor_cells: [Option<CellIndex>; 6],
+    current_cell_neighbors: u32,
+    proposed_cell_neighbors: u32,
+    other_cell_neighbors: u32,
 }
 
 pub struct VoxelSampler {
@@ -192,12 +203,29 @@ impl VoxelSampler {
 
         let log_proposal_imbalance = (reverse_proposal_prob.ln() - proposal_prob.ln()) as f32;
 
+        let (current_cell_neighbors, proposed_cell_neighbors, other_cell_neighbors) =
+            count_matching_neighbors(
+                &target.radius2_neighborhood().map(|voxel| {
+                    let k = voxel.k();
+                    if k < self.kmin || k > self.kmax {
+                        None
+                    } else {
+                        Some(quad.get_voxel_cell(voxel))
+                    }
+                }),
+                current_cell,
+                proposed_cell,
+            );
+
         Some(Proposal {
             voxel: target,
             current_state,
             proposed_cell,
             log_proposal_imbalance,
             neighbor_cells: target_neighbor_cells,
+            current_cell_neighbors,
+            proposed_cell_neighbors,
+            other_cell_neighbors,
         })
     }
 
@@ -293,10 +321,10 @@ impl VoxelSampler {
                 inv_isoperimetric_quotient(current_surface_area, current_volume),
             );
 
-            let (current_cell_neighbors, other_cell_neighbors) =
-                count_matching_neighbors(&proposal.neighbor_cells, current_cell);
+            let other_cell_neighbors =
+                proposal.proposed_cell_neighbors + proposal.other_cell_neighbors;
             let proposed_surface_area =
-                current_surface_area + current_cell_neighbors - other_cell_neighbors;
+                current_surface_area + proposal.current_cell_neighbors - other_cell_neighbors;
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
@@ -333,10 +361,10 @@ impl VoxelSampler {
                 inv_isoperimetric_quotient(current_surface_area, current_volume),
             );
 
-            let (proposed_cell_neighbors, other_cell_neighbors) =
-                count_matching_neighbors(&proposal.neighbor_cells, proposed_cell);
+            let other_cell_neighbors =
+                proposal.current_cell_neighbors + proposal.other_cell_neighbors;
             let proposed_surface_area =
-                current_surface_area - proposed_cell_neighbors + other_cell_neighbors;
+                current_surface_area - proposal.proposed_cell_neighbors + other_cell_neighbors;
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
@@ -399,13 +427,12 @@ impl VoxelSampler {
                 .cell_voxel_count
                 .modify(current_cell as usize, |volume| *volume -= 1);
 
-            let (current_cell_neighbors, other_cell_neighbors) =
-                count_matching_neighbors(&proposal.neighbor_cells, current_cell);
-
+            let other_cell_neighbors =
+                proposal.proposed_cell_neighbors + proposal.other_cell_neighbors;
             params
                 .cell_surface_area
                 .modify(current_cell as usize, |surface_area| {
-                    *surface_area += current_cell_neighbors;
+                    *surface_area += proposal.current_cell_neighbors;
                     *surface_area -= other_cell_neighbors;
                 });
 
@@ -426,12 +453,12 @@ impl VoxelSampler {
                 .cell_voxel_count
                 .modify(proposed_cell as usize, |volume| *volume += 1);
 
-            let (proposed_cell_neighbors, other_cell_neighbors) =
-                count_matching_neighbors(&proposal.neighbor_cells, proposed_cell);
+            let other_cell_neighbors =
+                proposal.current_cell_neighbors + proposal.other_cell_neighbors;
             params
                 .cell_surface_area
                 .modify(proposed_cell as usize, |surface_area| {
-                    *surface_area -= proposed_cell_neighbors;
+                    *surface_area -= proposal.proposed_cell_neighbors;
                     *surface_area += other_cell_neighbors;
                 });
 
