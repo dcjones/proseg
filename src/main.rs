@@ -586,7 +586,7 @@ fn main() {
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
     let mut dataset = if args.visiumhd {
-        read_visium_data(&args.transcript_csv)
+        read_visium_data(&args.transcript_csv, excluded_genes)
     } else {
         read_transcripts_csv(
             &args.transcript_csv,
