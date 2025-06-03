@@ -313,7 +313,7 @@ fn read_visium_scalefactors(filename: &str) -> f32 {
     parsed["microns_per_pixel"].as_f32().unwrap()
 }
 
-pub fn read_visium_data(path: &str) -> TranscriptDataset {
+pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> TranscriptDataset {
     const SQUARE_DIR: &str = "square_002um";
     const MATRIX_DIR: &str = "raw_feature_bc_matrix";
 
@@ -326,6 +326,24 @@ pub fn read_visium_data(path: &str) -> TranscriptDataset {
             .to_str()
             .unwrap(),
     );
+
+    let gene_index: HashMap<usize, usize> = if let Some(excluded_genes) = excluded_genes {
+        gene_names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, gene)| {
+                if excluded_genes.is_match(gene) {
+                    None
+                } else {
+                    Some(i)
+                }
+            })
+            .enumerate()
+            .map(|(j, i)| (i, j))
+            .collect()
+    } else {
+        (1..gene_names.len()).enumerate().collect()
+    };
 
     let barcodes = read_visium_barcodes_tsv(
         path.join(SQUARE_DIR)
@@ -373,7 +391,12 @@ pub fn read_visium_data(path: &str) -> TranscriptDataset {
         let row = result.unwrap();
 
         // "-1" beacuse mtx is 1-based indexing
-        let gene = (row[0].parse::<usize>().unwrap() - 1) as u32;
+        let gene = gene_index.get(&(row[0].parse::<usize>().unwrap() - 1));
+        if gene.is_none() {
+            continue; // excluded gene
+        }
+        let gene = *gene.unwrap() as u32;
+
         let square = row[1].parse::<usize>().unwrap() - 1;
         let count = row[2].parse::<usize>().unwrap() as u32;
 
@@ -384,6 +407,18 @@ pub fn read_visium_data(path: &str) -> TranscriptDataset {
 
         transcripts.push_run(Transcript { x, y, z: 0.0, gene }, count);
     }
+
+    let gene_names: Vec<String> = gene_names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, gene)| {
+            if gene_index.contains_key(&i) {
+                Some(gene.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     TranscriptDataset {
         transcripts,
