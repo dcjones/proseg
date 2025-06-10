@@ -15,7 +15,7 @@ fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
 }
 
 fn count_matching_neighbors(
-    neighbor_cells: &[Option<CellIndex>; 14],
+    neighbor_cells: &[Option<CellIndex>; 26],
     current_cell: CellIndex,
     proposed_cell: CellIndex,
 ) -> (u32, u32, u32) {
@@ -205,7 +205,7 @@ impl VoxelSampler {
 
         let (current_cell_neighbors, proposed_cell_neighbors, other_cell_neighbors) =
             count_matching_neighbors(
-                &target.radius2_neighborhood().map(|voxel| {
+                &target.moore_neighborhood().map(|voxel| {
                     let k = voxel.k();
                     if k < self.kmin || k > self.kmax {
                         None
@@ -458,8 +458,8 @@ impl VoxelSampler {
             params
                 .cell_surface_area
                 .modify(proposed_cell as usize, |surface_area| {
-                    *surface_area -= proposal.proposed_cell_neighbors;
                     *surface_area += other_cell_neighbors;
+                    *surface_area -= proposal.proposed_cell_neighbors;
                 });
 
             let counts_row = params.counts.row(proposed_cell as usize);

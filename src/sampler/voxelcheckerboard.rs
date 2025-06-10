@@ -149,8 +149,7 @@ pub struct Voxel {
 // Using a special value to represent any out of bound voxel.
 const OOB_VOXEL: u64 = 0xffffffffffffffff;
 
-pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
-    (0, 0, 0),
+pub const VON_NEUMANN_OFFSETS: [(i32, i32, i32); 6] = [
     (-1, 0, 0),
     (1, 0, 0),
     (0, -1, 0),
@@ -159,8 +158,7 @@ pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
     (0, 0, 1),
 ];
 
-pub const RADIUS2_AND_SELF_OFFSETS: [(i32, i32, i32); 15] = [
-    (0, 0, 0),
+pub const RADIUS2_OFFSETS: [(i32, i32, i32); 14] = [
     (0, -2, 0),
     (-1, -1, 0),
     (0, -1, 0),
@@ -176,6 +174,34 @@ pub const RADIUS2_AND_SELF_OFFSETS: [(i32, i32, i32); 15] = [
     (0, 0, -1),
     (0, 0, 1),
 ];
+
+// pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
+//     (0, 0, 0),
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (0, -1, 0),
+//     (0, 1, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
+
+// pub const RADIUS2_AND_SELF_OFFSETS: [(i32, i32, i32); 15] = [
+//     (0, 0, 0),
+//     (0, -2, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     (-2, 0, 0),
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (2, 0, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (0, 2, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
 
 // pub const MOORE_AND_SELF_OFFSETS: [(i32, i32, i32); 27] = [
 //     (0, 0, 0),
@@ -304,26 +330,26 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    pub fn radius2_neighborhood(&self) -> [Voxel; 14] {
-        let [i, j, k] = self.coords();
-        [
-            (0, -2, 0),
-            (-1, -1, 0),
-            (0, -1, 0),
-            (1, -1, 0),
-            (-2, 0, 0),
-            (-1, 0, 0),
-            (1, 0, 0),
-            (2, 0, 0),
-            (-1, 1, 0),
-            (0, 1, 0),
-            (1, 1, 0),
-            (0, 2, 0),
-            (0, 0, -1),
-            (0, 0, 1),
-        ]
-        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    }
+    // pub fn radius2_neighborhood(&self) -> [Voxel; 14] {
+    //     let [i, j, k] = self.coords();
+    //     [
+    //         (0, -2, 0),
+    //         (-1, -1, 0),
+    //         (0, -1, 0),
+    //         (1, -1, 0),
+    //         (-2, 0, 0),
+    //         (-1, 0, 0),
+    //         (1, 0, 0),
+    //         (2, 0, 0),
+    //         (-1, 1, 0),
+    //         (0, 1, 0),
+    //         (1, 1, 0),
+    //         (0, 2, 0),
+    //         (0, 0, -1),
+    //         (0, 0, 1),
+    //     ]
+    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    // }
 
     pub fn von_neumann_neighborhood_xy(&self) -> [Voxel; 4] {
         let [i, j, k] = self.coords();
@@ -331,41 +357,41 @@ impl Voxel {
             .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
-    //     let [i, j, k] = self.coords();
-    //     [
-    //         // top layer
-    //         (-1, 0, -1),
-    //         (0, 0, -1),
-    //         (1, 0, -1),
-    //         (-1, 1, -1),
-    //         (0, 1, -1),
-    //         (1, 1, -1),
-    //         (-1, -1, -1),
-    //         (0, -1, -1),
-    //         (1, -1, -1),
-    //         // middle layer
-    //         (-1, 0, 0),
-    //         (1, 0, 0),
-    //         (-1, 1, 0),
-    //         (0, 1, 0),
-    //         (1, 1, 0),
-    //         (-1, -1, 0),
-    //         (0, -1, 0),
-    //         (1, -1, 0),
-    //         // bottom layer
-    //         (-1, 0, 1),
-    //         (0, 0, 1),
-    //         (1, 0, 1),
-    //         (-1, 1, 1),
-    //         (0, 1, 1),
-    //         (1, 1, 1),
-    //         (-1, -1, 1),
-    //         (0, -1, 1),
-    //         (1, -1, 1),
-    //     ]
-    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    // }
+    pub fn moore_neighborhood(&self) -> [Voxel; 26] {
+        let [i, j, k] = self.coords();
+        [
+            // top layer
+            (-1, 0, -1),
+            (0, 0, -1),
+            (1, 0, -1),
+            (-1, 1, -1),
+            (0, 1, -1),
+            (1, 1, -1),
+            (-1, -1, -1),
+            (0, -1, -1),
+            (1, -1, -1),
+            // middle layer
+            (-1, 0, 0),
+            (1, 0, 0),
+            (-1, 1, 0),
+            (0, 1, 0),
+            (1, 1, 0),
+            (-1, -1, 0),
+            (0, -1, 0),
+            (1, -1, 0),
+            // bottom layer
+            (-1, 0, 1),
+            (0, 0, 1),
+            (1, 0, 1),
+            (-1, 1, 1),
+            (0, 1, 1),
+            (1, 1, 1),
+            (-1, -1, 1),
+            (0, -1, 1),
+            (1, -1, 1),
+        ]
+        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
 
     // // Gives the line segment defining the edge between two voxels bordering on
     // // the xy plane. (Panics if the voxels don't border.)
@@ -959,7 +985,13 @@ impl VoxelCheckerboard {
                 let prior = logistic(cellprobs_ij);
 
                 let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
-                *vote += cellprob_discount * prior;
+
+                // TODO: I think I'm misusing the prior here.
+                // We treat p = 0.5 as having no opinion, but here that would be significant evidence in favor
+                // of that pixel being in the cell. How should we be doing this? Scale everything to be in [0.5, 1.0]
+                //
+                // *vote += cellprob_discount * prior;
+                *vote += 0.5 + 0.5 * cellprob_discount * prior;
             });
     }
 
@@ -1386,7 +1418,8 @@ impl VoxelCheckerboard {
 
                     let mut voxel_surface_area = 0;
                     // for neighbor in voxel.von_neumann_neighborhood() {
-                    for neighbor in voxel.radius2_neighborhood() {
+                    // for neighbor in voxel.radius2_neighborhood() {
+                    for neighbor in voxel.moore_neighborhood() {
                         let k = neighbor.k();
                         let neighbor_cell = if k >= 0 && k <= quad.kmax {
                             quad.get_voxel_cell(neighbor)
@@ -1747,6 +1780,7 @@ impl VoxelCheckerboard {
         params: &mut ModelParams,
         dataset: &TranscriptDataset,
     ) -> VoxelCheckerboard {
+        println!("DOUBLE RESOLUTION");
         let quadsize = 2 * self.quadsize;
         let voxelsize = 0.5 * self.voxelsize;
         let voxelsize_z = self.voxelsize_z;
