@@ -138,6 +138,182 @@ impl Add for VoxelOffset {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_voxel_offset_zero() {
+        let offset = VoxelOffset::zero();
+        assert_eq!(offset.coords(), [0, 0, 0]);
+    }
+
+    #[test]
+    fn test_voxel_offset_positive_values() {
+        let offset = VoxelOffset::new(100, 200, 50);
+        assert_eq!(offset.coords(), [100, 200, 50]);
+    }
+
+    #[test]
+    fn test_voxel_offset_negative_values() {
+        let offset = VoxelOffset::new(-100, -200, -50);
+        assert_eq!(offset.coords(), [-100, -200, -50]);
+    }
+
+    #[test]
+    fn test_voxel_offset_mixed_values() {
+        let offset = VoxelOffset::new(-100, 200, -50);
+        assert_eq!(offset.coords(), [-100, 200, -50]);
+
+        let offset2 = VoxelOffset::new(100, -200, 50);
+        assert_eq!(offset2.coords(), [100, -200, 50]);
+    }
+
+    #[test]
+    fn test_voxel_offset_12bit_boundaries() {
+        // Test 12-bit signed integer boundaries for di and dj
+        // Range: -2048 to 2047
+
+        // Maximum positive values
+        let offset_max = VoxelOffset::new(2047, 2047, 127);
+        assert_eq!(offset_max.coords(), [2047, 2047, 127]);
+
+        // Maximum negative values
+        let offset_min = VoxelOffset::new(-2048, -2048, -128);
+        assert_eq!(offset_min.coords(), [-2048, -2048, -128]);
+
+        // Test edge cases around zero
+        let offset_pos_one = VoxelOffset::new(1, 1, 1);
+        assert_eq!(offset_pos_one.coords(), [1, 1, 1]);
+
+        let offset_neg_one = VoxelOffset::new(-1, -1, -1);
+        assert_eq!(offset_neg_one.coords(), [-1, -1, -1]);
+    }
+
+    #[test]
+    fn test_voxel_offset_8bit_boundaries() {
+        // Test 8-bit signed integer boundaries for dk
+        // Range: -128 to 127
+
+        let offset_max_k = VoxelOffset::new(0, 0, 127);
+        assert_eq!(offset_max_k.coords(), [0, 0, 127]);
+
+        let offset_min_k = VoxelOffset::new(0, 0, -128);
+        assert_eq!(offset_min_k.coords(), [0, 0, -128]);
+    }
+
+    #[test]
+    fn test_voxel_offset_addition() {
+        let offset1 = VoxelOffset::new(10, 20, 5);
+        let offset2 = VoxelOffset::new(5, -15, 3);
+        let result = offset1 + offset2;
+        assert_eq!(result.coords(), [15, 5, 8]);
+    }
+
+    #[test]
+    fn test_voxel_offset_addition_with_negatives() {
+        let offset1 = VoxelOffset::new(-10, -20, -5);
+        let offset2 = VoxelOffset::new(-5, 15, -3);
+        let result = offset1 + offset2;
+        assert_eq!(result.coords(), [-15, -5, -8]);
+    }
+
+    #[test]
+    fn test_voxel_offset_individual_accessors() {
+        let offset = VoxelOffset::new(123, -456, 78);
+        assert_eq!(offset.di(), 123);
+        assert_eq!(offset.dj(), -456);
+        assert_eq!(offset.dk(), 78);
+    }
+
+    #[test]
+    fn test_i12_to_i32_conversion() {
+        // Test positive values
+        assert_eq!(i12_to_i32(100), 100);
+        assert_eq!(i12_to_i32(2047), 2047);
+
+        // Test negative values (with sign bit set)
+        assert_eq!(i12_to_i32(0xFFF), -1); // All bits set = -1
+        assert_eq!(i12_to_i32(0x800), -2048); // Sign bit only = -2048
+        assert_eq!(i12_to_i32(0x801), -2047); // Sign bit + 1 = -2047
+    }
+
+    #[test]
+    fn test_i8_to_i32_conversion() {
+        // Test positive values
+        assert_eq!(i8_to_i32(100), 100);
+        assert_eq!(i8_to_i32(127), 127);
+
+        // Test negative values (with sign bit set)
+        assert_eq!(i8_to_i32(0xFF), -1); // All bits set = -1
+        assert_eq!(i8_to_i32(0x80), -128); // Sign bit only = -128
+        assert_eq!(i8_to_i32(0x81), -127); // Sign bit + 1 = -127
+    }
+
+    #[test]
+    fn test_voxel_offset_bit_packing() {
+        // Test that values are correctly packed and unpacked
+        let offset = VoxelOffset::new(0x123, 0x456, 0x78);
+
+        // Verify individual components
+        assert_eq!(offset.di(), 0x123);
+        assert_eq!(offset.dj(), 0x456);
+        assert_eq!(offset.dk(), 0x78);
+
+        // Verify the packed representation
+        let expected_packed =
+            ((0x123u32 & 0xFFF) << 20) | ((0x456u32 & 0xFFF) << 8) | (0x78u32 & 0xFF);
+        assert_eq!(offset.offset, expected_packed);
+    }
+
+    #[test]
+    fn test_voxel_offset_sign_extension() {
+        // Test that negative values are correctly sign-extended
+
+        // Test di with negative value
+        let offset1 = VoxelOffset::new(-1, 0, 0);
+        assert_eq!(offset1.di(), -1);
+
+        // Test dj with negative value
+        let offset2 = VoxelOffset::new(0, -1, 0);
+        assert_eq!(offset2.dj(), -1);
+
+        // Test dk with negative value
+        let offset3 = VoxelOffset::new(0, 0, -1);
+        assert_eq!(offset3.dk(), -1);
+    }
+
+    #[test]
+    fn test_voxel_offset_roundtrip() {
+        // Test a variety of values to ensure perfect roundtrip storage/recovery
+        let test_cases = vec![
+            (0, 0, 0),
+            (1, 1, 1),
+            (-1, -1, -1),
+            (100, -200, 50),
+            (-100, 200, -50),
+            (2047, 2047, 127),
+            (-2048, -2048, -128),
+            (1000, -1000, 100),
+            (-1000, 1000, -100),
+        ];
+
+        for (di, dj, dk) in test_cases {
+            let offset = VoxelOffset::new(di, dj, dk);
+            let recovered = offset.coords();
+            assert_eq!(
+                recovered,
+                [di, dj, dk],
+                "Roundtrip failed for ({}, {}, {}): got {:?}",
+                di,
+                dj,
+                dk,
+                recovered
+            );
+        }
+    }
+}
+
 // Index of a single voxel
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Voxel {
@@ -268,7 +444,6 @@ pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
 //     (1, -1, 1),
 // ];
 
-// TODO: we could just u32 for coordinates.
 impl Voxel {
     pub fn new(i: i32, j: i32, k: i32) -> Voxel {
         if i < 0
@@ -282,8 +457,8 @@ impl Voxel {
         }
 
         Voxel {
-            index: ((i as u64 & 0xFFFFFF) << 48)
-                | ((j as u64 & 0xFFFFFF) << 24)
+            index: ((i as u64 & 0xFFFFFF) << 40)
+                | ((j as u64 & 0xFFFFFF) << 16)
                 | (k as u64 & 0xFFFF),
         }
     }
@@ -319,11 +494,11 @@ impl Voxel {
     // }
 
     pub fn i(&self) -> i32 {
-        ((self.index >> 48) & 0xFFFFFF) as i32
+        ((self.index >> 40) & 0xFFFFFF) as i32
     }
 
     pub fn j(&self) -> i32 {
-        ((self.index >> 24) & 0xFFFFFF) as i32
+        ((self.index >> 16) & 0xFFFFFF) as i32
     }
 
     pub fn k(&self) -> i32 {
@@ -486,8 +661,8 @@ impl Ord for Voxel {
 
         // xor then extract coords rather than vice versa to save a few ops
         let xor = self.index ^ other.index;
-        let xi = ((xor >> 48) & 0xFFFFFF) as u32;
-        let xj = ((xor >> 24) & 0xFFFFFF) as u32;
+        let xi = ((xor >> 40) & 0xFFFFFF) as u32;
+        let xj = ((xor >> 16) & 0xFFFFFF) as u32;
         let xk = (xor & 0xFFFF) as u32;
 
         // just doing a bunch of branches here an trusting the compiler
