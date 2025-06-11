@@ -312,6 +312,205 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_voxel_offset_basic() {
+        // Test basic offset functionality with simple cases
+        let voxel = Voxel::new(100, 200, 50);
+        
+        // Test zero offset - should return same voxel
+        let offset_zero = VoxelOffset::new(0, 0, 0);
+        let result = voxel.offset(offset_zero);
+        assert_eq!(result.coords(), [100, 200, 50]);
+        assert!(!result.is_oob());
+
+        // Test positive offsets
+        let offset_pos = VoxelOffset::new(1, 2, 3);
+        let result = voxel.offset(offset_pos);
+        assert_eq!(result.coords(), [101, 202, 53]);
+        assert!(!result.is_oob());
+
+        // Test negative offsets
+        let offset_neg = VoxelOffset::new(-5, -10, -15);
+        let result = voxel.offset(offset_neg);
+        assert_eq!(result.coords(), [95, 190, 35]);
+        assert!(!result.is_oob());
+
+        // Test mixed offsets
+        let offset_mixed = VoxelOffset::new(50, -25, 10);
+        let result = voxel.offset(offset_mixed);
+        assert_eq!(result.coords(), [150, 175, 60]);
+        assert!(!result.is_oob());
+    }
+
+    #[test]
+    fn test_voxel_offset_von_neumann_neighbors() {
+        // Test that offset correctly computes Von Neumann neighborhood
+        let center = Voxel::new(1000, 2000, 500);
+        
+        let expected_neighbors = [
+            [999, 2000, 500],  // (-1, 0, 0)
+            [1001, 2000, 500], // (1, 0, 0)
+            [1000, 1999, 500], // (0, -1, 0)
+            [1000, 2001, 500], // (0, 1, 0)
+            [1000, 2000, 499], // (0, 0, -1)
+            [1000, 2000, 501], // (0, 0, 1)
+        ];
+
+        for (i, &(di, dj, dk)) in VON_NEUMANN_OFFSETS.iter().enumerate() {
+            let offset = VoxelOffset::new(di, dj, dk);
+            let neighbor = center.offset(offset);
+            assert_eq!(neighbor.coords(), expected_neighbors[i],
+                "Von Neumann neighbor {} offset ({}, {}, {}) failed", i, di, dj, dk);
+            assert!(!neighbor.is_oob());
+        }
+    }
+
+    #[test]
+    fn test_voxel_offset_moore_neighbors() {
+        // Test that offset correctly computes Moore neighborhood (3x3x3 cube minus center)
+        let center = Voxel::new(500, 600, 100);
+        
+        for &(di, dj, dk) in MOORE_OFFSETS.iter() {
+            let offset = VoxelOffset::new(di, dj, dk);
+            let neighbor = center.offset(offset);
+            let expected = [500 + di, 600 + dj, 100 + dk];
+            assert_eq!(neighbor.coords(), expected,
+                "Moore neighbor offset ({}, {}, {}) failed", di, dj, dk);
+            assert!(!neighbor.is_oob());
+        }
+    }
+
+    #[test]
+    fn test_voxel_offset_boundary_conditions() {
+        // Test offset behavior near coordinate boundaries
+        
+        // Test near origin
+        let near_origin = Voxel::new(1, 1, 1);
+        let offset_neg = VoxelOffset::new(-1, -1, -1);
+        let result = near_origin.offset(offset_neg);
+        assert_eq!(result.coords(), [0, 0, 0]);
+        assert!(!result.is_oob());
+
+        // Test at origin going negative (should be OOB)
+        let origin = Voxel::new(0, 0, 0);
+        let result = origin.offset(offset_neg);
+        assert!(result.is_oob());
+
+        // Test near maximum k boundary
+        let max_k = (1 << 16) - 1; // 65535
+        let near_max_k = Voxel::new(100, 100, max_k - 1);
+        let offset_pos_k = VoxelOffset::new(0, 0, 1);
+        let result = near_max_k.offset(offset_pos_k);
+        assert_eq!(result.coords(), [100, 100, max_k]);
+        assert!(!result.is_oob());
+
+        // Test at maximum k boundary going positive (should be OOB)
+        let at_max_k = Voxel::new(100, 100, max_k);
+        let result = at_max_k.offset(offset_pos_k);
+        assert!(result.is_oob());
+    }
+
+    #[test]
+    fn test_voxel_offset_out_of_bounds() {
+        // Test various scenarios that should result in OOB voxels
+        
+        // Test negative coordinates
+        let voxel = Voxel::new(5, 5, 5);
+        let large_neg = VoxelOffset::new(-10, 0, 0);
+        let result = voxel.offset(large_neg);
+        assert!(result.is_oob());
+
+        let large_neg_j = VoxelOffset::new(0, -10, 0);
+        let result = voxel.offset(large_neg_j);
+        assert!(result.is_oob());
+
+        let large_neg_k = VoxelOffset::new(0, 0, -10);
+        let result = voxel.offset(large_neg_k);
+        assert!(result.is_oob());
+
+        // Test coordinates that would exceed maximum bounds
+        let max_coord_24bit = (1 << 24) - 1; // For i and j coordinates
+        let max_coord_16bit = (1 << 16) - 1; // For k coordinate
+        
+        let near_max_i = Voxel::new(max_coord_24bit - 1, 100, 100);
+        let large_pos_i = VoxelOffset::new(10, 0, 0);
+        let result = near_max_i.offset(large_pos_i);
+        assert!(result.is_oob());
+
+        let near_max_j = Voxel::new(100, max_coord_24bit - 1, 100);
+        let large_pos_j = VoxelOffset::new(0, 10, 0);
+        let result = near_max_j.offset(large_pos_j);
+        assert!(result.is_oob());
+
+        let near_max_k = Voxel::new(100, 100, max_coord_16bit - 1);
+        let large_pos_k = VoxelOffset::new(0, 0, 10);
+        let result = near_max_k.offset(large_pos_k);
+        assert!(result.is_oob());
+    }
+
+    #[test]
+    fn test_voxel_offset_large_offsets() {
+        // Test with larger offset values within VoxelOffset limits
+        let center = Voxel::new(10000, 10000, 1000);
+        
+        // Test maximum positive VoxelOffset values
+        let max_offset = VoxelOffset::new(2047, 2047, 127);
+        let result = center.offset(max_offset);
+        assert_eq!(result.coords(), [12047, 12047, 1127]);
+        assert!(!result.is_oob());
+
+        // Test maximum negative VoxelOffset values
+        let min_offset = VoxelOffset::new(-2048, -2048, -128);
+        let result = center.offset(min_offset);
+        assert_eq!(result.coords(), [7952, 7952, 872]);
+        assert!(!result.is_oob());
+    }
+
+    #[test]
+    fn test_voxel_offset_consistency_with_coords() {
+        // Test that offset() and offset_coords() produce identical results
+        let voxel = Voxel::new(1234, 5678, 999);
+        
+        let test_offsets = [
+            (0, 0, 0),
+            (1, 2, 3),
+            (-1, -2, -3),
+            (100, -50, 25),
+            (-100, 50, -25),
+        ];
+        
+        for (di, dj, dk) in test_offsets {
+            let offset_obj = VoxelOffset::new(di, dj, dk);
+            let result_offset = voxel.offset(offset_obj);
+            let result_coords = voxel.offset_coords(di, dj, dk);
+            
+            assert_eq!(result_offset.coords(), result_coords.coords(),
+                "offset() and offset_coords() disagree for ({}, {}, {})", di, dj, dk);
+            assert_eq!(result_offset.is_oob(), result_coords.is_oob(),
+                "OOB status differs between offset() and offset_coords() for ({}, {}, {})", di, dj, dk);
+        }
+    }
+
+    #[test]
+    fn test_voxel_offset_chaining() {
+        // Test that multiple offsets can be chained correctly
+        let start = Voxel::new(1000, 2000, 500);
+        
+        // Apply a series of offsets
+        let offset1 = VoxelOffset::new(10, 20, 5);
+        let offset2 = VoxelOffset::new(-5, 15, -2);
+        let offset3 = VoxelOffset::new(100, -50, 25);
+        
+        let result = start.offset(offset1).offset(offset2).offset(offset3);
+        
+        // Should be equivalent to applying the sum of all offsets
+        let total_offset = VoxelOffset::new(10 + (-5) + 100, 20 + 15 + (-50), 5 + (-2) + 25);
+        let expected = start.offset(total_offset);
+        
+        assert_eq!(result.coords(), expected.coords());
+        assert_eq!(result.is_oob(), expected.is_oob());
+    }
 }
 
 // Index of a single voxel
