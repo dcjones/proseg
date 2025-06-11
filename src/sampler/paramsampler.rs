@@ -62,6 +62,22 @@ impl ParamSampler {
                 .update(&params.foreground_counts);
         }
 
+        let unassigned_layer_counts: Vec<_> = params
+            .unassigned_counts
+            .iter()
+            .map(|row| row.iter().map(|x| x as u64).sum::<u64>())
+            .collect();
+
+        dbg!(&unassigned_layer_counts);
+
+        let background_layer_counts: Vec<_> = params
+            .background_counts
+            .iter()
+            .map(|row| row.iter().map(|x| x as u64).sum::<u64>())
+            .collect();
+
+        dbg!(&background_layer_counts);
+
         params.t += 1;
     }
 

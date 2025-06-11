@@ -99,11 +99,11 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_scale: Option<f32>,
 
-    #[arg(long, default_value_t = 0.75)]
+    #[arg(long, default_value_t = 0.85)]
     cellpose_cellprob_discount: f32,
 
     /// Expand initialized cells outward by this many voxels.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 0)]
     expand_initialized_cells: usize,
 
     /// Name of column containing the x coordinate
@@ -198,7 +198,7 @@ struct Args {
 
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 1)]
     recorded_samples: usize,
 
     /// Number of CPU threads (by default, all cores are used)
@@ -206,7 +206,7 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (larger numbers induce more compact cells)
-    #[arg(long, default_value_t = 2.5)]
+    #[arg(long, default_value_t = 120.0)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
@@ -324,7 +324,7 @@ struct Args {
     output_transcript_metadata_fmt: OutputFormat,
 
     /// Output gene metadata
-    #[arg(long, default_value=None)]
+    #[arg(long, default_value = "gene-metadata.csv.gz")]
     output_gene_metadata: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
@@ -766,7 +766,9 @@ fn main() {
         p_diffusion: args.diffusion_probability,
         σ_xy_diffusion_near: args.diffusion_sigma_near,
         σ_xy_diffusion_far: args.diffusion_sigma_far,
-        σ_z_diffusion: 0.2 * zspan,
+        // σ_z_diffusion: 0.2 * zspan,
+        σ_z_diffusion: 0.05 * zspan,
+        // σ_z_diffusion: 1e-3 * zspan,
         τv: 10.0,
     };
 

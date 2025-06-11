@@ -10,16 +10,20 @@ use super::math::{
 };
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{
-    RADIUS2_AND_SELF_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
+    MOORE_OFFSETS, RADIUS2_OFFSETS, VON_NEUMANN_OFFSETS, VoxelCheckerboard, VoxelCountKey,
+    VoxelOffset, VoxelQuad,
 };
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
-use rand::rng;
 use rand::rngs::ThreadRng;
+use rand::{Rng, rng};
 
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 7] = VON_NEUMANN_AND_SELF_OFFSETS;
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 27] = MOORE_AND_SELF_OFFSETS;
-const REPO_NEIGHBORHOOD: [(i32, i32, i32); 15] = RADIUS2_AND_SELF_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 15] = RADIUS2_AND_SELF_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 6] = VON_NEUMANN_OFFSETS;
+const REPO_NEIGHBORHOOD: [(i32, i32, i32); 26] = MOORE_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 14] = RADIUS2_OFFSETS;
 
 pub struct TranscriptRepo {
     prior_near: VoxelDiffusionPrior,
@@ -110,7 +114,7 @@ fn quad_transcript_repo(
             continue;
         }
 
-        let k = voxel.k();
+        let k0 = voxel.k();
         let gene = *gene as usize;
         let [di0, dj0, dk0] = offset.coords();
 
@@ -120,22 +124,60 @@ fn quad_transcript_repo(
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
 
-        let t0 = Instant::now();
-        let λ_bg = params.λ_bg[[gene, k as usize]];
-        let neighbor_probs = REPO_NEIGHBORHOOD.map(|(di, dj, dk)| {
+        // let t0 = Instant::now();
+        let mut λ_current = params.λ_bg[[gene, k0 as usize]];
+        if cell != BACKGROUND_CELL {
+            λ_current += params.λ(cell as usize, gene);
+        }
+
+        let sq_dist_z = dk0 * dk0;
+        let z_prob0 = halfnormal_x2_pdf(
+            priors.σ_z_diffusion,
+            sq_dist_z as f32 * (voxelsize_z * voxelsize_z),
+        );
+
+        let sq_dist_prob0 = priors.p_diffusion
+            * prior_far.prob(di0)
+            * prior_far.prob(dj0)
+            * z_prob0
+            + (1.0 - priors.p_diffusion) * prior_near.prob(di0) * prior_near.prob(dj0) * z_prob0;
+
+        let current_prob = sq_dist_prob0 * λ_current;
+
+        let mut ρ = 1.0;
+        let mut s = *count;
+        let prop_prob = 1.0 / REPO_NEIGHBORHOOD.len() as f64;
+        let mut total_moved = 0;
+        REPO_NEIGHBORHOOD.iter().for_each(|&(di, dj, dk)| {
+            if s == 0 {
+                return;
+            }
+
+            // sample from a marginal binomial to determine how many transcript we are
+            // proposing to move to this neighbor.
+            let r = (prop_prob / ρ).min(1.0);
+            let diffused_count = Binomial::new(s as u64, r).unwrap().sample(rng) as u32;
+            ρ -= prop_prob;
+            s -= diffused_count;
+
+            if diffused_count == 0 {
+                return;
+            }
+
             let neighbor = voxel.offset_coords(di, dj, dk);
             let k = neighbor.k();
             if neighbor.is_oob() || k < 0 || k > quad.kmax {
-                return 0_f32;
+                return;
             }
 
             let u = neighbor.i() as u32 / quadsize;
             let v = neighbor.j() as u32 / quadsize;
             if !quads_coords.contains(&(u, v)) {
-                return 0_f32;
+                return;
             }
 
-            let mut λ = λ_bg;
+            // sample from another binomial to determine how many of these move we accept
+            let mut λ_proposed = params.λ_bg[[gene, k as usize]];
             let neighbor_cell = quad
                 .states
                 .get(&neighbor)
@@ -143,7 +185,7 @@ fn quad_transcript_repo(
                 .unwrap_or(BACKGROUND_CELL);
 
             if neighbor_cell != BACKGROUND_CELL {
-                λ += params.λ(neighbor_cell as usize, gene);
+                λ_proposed += params.λ(neighbor_cell as usize, gene);
             }
 
             let di = di + di0;
@@ -163,83 +205,65 @@ fn quad_transcript_repo(
                 * z_prob
                 + (1.0 - priors.p_diffusion) * prior_near.prob(di) * prior_near.prob(dj) * z_prob;
 
-            sq_dist_prob * λ
-        });
-        assert!(neighbor_probs[0] > 0.0);
-        compute_probs_elapsed += t0.elapsed();
+            let proposal_prob = sq_dist_prob * λ_proposed;
 
-        // TODO: Unclear if hillclimbing makes sense in repo
-        // if hillclimb {
-        //     let max_idx = neighbor_probs
-        //         .iter()
-        //         .enumerate()
-        //         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        //         .map(|(idx, _)| idx)
-        //         .unwrap_or(0);
+            let accepted_count = Binomial::new(
+                diffused_count as u64,
+                (proposal_prob as f64 / current_prob as f64).min(1.0),
+            )
+            .unwrap()
+            .sample(rng) as u32;
 
-        //     for (i, p) in neighbor_probs.iter_mut().enumerate() {
-        //         if i != max_idx {
-        //             *p = 0.0;
-        //         }
-        //     }
-        // }
+            // if k != k0 && accepted_count > 0 && rng.random::<f64>() < 1e-3 {
+            //     // let λ_bg_current = params.λ_bg[[gene, k0 as usize]];
+            //     // let λ_bg_proposal = params.λ_bg[[gene, k as usize]];
+            //     let λ_bgs = params.λ_bg.row(gene);
 
-        let sum_probs = neighbor_probs.iter().map(|v| *v as f64).sum::<f64>();
+            //     dbg!((
+            //         k0,
+            //         k,
+            //         dk0,
+            //         dk,
+            //         sq_dist_prob0,
+            //         sq_dist_prob,
+            //         λ_current,
+            //         λ_proposed,
+            //         λ_bgs,
+            //         (proposal_prob as f64 / current_prob as f64),
+            //         // λ_bg_current,
+            //         // λ_bg_proposal
+            //     ));
+            // }
 
-        let t0 = Instant::now();
-        // multinomial sampling (by sampling from Binomial marginals)
-        {
-            let mut ρ = 1.0;
-            let mut s = *count;
-
-            for (step, (&(di, dj, dk), p)) in
-                REPO_NEIGHBORHOOD.iter().zip(neighbor_probs).enumerate()
-            {
-                let p = p as f64 / sum_probs;
-                let diffused_count = if step == REPO_NEIGHBORHOOD.len() - 1 {
-                    s
-                } else if ρ > 0.0 {
-                    let r = (p / ρ).min(1.0);
-                    Binomial::new(s as u64, r).unwrap().sample(rng) as u32
-                } else {
-                    0
-                };
-
-                if di == 0 && dj == 0 && dk == 0 {
-                    if diffused_count < *count {
-                        let delta = *count - diffused_count;
-                        if cell == BACKGROUND_CELL {
-                            params.unassigned_counts[k as usize].sub(gene, delta);
-                        } else {
-                            let counts_c = params.counts.row(cell as usize);
-                            counts_c
-                                .write()
-                                .sub(CountMatRowKey::new(gene as u32, k as u32), delta);
-                        }
-                        *count = diffused_count;
-                    }
-                } else if diffused_count > 0 {
-                    let neighbor = voxel.offset_coords(di, dj, dk);
-                    quad.counts_deltas.push((
-                        VoxelCountKey {
-                            voxel: neighbor,
-                            gene: gene as u32,
-                            offset: VoxelOffset::new(di0 + di, dj0 + dj, dk0 + dk),
-                        },
-                        diffused_count,
-                    ));
-                }
-
-                s -= diffused_count;
-                ρ -= p;
-
-                if s == 0 {
-                    break;
-                }
+            if accepted_count == 0 {
+                return;
             }
-            assert!(s == 0);
+
+            quad.counts_deltas.push((
+                VoxelCountKey {
+                    voxel: neighbor,
+                    gene: gene as u32,
+                    offset: VoxelOffset::new(di, dj, dk),
+                },
+                accepted_count,
+            ));
+
+            total_moved += accepted_count;
+        });
+        assert!(s == 0);
+        assert!(total_moved <= *count);
+
+        if total_moved > 0 {
+            *count -= total_moved;
+            if cell == BACKGROUND_CELL {
+                params.unassigned_counts[k0 as usize].sub(gene, total_moved);
+            } else {
+                let counts_c = params.counts.row(cell as usize);
+                counts_c
+                    .write()
+                    .sub(CountMatRowKey::new(gene as u32, k0 as u32), total_moved);
+            }
         }
-        multinomial_sampling_elapsed += t0.elapsed();
     }
 
     trace!(
