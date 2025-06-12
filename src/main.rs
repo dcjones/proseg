@@ -582,7 +582,7 @@ fn main() {
     if voxel_double_count.fract().abs() > 1e-5 {
         panic!("Ratio between voxel size and burnin voxel size must be a power of two");
     }
-    let voxel_double_count = voxel_double_count as u32;
+    let voxel_double_count = -voxel_double_count as u32;
 
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
