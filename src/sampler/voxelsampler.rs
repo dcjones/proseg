@@ -10,12 +10,17 @@ use rayon::prelude::*;
 use std::f32;
 use std::time::Instant;
 
+// fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
+//     (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
+// }
+
 fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
-    (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
+    (surface_area as f32).powi(2) / (4.0 * f32::consts::PI * (volume as f32).powi(2))
 }
 
 fn count_matching_neighbors(
-    neighbor_cells: &[Option<CellIndex>; 26],
+    // neighbor_cells: &[Option<CellIndex>; 26],
+    neighbor_cells: &[Option<CellIndex>; 8],
     current_cell: CellIndex,
     proposed_cell: CellIndex,
 ) -> (u32, u32, u32) {
@@ -73,7 +78,7 @@ impl VoxelSampler {
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &ModelParams,
-        hillclimb: bool,
+        temperature: f32,
     ) {
         let t0 = Instant::now();
 
@@ -101,12 +106,8 @@ impl VoxelSampler {
                 }
                 let proposal = proposal.unwrap();
 
-                let logu = self.evaluate_proposal(&quad, priors, params, proposal);
-                let s = if hillclimb {
-                    0.0
-                } else {
-                    rng().random::<f32>().ln()
-                };
+                let logu = self.evaluate_proposal(&quad, priors, params, proposal) / temperature;
+                let s = rng().random::<f32>().ln();
 
                 if s < logu {
                     self.accept_proposal(voxels, &mut quad, params, proposal);
@@ -205,7 +206,7 @@ impl VoxelSampler {
 
         let (current_cell_neighbors, proposed_cell_neighbors, other_cell_neighbors) =
             count_matching_neighbors(
-                &target.moore_neighborhood().map(|voxel| {
+                &target.moore2d_neighborhood().map(|voxel| {
                     let k = voxel.k();
                     if k < self.kmin || k > self.kmax {
                         None

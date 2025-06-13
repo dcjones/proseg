@@ -10,8 +10,7 @@ use super::math::{
 };
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{
-    MOORE_OFFSETS, RADIUS2_OFFSETS, VON_NEUMANN_OFFSETS, VoxelCheckerboard, VoxelCountKey,
-    VoxelOffset, VoxelQuad,
+    MOORE_OFFSETS, RADIUS2_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
 };
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
@@ -22,8 +21,8 @@ use rand::{Rng, rng};
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 27] = MOORE_AND_SELF_OFFSETS;
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 15] = RADIUS2_AND_SELF_OFFSETS;
 // const REPO_NEIGHBORHOOD: [(i32, i32, i32); 6] = VON_NEUMANN_OFFSETS;
-const REPO_NEIGHBORHOOD: [(i32, i32, i32); 26] = MOORE_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 14] = RADIUS2_OFFSETS;
+// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 26] = MOORE_OFFSETS;
+const REPO_NEIGHBORHOOD: [(i32, i32, i32); 14] = RADIUS2_OFFSETS;
 
 pub struct TranscriptRepo {
     prior_near: VoxelDiffusionPrior,
@@ -51,7 +50,7 @@ impl TranscriptRepo {
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &mut ModelParams,
-        hillclimb: bool,
+        temperature: f32,
     ) {
         let t0 = Instant::now();
         voxels
@@ -71,7 +70,7 @@ impl TranscriptRepo {
                     voxels.quadsize as u32,
                     voxels.voxelsize,
                     voxels.voxelsize_z,
-                    hillclimb,
+                    temperature,
                 );
             });
         trace!("transcript repo: compute deltas: {:?}", t0.elapsed());
@@ -92,9 +91,9 @@ fn quad_transcript_repo(
     quad: &mut VoxelQuad,
     quads_coords: &HashSet<(u32, u32)>,
     quadsize: u32,
-    voxelsize: f32,
+    _voxelsize: f32,
     voxelsize_z: f32,
-    _hillclimb: bool,
+    temperature: f32,
 ) {
     quad.counts_deltas.clear();
 
@@ -207,33 +206,10 @@ fn quad_transcript_repo(
 
             let proposal_prob = sq_dist_prob * λ_proposed;
 
-            let accepted_count = Binomial::new(
-                diffused_count as u64,
-                (proposal_prob as f64 / current_prob as f64).min(1.0),
-            )
-            .unwrap()
-            .sample(rng) as u32;
-
-            // if k != k0 && accepted_count > 0 && rng.random::<f64>() < 1e-3 {
-            //     // let λ_bg_current = params.λ_bg[[gene, k0 as usize]];
-            //     // let λ_bg_proposal = params.λ_bg[[gene, k as usize]];
-            //     let λ_bgs = params.λ_bg.row(gene);
-
-            //     dbg!((
-            //         k0,
-            //         k,
-            //         dk0,
-            //         dk,
-            //         sq_dist_prob0,
-            //         sq_dist_prob,
-            //         λ_current,
-            //         λ_proposed,
-            //         λ_bgs,
-            //         (proposal_prob as f64 / current_prob as f64),
-            //         // λ_bg_current,
-            //         // λ_bg_proposal
-            //     ));
-            // }
+            let accept_prob = ((proposal_prob.ln() - current_prob.ln()) / temperature).exp() as f64;
+            let accepted_count = Binomial::new(diffused_count as u64, accept_prob.min(1.0))
+                .unwrap()
+                .sample(rng) as u32;
 
             if accepted_count == 0 {
                 return;
@@ -299,6 +275,8 @@ impl VoxelDiffusionPrior {
             }
             d += 1;
         }
+
+        dbg!(voxelsize, σ, &pmf);
 
         VoxelDiffusionPrior { eps, pmf }
     }
