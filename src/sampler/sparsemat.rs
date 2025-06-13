@@ -302,7 +302,7 @@ pub struct SparseRowWriteLock<'a, T, J> {
 
 impl<T, J> SparseRowWriteLock<'_, T, J>
 where
-    T: AddAssign + SubAssign + Zero + Eq,
+    T: AddAssign + SubAssign + Zero + Eq + PartialOrd,
     J: Ord + Copy + Debug + Zero,
 {
     pub fn sub(&mut self, j: J, delta: T) {
@@ -312,6 +312,7 @@ where
             .shard
             .get_mut(&key)
             .expect("Subtracting from a 0 entry in a sparse matrix. ");
+        assert!(*count >= delta);
         *count -= delta;
         if *count == T::zero() {
             self.shard.remove(&key);

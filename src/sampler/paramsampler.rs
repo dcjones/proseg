@@ -28,7 +28,7 @@ impl ParamSampler {
         priors: &ModelPriors,
         params: &mut ModelParams,
         burnin: bool,
-        _hillclimb: bool,
+        _temperature: f32,
         record_samples: bool,
         sample_z: bool,
         purge_sparse_mats: bool,

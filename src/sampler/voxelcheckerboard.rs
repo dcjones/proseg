@@ -9,7 +9,12 @@ use super::sparsemat::SparseMat;
 use super::transcripts::{BACKGROUND_CELL, CellIndex, TranscriptDataset};
 use super::{CountMatRowKey, ModelParams};
 
+use arrow::array::RecordBatch;
+use arrow::csv;
+use arrow::datatypes::{DataType, Field, Schema};
+use flate2::Compression;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use geo::geometry::{MultiPolygon, Polygon};
 use half::f16;
 use log::info;
@@ -28,6 +33,7 @@ use std::io::{BufReader, Read};
 use std::mem::drop;
 use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut};
+use std::sync::Arc;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -317,7 +323,7 @@ mod tests {
     fn test_voxel_offset_basic() {
         // Test basic offset functionality with simple cases
         let voxel = Voxel::new(100, 200, 50);
-        
+
         // Test zero offset - should return same voxel
         let offset_zero = VoxelOffset::new(0, 0, 0);
         let result = voxel.offset(offset_zero);
@@ -347,7 +353,7 @@ mod tests {
     fn test_voxel_offset_von_neumann_neighbors() {
         // Test that offset correctly computes Von Neumann neighborhood
         let center = Voxel::new(1000, 2000, 500);
-        
+
         let expected_neighbors = [
             [999, 2000, 500],  // (-1, 0, 0)
             [1001, 2000, 500], // (1, 0, 0)
@@ -360,8 +366,15 @@ mod tests {
         for (i, &(di, dj, dk)) in VON_NEUMANN_OFFSETS.iter().enumerate() {
             let offset = VoxelOffset::new(di, dj, dk);
             let neighbor = center.offset(offset);
-            assert_eq!(neighbor.coords(), expected_neighbors[i],
-                "Von Neumann neighbor {} offset ({}, {}, {}) failed", i, di, dj, dk);
+            assert_eq!(
+                neighbor.coords(),
+                expected_neighbors[i],
+                "Von Neumann neighbor {} offset ({}, {}, {}) failed",
+                i,
+                di,
+                dj,
+                dk
+            );
             assert!(!neighbor.is_oob());
         }
     }
@@ -370,13 +383,19 @@ mod tests {
     fn test_voxel_offset_moore_neighbors() {
         // Test that offset correctly computes Moore neighborhood (3x3x3 cube minus center)
         let center = Voxel::new(500, 600, 100);
-        
+
         for &(di, dj, dk) in MOORE_OFFSETS.iter() {
             let offset = VoxelOffset::new(di, dj, dk);
             let neighbor = center.offset(offset);
             let expected = [500 + di, 600 + dj, 100 + dk];
-            assert_eq!(neighbor.coords(), expected,
-                "Moore neighbor offset ({}, {}, {}) failed", di, dj, dk);
+            assert_eq!(
+                neighbor.coords(),
+                expected,
+                "Moore neighbor offset ({}, {}, {}) failed",
+                di,
+                dj,
+                dk
+            );
             assert!(!neighbor.is_oob());
         }
     }
@@ -384,7 +403,7 @@ mod tests {
     #[test]
     fn test_voxel_offset_boundary_conditions() {
         // Test offset behavior near coordinate boundaries
-        
+
         // Test near origin
         let near_origin = Voxel::new(1, 1, 1);
         let offset_neg = VoxelOffset::new(-1, -1, -1);
@@ -414,7 +433,7 @@ mod tests {
     #[test]
     fn test_voxel_offset_out_of_bounds() {
         // Test various scenarios that should result in OOB voxels
-        
+
         // Test negative coordinates
         let voxel = Voxel::new(5, 5, 5);
         let large_neg = VoxelOffset::new(-10, 0, 0);
@@ -432,7 +451,7 @@ mod tests {
         // Test coordinates that would exceed maximum bounds
         let max_coord_24bit = (1 << 24) - 1; // For i and j coordinates
         let max_coord_16bit = (1 << 16) - 1; // For k coordinate
-        
+
         let near_max_i = Voxel::new(max_coord_24bit - 1, 100, 100);
         let large_pos_i = VoxelOffset::new(10, 0, 0);
         let result = near_max_i.offset(large_pos_i);
@@ -453,7 +472,7 @@ mod tests {
     fn test_voxel_offset_large_offsets() {
         // Test with larger offset values within VoxelOffset limits
         let center = Voxel::new(10000, 10000, 1000);
-        
+
         // Test maximum positive VoxelOffset values
         let max_offset = VoxelOffset::new(2047, 2047, 127);
         let result = center.offset(max_offset);
@@ -471,7 +490,7 @@ mod tests {
     fn test_voxel_offset_consistency_with_coords() {
         // Test that offset() and offset_coords() produce identical results
         let voxel = Voxel::new(1234, 5678, 999);
-        
+
         let test_offsets = [
             (0, 0, 0),
             (1, 2, 3),
@@ -479,16 +498,28 @@ mod tests {
             (100, -50, 25),
             (-100, 50, -25),
         ];
-        
+
         for (di, dj, dk) in test_offsets {
             let offset_obj = VoxelOffset::new(di, dj, dk);
             let result_offset = voxel.offset(offset_obj);
             let result_coords = voxel.offset_coords(di, dj, dk);
-            
-            assert_eq!(result_offset.coords(), result_coords.coords(),
-                "offset() and offset_coords() disagree for ({}, {}, {})", di, dj, dk);
-            assert_eq!(result_offset.is_oob(), result_coords.is_oob(),
-                "OOB status differs between offset() and offset_coords() for ({}, {}, {})", di, dj, dk);
+
+            assert_eq!(
+                result_offset.coords(),
+                result_coords.coords(),
+                "offset() and offset_coords() disagree for ({}, {}, {})",
+                di,
+                dj,
+                dk
+            );
+            assert_eq!(
+                result_offset.is_oob(),
+                result_coords.is_oob(),
+                "OOB status differs between offset() and offset_coords() for ({}, {}, {})",
+                di,
+                dj,
+                dk
+            );
         }
     }
 
@@ -496,18 +527,18 @@ mod tests {
     fn test_voxel_offset_chaining() {
         // Test that multiple offsets can be chained correctly
         let start = Voxel::new(1000, 2000, 500);
-        
+
         // Apply a series of offsets
         let offset1 = VoxelOffset::new(10, 20, 5);
         let offset2 = VoxelOffset::new(-5, 15, -2);
         let offset3 = VoxelOffset::new(100, -50, 25);
-        
+
         let result = start.offset(offset1).offset(offset2).offset(offset3);
-        
+
         // Should be equivalent to applying the sum of all offsets
         let total_offset = VoxelOffset::new(10 + (-5) + 100, 20 + 15 + (-50), 5 + (-2) + 25);
         let expected = start.offset(total_offset);
-        
+
         assert_eq!(result.coords(), expected.coords());
         assert_eq!(result.is_oob(), expected.is_oob());
     }
@@ -524,14 +555,14 @@ pub struct Voxel {
 // Using a special value to represent any out of bound voxel.
 const OOB_VOXEL: u64 = 0xffffffffffffffff;
 
-pub const VON_NEUMANN_OFFSETS: [(i32, i32, i32); 6] = [
-    (-1, 0, 0),
-    (1, 0, 0),
-    (0, -1, 0),
-    (0, 1, 0),
-    (0, 0, -1),
-    (0, 0, 1),
-];
+// pub const VON_NEUMANN_OFFSETS: [(i32, i32, i32); 6] = [
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (0, -1, 0),
+//     (0, 1, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
 
 pub const RADIUS2_OFFSETS: [(i32, i32, i32); 14] = [
     (0, -2, 0),
@@ -761,6 +792,21 @@ impl Voxel {
         let [i, j, k] = self.coords();
         [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)]
             .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
+
+    pub fn moore2d_neighborhood(&self) -> [Voxel; 8] {
+        let [i, j, k] = self.coords();
+        [
+            (-1, 0, 0),
+            (1, 0, 0),
+            (-1, 1, 0),
+            (0, 1, 0),
+            (1, 1, 0),
+            (-1, -1, 0),
+            (0, -1, 0),
+            (1, -1, 0),
+        ]
+        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
     pub fn moore_neighborhood(&self) -> [Voxel; 26] {
@@ -1825,7 +1871,8 @@ impl VoxelCheckerboard {
                     let mut voxel_surface_area = 0;
                     // for neighbor in voxel.von_neumann_neighborhood() {
                     // for neighbor in voxel.radius2_neighborhood() {
-                    for neighbor in voxel.moore_neighborhood() {
+                    // for neighbor in voxel.moore_neighborhood() {
+                    for neighbor in voxel.moore2d_neighborhood() {
                         let k = neighbor.k();
                         let neighbor_cell = if k >= 0 && k <= quad.kmax {
                             quad.get_voxel_cell(neighbor)
@@ -2186,7 +2233,6 @@ impl VoxelCheckerboard {
         params: &mut ModelParams,
         dataset: &TranscriptDataset,
     ) -> VoxelCheckerboard {
-        println!("DOUBLE RESOLUTION");
         let quadsize = 2 * self.quadsize;
         let voxelsize = 0.5 * self.voxelsize;
         let voxelsize_z = self.voxelsize_z;
@@ -2265,5 +2311,79 @@ impl VoxelCheckerboard {
         params.voxel_volume *= 0.25;
 
         new_checkerboard
+    }
+
+    pub fn dump_counts(&self, transcripts: &TranscriptDataset, filename: &str) {
+        let file = File::create(filename).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+
+        // TODO: This isn't very useful unless we convert to slide coordinates.
+        // What info do I need for that.
+
+        let schema_fields = vec![
+            Field::new("gene", DataType::Utf8, false),
+            Field::new("count", DataType::UInt32, false),
+            Field::new("x", DataType::Float32, false),
+            Field::new("y", DataType::Float32, false),
+            Field::new("z", DataType::Float32, false),
+            Field::new("dx", DataType::Float32, false),
+            Field::new("dy", DataType::Float32, false),
+            Field::new("dz", DataType::Float32, false),
+        ];
+        let schema = Schema::new(schema_fields);
+
+        let mut gene_col = Vec::new();
+        let mut count_col = Vec::new();
+        let mut x_col = Vec::new();
+        let mut y_col = Vec::new();
+        let mut z_col = Vec::new();
+        let mut dx_col = Vec::new();
+        let mut dy_col = Vec::new();
+        let mut dz_col = Vec::new();
+
+        for quad in self.quads.values() {
+            let quad = quad.read().unwrap();
+            for (key, &count) in quad.counts.iter() {
+                if count == 0 {
+                    continue;
+                }
+
+                let [i, j, k] = key.voxel.coords();
+                let [di, dj, dk] = key.offset.coords();
+
+                let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+                let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+                let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
+
+                let dx = (di as f32) * self.voxelsize;
+                let dy = (dj as f32) * self.voxelsize;
+                let dz = (dk as f32) * self.voxelsize_z;
+
+                gene_col.push(Some(transcripts.gene_names[key.gene as usize].clone()));
+                count_col.push(Some(count));
+                x_col.push(Some(x));
+                y_col.push(Some(y));
+                z_col.push(Some(z));
+                dx_col.push(Some(dx));
+                dy_col.push(Some(dy));
+                dz_col.push(Some(dz));
+            }
+        }
+
+        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(arrow::array::StringArray::from(gene_col)),
+            Arc::new(arrow::array::UInt32Array::from(count_col)),
+            Arc::new(arrow::array::Float32Array::from(x_col)),
+            Arc::new(arrow::array::Float32Array::from(y_col)),
+            Arc::new(arrow::array::Float32Array::from(z_col)),
+            Arc::new(arrow::array::Float32Array::from(dx_col)),
+            Arc::new(arrow::array::Float32Array::from(dy_col)),
+            Arc::new(arrow::array::Float32Array::from(dz_col)),
+        ];
+
+        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+
+        let mut writer = csv::WriterBuilder::new().with_header(true).build(encoder);
+        writer.write(&batch).unwrap();
     }
 }

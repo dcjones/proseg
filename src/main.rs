@@ -801,7 +801,7 @@ fn main() {
     );
 
     for _ in 0..INIT_ITERATIONS {
-        param_sampler.sample(&priors, &mut params, true, false, false, false, false);
+        param_sampler.sample(&priors, &mut params, true, 1.0, false, false, false);
         prog.inc(1);
     }
 
@@ -816,7 +816,7 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             it < args.burnin_samples,
-            it >= args.burnin_samples + args.samples,
+            1.0,
             // TODO: I guess whether we record dependns on our intentions. We should probably
             // not record the hillclimbing iterations.
             it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
@@ -835,7 +835,14 @@ fn main() {
 
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize);
 
+    let cooling_factor = (0.01_f32.ln() / args.burnin_samples as f32).exp();
+    let mut temperature = 1.0;
+
     for it in args.burnin_samples..(args.burnin_samples + args.samples + args.hillclimb) {
+        if it > args.burnin_samples + args.samples {
+            temperature *= cooling_factor;
+        }
+
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -845,8 +852,8 @@ fn main() {
             &mut params,
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
-            it < args.burnin_samples,
-            it >= args.burnin_samples + args.samples,
+            false,
+            temperature,
             // TODO: I guess whether we record dependns on our intentions. We should probably
             // not record the hillclimbing iterations.
             it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
@@ -855,6 +862,9 @@ fn main() {
         );
     }
     prog.finish();
+
+    // TODO: Make an arg for this
+    voxels.dump_counts(&dataset, "voxels-dump.csv.gz");
 
     let t0 = Instant::now();
     write_sparse_mtx(
@@ -973,7 +983,7 @@ fn run_sampler(
     ntranscripts: usize,
     morphology_steps_per_iter: usize,
     burnin: bool,
-    hillclimb: bool,
+    temperature: f32,
     record_samples: bool,
     check_consistency: bool,
     prog: &ProgressBar,
@@ -982,19 +992,19 @@ fn run_sampler(
         priors,
         params,
         burnin,
-        hillclimb,
+        temperature,
         record_samples,
         true,
         true,
     );
 
     for _ in 0..morphology_steps_per_iter {
-        voxel_sampler.sample(voxels, priors, params, hillclimb);
+        voxel_sampler.sample(voxels, priors, params, temperature);
     }
 
     if !burnin && priors.use_diffusion_model {
         let t0 = Instant::now();
-        transcript_repo.sample(voxels, priors, params, hillclimb);
+        transcript_repo.sample(voxels, priors, params, temperature);
         info!("repo transcripts: {:?}", t0.elapsed());
     }
 
