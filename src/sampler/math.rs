@@ -98,27 +98,19 @@ pub fn halfnormal_x2_pdf(σ: f32, x2: f32) -> f32 {
     (SQRT_2_DIV_SQRT_PI / σ) * (-x2 / (2.0 * σ.powi(2))).exp()
 }
 
-// This is a Normal prior over transcript diffusion distance, integrating out
-// uncertain transcript positions, given we have only voxel positions. The math
-// is not remotely obvious, you'll just have to trust me.
-pub fn normal_dist_inter_voxel_marginal(d_min: f32, s: f32, σ: f32) -> f32 {
-    let a = normal_dist_inter_voxel_marginal_part(d_min, d_min + s, s, σ);
-    let b = s * (std_normal_cdf(σ, d_min + 2.0 * s) - std_normal_cdf(σ, d_min + s))
-        - normal_dist_inter_voxel_marginal_part(d_min + s, d_min + 2.0 * s, s, σ);
-    a + b
+fn erfint(span: f32, σ: f32) -> f32 {
+    -span * erff(span / (f32::consts::SQRT_2 * σ))
+        - (f32::consts::SQRT_2 * f32::consts::FRAC_2_SQRT_PI / 2.0)
+            * σ
+            * (-span.powi(2) / (2.0 * σ.powi(2))).exp()
 }
 
-fn normal_dist_inter_voxel_marginal_part(d_from: f32, d_to: f32, s: f32, σ: f32) -> f32 {
-    let mut result = s * std_normal_cdf(σ, d_to) - (s / 2.0);
-    let sqrt2_sigma = f32::consts::SQRT_2 * σ;
-    result += 0.5 * (d_from * erff(d_from / sqrt2_sigma) - d_to * erff(d_to / sqrt2_sigma));
-    result += 0.5
-        * (sqrt2_sigma / f32::consts::PI.sqrt())
-        * ((-(d_from / sqrt2_sigma).powi(2)).exp() - (-(d_to / sqrt2_sigma).powi(2)).exp());
-    result
-}
-
-pub fn normal_dist_intra_voxel_marginal(s: f32, σ: f32) -> f32 {
-    2.0 * s * (std_normal_cdf(σ, s) - std_normal_cdf(σ, 0.0))
-        - 2.0 * normal_dist_inter_voxel_marginal_part(0.0, s, s, σ)
+// Suppose x - x0 ~ N(0, σ), yet x and x0 are measured imprecisely, where we only know that
+// x0 ∈ [a0, b0]
+// x ∈ [a, b]
+// This function integrates the N() prior over the uncertain placement of x and x0
+pub fn uniformly_imprecise_normal_prob(a: f32, b: f32, a0: f32, b0: f32, σ: f32) -> f32 {
+    0.5 * (b0 - a0).recip()
+        * (b - a).recip()
+        * (erfint(b - b0, σ) + erfint(a - a0, σ) - erfint(b - a0, σ) - erfint(a - b0, σ))
 }
