@@ -5,9 +5,7 @@ use std::collections::HashSet;
 use std::ops::DerefMut;
 use std::time::{Duration, Instant};
 
-use super::math::{
-    halfnormal_x2_pdf, normal_dist_inter_voxel_marginal, normal_dist_intra_voxel_marginal,
-};
+use super::math::{halfnormal_x2_pdf, uniformly_imprecise_normal_prob};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{
     MOORE_OFFSETS, RADIUS2_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
@@ -263,12 +261,8 @@ impl VoxelDiffusionPrior {
 
         let mut d = 0;
         loop {
-            let p = if d > 0 {
-                let d_min = (d - 1) as f32 * voxelsize;
-                normal_dist_inter_voxel_marginal(d_min, voxelsize, σ)
-            } else {
-                normal_dist_intra_voxel_marginal(voxelsize, σ)
-            };
+            let p =
+                uniformly_imprecise_normal_prob(0.0, voxelsize, d as f32, d as f32 + voxelsize, σ);
             pmf.push(p);
             if p < eps {
                 break;
