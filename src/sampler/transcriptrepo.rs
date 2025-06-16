@@ -55,15 +55,13 @@ impl TranscriptRepo {
             .quads
             .par_iter()
             .for_each_init(rng, |rng, (_key, quad)| {
-                let mut quad_lock = quad.write().unwrap();
-                let quad_lock_ref = quad_lock.deref_mut();
                 quad_transcript_repo(
                     rng,
                     priors,
                     params,
                     &self.prior_near,
                     &self.prior_far,
-                    quad_lock_ref,
+                    quad,
                     &voxels.quads_coords,
                     voxels.quadsize as u32,
                     voxels.voxelsize,
@@ -86,14 +84,18 @@ fn quad_transcript_repo(
     params: &ModelParams,
     prior_near: &VoxelDiffusionPrior,
     prior_far: &VoxelDiffusionPrior,
-    quad: &mut VoxelQuad,
+    quad: &VoxelQuad,
     quads_coords: &HashSet<(u32, u32)>,
     quadsize: u32,
     _voxelsize: f32,
     voxelsize_z: f32,
     temperature: f32,
 ) {
-    quad.counts_deltas.clear();
+    let quad_states = quad.states.read().unwrap();
+    let mut quad_counts = quad.counts.write().unwrap();
+    let quad_counts_ref = quad_counts.deref_mut();
+
+    quad_counts_ref.counts_deltas.clear();
 
     let mut compute_probs_elapsed = Duration::ZERO;
     let mut multinomial_sampling_elapsed = Duration::ZERO;
@@ -105,7 +107,7 @@ fn quad_transcript_repo(
             offset,
         },
         count,
-    ) in quad.counts.iter_mut()
+    ) in quad_counts_ref.counts.iter_mut()
     {
         if *count == 0 {
             continue;
@@ -115,7 +117,7 @@ fn quad_transcript_repo(
         let gene = *gene as usize;
         let [di0, dj0, dk0] = offset.coords();
 
-        let cell = quad
+        let cell = quad_states
             .states
             .get(voxel)
             .map(|state| state.cell)
@@ -175,11 +177,24 @@ fn quad_transcript_repo(
 
             // sample from another binomial to determine how many of these move we accept
             let mut λ_proposed = params.λ_bg[[gene, k as usize]];
-            let neighbor_cell = quad
+            let neighbor_cell = quad_states
                 .states
                 .get(&neighbor)
                 .map(|state| state.cell)
                 .unwrap_or(BACKGROUND_CELL);
+
+            // TODO: We'd like to be able to look up cell states from neighbor quads
+            // but we can't we operate on mutable quad refs.
+            //
+            // But we need the mutable refs mainly to populate counts_deltas in each quad
+            // and to modify counts themselves.
+            //
+            // Possibly solutions:
+            // Keep counts_deltas separate from quads themselves and store subtractions in
+            // the counts_deltas.
+            //
+            // We could split quads into counts and states so we can modify one
+            // while doing lookups in the other.
 
             if neighbor_cell != BACKGROUND_CELL {
                 λ_proposed += params.λ(neighbor_cell as usize, gene);
@@ -213,7 +228,7 @@ fn quad_transcript_repo(
                 return;
             }
 
-            quad.counts_deltas.push((
+            quad_counts_ref.counts_deltas.push((
                 VoxelCountKey {
                     voxel: neighbor,
                     gene: gene as u32,
@@ -246,7 +261,7 @@ fn quad_transcript_repo(
     );
 
     // Clear out any zeros
-    quad.counts.retain(|_key, count| *count > 0);
+    quad_counts.counts.retain(|_key, count| *count > 0);
 }
 
 struct VoxelDiffusionPrior {
