@@ -97,8 +97,6 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let mut quad = quad.write().unwrap();
-
                 let proposal = self.generate_proposal(&quad);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
@@ -113,7 +111,7 @@ impl VoxelSampler {
                 let s = rng().random::<f32>().ln();
 
                 if s < logu {
-                    self.accept_proposal(voxels, &mut quad, params, proposal);
+                    self.accept_proposal(voxels, quad, params, proposal);
                 }
             });
 
@@ -123,8 +121,9 @@ impl VoxelSampler {
     }
 
     fn generate_proposal(&self, quad: &VoxelQuad) -> Option<Proposal> {
+        let quad_states = quad.states.read().unwrap();
         let mut rng = rng();
-        let edge = *quad.mismatch_edges.choose(&mut rng)?;
+        let edge = *quad_states.mismatch_edges.choose(&mut rng)?;
 
         // choose direction of undirected edge uniformly at random
         let (source, target) = if rng.random::<f32>() < 0.5 {
@@ -137,8 +136,8 @@ impl VoxelSampler {
             return None;
         }
 
-        let mut proposed_cell = quad.get_voxel_cell(source);
-        let current_state = quad.get_voxel_state(target).copied();
+        let mut proposed_cell = quad_states.get_voxel_cell(source);
+        let current_state = quad_states.get_voxel_state(target).copied();
         let current_cell = current_state
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
@@ -161,12 +160,12 @@ impl VoxelSampler {
             if k < self.kmin || k > self.kmax {
                 None
             } else {
-                Some(quad.get_voxel_cell(voxel))
+                Some(quad_states.get_voxel_cell(voxel))
             }
         });
 
         // multiply by 2 because edges are undirected and we only store one direction
-        let num_mismatching_edges = 2 * quad.mismatch_edges.len();
+        let num_mismatching_edges = 2 * quad_states.mismatch_edges.len();
 
         let num_target_cell_neighbors = target_neighbor_cells
             .iter()
@@ -214,7 +213,7 @@ impl VoxelSampler {
                     if k < self.kmin || k > self.kmax {
                         None
                     } else {
-                        Some(quad.get_voxel_cell(voxel))
+                        Some(quad_states.get_voxel_cell(voxel))
                     }
                 }),
                 current_cell,
@@ -242,6 +241,7 @@ impl VoxelSampler {
         proposal: Proposal,
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
+        let quad_counts = quad.counts.read().unwrap();
 
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
@@ -283,7 +283,7 @@ impl VoxelSampler {
                 offset: _,
             },
             &count,
-        ) in quad.voxel_counts(proposal.voxel)
+        ) in quad_counts.voxel_counts(proposal.voxel)
         {
             if count == 0 {
                 continue;
@@ -398,10 +398,12 @@ impl VoxelSampler {
     fn accept_proposal(
         &self,
         voxels: &VoxelCheckerboard,
-        quad: &mut VoxelQuad,
+        quad: &VoxelQuad,
         params: &ModelParams,
         proposal: Proposal,
     ) {
+        let mut quad_states = quad.states.write().unwrap();
+        let quad_counts = quad.counts.read().unwrap();
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
         let current_cell = proposal
@@ -409,7 +411,7 @@ impl VoxelSampler {
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
 
-        quad.set_voxel_cell(voxel, proposed_cell);
+        quad_states.set_voxel_cell(voxel, proposed_cell);
         for (neighbor, neighbor_cell) in proposal
             .voxel
             .von_neumann_neighborhood()
@@ -420,9 +422,9 @@ impl VoxelSampler {
             if let Some(neighbor_cell) = neighbor_cell {
                 let edge = UndirectedVoxelPair::new(voxel, neighbor);
                 if neighbor_cell == proposed_cell {
-                    quad.mismatch_edges.remove(edge);
+                    quad_states.mismatch_edges.remove(edge);
                 } else if neighbor_cell == current_cell {
-                    quad.mismatch_edges.insert(edge);
+                    quad_states.mismatch_edges.insert(edge);
                 };
             }
         }
@@ -434,10 +436,15 @@ impl VoxelSampler {
         let (min_i, max_i, min_j, max_j) = quad.bounds();
         assert!((min_i..max_i + 1).contains(&i) && (min_j..max_j + 1).contains(&j));
 
-        voxels.for_each_quad_neighbor(u, v, |neighbor_quad| {
+        voxels.for_each_quad_neighbor_states(u, v, |neighbor_quad, neighbor_quad_states| {
             let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
             if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
-                neighbor_quad.update_voxel_cell(voxel, current_cell, proposed_cell);
+                neighbor_quad_states.update_voxel_cell(
+                    neighbor_quad,
+                    voxel,
+                    current_cell,
+                    proposed_cell,
+                );
             }
         });
 
@@ -458,12 +465,12 @@ impl VoxelSampler {
 
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
-            for (key, &count) in quad.voxel_counts(voxel) {
+            for (key, &count) in quad_counts.voxel_counts(voxel) {
                 counts_row_write.sub(CountMatRowKey::new(key.gene, k as u32), count);
             }
         } else {
             let background_counts_k = &params.unassigned_counts[k as usize];
-            for (key, &count) in quad.voxel_counts(voxel) {
+            for (key, &count) in quad_counts.voxel_counts(voxel) {
                 background_counts_k.sub(key.gene as usize, count);
             }
         }
@@ -484,12 +491,12 @@ impl VoxelSampler {
 
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
-            for (key, &count) in quad.voxel_counts(voxel) {
+            for (key, &count) in quad_counts.voxel_counts(voxel) {
                 counts_row_write.add(CountMatRowKey::new(key.gene, k as u32), count);
             }
         } else {
             let background_counts_k = &params.unassigned_counts[k as usize];
-            for (key, &count) in quad.voxel_counts(voxel) {
+            for (key, &count) in quad_counts.voxel_counts(voxel) {
                 background_counts_k.add(key.gene as usize, count);
             }
         }
