@@ -14,8 +14,8 @@ use std::time::Instant;
 //     (surface_area as f32).powi(3) / (36.0 * f32::consts::PI * (volume as f32).powi(2))
 // }
 
-fn inv_isoperimetric_quotient(surface_area: u32, volume: u32) -> f32 {
-    (surface_area as f32).powi(2) / (4.0 * f32::consts::PI * (volume as f32).powi(2))
+fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
+    surface_area.powi(2) / (4.0 * f32::consts::PI * (volume as f32).powi(2))
 }
 
 fn count_matching_neighbors(
@@ -82,6 +82,8 @@ impl VoxelSampler {
     ) {
         let t0 = Instant::now();
 
+        let voxelsize_z = voxels.voxelsize_z;
+
         let parity = self.t % 4;
         voxels
             .quads
@@ -106,7 +108,8 @@ impl VoxelSampler {
                 }
                 let proposal = proposal.unwrap();
 
-                let logu = self.evaluate_proposal(&quad, priors, params, proposal) / temperature;
+                let logu = self.evaluate_proposal(&quad, priors, params, voxelsize_z, proposal)
+                    / temperature;
                 let s = rng().random::<f32>().ln();
 
                 if s < logu {
@@ -235,6 +238,7 @@ impl VoxelSampler {
         quad: &VoxelQuad,
         priors: &ModelPriors,
         params: &ModelParams,
+        voxelsize_z: f32,
         proposal: Proposal,
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
@@ -317,9 +321,15 @@ impl VoxelSampler {
                 - log_proposed_volume_μm;
 
             let current_surface_area = params.cell_surface_area.get(current_cell as usize);
+
+            // We scale by voxelsize_z here, because that's always fractional in [0,1], so the effect is
+            // averaging 2d perimeters across voxel layers.
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(current_surface_area, current_volume),
+                inv_isoperimetric_quotient(
+                    voxelsize_z * current_surface_area as f32,
+                    current_volume,
+                ),
             );
 
             let other_cell_neighbors =
@@ -329,7 +339,10 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(proposed_surface_area, proposed_volume),
+                inv_isoperimetric_quotient(
+                    voxelsize_z * proposed_surface_area as f32,
+                    proposed_volume,
+                ),
             );
         }
 
@@ -359,7 +372,10 @@ impl VoxelSampler {
             let current_surface_area = params.cell_surface_area.get(proposed_cell as usize);
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(current_surface_area, current_volume),
+                inv_isoperimetric_quotient(
+                    voxelsize_z * current_surface_area as f32,
+                    current_volume,
+                ),
             );
 
             let other_cell_neighbors =
@@ -369,7 +385,10 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(proposed_surface_area, proposed_volume),
+                inv_isoperimetric_quotient(
+                    voxelsize_z * proposed_surface_area as f32,
+                    proposed_volume,
+                ),
             );
         }
 
