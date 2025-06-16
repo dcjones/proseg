@@ -1741,6 +1741,13 @@ impl VoxelCheckerboard {
             .unwrap()
     }
 
+    pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
+        self.quads
+            .get(&self.quad_index(voxel))
+            .map(|quad| quad.states.read().unwrap().get_voxel_cell(voxel))
+            .unwrap_or(BACKGROUND_CELL)
+    }
+
     // fn quad_bounds(&self, index: (u32, u32)) -> (Voxel, Voxel) {
     //     let min_ij = Voxel::new(
     //         index.0 as i32 * self.quadsize as i32,

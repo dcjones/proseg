@@ -56,6 +56,7 @@ impl TranscriptRepo {
             .par_iter()
             .for_each_init(rng, |rng, (_key, quad)| {
                 quad_transcript_repo(
+                    voxels,
                     rng,
                     priors,
                     params,
@@ -79,6 +80,7 @@ impl TranscriptRepo {
 
 #[allow(clippy::too_many_arguments)]
 fn quad_transcript_repo(
+    voxels: &VoxelCheckerboard,
     rng: &mut ThreadRng,
     priors: &ModelPriors,
     params: &ModelParams,
@@ -96,9 +98,6 @@ fn quad_transcript_repo(
     let quad_counts_ref = quad_counts.deref_mut();
 
     quad_counts_ref.counts_deltas.clear();
-
-    let mut compute_probs_elapsed = Duration::ZERO;
-    let mut multinomial_sampling_elapsed = Duration::ZERO;
 
     for (
         VoxelCountKey {
@@ -177,24 +176,15 @@ fn quad_transcript_repo(
 
             // sample from another binomial to determine how many of these move we accept
             let mut λ_proposed = params.λ_bg[[gene, k as usize]];
-            let neighbor_cell = quad_states
-                .states
-                .get(&neighbor)
-                .map(|state| state.cell)
-                .unwrap_or(BACKGROUND_CELL);
-
-            // TODO: We'd like to be able to look up cell states from neighbor quads
-            // but we can't we operate on mutable quad refs.
-            //
-            // But we need the mutable refs mainly to populate counts_deltas in each quad
-            // and to modify counts themselves.
-            //
-            // Possibly solutions:
-            // Keep counts_deltas separate from quads themselves and store subtractions in
-            // the counts_deltas.
-            //
-            // We could split quads into counts and states so we can modify one
-            // while doing lookups in the other.
+            let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
+                quad_states
+                    .states
+                    .get(&neighbor)
+                    .map(|state| state.cell)
+                    .unwrap_or(BACKGROUND_CELL)
+            } else {
+                voxels.get_voxel_cell(neighbor)
+            };
 
             if neighbor_cell != BACKGROUND_CELL {
                 λ_proposed += params.λ(neighbor_cell as usize, gene);
@@ -254,11 +244,6 @@ fn quad_transcript_repo(
             }
         }
     }
-
-    trace!(
-        "transcript repo timings: {:?}",
-        (compute_probs_elapsed, multinomial_sampling_elapsed)
-    );
 
     // Clear out any zeros
     quad_counts.counts.retain(|_key, count| *count > 0);
