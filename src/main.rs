@@ -253,10 +253,14 @@ struct Args {
     /// Stddev parameter for repositioning of un-diffused transcripts
     #[arg(long, default_value_t = 2.0)]
     diffusion_sigma_near: f32,
-    ///
+
     /// Stddev parameter for repositioning of diffused transcripts
     #[arg(long, default_value_t = 4.0)]
     diffusion_sigma_far: f32,
+
+    /// Stddev parameter for repositioning transcripts on the z-axis.
+    #[arg(long, default_value_t = 0.1)]
+    diffusion_sigma_z: f32,
 
     /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
@@ -766,9 +770,7 @@ fn main() {
         p_diffusion: args.diffusion_probability,
         σ_xy_diffusion_near: args.diffusion_sigma_near,
         σ_xy_diffusion_far: args.diffusion_sigma_far,
-        // σ_z_diffusion: 0.2 * zspan,
-        σ_z_diffusion: 0.05 * zspan,
-        // σ_z_diffusion: 1e-3 * zspan,
+        σ_z_diffusion: args.diffusion_sigma_z * zspan,
         τv: 10.0,
     };
 
