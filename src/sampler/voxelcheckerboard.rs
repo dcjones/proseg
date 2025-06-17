@@ -823,7 +823,22 @@ impl Voxel {
             .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    pub fn moore2d_neighborhood(&self) -> [Voxel; 8] {
+    // pub fn moore2d_neighborhood(&self) -> [Voxel; 8] {
+    //     let [i, j, k] = self.coords();
+    //     [
+    //         (-1, 0, 0),
+    //         (1, 0, 0),
+    //         (-1, 1, 0),
+    //         (0, 1, 0),
+    //         (1, 1, 0),
+    //         (-1, -1, 0),
+    //         (0, -1, 0),
+    //         (1, -1, 0),
+    //     ]
+    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    // }
+
+    pub fn moorish_neighborhood(&self) -> [Voxel; 10] {
         let [i, j, k] = self.coords();
         [
             (-1, 0, 0),
@@ -834,45 +849,47 @@ impl Voxel {
             (-1, -1, 0),
             (0, -1, 0),
             (1, -1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
         ]
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    pub fn moore_neighborhood(&self) -> [Voxel; 26] {
-        let [i, j, k] = self.coords();
-        [
-            // top layer
-            (-1, 0, -1),
-            (0, 0, -1),
-            (1, 0, -1),
-            (-1, 1, -1),
-            (0, 1, -1),
-            (1, 1, -1),
-            (-1, -1, -1),
-            (0, -1, -1),
-            (1, -1, -1),
-            // middle layer
-            (-1, 0, 0),
-            (1, 0, 0),
-            (-1, 1, 0),
-            (0, 1, 0),
-            (1, 1, 0),
-            (-1, -1, 0),
-            (0, -1, 0),
-            (1, -1, 0),
-            // bottom layer
-            (-1, 0, 1),
-            (0, 0, 1),
-            (1, 0, 1),
-            (-1, 1, 1),
-            (0, 1, 1),
-            (1, 1, 1),
-            (-1, -1, 1),
-            (0, -1, 1),
-            (1, -1, 1),
-        ]
-        .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    }
+    // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
+    //     let [i, j, k] = self.coords();
+    //     [
+    //         // top layer
+    //         (-1, 0, -1),
+    //         (0, 0, -1),
+    //         (1, 0, -1),
+    //         (-1, 1, -1),
+    //         (0, 1, -1),
+    //         (1, 1, -1),
+    //         (-1, -1, -1),
+    //         (0, -1, -1),
+    //         (1, -1, -1),
+    //         // middle layer
+    //         (-1, 0, 0),
+    //         (1, 0, 0),
+    //         (-1, 1, 0),
+    //         (0, 1, 0),
+    //         (1, 1, 0),
+    //         (-1, -1, 0),
+    //         (0, -1, 0),
+    //         (1, -1, 0),
+    //         // bottom layer
+    //         (-1, 0, 1),
+    //         (0, 0, 1),
+    //         (1, 0, 1),
+    //         (-1, 1, 1),
+    //         (0, 1, 1),
+    //         (1, 1, 1),
+    //         (-1, -1, 1),
+    //         (0, -1, 1),
+    //         (1, -1, 1),
+    //     ]
+    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    // }
 
     // // Gives the line segment defining the edge between two voxels bordering on
     // // the xy plane. (Panics if the voxels don't border.)
@@ -1956,10 +1973,7 @@ impl VoxelCheckerboard {
                     volume.add(state.cell as usize, 1);
 
                     let mut voxel_surface_area = 0;
-                    // for neighbor in voxel.von_neumann_neighborhood() {
-                    // for neighbor in voxel.radius2_neighborhood() {
-                    // for neighbor in voxel.moore_neighborhood() {
-                    for neighbor in voxel.moore2d_neighborhood() {
+                    for neighbor in voxel.moorish_neighborhood() {
                         let k = neighbor.k();
                         let neighbor_cell = if k >= 0 && k <= quad.kmax {
                             quad_states.get_voxel_cell(neighbor)
