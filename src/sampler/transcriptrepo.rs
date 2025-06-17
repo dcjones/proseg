@@ -52,6 +52,7 @@ impl TranscriptRepo {
         params: &mut ModelParams,
         temperature: f32,
     ) {
+        dbg!(voxels.voxelsize, voxels.voxelsize_z);
         let t0 = Instant::now();
         voxels
             .quads
@@ -227,7 +228,7 @@ impl TranscriptRepo {
             if total_moved > 0 {
                 *count -= total_moved;
                 if cell == BACKGROUND_CELL {
-                    params.unassigned_counts[k1 as usize].sub(gene, total_moved);
+                    params.unassigned_counts[k0 as usize].sub(gene, total_moved);
                 } else {
                     let counts_c = params.counts.row(cell as usize);
                     counts_c
