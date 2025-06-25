@@ -73,9 +73,9 @@ pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
 //     return 0.5 * (1.0 + erff((x - μ) / (SQRT2 * σ)));
 // }
 
-fn std_normal_cdf(σ: f32, x: f32) -> f32 {
-    0.5 * (1.0 + erff(x / (f32::consts::SQRT_2 * σ)))
-}
+// fn std_normal_cdf(σ: f32, x: f32) -> f32 {
+//     0.5 * (1.0 + erff(x / (f32::consts::SQRT_2 * σ)))
+// }
 
 pub fn normal_logpdf(μ: f32, σ: f32, x: f32) -> f32 {
     -LN_SQRT_TWO_PI - σ.ln() - ((x - μ) / σ).powi(2) / 2.0

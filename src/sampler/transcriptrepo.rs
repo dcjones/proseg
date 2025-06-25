@@ -3,25 +3,18 @@ use rand_distr::{Binomial, Distribution};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;
 use std::ops::DerefMut;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::math::{halfnormal_x2_pdf, uniformly_imprecise_normal_prob};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{
-    MOORE_OFFSETS, RADIUS2_OFFSETS, RADIUS3_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset,
-    VoxelQuad,
+    RADIUS3_OFFSETS, VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad,
 };
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
+use rand::rng;
 use rand::rngs::ThreadRng;
-use rand::{Rng, rng};
 
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 7] = VON_NEUMANN_AND_SELF_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 27] = MOORE_AND_SELF_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 15] = RADIUS2_AND_SELF_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 6] = VON_NEUMANN_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 26] = MOORE_OFFSETS;
-// const REPO_NEIGHBORHOOD: [(i32, i32, i32); 14] = RADIUS2_OFFSETS;
 const REPO_NEIGHBORHOOD: [(i32, i32, i32); 26] = RADIUS3_OFFSETS;
 
 pub struct TranscriptRepo {
