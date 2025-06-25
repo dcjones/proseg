@@ -17,10 +17,12 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use geo::geometry::{MultiPolygon, Polygon};
 use half::f16;
+use itertools::izip;
 use log::info;
 use log::trace;
 use ndarray::{Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
@@ -1450,6 +1452,153 @@ impl VoxelCheckerboard {
             *count += run.len;
         }
         trace!("assigned voxel counts: {:?}", t0.elapsed());
+        checkerboard.quads_coords.extend(checkerboard.quads.keys());
+
+        checkerboard.finish_initialization(expansion);
+        checkerboard
+    }
+
+    pub fn from_visium_barcode_mappings(
+        dataset: &mut TranscriptDataset,
+        barcode_mappings_filename: &str,
+        voxelsize: f32,
+        quadsize: f32,
+        nzlayers: usize,
+        nucprior: f32,
+        expansion: usize,
+    ) -> VoxelCheckerboard {
+        let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
+        let voxelsize_z = if zmin == zmax {
+            1.0
+        } else {
+            (zmax - zmin) / nzlayers as f32
+        };
+        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
+        let zmid = dataset.z_mean();
+        let log_nucprior = f16::from_f32(nucprior.ln());
+        let log_1m_nucprior = f16::from_f32((1.0 - nucprior).ln());
+
+        let coords_to_voxel = |x: f32, y: f32, z: f32| {
+            let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
+            let j = ((y - ymin) / voxelsize).round().max(0.0) as i32;
+            let k = (((z - zmin) / voxelsize_z) as i32)
+                .min(nzlayers as i32 - 1)
+                .max(0);
+            Voxel::new(i, j, k)
+        };
+
+        let mut checkerboard = VoxelCheckerboard {
+            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
+            kmax: (nzlayers - 1) as i32,
+            ncells: 0,
+            ngenes: dataset.ngenes(),
+            nzlayers,
+            voxel_volume,
+            xmin,
+            ymin,
+            zmin,
+            voxelsize,
+            voxelsize_z,
+            used_cell_mask: vec![false; 0],
+            quads: HashMap::new(),
+            quads_coords: HashSet::new(),
+        };
+
+        let barcode_positions = dataset.barcode_positions.as_ref().unwrap();
+
+        let barcode_mapping_file = File::open(barcode_mappings_filename)
+            .unwrap_or_else(|_| panic!("Unable to open '{}'.", &barcode_mappings_filename));
+        let builder = ParquetRecordBatchReaderBuilder::try_new(barcode_mapping_file).unwrap();
+        let schema = builder.schema().as_ref().clone();
+
+        let rdr = builder.build().unwrap_or_else(|_| {
+            panic!(
+                "Unable to read parquet data from {}",
+                barcode_mappings_filename
+            )
+        });
+
+        let barcode_col_idx = schema.index_of("square_002um").unwrap();
+        let cell_id_col_idx = schema.index_of("cell_id").unwrap();
+        let in_nucleus_col_idx = schema.index_of("in_nucleus").unwrap();
+        let mut cell_id_map = HashMap::new();
+
+        let mut assigned_voxels = 0;
+        for rec_batch in rdr {
+            let rec_batch = rec_batch.expect("Unable to read record batch.");
+
+            let barcodes = rec_batch
+                .column(barcode_col_idx)
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .unwrap();
+
+            let cell_ids = rec_batch
+                .column(cell_id_col_idx)
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .unwrap();
+
+            let in_nucleus = rec_batch
+                .column(in_nucleus_col_idx)
+                .as_any()
+                .downcast_ref::<arrow::array::BooleanArray>()
+                .unwrap();
+
+            for (barcode, cell_id_str, in_nuc) in izip!(barcodes, cell_ids, in_nucleus) {
+                if !in_nuc.unwrap() {
+                    continue;
+                }
+
+                if let Some(cell_id_str) = cell_id_str {
+                    let (x, y) = barcode_positions[barcode.unwrap()];
+
+                    let next_cell_id = cell_id_map.len() as CellIndex;
+                    let cell_id = *cell_id_map
+                        .entry(cell_id_str.to_string())
+                        .or_insert(next_cell_id);
+
+                    let voxel = coords_to_voxel(x, y, zmid);
+
+                    if !voxel.is_oob() {
+                        assigned_voxels += 1;
+                        checkerboard.insert_state(
+                            voxel,
+                            VoxelState {
+                                cell: cell_id,
+                                prior_cell: cell_id,
+                                log_prior: log_nucprior,
+                                log_1m_prior: log_1m_nucprior,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        dbg!(assigned_voxels);
+
+        checkerboard.ncells = cell_id_map.len();
+
+        dataset.original_cell_ids = vec![String::new(); cell_id_map.len()];
+        for (cell_id, i) in cell_id_map {
+            dataset.original_cell_ids[i as usize] = cell_id;
+        }
+        checkerboard.used_cell_mask = vec![true; checkerboard.ncells];
+
+        // count transcripts
+        for run in dataset.transcripts.iter_runs() {
+            let transcript = &run.value;
+            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+
+            let mut quad_counts = checkerboard.write_quad_counts(voxel);
+            let count = quad_counts.counts.entry(key).or_insert(0_u32);
+            *count += run.len;
+        }
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
         checkerboard.finish_initialization(expansion);

@@ -52,7 +52,6 @@ impl TranscriptRepo {
         params: &mut ModelParams,
         temperature: f32,
     ) {
-        dbg!(voxels.voxelsize, voxels.voxelsize_z);
         let t0 = Instant::now();
         voxels
             .quads
@@ -282,8 +281,6 @@ impl VoxelDiffusionPrior {
             }
             d += 1;
         }
-
-        dbg!(voxelsize, σ, &pmf);
 
         VoxelDiffusionPrior { eps, pmf }
     }
