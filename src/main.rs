@@ -202,7 +202,7 @@ struct Args {
 
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 100)]
     recorded_samples: usize,
 
     /// Number of CPU threads (by default, all cores are used)
@@ -210,7 +210,7 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (larger numbers induce more compact cells)
-    #[arg(long, default_value_t = 120.0)]
+    #[arg(long, default_value_t = 0.2)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
@@ -291,11 +291,11 @@ struct Args {
     output_path: Option<String>,
 
     /// Output a point estimate of transcript counts per cell
-    #[arg(long, default_value = None)]
-    output_maxpost_counts: Option<String>,
+    #[arg(long, default_value = "counts.mtx.gz")]
+    output_counts: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
-    output_maxpost_counts_fmt: OutputFormat,
+    output_counts_fmt: OutputFormat,
 
     /// Output a matrix of expected transcript counts per cell
     #[arg(long, default_value = "expected-counts.mtx.gz")]
@@ -371,6 +371,10 @@ struct Args {
     /// Output separate cell polygons for each layer of voxels along the z-axis
     #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
     output_cell_polygon_layers: Option<String>,
+
+    /// Output a table of voxel-level counts (mainly for debugging)
+    #[arg(long, default_value = None)]
+    output_voxel_counts: Option<String>,
 
     /// Output cell polygons repeatedly during sampling
     #[arg(long, default_value = None)]
@@ -828,7 +832,7 @@ fn main() {
         prog.inc(1);
     }
 
-    for it in 0..args.burnin_samples {
+    for _it in 0..args.burnin_samples {
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -838,11 +842,9 @@ fn main() {
             &mut params,
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
-            it < args.burnin_samples,
+            true,
             1.0,
-            // TODO: I guess whether we record dependns on our intentions. We should probably
-            // not record the hillclimbing iterations.
-            it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
+            false,
             args.check_consistency,
             &prog,
         );
@@ -861,8 +863,8 @@ fn main() {
     let cooling_factor = (0.01_f32.ln() / args.burnin_samples as f32).exp();
     let mut temperature = 1.0;
 
-    for it in args.burnin_samples..(args.burnin_samples + args.samples + args.hillclimb) {
-        if it > args.burnin_samples + args.samples {
+    for it in 0..(args.samples + args.hillclimb) {
+        if it > args.samples {
             temperature *= cooling_factor;
         }
 
@@ -877,17 +879,16 @@ fn main() {
             args.morphology_steps_per_iter,
             false,
             temperature,
-            // TODO: I guess whether we record dependns on our intentions. We should probably
-            // not record the hillclimbing iterations.
-            it >= (args.burnin_samples + args.samples + args.hillclimb) - args.recorded_samples,
+            (args.samples - args.recorded_samples) <= it && it < args.samples,
             args.check_consistency,
             &prog,
         );
     }
     prog.finish();
 
-    // TODO: Make an arg for this
-    voxels.dump_counts(&dataset, "voxels-dump.csv.gz");
+    if let Some(output_voxel_counts) = args.output_voxel_counts {
+        voxels.dump_counts(&dataset, &output_voxel_counts);
+    }
 
     let t0 = Instant::now();
     write_sparse_mtx(
@@ -900,14 +901,13 @@ fn main() {
     let t0 = Instant::now();
     write_sparse_mtx(
         &args.output_path,
-        &args.output_maxpost_counts,
+        &args.output_counts,
         &params.foreground_counts,
     );
     trace!("write_sparse_mtx (max post counts): {:?}", t0.elapsed());
 
     let cell_centroids = voxels.cell_centroids(&params);
 
-    // TODO: This isn't going to work with cellpose masks
     let original_cell_ids = dataset
         .original_cell_ids
         .iter()

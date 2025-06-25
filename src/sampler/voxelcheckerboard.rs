@@ -22,7 +22,7 @@ use log::info;
 use log::trace;
 use ndarray::{Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
@@ -557,31 +557,31 @@ pub struct Voxel {
 // Using a special value to represent any out of bound voxel.
 const OOB_VOXEL: u64 = 0xffffffffffffffff;
 
-pub const VON_NEUMANN_OFFSETS: [(i32, i32, i32); 6] = [
-    (-1, 0, 0),
-    (1, 0, 0),
-    (0, -1, 0),
-    (0, 1, 0),
-    (0, 0, -1),
-    (0, 0, 1),
-];
+// pub const VON_NEUMANN_OFFSETS: [(i32, i32, i32); 6] = [
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (0, -1, 0),
+//     (0, 1, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
 
-pub const RADIUS2_OFFSETS: [(i32, i32, i32); 14] = [
-    (0, -2, 0),
-    (-1, -1, 0),
-    (0, -1, 0),
-    (1, -1, 0),
-    (-2, 0, 0),
-    (-1, 0, 0),
-    (1, 0, 0),
-    (2, 0, 0),
-    (-1, 1, 0),
-    (0, 1, 0),
-    (1, 1, 0),
-    (0, 2, 0),
-    (0, 0, -1),
-    (0, 0, 1),
-];
+// pub const RADIUS2_OFFSETS: [(i32, i32, i32); 14] = [
+//     (0, -2, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     (-2, 0, 0),
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (2, 0, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (0, 2, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
 
 pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
     (0, -3, 0),
@@ -612,37 +612,37 @@ pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
     (0, 0, 1),
 ];
 
-pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
-    // top layer
-    (-1, 0, -1),
-    (0, 0, -1),
-    (1, 0, -1),
-    (-1, 1, -1),
-    (0, 1, -1),
-    (1, 1, -1),
-    (-1, -1, -1),
-    (0, -1, -1),
-    (1, -1, -1),
-    // middle layer
-    (-1, 0, 0),
-    (1, 0, 0),
-    (-1, 1, 0),
-    (0, 1, 0),
-    (1, 1, 0),
-    (-1, -1, 0),
-    (0, -1, 0),
-    (1, -1, 0),
-    // bottom layer
-    (-1, 0, 1),
-    (0, 0, 1),
-    (1, 0, 1),
-    (-1, 1, 1),
-    (0, 1, 1),
-    (1, 1, 1),
-    (-1, -1, 1),
-    (0, -1, 1),
-    (1, -1, 1),
-];
+// pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
+//     // top layer
+//     (-1, 0, -1),
+//     (0, 0, -1),
+//     (1, 0, -1),
+//     (-1, 1, -1),
+//     (0, 1, -1),
+//     (1, 1, -1),
+//     (-1, -1, -1),
+//     (0, -1, -1),
+//     (1, -1, -1),
+//     // middle layer
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     // bottom layer
+//     (-1, 0, 1),
+//     (0, 0, 1),
+//     (1, 0, 1),
+//     (-1, 1, 1),
+//     (0, 1, 1),
+//     (1, 1, 1),
+//     (-1, -1, 1),
+//     (0, -1, 1),
+//     (1, -1, 1),
+// ];
 
 // pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
 //     (0, 0, 0),
