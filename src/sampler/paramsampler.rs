@@ -5,7 +5,7 @@ use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
-use ndarray::{Array1, Array2, Axis, Zip, s};
+use ndarray::{Array2, Axis, Zip, s};
 use rand::{Rng, rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -50,13 +50,12 @@ impl ParamSampler {
         trace!("sample_background_rates: {:?}", t0.elapsed());
 
         if !burnin && record_samples {
-            // TODO: temporarily disabling this to try to save as much memory as I can.
-            //     params
-            //         .foreground_counts_lower
-            //         .update(&params.foreground_counts);
-            //     params
-            //         .foreground_counts_upper
-            //         .update(&params.foreground_counts);
+            params
+                .foreground_counts_lower
+                .update(&params.foreground_counts);
+            params
+                .foreground_counts_upper
+                .update(&params.foreground_counts);
             params
                 .foreground_counts_mean
                 .update(&params.foreground_counts);
