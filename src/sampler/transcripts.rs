@@ -41,6 +41,7 @@ pub struct TranscriptDataset {
     pub transcripts: RunVec<u32, Transcript>, // [ntranscripts]
     pub priorseg: RunVec<u32, PriorTranscriptSeg>, // [ntranscripts]
     pub fovs: RunVec<usize, u32>,             // [ntranscripts] (Why to we need to save this?)
+    pub barcode_positions: Option<HashMap<String, (f32, f32)>>,
 
     pub gene_names: Vec<String>,        // [ngenes]
     pub fov_names: Vec<String>,         // [nfovs]
@@ -259,7 +260,10 @@ fn read_visium_barcodes_tsv(filename: &str) -> Vec<String> {
     barcodes
 }
 
-fn read_visium_tissue_positions_parquet(filename: &str) -> HashMap<String, (f32, f32)> {
+fn read_visium_tissue_positions_parquet(
+    filename: &str,
+    microns_per_pixel: f32,
+) -> HashMap<String, (f32, f32)> {
     let input_file =
         File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
@@ -294,10 +298,14 @@ fn read_visium_tissue_positions_parquet(filename: &str) -> HashMap<String, (f32,
             .downcast_ref::<arrow::array::Float64Array>()
             .unwrap();
 
+        // TODO: Should row and col be flipped here?
         for (barcode, row_px, col_px) in izip!(barcodes, row_pxs, col_pxs) {
             barcode_positions.insert(
                 barcode.unwrap().to_string(),
-                (row_px.unwrap() as f32, col_px.unwrap() as f32),
+                (
+                    microns_per_pixel * row_px.unwrap() as f32,
+                    microns_per_pixel * col_px.unwrap() as f32,
+                ),
             );
         }
     }
@@ -353,20 +361,21 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
             .unwrap(),
     );
 
-    let barcode_positions = read_visium_tissue_positions_parquet(
-        path.join(SQUARE_DIR)
-            .join("spatial")
-            .join("tissue_positions.parquet")
-            .to_str()
-            .unwrap(),
-    );
-
     let microns_per_pixel = read_visium_scalefactors(
         path.join(SQUARE_DIR)
             .join("spatial")
             .join("scalefactors_json.json")
             .to_str()
             .unwrap(),
+    );
+
+    let barcode_positions = read_visium_tissue_positions_parquet(
+        path.join(SQUARE_DIR)
+            .join("spatial")
+            .join("tissue_positions.parquet")
+            .to_str()
+            .unwrap(),
+        microns_per_pixel,
     );
 
     // read count matrix
@@ -400,10 +409,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
         let square = row[1].parse::<usize>().unwrap() - 1;
         let count = row[2].parse::<usize>().unwrap() as u32;
 
-        let (row_px, col_px) = barcode_positions[&barcodes[square]];
-
-        let y = row_px * microns_per_pixel;
-        let x = col_px * microns_per_pixel;
+        let (x, y) = barcode_positions[&barcodes[square]];
 
         transcripts.push_run(Transcript { x, y, z: 0.0, gene }, count);
     }
@@ -424,6 +430,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
         transcripts,
         priorseg: RunVec::new(),
         fovs: RunVec::new(),
+        barcode_positions: Some(barcode_positions),
         gene_names,
         fov_names: Vec::new(),
         original_cell_ids: Vec::new(),
@@ -710,7 +717,7 @@ where
             let next_cell_id = cell_id_map.len() as CellIndex;
             let cell_id = *cell_id_map
                 .entry((fov, cell_id_str.to_string()))
-                .or_insert_with(|| next_cell_id);
+                .or_insert(next_cell_id);
 
             let is_nuclear = if let Some(compartment_col) = compartment_col {
                 row[compartment_col] == compartment_nuclear
@@ -762,6 +769,7 @@ where
         transcripts,
         priorseg,
         fovs,
+        barcode_positions: None,
         gene_names,
         fov_names,
         original_cell_ids,
@@ -1052,6 +1060,7 @@ where
         transcripts,
         priorseg,
         fovs,
+        barcode_positions: None,
         gene_names,
         fov_names,
         original_cell_ids,

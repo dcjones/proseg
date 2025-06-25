@@ -83,6 +83,10 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_masks: Option<String>,
 
+    /// Spaceranger Visium HD segmentation parquet file.
+    #[arg(long, default_value = None)]
+    spaceranger_barcode_mappings: Option<String>,
+
     /// Cellpose cell probability matrix in .npy format.
     #[arg(long, default_value = None)]
     cellpose_cellprobs: Option<String>,
@@ -556,8 +560,15 @@ fn main() {
         set_visiumhd_presets(&mut args);
     }
 
-    if args.visiumhd && args.cellpose_masks.is_none() {
-        panic!("Visium HD input must be initialized with cellpose masks.");
+    if args.visiumhd && args.cellpose_masks.is_none() && args.spaceranger_barcode_mappings.is_none()
+    {
+        panic!(
+            "Visium HD input must be initialized with either --cellpose-masks or --spacerange-barcode-mappings."
+        );
+    }
+
+    if args.cellpose_masks.is_some() && args.spaceranger_barcode_mappings.is_some() {
+        panic!("Only one of --cellpose-masks or --spaceranger-barcode-mappings can be used.");
     }
 
     if args.recorded_samples > args.samples {
@@ -643,7 +654,7 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
-    let mut voxels = if args.cellpose_masks.is_some() {
+    let mut voxels = if let Some(cellpose_masks) = args.cellpose_masks {
         if args.cellpose_scale.is_some()
             && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
         {
@@ -679,7 +690,7 @@ fn main() {
 
         VoxelCheckerboard::from_cellpose_masks(
             &mut dataset,
-            &args.cellpose_masks.unwrap(),
+            &cellpose_masks,
             &args.cellpose_cellprobs,
             args.cellpose_cellprob_discount,
             burnin_voxel_size,
@@ -687,6 +698,16 @@ fn main() {
             args.voxel_layers,
             &pixel_transform,
             1.0 - args.prior_seg_reassignment_prob,
+            args.expand_initialized_cells,
+        )
+    } else if let Some(spaceranger_barcode_mappings) = args.spaceranger_barcode_mappings {
+        VoxelCheckerboard::from_visium_barcode_mappings(
+            &mut dataset,
+            &spaceranger_barcode_mappings,
+            burnin_voxel_size,
+            args.quad_size,
+            args.voxel_layers,
+            1.0 - args.nuclear_reassignment_prob,
             args.expand_initialized_cells,
         )
     } else {

@@ -5,7 +5,7 @@ use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
-use ndarray::{Array2, Axis, Zip, s};
+use ndarray::{Array1, Array2, Axis, Zip, s};
 use rand::{Rng, rng};
 use rand_distr::{Binomial, Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -693,6 +693,23 @@ impl ParamSampler {
                     *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                 }
             });
+
+        // // TODO: Crude hack to see what things look like if we don't vary background rates by layer
+        // let mut background_counts: Array1<u32> = Array1::zeros(params.ngenes());
+        // for x_l in params.background_counts.iter() {
+        //     for (x_lg, y_g) in x_l.iter().zip(background_counts.iter_mut()) {
+        //         *y_g += x_lg;
+        //     }
+        // }
+
+        // let nlayers = params.nlayers();
+        // Zip::from(params.λ_bg.columns_mut()).for_each(|λ_l| {
+        //     for (λ_lg, x_lg) in izip!(λ_l, background_counts.iter()) {
+        //         let α = priors.α_bg + *x_lg as f32;
+        //         let β = priors.β_bg + params.layer_volume * nlayers as f32;
+        //         *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+        //     }
+        // });
 
         Zip::from(&mut params.logλ_bg)
             .and(&params.λ_bg)
