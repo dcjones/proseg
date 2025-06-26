@@ -96,7 +96,7 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let proposal = self.generate_proposal(&quad);
+                let proposal = self.generate_proposal(quad);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
                     // In that case we should just regenerate, but we have to be careful we
@@ -105,8 +105,12 @@ impl VoxelSampler {
                 }
                 let proposal = proposal.unwrap();
 
-                let logu = self.evaluate_proposal(&quad, priors, params, voxelsize_z, proposal)
-                    / temperature;
+                let mut logu = self.evaluate_proposal(quad, priors, params, voxelsize_z, proposal);
+                if temperature < 1.0 {
+                    logu /= temperature;
+                } else {
+                    logu += proposal.log_proposal_imbalance
+                }
                 let s = rng().random::<f32>().ln();
 
                 if s < logu {
@@ -166,18 +170,18 @@ impl VoxelSampler {
         // multiply by 2 because edges are undirected and we only store one direction
         let num_mismatching_edges = 2 * quad_states.mismatch_edges.len();
 
-        let num_target_cell_neighbors = target_neighbor_cells
+        let num_current_cell_neighbors = target_neighbor_cells
             .iter()
             .filter(|cell| cell.is_some_and(|cell| cell == current_cell))
             .count();
 
-        let num_source_cell_neighbors = target_neighbor_cells
+        let num_proposed_cell_neighbors = target_neighbor_cells
             .iter()
             .filter(|cell| cell.is_some_and(|cell| cell == proposed_cell))
             .count();
 
         let mut proposal_prob = (1.0 - self.bubble_formation_prob as f64)
-            * (num_source_cell_neighbors as f64 / num_mismatching_edges as f64);
+            * (num_proposed_cell_neighbors as f64 / num_mismatching_edges as f64);
 
         if proposed_cell == BACKGROUND_CELL {
             let num_mismatching_neighbors = target_neighbor_cells
@@ -188,11 +192,12 @@ impl VoxelSampler {
                 * (num_mismatching_neighbors as f64 / num_mismatching_edges as f64);
         }
 
-        let post_accept_num_mismatching_edges =
-            num_mismatching_edges + 2 * num_target_cell_neighbors - 2 * num_source_cell_neighbors;
+        let post_accept_num_mismatching_edges = num_mismatching_edges
+            + 2 * num_current_cell_neighbors
+            - 2 * num_proposed_cell_neighbors;
 
         let mut reverse_proposal_prob = (1.0 - self.bubble_formation_prob as f64)
-            * (num_target_cell_neighbors as f64 / post_accept_num_mismatching_edges as f64);
+            * (num_current_cell_neighbors as f64 / post_accept_num_mismatching_edges as f64);
 
         if current_cell == BACKGROUND_CELL {
             let num_mismatching_neighbors = target_neighbor_cells
@@ -391,7 +396,7 @@ impl VoxelSampler {
             );
         }
 
-        δ + proposal.log_proposal_imbalance
+        δ
     }
 
     fn accept_proposal(
