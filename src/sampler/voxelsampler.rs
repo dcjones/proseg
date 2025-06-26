@@ -247,7 +247,6 @@ impl VoxelSampler {
         let mut δ = 0.0; // Metropolis-Hastings ratio
         let quad_counts = quad.counts.read().unwrap();
 
-        let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
         let (current_cell, prior_cell, log_prior_prob, log_1m_prior_prob) =
             if let Some(current_state) = proposal.current_state {
@@ -278,17 +277,18 @@ impl VoxelSampler {
             }
         }
 
-        let k = voxel.k();
-        let λ_bg_k = params.λ_bg.column(k as usize);
         for (
             &VoxelCountKey {
-                voxel: _,
+                voxel,
                 gene,
-                offset: _,
+                offset,
             },
             &count,
         ) in quad_counts.voxel_counts(proposal.voxel)
         {
+            let k = voxel.k() - offset.dk();
+            let λ_bg_k = params.λ_bg.column(k as usize);
+
             if count == 0 {
                 continue;
             }
@@ -435,7 +435,7 @@ impl VoxelSampler {
 
         // Update neighboring quads to mirror voxel states on the edge
         let (u, v) = (quad.u, quad.v);
-        let [i, j, k] = proposal.voxel.coords();
+        let [i, j, _k] = proposal.voxel.coords();
 
         let (min_i, max_i, min_j, max_j) = quad.bounds();
         assert!((min_i..max_i + 1).contains(&i) && (min_j..max_j + 1).contains(&j));
@@ -470,11 +470,13 @@ impl VoxelSampler {
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                counts_row_write.sub(CountMatRowKey::new(key.gene, k as u32), count);
+                let k_origin = key.voxel.k() - key.offset.dk();
+                counts_row_write.sub(CountMatRowKey::new(key.gene, k_origin as u32), count);
             }
         } else {
-            let background_counts_k = &params.unassigned_counts[k as usize];
             for (key, &count) in quad_counts.voxel_counts(voxel) {
+                let k_origin = key.voxel.k() - key.offset.dk();
+                let background_counts_k = &params.unassigned_counts[k_origin as usize];
                 background_counts_k.sub(key.gene as usize, count);
             }
         }
@@ -496,11 +498,13 @@ impl VoxelSampler {
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                counts_row_write.add(CountMatRowKey::new(key.gene, k as u32), count);
+                let k_origin = key.voxel.k() - key.offset.dk();
+                counts_row_write.add(CountMatRowKey::new(key.gene, k_origin as u32), count);
             }
         } else {
-            let background_counts_k = &params.unassigned_counts[k as usize];
             for (key, &count) in quad_counts.voxel_counts(voxel) {
+                let k_origin = key.voxel.k() - key.offset.dk();
+                let background_counts_k = &params.unassigned_counts[k_origin as usize];
                 background_counts_k.add(key.gene as usize, count);
             }
         }

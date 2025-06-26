@@ -575,7 +575,7 @@ fn main() {
     }
 
     if args.recorded_samples > args.samples {
-        panic!("recorded-samples must be <= samplese");
+        panic!("recorded-samples must be <= samples");
     }
 
     if args.use_cell_initialization {

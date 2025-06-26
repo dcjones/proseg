@@ -109,6 +109,7 @@ impl TranscriptRepo {
             let k0 = voxel.k();
             let gene = *gene as usize;
             let [di0, dj0, dk0] = offset.coords();
+            let k_origin = k0 - dk0;
 
             let cell = quad_states
                 .states
@@ -117,7 +118,8 @@ impl TranscriptRepo {
                 .unwrap_or(BACKGROUND_CELL);
 
             // let t0 = Instant::now();
-            let mut λ_current = params.λ_bg[[gene, k0 as usize]];
+            let λ_bg = params.λ_bg[[gene, k_origin as usize]];
+            let mut λ_current = λ_bg;
             if cell != BACKGROUND_CELL {
                 λ_current += params.λ(cell as usize, gene);
             }
@@ -164,7 +166,7 @@ impl TranscriptRepo {
                     }
 
                     // sample from another binomial to determine how many of these move we accept
-                    let mut λ_proposed = params.λ_bg[[gene, k as usize]];
+                    let mut λ_proposed = λ_bg;
                     let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
                         quad_states
                             .states
@@ -220,12 +222,13 @@ impl TranscriptRepo {
             if total_moved > 0 {
                 *count -= total_moved;
                 if cell == BACKGROUND_CELL {
-                    params.unassigned_counts[k0 as usize].sub(gene, total_moved);
+                    params.unassigned_counts[k_origin as usize].sub(gene, total_moved);
                 } else {
                     let counts_c = params.counts.row(cell as usize);
-                    counts_c
-                        .write()
-                        .sub(CountMatRowKey::new(gene as u32, k0 as u32), total_moved);
+                    counts_c.write().sub(
+                        CountMatRowKey::new(gene as u32, k_origin as u32),
+                        total_moved,
+                    );
                 }
             }
         }
