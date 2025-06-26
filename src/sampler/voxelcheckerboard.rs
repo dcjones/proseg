@@ -1523,7 +1523,6 @@ impl VoxelCheckerboard {
         let in_nucleus_col_idx = schema.index_of("in_nucleus").unwrap();
         let mut cell_id_map = HashMap::new();
 
-        let mut assigned_voxels = 0;
         for rec_batch in rdr {
             let rec_batch = rec_batch.expect("Unable to read record batch.");
 
@@ -1561,7 +1560,6 @@ impl VoxelCheckerboard {
                     let voxel = coords_to_voxel(x, y, zmid);
 
                     if !voxel.is_oob() {
-                        assigned_voxels += 1;
                         checkerboard.insert_state(
                             voxel,
                             VoxelState {
@@ -1575,7 +1573,6 @@ impl VoxelCheckerboard {
                 }
             }
         }
-        dbg!(assigned_voxels);
 
         checkerboard.ncells = cell_id_map.len();
 
