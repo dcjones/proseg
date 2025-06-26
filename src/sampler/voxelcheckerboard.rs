@@ -126,7 +126,7 @@ impl VoxelOffset {
         i12_to_i32((self.offset >> 8) & 0xFFF)
     }
 
-    fn dk(&self) -> i32 {
+    pub fn dk(&self) -> i32 {
         i8_to_i32(self.offset & 0xFF)
     }
 
@@ -2466,14 +2466,15 @@ impl VoxelCheckerboard {
                         .map(|state| state.cell)
                         .unwrap_or(BACKGROUND_CELL);
 
-                    let k = key.voxel.k();
+                    let k_origin = key.voxel.k() - key.offset.dk();
                     if cell == BACKGROUND_CELL {
-                        params.unassigned_counts[k as usize].add(key.gene as usize, count_delta);
+                        params.unassigned_counts[k_origin as usize]
+                            .add(key.gene as usize, count_delta);
                     } else {
                         let counts_c = params.counts.row(cell as usize);
                         counts_c
                             .write()
-                            .add(CountMatRowKey::new(key.gene, k as u32), count_delta);
+                            .add(CountMatRowKey::new(key.gene, k_origin as u32), count_delta);
                     }
                 }
             }
