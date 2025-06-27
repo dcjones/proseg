@@ -255,7 +255,7 @@ struct Args {
     diffusion_probability: f32,
 
     /// Stddev parameter for repositioning of un-diffused transcripts
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 1.0)]
     diffusion_sigma_near: f32,
 
     /// Stddev parameter for repositioning of diffused transcripts
@@ -263,7 +263,7 @@ struct Args {
     diffusion_sigma_far: f32,
 
     /// Stddev parameter for repositioning transcripts on the z-axis.
-    #[arg(long, default_value_t = 0.1)]
+    #[arg(long, default_value_t = 0.2)]
     diffusion_sigma_z: f32,
 
     /// Allow dispersion parameter to vary during burn-in

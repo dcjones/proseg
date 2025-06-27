@@ -1,3 +1,4 @@
+pub mod connectivity;
 mod math;
 mod multinomial;
 pub mod onlinestats;
