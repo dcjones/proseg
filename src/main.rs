@@ -384,6 +384,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
+    /// Use connectivity checks to prevent cells from having any disconnected voxels
+    #[arg(long, default_value_t = false)]
+    enforce_connectivity: bool,
+
     #[arg(long, default_value_t = 300)]
     nunfactored: usize,
 
@@ -758,6 +762,7 @@ fn main() {
         β_σ_volume: 0.1,
 
         use_factorization: !args.no_factorization,
+        enforce_connectivity: args.enforce_connectivity,
 
         // TODO: mean/var ratio is always 1/fφ, but that doesn't seem like the whole
         // story. Seems like it needs to change as a function of the dimensionality

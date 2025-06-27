@@ -57,6 +57,7 @@ pub struct ModelPriors {
     pub β_σ_volume: f32,
 
     pub use_factorization: bool,
+    pub enforce_connectivity: bool,
 
     // dirichlet prior on θ
     pub αθ: f32,
