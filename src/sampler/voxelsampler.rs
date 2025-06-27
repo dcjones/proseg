@@ -125,6 +125,7 @@ impl VoxelSampler {
 
     fn generate_proposal(&self, quad: &VoxelQuad) -> Option<Proposal> {
         let quad_states = quad.states.read().unwrap();
+        let mut connectivity = quad.connectivity.write().unwrap();
         let mut rng = rng();
         let edge = *quad_states.mismatch_edges.choose(&mut rng)?;
 
@@ -150,13 +151,25 @@ impl VoxelSampler {
             proposed_cell = BACKGROUND_CELL;
         }
 
-        // TODO: Connectivity checking
-        // I'm skipping this for now, because it may not be necessary if our
-        // perimiter penalization is rigorous enough. If we decide we do need
-        // this, I think we just rewrite the existing code, but use u128s to store
-        // node sets (visited and cell), so there's no allocation or hashing.
-        // We also have to expand how much redudant information is mirrored
-        // across quads to account for the 2x moore neighborhood used for this.
+        // Connectivity checking
+        let moore_neigbor_is_current: [bool; 26] = target.moore_neighborhood().map(|neighbor| {
+            quad_states
+                .get_voxel_state(neighbor)
+                .is_some_and(|state| state.cell == current_cell)
+        });
+
+        let moore_neigbor_is_proposed: [bool; 26] = target.moore_neighborhood().map(|neighbor| {
+            quad_states
+                .get_voxel_state(neighbor)
+                .is_some_and(|state| state.cell == proposed_cell)
+        });
+
+        let is_articulation_current = connectivity.is_articulation(&moore_neigbor_is_current);
+        let is_articulation_proposed = connectivity.is_articulation(&moore_neigbor_is_proposed);
+
+        if is_articulation_current || is_articulation_proposed {
+            return None;
+        }
 
         let target_neighbor_cells = target.von_neumann_neighborhood().map(|voxel| {
             let k = voxel.k();

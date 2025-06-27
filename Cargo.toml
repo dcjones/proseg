@@ -45,7 +45,6 @@ ndarray = { version = "0.16.1", features = [
 ] }
 numeric_literals = "0.2.0"
 parquet = "54.2.1"
-petgraph = "0.6.3"
 rand = "0.9.0"
 rand_distr = "0.5.1"
 rayon = "1.7.0"
@@ -60,3 +59,4 @@ dashmap = "6.1.0"
 ordered-float = "5.0.0"
 ndarray-npy = "0.9.1"
 half = "2.6.0"
+lazy_static = "1.5.0"

@@ -1,6 +1,7 @@
 // Data structures for maintaining a set of voxels each with an associated:
 // sparse transcript vector.
 
+use super::connectivity::MooreConnectivityChecker;
 use super::math::logistic;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::sampleset::SampleSet;
@@ -612,37 +613,37 @@ pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
     (0, 0, 1),
 ];
 
-// pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
-//     // top layer
-//     (-1, 0, -1),
-//     (0, 0, -1),
-//     (1, 0, -1),
-//     (-1, 1, -1),
-//     (0, 1, -1),
-//     (1, 1, -1),
-//     (-1, -1, -1),
-//     (0, -1, -1),
-//     (1, -1, -1),
-//     // middle layer
-//     (-1, 0, 0),
-//     (1, 0, 0),
-//     (-1, 1, 0),
-//     (0, 1, 0),
-//     (1, 1, 0),
-//     (-1, -1, 0),
-//     (0, -1, 0),
-//     (1, -1, 0),
-//     // bottom layer
-//     (-1, 0, 1),
-//     (0, 0, 1),
-//     (1, 0, 1),
-//     (-1, 1, 1),
-//     (0, 1, 1),
-//     (1, 1, 1),
-//     (-1, -1, 1),
-//     (0, -1, 1),
-//     (1, -1, 1),
-// ];
+pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
+    // top layer
+    (-1, 0, -1),
+    (0, 0, -1),
+    (1, 0, -1),
+    (-1, 1, -1),
+    (0, 1, -1),
+    (1, 1, -1),
+    (-1, -1, -1),
+    (0, -1, -1),
+    (1, -1, -1),
+    // middle layer
+    (-1, 0, 0),
+    (1, 0, 0),
+    (-1, 1, 0),
+    (0, 1, 0),
+    (1, 1, 0),
+    (-1, -1, 0),
+    (0, -1, 0),
+    (1, -1, 0),
+    // bottom layer
+    (-1, 0, 1),
+    (0, 0, 1),
+    (1, 0, 1),
+    (-1, 1, 1),
+    (0, 1, 1),
+    (1, 1, 1),
+    (-1, -1, 1),
+    (0, -1, 1),
+    (1, -1, 1),
+];
 
 // pub const VON_NEUMANN_AND_SELF_OFFSETS: [(i32, i32, i32); 7] = [
 //     (0, 0, 0),
@@ -857,41 +858,10 @@ impl Voxel {
         .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
     }
 
-    // pub fn moore_neighborhood(&self) -> [Voxel; 26] {
-    //     let [i, j, k] = self.coords();
-    //     [
-    //         // top layer
-    //         (-1, 0, -1),
-    //         (0, 0, -1),
-    //         (1, 0, -1),
-    //         (-1, 1, -1),
-    //         (0, 1, -1),
-    //         (1, 1, -1),
-    //         (-1, -1, -1),
-    //         (0, -1, -1),
-    //         (1, -1, -1),
-    //         // middle layer
-    //         (-1, 0, 0),
-    //         (1, 0, 0),
-    //         (-1, 1, 0),
-    //         (0, 1, 0),
-    //         (1, 1, 0),
-    //         (-1, -1, 0),
-    //         (0, -1, 0),
-    //         (1, -1, 0),
-    //         // bottom layer
-    //         (-1, 0, 1),
-    //         (0, 0, 1),
-    //         (1, 0, 1),
-    //         (-1, 1, 1),
-    //         (0, 1, 1),
-    //         (1, 1, 1),
-    //         (-1, -1, 1),
-    //         (0, -1, 1),
-    //         (1, -1, 1),
-    //     ]
-    //     .map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
-    // }
+    pub fn moore_neighborhood(&self) -> [Voxel; 26] {
+        let [i, j, k] = self.coords();
+        MOORE_OFFSETS.map(|(di, dj, dk)| Voxel::new(i + di, j + dj, k + dk))
+    }
 
     // // Gives the line segment defining the edge between two voxels bordering on
     // // the xy plane. (Panics if the voxels don't border.)
@@ -1055,7 +1025,6 @@ impl VoxelState {
 pub struct QuadStates {
     // Voxel state and prior.
     pub states: BTreeMap<Voxel, VoxelState>,
-
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
 }
 
@@ -1196,6 +1165,9 @@ pub struct VoxelQuad {
     // voxel set. We also have to keep track of repositioned transcripts here.
     pub counts: RwLock<QuadCounts>,
 
+    // Allocates some matrices to be re-used for connectivity checks
+    pub connectivity: RwLock<MooreConnectivityChecker>,
+
     pub kmax: i32,
     quadsize: usize,
 
@@ -1210,6 +1182,7 @@ impl VoxelQuad {
         VoxelQuad {
             states: RwLock::new(QuadStates::new()),
             counts: RwLock::new(QuadCounts::new()),
+            connectivity: RwLock::new(MooreConnectivityChecker::new()),
             kmax,
             quadsize,
             u,
@@ -1234,7 +1207,7 @@ impl VoxelQuad {
     }
 }
 
-impl<'a> VoxelQuad {}
+impl VoxelQuad {}
 
 pub struct VoxelCheckerboard {
     // number of voxels in each x/y direction
