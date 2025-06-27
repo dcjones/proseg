@@ -2003,37 +2003,61 @@ impl VoxelCheckerboard {
         }
     }
 
+    pub fn check_mismatch_edges(&self) {
+        let mut mismatch_edges = Vec::new();
+        let mut mismatch_edge_set = SampleSet::new();
+        for quad in self.quads.values() {
+            let quad_states = quad.states.read().unwrap();
+
+            mismatch_edges.clear();
+            self.build_quad_edge_sets(&quad_states, &mut mismatch_edges);
+
+            mismatch_edge_set.clear();
+            mismatch_edge_set.extend(&mismatch_edges);
+
+            assert!(quad_states.mismatch_edges == mismatch_edge_set);
+        }
+    }
+
     fn build_edge_sets(&mut self) {
         // have to do this to get around a double borrow issue
         let mut mismatch_edges = Vec::new();
         for quad in self.quads.values() {
             let mut quad_states = quad.states.write().unwrap();
-            mismatch_edges.clear();
-            for (&voxel, state) in &quad_states.states {
-                let cell = state.cell;
-                if cell == BACKGROUND_CELL {
-                    continue;
-                }
-
-                for neighbor in voxel.von_neumann_neighborhood() {
-                    let k = neighbor.k();
-                    if k < 0 || k > self.kmax {
-                        continue;
-                    }
-
-                    let neighbor_cell = quad_states
-                        .states
-                        .get(&neighbor)
-                        .map_or(BACKGROUND_CELL, |state| state.cell);
-
-                    if cell != neighbor_cell {
-                        mismatch_edges.push(UndirectedVoxelPair::new(voxel, neighbor));
-                    }
-                }
-            }
+            self.build_quad_edge_sets(&quad_states, &mut mismatch_edges);
 
             quad_states.mismatch_edges.clear();
             quad_states.mismatch_edges.extend(&mismatch_edges);
+        }
+    }
+
+    fn build_quad_edge_sets(
+        &self,
+        quad_states: &QuadStates,
+        mismatch_edges: &mut Vec<UndirectedVoxelPair>,
+    ) {
+        mismatch_edges.clear();
+        for (&voxel, state) in &quad_states.states {
+            let cell = state.cell;
+            if cell == BACKGROUND_CELL {
+                continue;
+            }
+
+            for neighbor in voxel.von_neumann_neighborhood() {
+                let k = neighbor.k();
+                if k < 0 || k > self.kmax {
+                    continue;
+                }
+
+                let neighbor_cell = quad_states
+                    .states
+                    .get(&neighbor)
+                    .map_or(BACKGROUND_CELL, |state| state.cell);
+
+                if cell != neighbor_cell {
+                    mismatch_edges.push(UndirectedVoxelPair::new(voxel, neighbor));
+                }
+            }
         }
     }
 
