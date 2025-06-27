@@ -96,7 +96,7 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let proposal = self.generate_proposal(quad);
+                let proposal = self.generate_proposal(quad, priors);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
                     // In that case we should just regenerate, but we have to be careful we
@@ -123,7 +123,7 @@ impl VoxelSampler {
         trace!("sample voxels: {:?}", t0.elapsed());
     }
 
-    fn generate_proposal(&self, quad: &VoxelQuad) -> Option<Proposal> {
+    fn generate_proposal(&self, quad: &VoxelQuad, priors: &ModelPriors) -> Option<Proposal> {
         let quad_states = quad.states.read().unwrap();
         let mut connectivity = quad.connectivity.write().unwrap();
         let mut rng = rng();
@@ -152,23 +152,32 @@ impl VoxelSampler {
         }
 
         // Connectivity checking
-        let moore_neigbor_is_current: [bool; 26] = target.moore_neighborhood().map(|neighbor| {
-            quad_states
-                .get_voxel_state(neighbor)
-                .is_some_and(|state| state.cell == current_cell)
-        });
+        if priors.enforce_connectivity {
+            if current_cell != BACKGROUND_CELL {
+                let moore_neigbor_is_current: [bool; 26] =
+                    target.moore_neighborhood().map(|neighbor| {
+                        quad_states
+                            .get_voxel_state(neighbor)
+                            .is_some_and(|state| state.cell == current_cell)
+                    });
 
-        let moore_neigbor_is_proposed: [bool; 26] = target.moore_neighborhood().map(|neighbor| {
-            quad_states
-                .get_voxel_state(neighbor)
-                .is_some_and(|state| state.cell == proposed_cell)
-        });
+                if connectivity.is_articulation(&moore_neigbor_is_current) {
+                    return None;
+                }
+            }
 
-        let is_articulation_current = connectivity.is_articulation(&moore_neigbor_is_current);
-        let is_articulation_proposed = connectivity.is_articulation(&moore_neigbor_is_proposed);
+            if proposed_cell != BACKGROUND_CELL {
+                let moore_neigbor_is_proposed: [bool; 26] =
+                    target.moore_neighborhood().map(|neighbor| {
+                        quad_states
+                            .get_voxel_state(neighbor)
+                            .is_some_and(|state| state.cell == proposed_cell)
+                    });
 
-        if is_articulation_current || is_articulation_proposed {
-            return None;
+                if connectivity.is_articulation(&moore_neigbor_is_proposed) {
+                    return None;
+                }
+            }
         }
 
         let target_neighbor_cells = target.von_neumann_neighborhood().map(|voxel| {
