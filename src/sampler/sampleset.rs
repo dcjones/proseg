@@ -12,6 +12,17 @@ pub struct SampleSet<T> {
     vec: Vec<T>,
 }
 
+impl<T> PartialEq for SampleSet<T>
+where
+    T: Eq + Hash,
+{
+    fn eq(&self, other: &Self) -> bool {
+
+    }
+}
+
+impl<T> Eq for SampleSet<T> where T: Eq + Hash {}
+
 impl<T> SampleSet<T>
 where
     T: Eq + Hash + Copy,
