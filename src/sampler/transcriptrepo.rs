@@ -132,87 +132,84 @@ impl TranscriptRepo {
             let mut s = *count;
             let prop_prob = 1.0 / REPO_NEIGHBORHOOD.len() as f64;
             let mut total_moved = 0;
-            REPO_NEIGHBORHOOD
-                .iter()
-                .enumerate()
-                .for_each(|(_neighbor_idx, &(di, dj, dk))| {
-                    if s == 0 {
-                        return;
-                    }
+            REPO_NEIGHBORHOOD.iter().for_each(|&(di, dj, dk)| {
+                if s == 0 {
+                    return;
+                }
 
-                    // sample from a marginal binomial to determine how many transcript we are
-                    // proposing to move to this neighbor.
-                    let r = (prop_prob / ρ).min(1.0);
-                    let diffused_count = Binomial::new(s as u64, r).unwrap().sample(rng) as u32;
-                    ρ -= prop_prob;
-                    s -= diffused_count;
+                // sample from a marginal binomial to determine how many transcript we are
+                // proposing to move to this neighbor.
+                let r = (prop_prob / ρ).min(1.0);
+                let diffused_count = Binomial::new(s as u64, r).unwrap().sample(rng) as u32;
+                ρ -= prop_prob;
+                s -= diffused_count;
 
-                    if diffused_count == 0 {
-                        return;
-                    }
+                if diffused_count == 0 {
+                    return;
+                }
 
-                    // proposed_total[neighbor_idx] += diffused_count;
+                // proposed_total[neighbor_idx] += diffused_count;
 
-                    let neighbor = voxel.offset_coords(di, dj, dk);
-                    let k = neighbor.k();
-                    if neighbor.is_oob() || k < 0 || k > quad.kmax {
-                        return;
-                    }
+                let neighbor = voxel.offset_coords(di, dj, dk);
+                let k = neighbor.k();
+                if neighbor.is_oob() || k < 0 || k > quad.kmax {
+                    return;
+                }
 
-                    let u = neighbor.i() as u32 / quadsize;
-                    let v = neighbor.j() as u32 / quadsize;
-                    if !quads_coords.contains(&(u, v)) {
-                        return;
-                    }
+                let u = neighbor.i() as u32 / quadsize;
+                let v = neighbor.j() as u32 / quadsize;
+                if !quads_coords.contains(&(u, v)) {
+                    return;
+                }
 
-                    // sample from another binomial to determine how many of these move we accept
-                    let mut λ_proposed = λ_bg;
-                    let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
-                        quad_states
-                            .states
-                            .get(&neighbor)
-                            .map(|state| state.cell)
-                            .unwrap_or(BACKGROUND_CELL)
-                    } else {
-                        voxels.get_voxel_cell(neighbor)
-                    };
+                // sample from another binomial to determine how many of these move we accept
+                let mut λ_proposed = λ_bg;
+                let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
+                    quad_states
+                        .states
+                        .get(&neighbor)
+                        .map(|state| state.cell)
+                        .unwrap_or(BACKGROUND_CELL)
+                } else {
+                    voxels.get_voxel_cell(neighbor)
+                };
 
-                    if neighbor_cell != BACKGROUND_CELL {
-                        λ_proposed += params.λ(neighbor_cell as usize, gene);
-                    }
+                if neighbor_cell != BACKGROUND_CELL {
+                    λ_proposed += params.λ(neighbor_cell as usize, gene);
+                }
 
-                    let di = di + di0;
-                    let dj = dj + dj0;
-                    let dk = dk + dk0;
+                let di = di + di0;
+                let dj = dj + dj0;
+                let dk = dk + dk0;
 
-                    let dist_prob_proposed =
-                        self.diffusion_distance_prior(priors, voxelsize_z, di, dj, dk);
+                let dist_prob_proposed =
+                    self.diffusion_distance_prior(priors, voxelsize_z, di, dj, dk);
 
-                    let proposal_prob = dist_prob_proposed * λ_proposed;
+                let proposal_prob = dist_prob_proposed * λ_proposed;
 
-                    let accept_prob =
-                        ((proposal_prob.ln() - current_prob.ln()) / temperature).exp() as f64;
-                    let accepted_count = Binomial::new(diffused_count as u64, accept_prob.min(1.0))
-                        .unwrap()
-                        .sample(rng) as u32;
+                let accept_prob =
+                    ((proposal_prob.ln() - current_prob.ln()) / temperature).exp() as f64;
+                let accepted_count = Binomial::new(diffused_count as u64, accept_prob.min(1.0))
+                    .unwrap()
+                    .sample(rng) as u32;
 
-                    if accepted_count == 0 {
-                        return;
-                    }
+                if accepted_count == 0 {
+                    return;
+                }
 
-                    // accept_total[neighbor_idx] += accepted_count;
+                // accept_total[neighbor_idx] += accepted_count;
 
-                    quad_counts_ref.counts_deltas.push((
-                        VoxelCountKey {
-                            voxel: neighbor,
-                            gene: gene as u32,
-                            offset: VoxelOffset::new(di, dj, dk),
-                        },
-                        accepted_count,
-                    ));
+                quad_counts_ref.counts_deltas.push((
+                    VoxelCountKey {
+                        voxel: neighbor,
+                        gene: gene as u32,
+                        offset: VoxelOffset::new(di, dj, dk),
+                    },
+                    accepted_count,
+                ));
 
-                    total_moved += accepted_count;
-                });
+                total_moved += accepted_count;
+            });
             assert!(s == 0);
             assert!(total_moved <= *count);
 

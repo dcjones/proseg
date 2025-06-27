@@ -1,129 +1,104 @@
-use super::voxelsampler::Voxel;
-use petgraph::graph::{Graph, NodeIndex};
-use petgraph::Undirected;
-use std::collections::{HashMap, HashSet};
+use crate::sampler::voxelcheckerboard::MOORE_OFFSETS;
 
-// Using adjacency list representation for the subgraphs because they will typically be
-// very small, so I expect this to be fast and easier to resize/reset without allocating.
-type NeighborhoodGraph = Graph<(), (), Undirected, usize>;
+use lazy_static::lazy_static;
+use ndarray::Array2;
+use ndarray::linalg::general_mat_mul;
+use std::collections::HashMap;
 
-#[derive(Copy, Clone, PartialEq)]
-struct DfsInfo {
-    parent: NodeIndex<usize>,
-    depth: u32,
-    low: u32,
-}
-
-impl Default for DfsInfo {
-    fn default() -> Self {
-        Self {
-            parent: NodeIndex::end(),
-            depth: 0,
-            low: 0,
+lazy_static! {
+    static ref MOORE_NEIGHBORHOOD_ADJACENCY: Array2<f32> = {
+        let mut rev_moore_offsets = HashMap::new();
+        for (u, (udi, udj, udk)) in MOORE_OFFSETS.iter().enumerate() {
+            rev_moore_offsets.insert((*udi, *udj, *udk), u);
         }
-    }
-}
 
-pub struct ConnectivityChecker {
-    subgraph: NeighborhoodGraph,
-    voxel_to_subgraph: HashMap<Voxel, NodeIndex<usize>>,
-    visited: HashSet<NodeIndex<usize>>,
-}
-
-impl ConnectivityChecker {
-    pub fn new() -> Self {
-        let subgraph: NeighborhoodGraph = Graph::default();
-
-        Self {
-            subgraph,
-            voxel_to_subgraph: HashMap::new(),
-            visited: HashSet::new(),
-        }
-    }
-
-    pub fn voxel_isarticulation<F>(&mut self, root: Voxel, voxel_cell: F, cell: u32) -> bool
-    where
-        F: Fn(Voxel) -> u32,
-    {
-        self.construct_voxel_subgraph(root, voxel_cell, cell);
-
-        // dbg!(self.subgraph.node_count(), self.subgraph.edge_count(), cell);
-
-        self.visited.clear();
-        is_articulation_dfs(
-            &self.subgraph,
-            &mut self.visited,
-            self.voxel_to_subgraph[&root],
-        )
-    }
-
-    fn construct_voxel_subgraph<F>(&mut self, root: Voxel, voxel_cell: F, cell: u32)
-    where
-        F: Fn(Voxel) -> u32,
-    {
-        self.subgraph.clear();
-        self.voxel_to_subgraph.clear();
-
-        let i_idx = self.subgraph.add_node(());
-        self.voxel_to_subgraph.insert(root, i_idx);
-
-        for neighbor in root.moore_neighborhood() {
-            // for neighbor in root.von_neumann_neighborhood() {
-            let neighbor_cell = voxel_cell(neighbor);
-            if cell == neighbor_cell {
-                self.voxel_to_subgraph
-                    .entry(neighbor)
-                    .or_insert_with(|| self.subgraph.add_node(()));
+        let mut adj = Array2::zeros((26, 26));
+        for (u, (udi, udj, udk)) in MOORE_OFFSETS.iter().enumerate() {
+            for (vdi, vdj, vdk) in MOORE_OFFSETS.iter() {
+                // By doing these lookups we are excluded out of bound edges and
+                // edges involving (0,0).
+                if let Some(v) = rev_moore_offsets.get(&(udi + vdi, udj + vdj, udk + vdk)) {
+                    adj[[u, *v]] = 1.0;
+                }
             }
+
+            // We do want self edges so raising to powers computes connectivity
+            adj[[u, u]] = 1.0;
         }
 
-        // add edges from i to neighbors, and neighbors' neighbors
-        for neighbor in root.moore_neighborhood() {
-            // for neighbor in root.von_neumann_neighborhood() {
-            if !self.voxel_to_subgraph.contains_key(&neighbor) {
+        adj
+    };
+}
+
+pub struct MooreConnectivityChecker {
+    cell_mask: Array2<f32>,
+    cell_adj: Array2<f32>,
+    cell_adj_k: Array2<f32>,
+    cell_adj_kp1: Array2<f32>,
+}
+
+impl MooreConnectivityChecker {
+    pub fn new() -> Self {
+        MooreConnectivityChecker {
+            cell_mask: Array2::zeros((26, 26)),
+            cell_adj: MOORE_NEIGHBORHOOD_ADJACENCY.clone(),
+            cell_adj_k: MOORE_NEIGHBORHOOD_ADJACENCY.clone(),
+            cell_adj_kp1: MOORE_NEIGHBORHOOD_ADJACENCY.clone(),
+        }
+    }
+
+    pub fn is_articulation(&mut self, cell_mask: &[bool; 26]) -> bool {
+        // bulid f3 cell mask matrix
+        self.cell_mask.fill(0.0);
+        self.cell_mask
+            .diag_mut()
+            .iter_mut()
+            .zip(cell_mask)
+            .for_each(|(mask, &is_cell)| {
+                *mask = (is_cell as u8) as f32;
+            });
+
+        // mask the moore neighboorhood adjacency matrix
+        // to only consider edges between voxels of the cell being considered
+        general_mat_mul(
+            1.0,
+            &self.cell_mask,
+            &MOORE_NEIGHBORHOOD_ADJACENCY,
+            0.0,
+            &mut self.cell_adj,
+        );
+
+        // The longest possibly connecting path we have to consider is k=4
+        // so we compute connectivity info for that many steps.
+        self.cell_adj_k.fill(0.0);
+        self.cell_adj_k.diag_mut().fill(1.0);
+        for _ in 0..4 {
+            general_mat_mul(
+                1.0,
+                &self.cell_adj_k,
+                &self.cell_adj,
+                0.0,
+                &mut self.cell_adj_kp1,
+            );
+            self.cell_adj_k.assign(&self.cell_adj_kp1);
+        }
+
+        // it's sufficient now to choose an arbitrary neighbor and check
+        // that it's connected to every other neighbor
+        for (i, &mask_i) in cell_mask.iter().enumerate() {
+            if !mask_i {
                 continue;
             }
 
-            self.subgraph.add_edge(
-                self.voxel_to_subgraph[&root],
-                self.voxel_to_subgraph[&neighbor],
-                (),
-            );
-
-            for k in neighbor.moore_neighborhood() {
-                // for k in neighbor.von_neumann_neighborhood() {
-                let k_cell = voxel_cell(k);
-                if self.voxel_to_subgraph.contains_key(&k) && k_cell == cell {
-                    self.subgraph.add_edge(
-                        self.voxel_to_subgraph[&neighbor],
-                        self.voxel_to_subgraph[&k],
-                        (),
-                    );
+            for (j, &mask_j) in cell_mask.iter().enumerate() {
+                // j in unreachable from i without (0, 0), so it is an articulation point
+                if mask_j && self.cell_adj_k[[i, j]] == 0.0 {
+                    return true;
                 }
             }
-        }
-    }
-}
-
-// Recursive traversal function to find articulation points
-fn is_articulation_dfs(
-    subgraph: &NeighborhoodGraph,
-    visited: &mut HashSet<NodeIndex<usize>>,
-    i: NodeIndex<usize>,
-) -> bool {
-    visited.insert(i);
-    let mut child_count = 0;
-
-    // wikipedia version
-
-    for j in subgraph.neighbors(i) {
-        if visited.contains(&j) {
-            continue;
+            break;
         }
 
-        child_count += 1;
-        is_articulation_dfs(subgraph, visited, j);
+        false
     }
-
-    child_count > 1
 }
