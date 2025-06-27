@@ -1054,6 +1054,7 @@ fn run_sampler(
 
     if check_consistency {
         voxels.check_mirrored_quad_edges();
+        voxels.check_mismatch_edges();
         params.check_consistency(voxels);
     }
 }
