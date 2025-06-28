@@ -17,7 +17,7 @@ where
     T: Eq + Hash,
 {
     fn eq(&self, other: &Self) -> bool {
-
+        self.set.len() == other.set.len() && self.set.keys().all(|k| other.set.contains_key(k))
     }
 }
 
