@@ -150,8 +150,10 @@ impl TranscriptDataset {
         let (q0, q1) = (0.01, 0.99);
         let zmin = zs_sorted[(q0 * (zs.len() as f32)) as usize];
         let zmax = zs_sorted[(q1 * (zs.len() as f32)) as usize];
-        // dbg!(zmin, zmax);
-        zs.iter_mut().for_each(|z| *z = z.max(zmin).min(zmax));
+        let zspan = if zmin == zmax { 1.0 } else { zmax - zmin };
+
+        zs.iter_mut()
+            .for_each(|z| *z = z.max(zmin).min(zmax) / zspan);
 
         for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
             run.value.z = *z;

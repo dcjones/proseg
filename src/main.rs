@@ -210,7 +210,7 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (larger numbers induce more compact cells)
-    #[arg(long, default_value_t = 0.2)]
+    #[arg(long, default_value_t = 0.05)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
@@ -642,15 +642,10 @@ fn main() {
     }
 
     let (zmin, zmax) = dataset.normalize_z_coordinates();
-    let mut zspan = zmax - zmin;
 
-    if zspan == 0.0 && args.voxel_layers != 1 {
+    if zmin == zmax && args.voxel_layers != 1 {
         println!("Z-coordinate span is zero. Setting voxel layers to 1.");
         args.voxel_layers = 1;
-    }
-
-    if zspan == 0.0 {
-        zspan = 1.0;
     }
 
     // TODO: In various sharded data structures we assume cells index proximity
@@ -744,7 +739,7 @@ fn main() {
         }
     });
 
-    let μ_vol0 = 10.0 * 10.0 * 0.5 * zspan;
+    let μ_vol0: f32 = 10.0 * 10.0 * 0.5;
     let priors = ModelPriors {
         dispersion: args.dispersion,
         burnin_dispersion: if args.variable_burnin_dispersion {
@@ -800,7 +795,7 @@ fn main() {
         p_diffusion: args.diffusion_probability,
         σ_xy_diffusion_near: args.diffusion_sigma_near,
         σ_xy_diffusion_far: args.diffusion_sigma_far,
-        σ_z_diffusion: args.diffusion_sigma_z * zspan,
+        σ_z_diffusion: args.diffusion_sigma_z,
         τv: 10.0,
     };
 
