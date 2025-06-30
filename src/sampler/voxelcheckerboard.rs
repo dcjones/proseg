@@ -1260,13 +1260,9 @@ impl VoxelCheckerboard {
         cellprior: f32,
         expansion: usize,
     ) -> VoxelCheckerboard {
-        let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
+        let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
+        let voxelsize_z = 1.0 / nzlayers as f32;
 
-        let voxelsize_z = if zmin == zmax {
-            1.0
-        } else {
-            (zmax - zmin) / nzlayers as f32
-        };
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
@@ -1440,12 +1436,8 @@ impl VoxelCheckerboard {
         nucprior: f32,
         expansion: usize,
     ) -> VoxelCheckerboard {
-        let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
-        let voxelsize_z = if zmin == zmax {
-            1.0
-        } else {
-            (zmax - zmin) / nzlayers as f32
-        };
+        let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
+        let voxelsize_z = 1.0 / nzlayers as f32;
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
         let zmid = dataset.z_mean();
         let log_nucprior = f16::from_f32(nucprior.ln());
@@ -1685,12 +1677,8 @@ impl VoxelCheckerboard {
             masks.shape()[1]
         );
 
-        let (xmin, _xmax, ymin, _ymax, zmin, zmax) = dataset.coordinate_span();
-        let voxelsize_z = if zmin == zmax {
-            1.0
-        } else {
-            (zmax - zmin) / nzlayers as f32
-        };
+        let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
+        let voxelsize_z = 1.0 / nzlayers as f32;
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
         let zmid = dataset.z_mean();
 
