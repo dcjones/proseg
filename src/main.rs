@@ -19,6 +19,7 @@ use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
 use schemas::OutputFormat;
+use std::path::Path;
 use std::time::Instant;
 
 use output::*;
@@ -296,15 +297,19 @@ struct Args {
     #[arg(long, default_value = "proseg-output.zarr")]
     output_spatialdata: Option<String>,
 
+    /// Overwrite existing spatialdata file (other output is always overwritten)
+    #[arg(long, default_value_t = false)]
+    overwrite: bool,
+
     /// Output a point estimate of transcript counts per cell
-    #[arg(long, default_value = "counts.mtx.gz")]
+    #[arg(long, default_value = None)]
     output_counts: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_counts_fmt: OutputFormat,
 
     /// Output a matrix of expected transcript counts per cell
-    #[arg(long, default_value = "expected-counts.mtx.gz")]
+    #[arg(long, default_value = None)]
     output_expected_counts: Option<String>,
 
     /// Output a matrix of estimated Poisson expression rates per cell
@@ -324,21 +329,21 @@ struct Args {
     output_expected_counts_fmt: OutputFormat,
 
     /// Output cell metadata
-    #[arg(long, default_value = "cell-metadata.csv.gz")]
+    #[arg(long, default_value = None)]
     output_cell_metadata: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_cell_metadata_fmt: OutputFormat,
 
     /// Output transcript metadata
-    #[arg(long, default_value = "transcript-metadata.csv.gz")]
+    #[arg(long, default_value = None)]
     output_transcript_metadata: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_transcript_metadata_fmt: OutputFormat,
 
     /// Output gene metadata
-    #[arg(long, default_value = "gene-metadata.csv.gz")]
+    #[arg(long, default_value = None)]
     output_gene_metadata: Option<String>,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
@@ -367,15 +372,15 @@ struct Args {
 
     /// Output consensus non-overlapping 2D polygons, formed by taking the
     /// dominant cell at each x/y location.
-    #[arg(long, default_value = "cell-polygons.geojson.gz")]
+    #[arg(long, default_value = None)]
     output_cell_polygons: Option<String>,
 
     /// Output cell polygons flattened (unioned) to 2D
-    #[arg(long, default_value = "union-cell-polygons.geojson.gz")]
+    #[arg(long, default_value = None)]
     output_union_cell_polygons: Option<String>,
 
     /// Output separate cell polygons for each layer of voxels along the z-axis
-    #[arg(long, default_value = "cell-polygons-layers.geojson.gz")]
+    #[arg(long, default_value = None)]
     output_cell_polygon_layers: Option<String>,
 
     /// Output a table of voxel-level counts (mainly for debugging)
@@ -535,6 +540,31 @@ fn main() {
     }
     let nthreads = current_num_threads();
     println!("Using {} threads", nthreads);
+
+    if let Some(ref output_spatialdata) = args.output_spatialdata {
+        let path = if let Some(ref output_path) = args.output_path {
+            Path::new(output_path).join(output_spatialdata)
+        } else {
+            Path::new(output_spatialdata).to_path_buf()
+        };
+
+        if path.exists() {
+            if args.overwrite {
+                std::fs::remove_dir_all(&path).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to remove existing directory {}: {}",
+                        path.display(),
+                        e
+                    );
+                });
+            } else {
+                panic!(
+                    "Output directory {} already exists. Use --overwrite to replace it.",
+                    path.display()
+                );
+            }
+        }
+    }
 
     if (args.xenium as u8)
         + (args.cosmx as u8)
