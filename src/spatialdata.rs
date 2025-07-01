@@ -1,16 +1,23 @@
 // Support for writing (and partially reeading) proseg output to (from)
 // SpatialData objects serialized in zarr format.
 
-use geo::MultiPolygon;
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Field, Schema};
+use geo::geometry::Coord;
+use geo::{MapCoords, MultiPolygon};
 use ndarray::{Array1, Array2};
+use parquet::arrow::ArrowWriter;
+use parquet::basic::{Compression::ZSTD, ZstdLevel};
+use parquet::file::metadata::KeyValue;
+use parquet::file::properties::WriterProperties;
 use serde_json::json;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use wkb::writer::{WriteOptions, write_multi_polygon};
 use zarrs::array::ChunkShape;
-use zarrs::metadata::v2::{
-    ArrayMetadataV2, DataTypeMetadataV2, FillValueMetadataV2, GroupMetadataV2, MetadataV2,
-};
-use zarrs::storage::{ReadableWritableStorageTraits, WritableStorageTraits};
+use zarrs::metadata::v2::{DataTypeMetadataV2, FillValueMetadataV2, MetadataV2};
+use zarrs::storage::ReadableWritableStorageTraits;
 
 use super::sampler::ModelParams;
 use super::sampler::runvec::RunVec;
@@ -79,17 +86,130 @@ fn write_spatialdata_parts(
         transcripts,
     )?;
 
-    write_shapes_zarr(store.clone(), polygons)?;
+    write_shapes_zarr(path, store.clone(), polygons)?;
 
     Ok(())
 }
 
 fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
+    path: &PathBuf,
     store: Arc<T>,
     polygons: &Vec<MultiPolygon<f32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Seems like all they do is serialize a GeoDataFrame to a parquet file.
-    // Can we mimic that here?
+    let ncells = polygons.len();
+
+    new_zarr_group(store.clone(), "/shapes", None)?.store_metadata()?;
+
+    new_zarr_group(
+        store.clone(),
+        "/shapes/cells",
+        Some(
+            json!({
+                "spatialdata_attrs": {
+                    "version": "0.2"
+                },
+                "encoding-type": "ngff:shapes",
+                "axes": ["x", "y"],
+                "coordinateTransformations": [
+                    {
+                        "input": {
+                            "axes": [
+                                {
+                                    "name": "x",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "y",
+                                    "type": "space",
+                                    "unit": "unit"
+                                }
+                            ],
+                            "name": "xy"
+                        },
+                        "output": {
+                            "axes": [
+                                {
+                                    "name": "x",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "y",
+                                    "type": "space",
+                                    "unit": "unit"
+                                }
+                            ],
+                            "name": "global"
+                        },
+                        "type": "identity"
+                    }
+                ],
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let schema = Schema::new(vec![
+        Field::new("cell", DataType::UInt32, false),
+        Field::new("geometry", DataType::Binary, false),
+    ]);
+
+    let mut buf = Vec::new();
+    let wkb_write_opts = WriteOptions::default();
+    let polygon_data = polygons
+        .iter()
+        .map(|poly| {
+            buf.clear();
+            write_multi_polygon(
+                &mut buf,
+                &poly.map_coords(|xy| Coord {
+                    x: xy.x as f64,
+                    y: xy.y as f64,
+                }),
+                &wkb_write_opts,
+            )
+            .ok();
+            Some(buf.clone())
+        })
+        .collect::<arrow::array::BinaryArray>();
+
+    let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+        Arc::new((0..ncells as u32).collect::<arrow::array::UInt32Array>()),
+        Arc::new(polygon_data),
+    ];
+
+    let batch = RecordBatch::try_new(Arc::new(schema), columns)?;
+
+    // this is the minimal metadata needed for geopandas to successfully read the data
+    let geo_metadata_str = json!({
+        "primary_column": "geometry",
+        "columns": {
+            "geometry": {
+                "encoding": "WKB",
+            }
+        },
+        "version": "1.0.0"
+    })
+    .to_string();
+
+    let props = WriterProperties::builder()
+        .set_compression(ZSTD(ZstdLevel::try_new(3).unwrap()))
+        .set_key_value_metadata(Some(vec![KeyValue::new(
+            String::from("geo"),
+            Some(geo_metadata_str),
+        )]))
+        .build();
+
+    let path = path.join("shapes").join("cells").join("shapes.parquet");
+    let output = File::create(path)?;
+
+    let mut writer = ArrowWriter::try_new(output, batch.schema(), Some(props)).unwrap();
+    writer.write(&batch)?;
+    writer.close()?;
 
     Ok(())
 }
