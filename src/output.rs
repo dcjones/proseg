@@ -742,7 +742,7 @@ pub fn write_voxels(
 pub fn write_cell_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
-    polygons: Vec<MultiPolygon<f32>>,
+    polygons: &Vec<MultiPolygon<f32>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {
@@ -826,7 +826,7 @@ pub fn write_cell_multipolygons(
 pub fn write_cell_layered_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
-    polygons: Vec<Vec<(i32, MultiPolygon<f32>)>>,
+    polygons: &Vec<Vec<(i32, MultiPolygon<f32>)>>,
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {

@@ -5,6 +5,7 @@ use clap::Parser;
 mod output;
 mod sampler;
 mod schemas;
+mod spatialdata;
 
 use core::f32;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -21,6 +22,7 @@ use schemas::OutputFormat;
 use std::time::Instant;
 
 use output::*;
+use spatialdata::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
 const DEFAULT_VOXEL_SIZE: f32 = 1.0;
@@ -289,6 +291,10 @@ struct Args {
     /// Prepend a path name to every  output file name
     #[arg(long, default_value = None)]
     output_path: Option<String>,
+
+    /// Write a SpatialData object to zarr format
+    #[arg(long, default_value = "proseg-output.zarr")]
+    output_spatialdata: Option<String>,
 
     /// Output a point estimate of transcript counts per cell
     #[arg(long, default_value = "counts.mtx.gz")]
@@ -958,16 +964,16 @@ fn main() {
     );
     trace!("write_metagene_loadings: {:?}", t0.elapsed());
 
-    if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
-        let t0 = Instant::now();
-        let (cell_polygons, cell_flattened_polygons) = voxels.cell_polygons();
-        info!("generating polygon layers: {:?}", t0.elapsed());
+    let t0 = Instant::now();
+    let (cell_polygons, cell_flattened_polygons) = voxels.cell_polygons();
+    info!("generating polygon layers: {:?}", t0.elapsed());
 
+    if args.output_cell_polygon_layers.is_some() || args.output_union_cell_polygons.is_some() {
         let t0 = Instant::now();
         write_cell_multipolygons(
             &args.output_path,
             &args.output_union_cell_polygons,
-            cell_flattened_polygons,
+            &cell_flattened_polygons,
         );
         info!("write union polygons: {:?}", t0.elapsed());
 
@@ -975,7 +981,7 @@ fn main() {
         write_cell_layered_multipolygons(
             &args.output_path,
             &args.output_cell_polygon_layers,
-            cell_polygons,
+            &cell_polygons,
         );
         info!("write polygon layers: {:?}", t0.elapsed());
     }
@@ -989,9 +995,27 @@ fn main() {
         write_cell_multipolygons(
             &args.output_path,
             &args.output_cell_polygons,
-            consensus_cell_polygons,
+            &consensus_cell_polygons,
         );
         info!("write consensus polygons: {:?}", t0.elapsed());
+    }
+
+    if let Some(output_spatialdata) = args.output_spatialdata {
+        let t0 = Instant::now();
+
+        write_spatialdata_zarr(
+            &args.output_path,
+            &output_spatialdata,
+            &params.foreground_counts,
+            &params,
+            &cell_centroids,
+            &original_cell_ids,
+            &dataset.gene_names,
+            &dataset.transcripts,
+            &cell_flattened_polygons,
+        );
+
+        info!("write SpatialData: {:?}", t0.elapsed());
     }
 }
 
