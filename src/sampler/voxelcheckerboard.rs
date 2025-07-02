@@ -4,10 +4,11 @@
 use super::connectivity::MooreConnectivityChecker;
 use super::math::logistic;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
+use super::runvec::RunVec;
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
 use super::sparsemat::SparseMat;
-use super::transcripts::{BACKGROUND_CELL, CellIndex, TranscriptDataset};
+use super::transcripts::{BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset};
 use super::{CountMatRowKey, ModelParams};
 
 use arrow::array::RecordBatch;
@@ -34,8 +35,8 @@ use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem::drop;
-use std::ops::Bound::Included;
-use std::ops::{Add, DerefMut};
+use std::ops::Bound::{Excluded, Included};
+use std::ops::{Add, DerefMut, Neg};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
@@ -43,6 +44,13 @@ use thread_local::ThreadLocal;
 
 pub type CellPolygon = MultiPolygon<f32>;
 pub type CellPolygonLayers = Vec<(i32, CellPolygon)>;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct TranscriptMetadata {
+    pub offset: VoxelOffset,
+    pub cell: CellIndex,
+    pub foreground: bool,
+}
 
 // Simple affine transform matrix to map pixel coordinates onto slide microns
 #[derive(Debug)]
@@ -133,6 +141,14 @@ impl VoxelOffset {
 
     pub fn coords(&self) -> [i32; 3] {
         [self.di(), self.dj(), self.dk()]
+    }
+}
+
+impl Neg for VoxelOffset {
+    type Output = VoxelOffset;
+
+    fn neg(self) -> VoxelOffset {
+        VoxelOffset::new(-self.di(), -self.dj(), -self.dk())
     }
 }
 
@@ -1443,15 +1459,6 @@ impl VoxelCheckerboard {
         let log_nucprior = f16::from_f32(nucprior.ln());
         let log_1m_nucprior = f16::from_f32((1.0 - nucprior).ln());
 
-        let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).round().max(0.0) as i32;
-            let k = (((z - zmin) / voxelsize_z) as i32)
-                .min(nzlayers as i32 - 1)
-                .max(0);
-            Voxel::new(i, j, k)
-        };
-
         let mut checkerboard = VoxelCheckerboard {
             quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
             kmax: (nzlayers - 1) as i32,
@@ -1522,7 +1529,7 @@ impl VoxelCheckerboard {
                         .entry(cell_id_str.to_string())
                         .or_insert(next_cell_id);
 
-                    let voxel = coords_to_voxel(x, y, zmid);
+                    let voxel = checkerboard.coords_to_voxel(x, y, zmid);
 
                     if !voxel.is_oob() {
                         checkerboard.insert_state(
@@ -1550,7 +1557,7 @@ impl VoxelCheckerboard {
         // count transcripts
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             let key = VoxelCountKey {
                 voxel,
                 gene: transcript.gene,
@@ -1899,6 +1906,15 @@ impl VoxelCheckerboard {
             .get(&self.quad_index(voxel))
             .map(|quad| quad.states.read().unwrap().get_voxel_cell(voxel))
             .unwrap_or(BACKGROUND_CELL)
+    }
+
+    fn coords_to_voxel(&self, x: f32, y: f32, z: f32) -> Voxel {
+        let i = ((x - self.xmin) / self.voxelsize).floor().max(0.0) as i32;
+        let j = ((y - self.ymin) / self.voxelsize).floor().max(0.0) as i32;
+        let k = (((z - self.zmin) / self.voxelsize_z) as i32)
+            .min(self.nzlayers as i32 - 1)
+            .max(0);
+        Voxel::new(i, j, k)
     }
 
     // fn quad_bounds(&self, index: (u32, u32)) -> (Voxel, Voxel) {
@@ -2344,6 +2360,91 @@ impl VoxelCheckerboard {
         cell_polygons
     }
 
+    // Construct transcript metadata by matching observed transcripts up to voxelized counts.
+    pub fn transcript_metadata(
+        &self,
+        params: &ModelParams,
+        transcripts: &RunVec<u32, Transcript>,
+    ) -> RunVec<u32, TranscriptMetadata> {
+        // Clone the count structures so we can decrement transcripts as they are encountered
+        // We also have to re-index by the observed voxel in order to look up transcripts by their
+        // observed position.
+        let mut counts = BTreeMap::new();
+        self.quads.iter().for_each(|(_quad_index, quad)| {
+            quad.counts
+                .read()
+                .unwrap()
+                .counts
+                .iter()
+                .for_each(|(key, count)| {
+                    // Rebuild the hash map indexing on observed voxel
+                    let mut newkey = *key;
+                    newkey.voxel = key.voxel.offset(-key.offset);
+                    counts.insert(newkey, *count);
+                });
+        });
+
+        // Similarly, we need to clone foreground counts so we can keep track
+        let mut foreground_counts: HashMap<(u32, u32), u32> = HashMap::new();
+        for row in params.foreground_counts.rows() {
+            let row_lock = row.read();
+            let cell = row.i;
+            for (gene, count) in row_lock.iter_nonzeros() {
+                foreground_counts.insert((cell as CellIndex, gene), count);
+            }
+        }
+
+        let mut metadata = RunVec::new();
+        for transcript in transcripts.iter() {
+            let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
+
+            let from = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+
+            let to = VoxelCountKey {
+                voxel,
+                gene: transcript.gene + 1,
+                offset: VoxelOffset::zero(),
+            };
+
+            let mut found = false;
+            for (key, count) in counts.range_mut((Included(from), Excluded(to))) {
+                if *count > 0 {
+                    let cell = self.get_voxel_cell(voxel.offset(key.offset));
+                    let foreground =
+                        if let Some(c) = foreground_counts.get_mut(&(cell, transcript.gene)) {
+                            if *c > 0 {
+                                *c -= 1;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                    metadata.push(TranscriptMetadata {
+                        offset: key.offset,
+                        cell,
+                        foreground,
+                    });
+                    *count -= 1;
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                panic!("Unable to find a matching transcript. Inconsistent count structure.");
+            }
+        }
+
+        metadata
+    }
+
     // Copy occupied voxel states to unoccupied neighbors
     fn expand_cells(&mut self) {
         self.quads.par_iter().for_each(|(_quad_pos, quad)| {
@@ -2518,18 +2619,9 @@ impl VoxelCheckerboard {
             quads_coords,
         };
 
-        let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - self.xmin) / voxelsize).floor().max(0.0) as i32;
-            let j = ((y - self.ymin) / voxelsize).floor().max(0.0) as i32;
-            let k = (((z - self.zmin) / voxelsize_z) as i32)
-                .min(self.nzlayers as i32 - 1)
-                .max(0);
-            Voxel::new(i, j, k)
-        };
-
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = new_checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             let key = VoxelCountKey {
                 voxel,
                 gene: transcript.gene,
