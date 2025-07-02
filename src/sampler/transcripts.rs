@@ -21,7 +21,7 @@ pub const BACKGROUND_CELL: CellIndex = u32::MAX;
 // Should probably rearrange this...
 use super::super::output::infer_format_from_filename;
 use super::runvec::RunVec;
-use crate::schemas::OutputFormat;
+use crate::output::OutputFormat;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {

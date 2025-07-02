@@ -19,12 +19,31 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::sampler::transcripts::BACKGROUND_CELL;
+
 use super::sampler::ModelParams;
 use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
+use super::sampler::voxelcheckerboard::VoxelCheckerboard;
 // use crate::schemas::{transcript_metadata_schema, OutputFormat};
-use crate::schemas::OutputFormat;
+// use crate::schemas::OutputFormat;
+
+use clap::ValueEnum;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum OutputFormat {
+    Infer,
+    Csv,
+    CsvGz,
+    Parquet,
+}
+fn large_utf8_if_parquet(fmt: OutputFormat) -> DataType {
+    match fmt {
+        OutputFormat::Parquet => DataType::LargeUtf8,
+        _ => DataType::Utf8,
+    }
+}
 
 pub fn write_table(
     output_path: &Option<String>,
@@ -490,119 +509,194 @@ pub fn write_cell_metadata(
     }
 }
 
-/*
-#[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
     output_path: &Option<String>,
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: OutputFormat,
-    transcripts: &[Transcript],
-    transcript_positions: &[(f32, f32, f32)],
-    transcript_names: &[String],
-    cell_assignments: &[(u32, f32)],
-    transcript_state: &Array1<TranscriptState>,
-    qvs: &[f32],
-    fovs: &[u32],
-    fov_names: &[String],
+    voxels: &VoxelCheckerboard,
+    params: &ModelParams,
+    transcripts: &RunVec<u32, Transcript>,
+    gene_names: &[String],
 ) {
-    if let Some(output_transcript_metadata) = output_transcript_metadata {
-        // arraw_csv has no problem outputting LargeStringArray, but can't read them.
-        // As a work around we always output the same schema, but change the schema
-        // when reading csv.
-        let schema = transcript_metadata_schema(OutputFormat::Parquet);
+    if output_transcript_metadata.is_none() {
+        return;
+    }
+    let output_transcript_metadata = output_transcript_metadata.as_ref().unwrap();
 
-        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
-            Arc::new(
-                transcripts
-                    .iter()
-                    .map(|t| t.transcript_id)
-                    .collect::<arrow::array::UInt64Array>(),
-            ),
-            Arc::new(
-                transcript_positions
-                    .iter()
-                    .map(|(x, _, _)| *x)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcript_positions
-                    .iter()
-                    .map(|(_, y, _)| *y)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcript_positions
-                    .iter()
-                    .map(|(_, _, z)| *z)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcripts
-                    .iter()
-                    .map(|t| t.x)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcripts
-                    .iter()
-                    .map(|t| t.y)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcripts
-                    .iter()
-                    .map(|t| t.z)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcripts
-                    .iter()
-                    .map(|t| Some(transcript_names[t.gene as usize].clone()))
-                    .collect::<arrow::array::LargeStringArray>(),
-            ),
-            Arc::new(qvs.iter().cloned().collect::<arrow::array::Float32Array>()),
-            Arc::new(
-                fovs.iter()
-                    .map(|fov| Some(fov_names[*fov as usize].clone()))
-                    .collect::<arrow::array::LargeStringArray>(),
-            ),
-            Arc::new(
-                cell_assignments
-                    .iter()
-                    .map(|(cell, _)| *cell)
-                    .collect::<arrow::array::UInt32Array>(),
-            ),
-            Arc::new(
-                cell_assignments
-                    .iter()
-                    .map(|(_, pr)| *pr)
-                    .collect::<arrow::array::Float32Array>(),
-            ),
-            Arc::new(
-                transcript_state
-                    .iter()
-                    .map(|&s| (s == TranscriptState::Background) as u8)
-                    .collect::<arrow::array::UInt8Array>(),
-            ),
-            Arc::new(
-                transcript_state
-                    .iter()
-                    .map(|&s| (s == TranscriptState::Confusion) as u8)
-                    .collect::<arrow::array::UInt8Array>(),
-            ),
-        ];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+        Field::new("z", DataType::Float32, false),
+        Field::new("observed_x", DataType::Float32, false),
+        Field::new("observed_y", DataType::Float32, false),
+        Field::new("observed_z", DataType::Float32, false),
+        Field::new(
+            "gene",
+            // TODO: Can I use DataType::Utf8View here? Will that save space in parquet files?
+            large_utf8_if_parquet(output_transcript_metadata_fmt),
+            false,
+        ),
+        Field::new("assignment", DataType::UInt32, true),
+        Field::new("background", DataType::Boolean, false),
+    ]));
 
-        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+    let fmt = match output_transcript_metadata_fmt {
+        OutputFormat::Infer => infer_format_from_filename(output_transcript_metadata),
+        _ => output_transcript_metadata_fmt,
+    };
 
-        write_table(
-            output_path,
-            output_transcript_metadata,
-            output_transcript_metadata_fmt,
-            &batch,
-        );
+    let output = if let Some(output_path) = output_path {
+        File::create(Path::new(output_path).join(output_transcript_metadata)).unwrap()
+    } else {
+        File::create(output_transcript_metadata).unwrap()
+    };
+
+    match fmt {
+        OutputFormat::Csv => {
+            let mut writer = csv::WriterBuilder::new().with_header(true).build(output);
+            write_transcript_metadata_with_fn(
+                schema.clone(),
+                voxels,
+                params,
+                transcripts,
+                gene_names,
+                |batch| writer.write(batch).unwrap(),
+            );
+        }
+        OutputFormat::CsvGz => {
+            let encoder = GzEncoder::new(output, Compression::default());
+            let mut writer = csv::WriterBuilder::new().with_header(true).build(encoder);
+            write_transcript_metadata_with_fn(
+                schema.clone(),
+                voxels,
+                params,
+                transcripts,
+                gene_names,
+                |batch| writer.write(batch).unwrap(),
+            );
+        }
+        OutputFormat::Parquet => {
+            let props = WriterProperties::builder()
+                .set_compression(ZSTD(ZstdLevel::try_new(3).unwrap()))
+                .build();
+            let mut writer = ArrowWriter::try_new(output, schema.clone(), Some(props)).unwrap();
+            write_transcript_metadata_with_fn(
+                schema.clone(),
+                voxels,
+                params,
+                transcripts,
+                gene_names,
+                |batch| writer.write(batch).unwrap(),
+            );
+            writer.close().unwrap();
+        }
+        OutputFormat::Infer => {
+            panic!("Cannot infer output format for filename: {output_transcript_metadata}");
+        }
     }
 }
-*/
+
+#[allow(clippy::too_many_arguments)]
+fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
+    schema: Arc<Schema>,
+    voxels: &VoxelCheckerboard,
+    params: &ModelParams,
+    transcripts: &RunVec<u32, Transcript>,
+    gene_names: &[String],
+    mut write_batch: F,
+) {
+    let metadata = voxels.transcript_metadata(params, transcripts);
+
+    // This is one table I probably should try to write in batches.
+    let mut x = Vec::new();
+    let mut y = Vec::new();
+    let mut z = Vec::new();
+    let mut observed_x = Vec::new();
+    let mut observed_y = Vec::new();
+    let mut observed_z = Vec::new();
+    let mut gene = Vec::new();
+    let mut assignment = Vec::new();
+    let mut background = Vec::new();
+
+    const BATCH_SIZE: usize = 65536;
+    let mut count = 0;
+    for (transcript, metadata) in transcripts.iter().zip(metadata.iter()) {
+        let [dx, dy, dz] = metadata.offset.coords();
+
+        x.push(transcript.x + (dx as f32) * voxels.voxelsize);
+        y.push(transcript.y + (dy as f32) * voxels.voxelsize);
+        z.push(transcript.z + (dz as f32) * voxels.voxelsize_z);
+        observed_x.push(transcript.x);
+        observed_y.push(transcript.y);
+        observed_z.push(transcript.z);
+        gene.push(gene_names[transcript.gene as usize].clone());
+        assignment.push(if metadata.cell == BACKGROUND_CELL {
+            None
+        } else {
+            Some(metadata.cell)
+        });
+        background.push(metadata.cell == BACKGROUND_CELL || !metadata.foreground);
+
+        count += 1;
+        if count == BATCH_SIZE {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(observed_x.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(observed_y.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(observed_z.drain(..).collect::<arrow::array::Float32Array>()),
+                    Arc::new(
+                        gene.drain(..)
+                            .map(Some)
+                            .collect::<arrow::array::StringArray>(),
+                    ),
+                    Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
+                    Arc::new(
+                        background
+                            .drain(..)
+                            .map(Some)
+                            .collect::<arrow::array::BooleanArray>(),
+                    ),
+                ],
+            )
+            .unwrap();
+
+            write_batch(&batch);
+        }
+    }
+
+    if count > 0 {
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(observed_x.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(observed_y.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(observed_z.drain(..).collect::<arrow::array::Float32Array>()),
+                Arc::new(
+                    gene.drain(..)
+                        .map(Some)
+                        .collect::<arrow::array::StringArray>(),
+                ),
+                Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
+                Arc::new(
+                    background
+                        .drain(..)
+                        .map(Some)
+                        .collect::<arrow::array::BooleanArray>(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        write_batch(&batch);
+    }
+}
 
 pub fn write_gene_metadata(
     output_path: &Option<String>,
