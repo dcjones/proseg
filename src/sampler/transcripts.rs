@@ -153,7 +153,7 @@ impl TranscriptDataset {
         let zspan = if zmin == zmax { 1.0 } else { zmax - zmin };
 
         zs.iter_mut()
-            .for_each(|z| *z = z.max(zmin).min(zmax) / zspan);
+            .for_each(|z| *z = (z.max(zmin).min(zmax) - zmin) / zspan);
 
         for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
             run.value.z = *z;
