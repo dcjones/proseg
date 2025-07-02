@@ -4,7 +4,7 @@ use clap::Parser;
 
 mod output;
 mod sampler;
-mod schemas;
+// mod schemas;
 mod spatialdata;
 
 use core::f32;
@@ -18,7 +18,6 @@ use sampler::transcripts::{read_transcripts_csv, read_visium_data};
 use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
-use schemas::OutputFormat;
 use std::path::Path;
 use std::time::Instant;
 
@@ -983,6 +982,18 @@ fn main() {
         &params.φ,
     );
     trace!("write_metagene_rates: {:?}", t0.elapsed());
+
+    let t0 = Instant::now();
+    write_transcript_metadata(
+        &args.output_path,
+        &args.output_transcript_metadata,
+        args.output_transcript_metadata_fmt,
+        &voxels,
+        &params,
+        &dataset.transcripts,
+        &dataset.gene_names,
+    );
+    info!("write_transcript_metadata: {:?}", t0.elapsed());
 
     let t0 = Instant::now();
     write_metagene_loadings(
