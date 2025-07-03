@@ -11,7 +11,7 @@ use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::json;
-use std::fs::File;
+use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use wkb::writer::{WriteOptions, write_multi_polygon};
@@ -19,10 +19,15 @@ use zarrs::array::ChunkShape;
 use zarrs::metadata::v2::{DataTypeMetadataV2, FillValueMetadataV2, MetadataV2};
 use zarrs::storage::ReadableWritableStorageTraits;
 
+use super::output::{OutputFormat, write_transcript_metadata};
 use super::sampler::ModelParams;
 use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
+use super::sampler::voxelcheckerboard::TranscriptMetadata;
+use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
+
+const TABLE_NAME: &str = "table";
 
 #[allow(clippy::too_many_arguments)]
 pub fn write_spatialdata_zarr(
@@ -30,10 +35,12 @@ pub fn write_spatialdata_zarr(
     filename: &str,
     counts: &SparseMat<u32, u32>,
     params: &ModelParams,
+    voxels: &VoxelCheckerboard,
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
+    transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &Vec<MultiPolygon<f32>>,
 ) {
     let path = if let Some(outputpath) = output_path {
@@ -46,10 +53,12 @@ pub fn write_spatialdata_zarr(
         &path,
         counts,
         params,
+        voxels,
         cell_centroids,
         original_cell_ids,
         gene_names,
         transcripts,
+        transcript_metadata,
         polygons,
     ) {
         panic!(
@@ -65,14 +74,14 @@ fn write_spatialdata_parts(
     path: &PathBuf,
     counts: &SparseMat<u32, u32>,
     params: &ModelParams,
+    voxels: &VoxelCheckerboard,
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
+    transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &Vec<MultiPolygon<f32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: deal with overwriting (it should be enabled by default)
-    // Or maybe we check at the very start and warn.
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
     new_zarr_group(store.clone(), "/", None)?.store_metadata()?;
@@ -87,6 +96,14 @@ fn write_spatialdata_parts(
     )?;
 
     write_shapes_zarr(path, store.clone(), polygons)?;
+    write_transcripts_zarr(
+        path,
+        store.clone(),
+        transcripts,
+        transcript_metadata,
+        voxels,
+        gene_names,
+    )?;
 
     Ok(())
 }
@@ -96,13 +113,15 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
     store: Arc<T>,
     polygons: &Vec<MultiPolygon<f32>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    const SHAPES_NAME: &str = "cell_boundaries";
+
     let ncells = polygons.len();
 
     new_zarr_group(store.clone(), "/shapes", None)?.store_metadata()?;
 
     new_zarr_group(
         store.clone(),
-        "/shapes/cells",
+        &format!("/shapes/{SHAPES_NAME}"),
         Some(
             json!({
                 "spatialdata_attrs": {
@@ -204,12 +223,106 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
         )]))
         .build();
 
-    let path = path.join("shapes").join("cells").join("shapes.parquet");
+    let path = path.join("shapes").join(SHAPES_NAME).join("shapes.parquet");
     let output = File::create(path)?;
 
     let mut writer = ArrowWriter::try_new(output, batch.schema(), Some(props)).unwrap();
     writer.write(&batch)?;
     writer.close()?;
+
+    Ok(())
+}
+
+fn write_transcripts_zarr<T: ReadableWritableStorageTraits>(
+    path: &PathBuf,
+    store: Arc<T>,
+    transcripts: &RunVec<u32, Transcript>,
+    transcript_metadata: &RunVec<u32, TranscriptMetadata>,
+    voxels: &VoxelCheckerboard,
+    gene_names: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    const TRANSCRIPTS_NAME: &str = "transcripts";
+
+    new_zarr_group(store.clone(), "/points", None)?.store_metadata()?;
+    new_zarr_group(
+        store.clone(),
+        &format!("/points/{TRANSCRIPTS_NAME}"),
+        Some(
+            json!({
+                "axes": ["x", "y", "z"],
+                "encoding-type": "ngff:points",
+                "spatialdata_attrs": {
+                    "version": "0.1"
+                },
+                "coordinateTransformations": [
+                    {
+                        "input": {
+                            "axes": [
+                                {
+                                    "name": "x",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "y",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "z",
+                                    "type": "space",
+                                    "unit": "unit"
+                                }
+                            ],
+                            "name": "xyz"
+                        },
+                        "output": {
+                            "axes": [
+                                {
+                                    "name": "x",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "y",
+                                    "type": "space",
+                                    "unit": "unit"
+                                },
+                                {
+                                    "name": "z",
+                                    "type": "space",
+                                    "unit": "unit"
+                                }
+                            ],
+                            "name": "global"
+                        },
+                        "type": "identity"
+                    }
+                ],
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let parquet_path = path
+        .join("points")
+        .join(TRANSCRIPTS_NAME)
+        .join("points.parquet");
+
+    create_dir(&parquet_path).unwrap();
+
+    write_transcript_metadata(
+        &Some(parquet_path.into_os_string().into_string().unwrap()),
+        &Some(String::from("part.0.parquet")),
+        OutputFormat::Parquet,
+        voxels,
+        transcripts,
+        transcript_metadata,
+        gene_names,
+    );
 
     Ok(())
 }
@@ -290,7 +403,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     new_zarr_group(store.clone(), "/tables", None)?.store_metadata()?;
     new_zarr_group(
         store.clone(),
-        "/tables/adata",
+        &format!("/tables/{TABLE_NAME}"),
         Some(
             json!({
                 "encoding-type": "anndata",
@@ -316,7 +429,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     // Empty fields
     new_zarr_group(
         store.clone(),
-        "/tables/adata/layers",
+        &format!("/tables/{TABLE_NAME}/layers"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -331,7 +444,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/obsp",
+        &format!("/tables/{TABLE_NAME}/obsp"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -346,7 +459,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/uns",
+        &format!("/tables/{TABLE_NAME}/uns"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -361,7 +474,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/varp",
+        &format!("/tables/{TABLE_NAME}/varp"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -376,7 +489,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/varm",
+        &format!("/tables/{TABLE_NAME}/varm"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -424,7 +537,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/obs",
+        &format!("/tables/{TABLE_NAME}/obs"),
         Some(
             json!({
                 "encoding-type": "dataframe",
@@ -442,7 +555,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // _index
     let mut arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/_index",
+        &format!("/tables/{TABLE_NAME}/obs/_index"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 16) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("|O")),
@@ -467,7 +580,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // cell
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/cell",
+        &format!("/tables/{TABLE_NAME}/obs/cell"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<u4")),
@@ -482,7 +595,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // original_cell_id
     let mut arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/original_cell_id",
+        &format!("/tables/{TABLE_NAME}/obs/original_cell_id"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 16) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("|O")),
@@ -508,7 +621,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // centroid_x
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/centroid_x",
+        &format!("/tables/{TABLE_NAME}/obs/centroid_x"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -522,7 +635,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // centroid_y
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/centroid_y",
+        &format!("/tables/{TABLE_NAME}/obs/centroid_y"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -536,7 +649,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // centroid_z
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/centroid_z",
+        &format!("/tables/{TABLE_NAME}/obs/centroid_z"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -550,7 +663,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // cluster
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/component",
+        &format!("/tables/{TABLE_NAME}/obs/component"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<u4")),
@@ -564,7 +677,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // volume
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/volume",
+        &format!("/tables/{TABLE_NAME}/obs/volume"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -585,7 +698,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // surface_area
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/surface_area",
+        &format!("/tables/{TABLE_NAME}/obs/surface_area"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -606,7 +719,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     // scale
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obs/scale",
+        &format!("/tables/{TABLE_NAME}/obs/scale"),
         vec![ncells as u64],
         vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -626,6 +739,8 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    const TABLE_NAME: &str = "table";
+
     let ngenes = gene_names.len();
 
     let mut cols = vec!["gene".to_string(), "total_count".to_string()];
@@ -637,7 +752,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
-        "/tables/adata/var",
+        &format!("/tables/{TABLE_NAME}/var"),
         Some(
             json!({
                 "encoding-type": "dataframe",
@@ -655,7 +770,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     // index_
     let mut arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/var/_index",
+        &format!("/tables/{TABLE_NAME}/var/_index"),
         vec![gene_names.len() as u64],
         vec![guess_chunks_1d(gene_names.len(), 16) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("|O")),
@@ -675,7 +790,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     // gene (which is just a copy of _index)
     let mut arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/var/gene",
+        &format!("/tables/{TABLE_NAME}/var/gene"),
         vec![gene_names.len() as u64],
         vec![guess_chunks_1d(gene_names.len(), 16) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("|O")),
@@ -695,7 +810,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     // total_count
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/var/total_count",
+        &format!("/tables/{TABLE_NAME}/var/total_count"),
         vec![ngenes as u64],
         vec![guess_chunks_1d(ngenes, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<u4")),
@@ -716,7 +831,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     for (k, λ_bg_k) in params.λ_bg.columns().into_iter().enumerate() {
         let arr = new_zarr_array(
             store.clone(),
-            &format!("/tables/adata/var/lambda_bg_{k}"),
+            &format!("/tables/{TABLE_NAME}/var/lambda_bg_{k}"),
             vec![ngenes as u64],
             vec![guess_chunks_1d(ngenes, 4) as u64].try_into()?,
             DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -738,7 +853,7 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
-        "/tables/adata/obsm",
+        &format!("/tables/{TABLE_NAME}/obsm"),
         Some(
             json!({
                 "encoding-type": "dict",
@@ -755,7 +870,7 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/obsm/spatial",
+        &format!("/tables/{TABLE_NAME}/obsm/spatial"),
         vec![ncells as u64, 2],
         vec![guess_chunks_1d(ncells, 4) as u64, 1].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
@@ -776,7 +891,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
-        "/tables/adata/X",
+        &format!("/tables/{TABLE_NAME}/X"),
         Some(
             json!({
                 "encoding-type": "csr_matrix",
@@ -822,7 +937,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/X/data",
+        &format!("/tables/{TABLE_NAME}/X/data"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<u4")),
@@ -836,7 +951,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/X/indices",
+        &format!("/tables/{TABLE_NAME}/X/indices"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<i4")),
@@ -850,7 +965,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        "/tables/adata/X/indptr",
+        &format!("/tables/{TABLE_NAME}/X/indptr"),
         vec![indptr.len() as u64],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<i4")),

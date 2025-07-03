@@ -941,6 +941,7 @@ fn main() {
     trace!("write_sparse_mtx (max post counts): {:?}", t0.elapsed());
 
     let cell_centroids = voxels.cell_centroids(&params);
+    let transcript_metadata = voxels.transcript_metadata(&params, &dataset.transcripts);
 
     let original_cell_ids = dataset
         .original_cell_ids
@@ -988,8 +989,8 @@ fn main() {
         &args.output_transcript_metadata,
         args.output_transcript_metadata_fmt,
         &voxels,
-        &params,
         &dataset.transcripts,
+        &transcript_metadata,
         &dataset.gene_names,
     );
     info!("write_transcript_metadata: {:?}", t0.elapsed());
@@ -1048,10 +1049,12 @@ fn main() {
             &output_spatialdata,
             &params.foreground_counts,
             &params,
+            &voxels,
             &cell_centroids,
             &original_cell_ids,
             &dataset.gene_names,
             &dataset.transcripts,
+            &transcript_metadata,
             &cell_flattened_polygons,
         );
 
