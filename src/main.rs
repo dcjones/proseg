@@ -18,6 +18,8 @@ use sampler::transcripts::{read_transcripts_csv, read_visium_data};
 use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::VoxelSampler;
 use sampler::{ModelParams, ModelPriors};
+use std::collections::HashMap;
+use std::env;
 use std::path::Path;
 use std::time::Instant;
 
@@ -527,6 +529,7 @@ fn set_visiumhd_presets(args: &mut Args) {
 
 fn main() {
     env_logger::init();
+    let start_time = Instant::now();
 
     let mut args = Args::parse();
 
@@ -1041,6 +1044,20 @@ fn main() {
         info!("write consensus polygons: {:?}", t0.elapsed());
     }
 
+    let mut run_metadata: HashMap<String, String> = HashMap::new();
+    run_metadata.insert(
+        String::from("version"),
+        String::from(env!("CARGO_PKG_VERSION")),
+    );
+    run_metadata.insert(
+        String::from("args"),
+        env::args().collect::<Vec<String>>().join(" "),
+    );
+    run_metadata.insert(
+        String::from("duration"),
+        format!("{:?}", start_time.elapsed()),
+    );
+
     if let Some(output_spatialdata) = args.output_spatialdata {
         let t0 = Instant::now();
 
@@ -1056,6 +1073,7 @@ fn main() {
             &dataset.transcripts,
             &transcript_metadata,
             &cell_flattened_polygons,
+            &run_metadata,
         );
 
         info!("write SpatialData: {:?}", t0.elapsed());
