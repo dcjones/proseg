@@ -11,6 +11,7 @@ use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +43,7 @@ pub fn write_spatialdata_zarr(
     transcripts: &RunVec<u32, Transcript>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &Vec<MultiPolygon<f32>>,
+    run_metadata: &HashMap<String, String>,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -60,6 +62,7 @@ pub fn write_spatialdata_zarr(
         transcripts,
         transcript_metadata,
         polygons,
+        run_metadata,
     ) {
         panic!(
             "Failed to write spatial data zarr file to {}: {}",
@@ -81,6 +84,7 @@ fn write_spatialdata_parts(
     transcripts: &RunVec<u32, Transcript>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &Vec<MultiPolygon<f32>>,
+    run_metadata: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
@@ -93,6 +97,7 @@ fn write_spatialdata_parts(
         original_cell_ids,
         gene_names,
         transcripts,
+        run_metadata,
     )?;
 
     write_shapes_zarr(path, store.clone(), polygons)?;
@@ -399,6 +404,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     original_cell_ids: &[String],
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
+    run_metadata: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(store.clone(), "/tables", None)?.store_metadata()?;
     new_zarr_group(
@@ -471,6 +477,42 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
         ),
     )?
     .store_metadata()?;
+
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{TABLE_NAME}/uns/proseg_run"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    for (key, value) in run_metadata {
+        let mut arr = new_zarr_array(
+            store.clone(),
+            &format!("/tables/{TABLE_NAME}/uns/proseg_run/{key}"),
+            vec![],
+            Vec::<u64>::new().try_into()?,
+            DataTypeMetadataV2::Simple(String::from("|O")),
+            FillValueMetadataV2::Null,
+            None,
+            Some(vec![serde_json::from_value(json!({
+                        "id": "vlen-utf8"
+                    } ))?]),
+        )?;
+        let attr = arr.attributes_mut();
+        attr.insert("encoding-type".to_string(), "string".into());
+        attr.insert("encoding-version".to_string(), "0.2.0".into());
+
+        arr.store_chunk_elements(&[], &[value.clone()])?;
+        arr.store_metadata()?;
+    }
 
     new_zarr_group(
         store.clone(),
