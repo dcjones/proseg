@@ -2,9 +2,11 @@
 FROM rust:1.87 AS builder
 WORKDIR /app
 COPY . .
-RUN cargo install --path .
+RUN cargo install --path . \
+  && mkdir /proseg_bins \
+  && cp /usr/local/cargo/bin/proseg* /proseg_bins/
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /usr/local/cargo/bin/proseg /usr/local/bin/proseg
+COPY --from=builder /proseg_bins/ /usr/local/bin/
 CMD ["proseg"]
