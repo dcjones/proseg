@@ -25,7 +25,7 @@ use super::sampler::ModelParams;
 use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
-use super::sampler::voxelcheckerboard::VoxelCheckerboard;
+use super::sampler::voxelcheckerboard::{TranscriptMetadata, VoxelCheckerboard};
 // use crate::schemas::{transcript_metadata_schema, OutputFormat};
 // use crate::schemas::OutputFormat;
 
@@ -38,12 +38,14 @@ pub enum OutputFormat {
     CsvGz,
     Parquet,
 }
-fn large_utf8_if_parquet(fmt: OutputFormat) -> DataType {
-    match fmt {
-        OutputFormat::Parquet => DataType::LargeUtf8,
-        _ => DataType::Utf8,
-    }
-}
+
+// We need this for reading, because csv can't read LargeUtf8 for some reason
+// fn large_utf8_if_parquet(fmt: OutputFormat) -> DataType {
+//     match fmt {
+//         OutputFormat::Parquet => DataType::LargeUtf8,
+//         _ => DataType::Utf8,
+//     }
+// }
 
 pub fn write_table(
     output_path: &Option<String>,
@@ -514,8 +516,8 @@ pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: OutputFormat,
     voxels: &VoxelCheckerboard,
-    params: &ModelParams,
     transcripts: &RunVec<u32, Transcript>,
+    metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
 ) {
     if output_transcript_metadata.is_none() {
@@ -530,12 +532,7 @@ pub fn write_transcript_metadata(
         Field::new("observed_x", DataType::Float32, false),
         Field::new("observed_y", DataType::Float32, false),
         Field::new("observed_z", DataType::Float32, false),
-        Field::new(
-            "gene",
-            // TODO: Can I use DataType::Utf8View here? Will that save space in parquet files?
-            large_utf8_if_parquet(output_transcript_metadata_fmt),
-            false,
-        ),
+        Field::new("gene", DataType::LargeUtf8, false),
         Field::new("assignment", DataType::UInt32, true),
         Field::new("background", DataType::Boolean, false),
     ]));
@@ -557,8 +554,8 @@ pub fn write_transcript_metadata(
             write_transcript_metadata_with_fn(
                 schema.clone(),
                 voxels,
-                params,
                 transcripts,
+                metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
             );
@@ -569,22 +566,23 @@ pub fn write_transcript_metadata(
             write_transcript_metadata_with_fn(
                 schema.clone(),
                 voxels,
-                params,
                 transcripts,
+                metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
             );
         }
         OutputFormat::Parquet => {
             let props = WriterProperties::builder()
+                .set_column_dictionary_enabled("gene".into(), true)
                 .set_compression(ZSTD(ZstdLevel::try_new(3).unwrap()))
                 .build();
             let mut writer = ArrowWriter::try_new(output, schema.clone(), Some(props)).unwrap();
             write_transcript_metadata_with_fn(
                 schema.clone(),
                 voxels,
-                params,
                 transcripts,
+                metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
             );
@@ -600,13 +598,11 @@ pub fn write_transcript_metadata(
 fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     schema: Arc<Schema>,
     voxels: &VoxelCheckerboard,
-    params: &ModelParams,
     transcripts: &RunVec<u32, Transcript>,
+    metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
     mut write_batch: F,
 ) {
-    let metadata = voxels.transcript_metadata(params, transcripts);
-
     // This is one table I probably should try to write in batches.
     let mut x = Vec::new();
     let mut y = Vec::new();
@@ -651,7 +647,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                     Arc::new(
                         gene.drain(..)
                             .map(Some)
-                            .collect::<arrow::array::StringArray>(),
+                            .collect::<arrow::array::LargeStringArray>(),
                     ),
                     Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
                     Arc::new(
@@ -681,7 +677,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                 Arc::new(
                     gene.drain(..)
                         .map(Some)
-                        .collect::<arrow::array::StringArray>(),
+                        .collect::<arrow::array::LargeStringArray>(),
                 ),
                 Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
                 Arc::new(
