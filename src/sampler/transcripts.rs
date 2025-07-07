@@ -179,6 +179,7 @@ fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) ->
 fn postprocess_cell_assignments(
     nucleus_assignments: &mut [CellIndex],
     cell_assignments: &mut [CellIndex],
+    original_cell_ids: &mut Vec<String>,
 ) -> Vec<usize> {
     // reassign cell ids to exclude anything that no initial transcripts assigned
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
@@ -214,6 +215,13 @@ fn postprocess_cell_assignments(
         if cell_id != BACKGROUND_CELL {
             nucleus_population[cell_id as usize] += 1;
         }
+    }
+
+    let old_original_cell_ids = original_cell_ids.clone();
+    original_cell_ids.resize_with(ncells, || String::new());
+    for (old_cell_id, new_cell_id) in &used_cell_ids {
+        original_cell_ids[*new_cell_id as usize] =
+            old_original_cell_ids[*old_cell_id as usize].clone();
     }
 
     nucleus_population
@@ -410,13 +418,16 @@ where
         }
     }
 
-    let nucleus_population =
-        postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
-
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
     }
+
+    let nucleus_population = postprocess_cell_assignments(
+        &mut nucleus_assignments,
+        &mut cell_assignments,
+        &mut original_cell_ids,
+    );
 
     TranscriptDataset {
         transcript_names,
@@ -705,13 +716,16 @@ where
         }
     }
 
-    let nucleus_population =
-        postprocess_cell_assignments(&mut nucleus_assignments, &mut cell_assignments);
-
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
     }
+
+    let nucleus_population = postprocess_cell_assignments(
+        &mut nucleus_assignments,
+        &mut cell_assignments,
+        &mut original_cell_ids,
+    );
 
     TranscriptDataset {
         transcript_names,

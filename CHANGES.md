@@ -1,3 +1,5 @@
+# 2.0.5
+  - Fix potentially incorrect `original_cell_id` in cell metadata.
 
 # 2.0.4
   - Fix potential empty cells when large number of voxel layers are used.
