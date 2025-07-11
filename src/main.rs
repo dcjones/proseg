@@ -143,7 +143,7 @@ struct Args {
     cell_assignment_column: Option<String>,
 
     /// Value in the cell assignment column indicating an unassigned transcript
-    #[arg(long, default_value = None)]
+    #[arg(long, default_value = None, allow_hyphen_values = true)]
     cell_assignment_unassigned: Option<String>,
 
     /// Name of column containing the cell ID
@@ -151,7 +151,7 @@ struct Args {
     cell_id_column: Option<String>,
 
     /// Value in the cell ID column indicating an unassigned transcript
-    #[arg(long, default_value = None)]
+    #[arg(long, default_value = None, allow_hyphen_values = true)]
     cell_id_unassigned: Option<String>,
 
     /// Name of column containing the quality value
