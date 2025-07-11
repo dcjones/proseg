@@ -440,9 +440,9 @@ fn set_xenium_presets(args: &mut Args) {
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
     args.min_qv.get_or_insert(20.0);
-    args.excluded_genes.get_or_insert(String::from(
-        "^(Deprecated|NegControl|Unassigned|Intergenic)",
-    ));
+    // args.excluded_genes.get_or_insert(String::from(
+    //     "^(Deprecated|NegControl|Unassigned|Intergenic)",
+    // ));
 
     // This seems pretty consistent, but seems possible it could change
     if args.cellpose_scale.is_none()
@@ -472,8 +472,8 @@ fn set_cosmx_presets(args: &mut Args) {
         .get_or_insert(String::from("cell_ID"));
     args.cell_assignment_unassigned
         .get_or_insert(String::from("0"));
-    args.excluded_genes
-        .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
+    // args.excluded_genes
+    //     .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
 
     // CosMx reports values in pixels and pixel size appears to always be 0.12028 microns.
     args.coordinate_scale.get_or_insert(0.12028);
@@ -491,8 +491,8 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    args.excluded_genes
-        .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
+    // args.excluded_genes
+    //     .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
 }
 
 fn set_merfish_presets(args: &mut Args) {
