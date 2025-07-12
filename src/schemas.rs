@@ -16,6 +16,7 @@ pub enum OutputFormat {
 
 pub fn transcript_metadata_schema() -> Schema {
     Schema::new(vec![
+        Field::new("transcript_id", DataType::UInt64, true),
         Field::new("x", DataType::Float32, false),
         Field::new("y", DataType::Float32, false),
         Field::new("z", DataType::Float32, false),
