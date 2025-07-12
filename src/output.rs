@@ -26,26 +26,7 @@ use super::sampler::runvec::RunVec;
 use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::{TranscriptMetadata, VoxelCheckerboard};
-// use crate::schemas::{transcript_metadata_schema, OutputFormat};
-// use crate::schemas::OutputFormat;
-
-use clap::ValueEnum;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum OutputFormat {
-    Infer,
-    Csv,
-    CsvGz,
-    Parquet,
-}
-
-// We need this for reading, because csv can't read LargeUtf8 for some reason
-// fn large_utf8_if_parquet(fmt: OutputFormat) -> DataType {
-//     match fmt {
-//         OutputFormat::Parquet => DataType::LargeUtf8,
-//         _ => DataType::Utf8,
-//     }
-// }
+use crate::schemas::{OutputFormat, transcript_metadata_schema};
 
 pub fn write_table(
     output_path: &Option<String>,
@@ -524,18 +505,7 @@ pub fn write_transcript_metadata(
         return;
     }
     let output_transcript_metadata = output_transcript_metadata.as_ref().unwrap();
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("x", DataType::Float32, false),
-        Field::new("y", DataType::Float32, false),
-        Field::new("z", DataType::Float32, false),
-        Field::new("observed_x", DataType::Float32, false),
-        Field::new("observed_y", DataType::Float32, false),
-        Field::new("observed_z", DataType::Float32, false),
-        Field::new("gene", DataType::LargeUtf8, false),
-        Field::new("assignment", DataType::UInt32, true),
-        Field::new("background", DataType::Boolean, false),
-    ]));
+    let schema = Arc::new(transcript_metadata_schema());
 
     let fmt = match output_transcript_metadata_fmt {
         OutputFormat::Infer => infer_format_from_filename(output_transcript_metadata),

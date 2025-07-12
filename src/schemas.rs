@@ -1,7 +1,10 @@
-// Maintain file schemas that are used in both by output.rs ond by to_baysor.rs
+// Hold a constants that are used in writing and reading spatialdata files.
 
-// use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 use clap::ValueEnum;
+
+pub const SD_SHAPES_NAME: &str = "cell_boundaries";
+pub const SD_TRANSCRIPTS_NAME: &str = "transcripts";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum OutputFormat {
@@ -11,28 +14,23 @@ pub enum OutputFormat {
     Parquet,
 }
 
-// pub fn large_utf8_if_parquet(fmt: OutputFormat) -> DataType {
-//     match fmt {
-//         OutputFormat::Parquet => DataType::LargeUtf8,
-//         _ => DataType::Utf8,
-//     }
-// }
+pub fn transcript_metadata_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+        Field::new("z", DataType::Float32, false),
+        Field::new("observed_x", DataType::Float32, false),
+        Field::new("observed_y", DataType::Float32, false),
+        Field::new("observed_z", DataType::Float32, false),
+        Field::new("gene", DataType::LargeUtf8, false),
+        Field::new("assignment", DataType::UInt32, true),
+        Field::new("background", DataType::Boolean, false),
+    ])
+}
 
-// pub fn transcript_metadata_schema(fmt: OutputFormat) -> Schema {
-//     Schema::new(vec![
-//         Field::new("transcript_id", DataType::UInt64, false),
-//         Field::new("x", DataType::Float32, false),
-//         Field::new("y", DataType::Float32, false),
-//         Field::new("z", DataType::Float32, false),
-//         Field::new("observed_x", DataType::Float32, false),
-//         Field::new("observed_y", DataType::Float32, false),
-//         Field::new("observed_z", DataType::Float32, false),
-//         Field::new("gene", large_utf8_if_parquet(fmt), false),
-//         Field::new("qv", DataType::Float32, false),
-//         Field::new("fov", large_utf8_if_parquet(fmt), false),
-//         Field::new("assignment", DataType::UInt32, false),
-//         Field::new("probability", DataType::Float32, false),
-//         Field::new("background", DataType::UInt8, false),
-//         Field::new("confusion", DataType::UInt8, false),
-//     ])
-// }
+pub fn wkb_shapes_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("cell", DataType::UInt32, false),
+        Field::new("geometry", DataType::Binary, false),
+    ])
+}

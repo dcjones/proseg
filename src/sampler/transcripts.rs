@@ -18,10 +18,9 @@ use std::str;
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = u32::MAX;
 
-// Should probably rearrange this...
-use super::super::output::infer_format_from_filename;
 use super::runvec::RunVec;
-use crate::output::OutputFormat;
+use crate::output::infer_format_from_filename;
+use crate::schemas::OutputFormat;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {
