@@ -994,6 +994,7 @@ fn main() {
         args.output_transcript_metadata_fmt,
         &voxels,
         &dataset.transcripts,
+        &dataset.transcript_ids,
         &transcript_metadata,
         &dataset.gene_names,
     );
@@ -1062,6 +1063,7 @@ fn main() {
     if let Some(output_spatialdata) = args.output_spatialdata {
         let t0 = Instant::now();
 
+        // TODO: I want to make outputing transcripts optional and default to false on visium hd
         write_spatialdata_zarr(
             &args.output_path,
             &output_spatialdata,
@@ -1072,6 +1074,7 @@ fn main() {
             &original_cell_ids,
             &dataset.gene_names,
             &dataset.transcripts,
+            &dataset.transcript_ids,
             &transcript_metadata,
             &cell_flattened_polygons,
             &run_metadata,
