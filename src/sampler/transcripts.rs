@@ -38,6 +38,7 @@ pub struct PriorTranscriptSeg {
 
 pub struct TranscriptDataset {
     pub transcripts: RunVec<u32, Transcript>, // [ntranscripts]
+    pub transcript_ids: Option<Vec<u64>>,     // [ntranscripts] if present
     pub priorseg: RunVec<u32, PriorTranscriptSeg>, // [ntranscripts]
     pub fovs: RunVec<usize, u32>,             // [ntranscripts] (Why to we need to save this?)
     pub barcode_positions: Option<HashMap<String, (f32, f32)>>,
@@ -429,6 +430,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 
     TranscriptDataset {
         transcripts,
+        transcript_ids: None,
         priorseg: RunVec::new(),
         fovs: RunVec::new(),
         barcode_positions: Some(barcode_positions),
@@ -580,7 +582,7 @@ fn read_transcripts_csv_xyz<T>(
     rdr: &mut csv::Reader<T>,
     excluded_genes: Option<Regex>,
     gene_column: &str,
-    _id_column: Option<String>,
+    id_column: Option<String>,
     compartment_column: Option<String>,
     compartment_nuclear: Option<String>,
     fov_column: Option<String>,
@@ -610,8 +612,7 @@ where
     } else {
         find_column(headers, z_column)
     };
-    // let id_col = id_column.map(|id_column| find_column(headers, &id_column));
-
+    let id_col = id_column.map(|id_column| find_column(headers, &id_column));
     let cell_id_col = find_column(headers, cell_id_column);
     let compartment_col =
         compartment_column.map(|compartment_column| find_column(headers, &compartment_column));
@@ -638,6 +639,7 @@ where
 
     // Need to map (fov, cell_id), since on some platform (e.g. CosMx cell_ids are only unique within fovs.)
     let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
+    let mut transcript_ids = Vec::new();
 
     for result in rdr.records() {
         let row = result.unwrap();
@@ -695,6 +697,13 @@ where
             z,
             gene: gene as u32,
         });
+
+        if let Some(id_col) = id_col {
+            let transcript_id = row[id_col]
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("Transcript ID must be an integer: {}", &row[id_col]));
+            transcript_ids.push(transcript_id);
+        }
 
         fovs.push(fov);
 
@@ -760,14 +769,15 @@ where
         original_cell_ids[i as usize] = cell_id;
     }
 
-    let nucleus_population = postprocess_cell_assignments(
-        &mut nucleus_assignments,
-        &mut cell_assignments,
-        &mut original_cell_ids,
-    );
+    let transcript_ids = if transcript_ids.is_empty() {
+        None
+    } else {
+        Some(transcript_ids)
+    };
 
     TranscriptDataset {
         transcripts,
+        transcript_ids,
         priorseg,
         fovs,
         barcode_positions: None,
@@ -863,7 +873,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
     gene_col_name: &str,
-    _id_col_name: &str,
+    id_col_name: &str,
     compartment_col_name: &str,
     compartment_nuclear: u8,
     fov_col_name: &str,
@@ -882,7 +892,7 @@ where
     for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
 {
     let gene_col_idx = schema.index_of(gene_col_name).unwrap();
-    // let id_col_idx = schema.index_of(id_col_name).unwrap();
+    let id_col_idx = schema.index_of(id_col_name).unwrap();
     let compartment_col_idx = schema.index_of(compartment_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
     let fov_col_idx = schema.index_of(fov_col_name).unwrap();
@@ -892,6 +902,7 @@ where
     let qv_col_idx = schema.index_of(qv_col_name).unwrap();
 
     let mut transcripts = RunVec::new();
+    let mut transcript_ids = Vec::new();
     let mut gene_name_map: HashMap<String, usize> = HashMap::new();
     let mut gene_names = Vec::new();
     let mut priorseg = RunVec::new();
@@ -909,11 +920,11 @@ where
             .downcast_ref::<T>()
             .unwrap();
 
-        // let id_col = rec_batch
-        //     .column(id_col_idx)
-        //     .as_any()
-        //     .downcast_ref::<arrow::array::UInt64Array>()
-        //     .unwrap();
+        let id_col = rec_batch
+            .column(id_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
 
         let compartment_col = rec_batch
             .column(compartment_col_idx)
@@ -957,8 +968,9 @@ where
             .downcast_ref::<arrow::array::Float32Array>()
             .unwrap();
 
-        for (transcript, compartment, cell_id, fov, x, y, z, qv) in izip!(
+        for (transcript, id, compartment, cell_id, fov, x, y, z, qv) in izip!(
             transcript_col,
+            id_col,
             compartment_col,
             cell_id_col,
             fov_col,
@@ -968,7 +980,7 @@ where
             qv_col
         ) {
             let transcript = transcript.unwrap();
-            // let transcript_id = id.unwrap();
+            let transcript_id = id.unwrap();
             let compartment = compartment.unwrap();
             let cell_id = cell_id.unwrap();
             let fov = fov.unwrap();
@@ -1013,7 +1025,7 @@ where
                 z: if ignore_z_column { 0.0 } else { z },
                 gene: gene as u32,
             });
-
+            transcript_ids.push(transcript_id);
             fovs.push(fov);
 
             if cell_id == cell_id_unassigned {
@@ -1059,6 +1071,7 @@ where
 
     TranscriptDataset {
         transcripts,
+        transcript_ids: Some(transcript_ids),
         priorseg,
         fovs,
         barcode_positions: None,

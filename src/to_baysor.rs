@@ -109,14 +109,13 @@ fn read_proseg_transcript_metadata_from_zarr(
     };
 
     let schema = transcript_metadata_schema();
-    // TODO: We are not actually keeping track of transcript id. Should we be?
-    // let transcript_id_col = find_column_index(&schema, "transcript_id");
+    let transcript_id_col = find_column_index(&schema, "transcript_id");
     let assignment_col = find_column_index(&schema, "assignment");
     let x_col = find_column_index(&schema, "x");
     let y_col = find_column_index(&schema, "y");
     let z_col = find_column_index(&schema, "z");
 
-    // TODO: Fuck. We are also not recording qv values. Is that necessary?
+    // TODO: We are no longer recording qv values. Is that necessary?
     // let qv_col = find_column_index(&schema, "qv");
 
     for rec_batch in rdr {
@@ -136,15 +135,15 @@ fn read_proseg_transcript_metadata_from_zarr(
             }
         }
 
-        // for transcript_id in rec_batch
-        //     .column(transcript_id_col)
-        //     .as_any()
-        //     .downcast_ref::<arrow::array::UInt64Array>()
-        //     .unwrap()
-        //     .iter()
-        // {
-        //     metadata.transcript_id.push(transcript_id.unwrap());
-        // }
+        for transcript_id in rec_batch
+            .column(transcript_id_col)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.transcript_id.push(transcript_id.unwrap_or(0));
+        }
         while metadata.transcript_id.len() < metadata.cell.len() {
             metadata
                 .transcript_id

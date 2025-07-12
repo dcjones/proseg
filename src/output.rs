@@ -498,6 +498,7 @@ pub fn write_transcript_metadata(
     output_transcript_metadata_fmt: OutputFormat,
     voxels: &VoxelCheckerboard,
     transcripts: &RunVec<u32, Transcript>,
+    transcript_ids: &Option<Vec<u64>>,
     metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
 ) {
@@ -525,6 +526,7 @@ pub fn write_transcript_metadata(
                 schema.clone(),
                 voxels,
                 transcripts,
+                transcript_ids,
                 metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
@@ -537,6 +539,7 @@ pub fn write_transcript_metadata(
                 schema.clone(),
                 voxels,
                 transcripts,
+                transcript_ids,
                 metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
@@ -552,6 +555,7 @@ pub fn write_transcript_metadata(
                 schema.clone(),
                 voxels,
                 transcripts,
+                transcript_ids,
                 metadata,
                 gene_names,
                 |batch| writer.write(batch).unwrap(),
@@ -564,16 +568,19 @@ pub fn write_transcript_metadata(
     }
 }
 
+// TODO: need to pass in transcript_ids
 #[allow(clippy::too_many_arguments)]
 fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     schema: Arc<Schema>,
     voxels: &VoxelCheckerboard,
     transcripts: &RunVec<u32, Transcript>,
+    transcript_ids: &Option<Vec<u64>>,
     metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
     mut write_batch: F,
 ) {
     // This is one table I probably should try to write in batches.
+    let mut transcript_id_data: Vec<Option<u64>> = Vec::new();
     let mut x = Vec::new();
     let mut y = Vec::new();
     let mut z = Vec::new();
@@ -586,8 +593,14 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
 
     const BATCH_SIZE: usize = 65536;
     let mut count = 0;
-    for (transcript, metadata) in transcripts.iter().zip(metadata.iter()) {
+    for (i, (transcript, metadata)) in transcripts.iter().zip(metadata.iter()).enumerate() {
         let [dx, dy, dz] = metadata.offset.coords();
+
+        transcript_id_data.push(if let Some(transcript_ids) = transcript_ids {
+            Some(transcript_ids[i])
+        } else {
+            None
+        });
 
         x.push(transcript.x + (dx as f32) * voxels.voxelsize);
         y.push(transcript.y + (dy as f32) * voxels.voxelsize);
@@ -608,6 +621,11 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
             let batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
+                    Arc::new(
+                        transcript_id_data
+                            .drain(..)
+                            .collect::<arrow::array::UInt64Array>(),
+                    ),
                     Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),
@@ -638,6 +656,11 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(
+                    transcript_id_data
+                        .drain(..)
+                        .collect::<arrow::array::UInt64Array>(),
+                ),
                 Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),
