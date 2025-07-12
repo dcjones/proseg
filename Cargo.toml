@@ -13,14 +13,9 @@ license-file = "LICENSE.md"
 name = "proseg"
 path = "src/main.rs"
 
-# TOOD: Needs to be reimplemented
-# [[bin]]
-# name = "proseg-to-baysor"
-# path = "src/to_baysor.rs"
-
-# [[bin]]
-# name = "proseg-centroid-distance"
-# path = "src/centroid_distance.rs"
+[[bin]]
+name = "proseg-to-baysor"
+path = "src/to_baysor.rs"
 
 [profile.release]
 debug = true
@@ -63,3 +58,4 @@ lazy_static = "1.5.0"
 zarrs = "0.21.2"
 serde_json = "1.0.140"
 wkb = "0.9.0"
+geo-traits = "0.3.0"

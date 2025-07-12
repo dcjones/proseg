@@ -4,7 +4,7 @@ use clap::Parser;
 
 mod output;
 mod sampler;
-// mod schemas;
+mod schemas;
 mod spatialdata;
 
 use core::f32;
@@ -24,6 +24,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use output::*;
+use schemas::OutputFormat;
 use spatialdata::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
