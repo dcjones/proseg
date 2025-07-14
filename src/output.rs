@@ -48,22 +48,22 @@ pub fn write_table(
     match fmt {
         OutputFormat::Csv => {
             if write_table_csv(&mut file, batch).is_err() {
-                panic!("Error writing csv file: {}", filename);
+                panic!("Error writing csv file: {filename}");
             }
         }
         OutputFormat::CsvGz => {
             let mut encoder = GzEncoder::new(file, Compression::default());
             if write_table_csv(&mut encoder, batch).is_err() {
-                panic!("Error writing csv.gz file: {}", filename);
+                panic!("Error writing csv.gz file: {filename}");
             }
         }
         OutputFormat::Parquet => {
             if write_table_parquet(&mut file, batch).is_err() {
-                panic!("Error writing parquet file: {}", filename);
+                panic!("Error writing parquet file: {filename}");
             }
         }
         OutputFormat::Infer => {
-            panic!("Cannot infer output format for filename: {}", filename);
+            panic!("Cannot infer output format for filename: {filename}");
         }
     }
 }
@@ -100,7 +100,7 @@ pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
     } else if filename.ends_with(".parquet") {
         OutputFormat::Parquet
     } else {
-        panic!("Unknown file format for filename: {}", filename);
+        panic!("Unknown file format for filename: {filename}");
     }
 }
 //
@@ -226,7 +226,7 @@ pub fn write_metagene_rates(
         let k = φ.shape()[1];
         let schema = Schema::new(
             (0..k)
-                .map(|name| Field::new(format!("phi{}", name), DataType::Float32, false))
+                .map(|name| Field::new(format!("phi{name}"), DataType::Float32, false))
                 .collect::<Vec<Field>>(),
         );
 
@@ -261,7 +261,7 @@ pub fn write_metagene_loadings(
         let mut schema = vec![Field::new("gene", DataType::Utf8, false)];
 
         for i in 0..k {
-            schema.push(Field::new(format!("theta{}", i), DataType::Float32, false));
+            schema.push(Field::new(format!("theta{i}"), DataType::Float32, false));
         }
 
         let schema = Schema::new(schema);
@@ -492,6 +492,7 @@ pub fn write_cell_metadata(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_transcript_metadata(
     output_path: &Option<String>,
     output_transcript_metadata: &Option<String>,
@@ -596,11 +597,11 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     for (i, (transcript, metadata)) in transcripts.iter().zip(metadata.iter()).enumerate() {
         let [dx, dy, dz] = metadata.offset.coords();
 
-        transcript_id_data.push(if let Some(transcript_ids) = transcript_ids {
-            Some(transcript_ids[i])
-        } else {
-            None
-        });
+        transcript_id_data.push(
+            transcript_ids
+                .as_ref()
+                .map(|transcript_ids| transcript_ids[i]),
+        );
 
         x.push(transcript.x + (dx as f32) * voxels.voxelsize);
         y.push(transcript.y + (dy as f32) * voxels.voxelsize);
@@ -739,7 +740,7 @@ pub fn write_gene_metadata(
 
         // background rates
         for i in 0..params.nlayers() {
-            schema_fields.push(Field::new(format!("λ_bg_{}", i), DataType::Float32, false));
+            schema_fields.push(Field::new(format!("λ_bg_{i}"), DataType::Float32, false));
             columns.push(Arc::new(
                 params
                     .λ_bg
@@ -825,7 +826,7 @@ pub fn write_voxels(
 pub fn write_cell_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
-    polygons: &Vec<MultiPolygon<f32>>,
+    polygons: &[MultiPolygon<f32>],
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {
@@ -845,7 +846,7 @@ pub fn write_cell_multipolygons(
         .unwrap();
 
         let ncells = polygons.len();
-        for (cell, polys) in polygons.into_iter().enumerate() {
+        for (cell, polys) in polygons.iter().enumerate() {
             writeln!(
                 encoder,
                 concat!(
@@ -871,12 +872,12 @@ pub fn write_cell_multipolygons(
                     let x_str = coord_strings
                         .entry(OrderedFloat(coord.x))
                         .or_insert_with(|| coord.x.to_string());
-                    write!(encoder, "              [{}, ", x_str).unwrap();
+                    write!(encoder, "              [{x_str}, ").unwrap();
 
                     let y_str = coord_strings
                         .entry(OrderedFloat(coord.y))
                         .or_insert_with(|| coord.y.to_string());
-                    write!(encoder, "{}]", y_str).unwrap();
+                    write!(encoder, "{y_str}]").unwrap();
 
                     if j < ncoords - 1 {
                         writeln!(encoder, ",").unwrap();
@@ -909,7 +910,7 @@ pub fn write_cell_multipolygons(
 pub fn write_cell_layered_multipolygons(
     output_path: &Option<String>,
     output_cell_polygons: &Option<String>,
-    polygons: &Vec<Vec<(i32, MultiPolygon<f32>)>>,
+    polygons: &[Vec<(i32, MultiPolygon<f32>)>],
 ) {
     if let Some(output_cell_polygons) = output_cell_polygons {
         let file = if let Some(output_path) = output_path {
@@ -962,12 +963,12 @@ pub fn write_cell_layered_multipolygons(
                         let x_str = coord_strings
                             .entry(OrderedFloat(coord.x))
                             .or_insert_with(|| coord.x.to_string());
-                        write!(encoder, "              [{}, ", x_str).unwrap();
+                        write!(encoder, "              [{x_str}, ").unwrap();
 
                         let y_str = coord_strings
                             .entry(OrderedFloat(coord.y))
                             .or_insert_with(|| coord.y.to_string());
-                        write!(encoder, "{}]", y_str).unwrap();
+                        write!(encoder, "{y_str}]").unwrap();
 
                         if j < ncoords - 1 {
                             writeln!(encoder, ",").unwrap();

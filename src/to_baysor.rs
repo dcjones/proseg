@@ -36,12 +36,14 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let zarr_store = Arc::new(FilesystemStore::new(&args.proseg_spatialdata_zarr).expect(
-        &format!(
-            "Unable to open proseg spatialdata at {}",
-            &args.proseg_spatialdata_zarr
-        ),
-    ));
+    let zarr_store = Arc::new(
+        FilesystemStore::new(&args.proseg_spatialdata_zarr).unwrap_or_else(|_err| {
+            panic!(
+                "Unable to open proseg spatialdata at {}",
+                &args.proseg_spatialdata_zarr
+            )
+        }),
+    );
 
     let transcript_metadata = read_proseg_transcript_metadata_from_zarr(zarr_store.clone());
     let cell_polygons = read_proseg_cell_polygons_from_zarr(zarr_store.clone());
@@ -64,7 +66,7 @@ fn find_column_index(schema: &Schema, column: &str) -> usize {
     let col = schema.index_of(column);
     match col {
         Ok(col) => col,
-        _ => panic!("Column '{}' not found in CSV file", column),
+        _ => panic!("Column '{column}' not found in CSV file"),
     }
 }
 
@@ -81,23 +83,23 @@ fn read_proseg_transcript_metadata_from_zarr(
     zarr_store: Arc<FilesystemStore>,
 ) -> TranscriptMetadata {
     let parquet_path = zarr_store.key_to_fspath(
-        &zarrs::storage::StoreKey::new(&format!(
+        &zarrs::storage::StoreKey::new(format!(
             "points/{SD_TRANSCRIPTS_NAME}/points.parquet/part.0.parquet"
         ))
         .unwrap(),
     );
-    let input_file = File::open(&parquet_path).expect(&format!(
-        "Unable to open '{}'.",
-        parquet_path.to_str().unwrap()
-    ));
+    let input_file = File::open(&parquet_path)
+        .unwrap_or_else(|_err| panic!("Unable to open '{}'.", parquet_path.to_str().unwrap()));
 
     let rdr = ParquetRecordBatchReaderBuilder::try_new(input_file)
         .unwrap()
         .build()
-        .expect(&format!(
-            "Unable to read parquet data from from {}",
-            parquet_path.to_str().unwrap()
-        ));
+        .unwrap_or_else(|_err| {
+            panic!(
+                "Unable to read parquet data from from {}",
+                parquet_path.to_str().unwrap()
+            )
+        });
 
     let mut metadata = TranscriptMetadata {
         transcript_id: Vec::new(),
@@ -228,7 +230,7 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
                     if *cell == BACKGROUND_CELL {
                         Some(String::new())
                     } else {
-                        Some(format!("cell-{}", cell))
+                        Some(format!("cell-{cell}"))
                     }
                 })
                 .collect::<arrow::array::LargeStringArray>(),
@@ -271,21 +273,21 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
 
 fn read_proseg_cell_polygons_from_zarr(zarr_store: Arc<FilesystemStore>) -> Vec<JsonValue> {
     let parquet_path = zarr_store.key_to_fspath(
-        &zarrs::storage::StoreKey::new(&format!("shapes/{SD_SHAPES_NAME}/shapes.parquet")).unwrap(),
+        &zarrs::storage::StoreKey::new(format!("shapes/{SD_SHAPES_NAME}/shapes.parquet")).unwrap(),
     );
 
-    let input_file = File::open(&parquet_path).expect(&format!(
-        "Unable to open '{}'.",
-        parquet_path.to_str().unwrap()
-    ));
+    let input_file = File::open(&parquet_path)
+        .unwrap_or_else(|_err| panic!("Unable to open '{}'.", parquet_path.to_str().unwrap()));
 
     let rdr = ParquetRecordBatchReaderBuilder::try_new(input_file)
         .unwrap()
         .build()
-        .expect(&format!(
-            "Unable to read parquet data from from {}",
-            parquet_path.to_str().unwrap()
-        ));
+        .unwrap_or_else(|_err| {
+            panic!(
+                "Unable to read parquet data from from {}",
+                parquet_path.to_str().unwrap()
+            )
+        });
 
     let schema = wkb_shapes_schema();
     let cell_col = find_column_index(&schema, "cell");
