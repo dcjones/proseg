@@ -272,7 +272,7 @@ fn read_visium_tissue_positions_parquet(
     let schema = builder.schema().as_ref().clone();
     let rdr = builder
         .build()
-        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {}", filename));
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {filename}"));
 
     let barcode_col_idx = schema.index_of("barcode").unwrap();
     let row_px_col_idx = schema.index_of("pxl_row_in_fullres").unwrap();
@@ -529,7 +529,7 @@ pub fn read_transcripts_csv(
             ignore_z_column,
             coordinate_scale,
         ),
-        OutputFormat::Infer => panic!("Could not infer format of file '{}'", path),
+        OutputFormat::Infer => panic!("Could not infer format of file '{path}'"),
     }
 }
 
@@ -537,7 +537,7 @@ fn find_column(headers: &csv::StringRecord, column: &str) -> usize {
     let col = headers.iter().position(|x| x == column);
     match col {
         Some(col) => col,
-        None => panic!("Column '{}' not found in CSV file", column),
+        None => panic!("Column '{column}' not found in CSV file"),
     }
 }
 
@@ -813,7 +813,7 @@ fn read_xenium_transcripts_parquet(
     let schema = builder.schema().as_ref().clone();
     let rdr = builder
         .build()
-        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {}", filename));
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {filename}"));
 
     // Xenium parquet files can use i32 or i64 indexes in their string arrays,
     // so we have to dynamically dispatch here.

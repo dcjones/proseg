@@ -43,7 +43,7 @@ pub fn write_spatialdata_zarr(
     transcripts: &RunVec<u32, Transcript>,
     transcript_ids: &Option<Vec<u64>>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
-    polygons: &Vec<MultiPolygon<f32>>,
+    polygons: &[MultiPolygon<f32>],
     run_metadata: &HashMap<String, String>,
 ) {
     let path = if let Some(outputpath) = output_path {
@@ -86,7 +86,7 @@ fn write_spatialdata_parts(
     transcripts: &RunVec<u32, Transcript>,
     transcript_ids: &Option<Vec<u64>>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
-    polygons: &Vec<MultiPolygon<f32>>,
+    polygons: &[MultiPolygon<f32>],
     run_metadata: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
@@ -118,9 +118,9 @@ fn write_spatialdata_parts(
 }
 
 fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
-    path: &PathBuf,
+    path: &Path,
     store: Arc<T>,
-    polygons: &Vec<MultiPolygon<f32>>,
+    polygons: &[MultiPolygon<f32>],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ncells = polygons.len();
 
@@ -240,7 +240,7 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
 }
 
 fn write_transcripts_zarr<T: ReadableWritableStorageTraits>(
-    path: &PathBuf,
+    path: &Path,
     store: Arc<T>,
     transcripts: &RunVec<u32, Transcript>,
     transcript_ids: &Option<Vec<u64>>,
@@ -397,6 +397,7 @@ fn new_zarr_array<T: ReadableWritableStorageTraits>(
     zarrs::array::Array::new_with_metadata(store, path, metadata.into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
     counts: &SparseMat<u32, u32>,

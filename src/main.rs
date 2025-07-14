@@ -552,7 +552,7 @@ fn main() {
             .unwrap();
     }
     let nthreads = current_num_threads();
-    println!("Using {} threads", nthreads);
+    println!("Using {nthreads} threads");
 
     if let Some(ref output_spatialdata) = args.output_spatialdata {
         let path = if let Some(ref output_path) = args.output_path {
@@ -640,7 +640,7 @@ fn main() {
     assert!(args.ncomponents > 0);
 
     fn expect_arg<T>(arg: Option<T>, argname: &str) -> T {
-        arg.unwrap_or_else(|| panic!("Missing required argument: --{}", argname))
+        arg.unwrap_or_else(|| panic!("Missing required argument: --{argname}"))
     }
 
     let burnin_voxel_size = args.burnin_voxel_size.unwrap_or(DEFAULT_BURNIN_VOXEL_SIZE);
@@ -784,7 +784,7 @@ fn main() {
     // an error interpreting the file. (e.g. Misinterpreting the unassigned indicator as a cell)
     dataset.prior_nuclei_populations().iter().for_each(|&p| {
         if p > 50000 {
-            warn!("Nucleus with large initial population: {}", p);
+            warn!("Nucleus with large initial population: {p}");
         }
     });
 

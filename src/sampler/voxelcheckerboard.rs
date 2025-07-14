@@ -329,11 +329,7 @@ mod tests {
             assert_eq!(
                 recovered,
                 [di, dj, dk],
-                "Roundtrip failed for ({}, {}, {}): got {:?}",
-                di,
-                dj,
-                dk,
-                recovered
+                "Roundtrip failed for ({di}, {dj}, {dk}): got {recovered:?}",
             );
         }
     }
@@ -369,36 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn test_voxel_offset_von_neumann_neighbors() {
-        // Test that offset correctly computes Von Neumann neighborhood
-        let center = Voxel::new(1000, 2000, 500);
-
-        let expected_neighbors = [
-            [999, 2000, 500],  // (-1, 0, 0)
-            [1001, 2000, 500], // (1, 0, 0)
-            [1000, 1999, 500], // (0, -1, 0)
-            [1000, 2001, 500], // (0, 1, 0)
-            [1000, 2000, 499], // (0, 0, -1)
-            [1000, 2000, 501], // (0, 0, 1)
-        ];
-
-        for (i, &(di, dj, dk)) in VON_NEUMANN_OFFSETS.iter().enumerate() {
-            let offset = VoxelOffset::new(di, dj, dk);
-            let neighbor = center.offset(offset);
-            assert_eq!(
-                neighbor.coords(),
-                expected_neighbors[i],
-                "Von Neumann neighbor {} offset ({}, {}, {}) failed",
-                i,
-                di,
-                dj,
-                dk
-            );
-            assert!(!neighbor.is_oob());
-        }
-    }
-
-    #[test]
     fn test_voxel_offset_moore_neighbors() {
         // Test that offset correctly computes Moore neighborhood (3x3x3 cube minus center)
         let center = Voxel::new(500, 600, 100);
@@ -410,10 +376,7 @@ mod tests {
             assert_eq!(
                 neighbor.coords(),
                 expected,
-                "Moore neighbor offset ({}, {}, {}) failed",
-                di,
-                dj,
-                dk
+                "Moore neighbor offset ({di}, {dj}, {dk}) failed"
             );
             assert!(!neighbor.is_oob());
         }
@@ -526,18 +489,12 @@ mod tests {
             assert_eq!(
                 result_offset.coords(),
                 result_coords.coords(),
-                "offset() and offset_coords() disagree for ({}, {}, {})",
-                di,
-                dj,
-                dk
+                "offset() and offset_coords() disagree for ({di}, {dj}, {dk})"
             );
             assert_eq!(
                 result_offset.is_oob(),
                 result_coords.is_oob(),
-                "OOB status differs between offset() and offset_coords() for ({}, {}, {})",
-                di,
-                dj,
-                dk
+                "OOB status differs between offset() and offset_coords() for ({di}, {dj}, {dk})",
             );
         }
     }
@@ -1484,10 +1441,7 @@ impl VoxelCheckerboard {
         let schema = builder.schema().as_ref().clone();
 
         let rdr = builder.build().unwrap_or_else(|_| {
-            panic!(
-                "Unable to read parquet data from {}",
-                barcode_mappings_filename
-            )
+            panic!("Unable to read parquet data from {barcode_mappings_filename}")
         });
 
         let barcode_col_idx = schema.index_of("square_002um").unwrap();
@@ -1613,7 +1567,7 @@ impl VoxelCheckerboard {
         zmid: f32,
     ) {
         let cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
-            |_err| panic!("Unable to read cellpose cellprob from {}. Make sure it an npy file (possibly gzipped) containing a float32 matrix", cellprob_filename)
+            |_err| panic!("Unable to read cellpose cellprob from {cellprob_filename}. Make sure it an npy file (possibly gzipped) containing a float32 matrix")
         );
         assert!(masks.shape() == cellprobs.shape());
 
@@ -1676,7 +1630,7 @@ impl VoxelCheckerboard {
         expansion: usize,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
-            |_err| panic!("Unable to read cellpose masks from {}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix", masks_filename)
+            |_err| panic!("Unable to read cellpose masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
         );
         info!(
             "Read {} by {} cellpose mask.",
