@@ -480,7 +480,7 @@ fn set_cosmx_presets(args: &mut Args) {
         .get_or_insert(String::from("0"));
     if args.include_neg_ctrls {
         args.excluded_genes
-            .get_or_insert(String::from("^(FalseCode|NegPrb)"));
+            .get_or_insert(String::from("^(FalseCode|NegPrb|SystemControl)"));
     }
 
     // CosMx reports values in pixels and pixel size appears to always be 0.12 microns.
@@ -501,7 +501,7 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.cell_id_unassigned.get_or_insert(String::from("0"));
     if args.include_neg_ctrls {
         args.excluded_genes
-            .get_or_insert(String::from("^(FalseCode|NegPrb)"));
+            .get_or_insert(String::from("^(FalseCode|NegPrb|SystemControl)"));
     }
 }
 
