@@ -82,7 +82,7 @@ impl TranscriptRepo {
         quadsize: u32,
         _voxelsize: f32,
         voxelsize_z: f32,
-        temperature: f32,
+        _temperature: f32,
     ) {
         let quad_states = quad.states.read().unwrap();
         let mut quad_counts = quad.counts.write().unwrap();
@@ -187,8 +187,7 @@ impl TranscriptRepo {
 
                 let proposal_prob = dist_prob_proposed * λ_proposed;
 
-                let accept_prob =
-                    ((proposal_prob.ln() - current_prob.ln()) / temperature).exp() as f64;
+                let accept_prob = (proposal_prob.ln() - current_prob.ln()).exp() as f64;
                 let accepted_count = Binomial::new(diffused_count as u64, accept_prob.min(1.0))
                     .unwrap()
                     .sample(rng) as u32;
