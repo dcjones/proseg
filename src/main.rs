@@ -445,7 +445,7 @@ fn set_xenium_presets(args: &mut Args) {
         .get_or_insert(String::from("UNASSIGNED"));
     args.qv_column.get_or_insert(String::from("qv"));
     args.min_qv.get_or_insert(20.0);
-    if args.include_neg_ctrls {
+    if !args.include_neg_ctrls {
         args.excluded_genes.get_or_insert(String::from(
             "^(Deprecated|NegControl|Unassigned|Intergenic)",
         ));
@@ -479,7 +479,7 @@ fn set_cosmx_presets(args: &mut Args) {
         .get_or_insert(String::from("cell_ID"));
     args.cell_assignment_unassigned
         .get_or_insert(String::from("0"));
-    if args.include_neg_ctrls {
+    if !args.include_neg_ctrls {
         args.excluded_genes
             .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
     }
@@ -500,7 +500,7 @@ fn set_cosmx_micron_presets(args: &mut Args) {
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_ID"));
     args.cell_id_unassigned.get_or_insert(String::from("0"));
-    if args.include_neg_ctrls {
+    if !args.include_neg_ctrls {
         args.excluded_genes
             .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
     }
