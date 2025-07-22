@@ -677,7 +677,7 @@ fn main() {
             &expect_arg(args.x_column, "x-column"),
             &expect_arg(args.y_column, "y-column"),
             &expect_arg(args.z_column, "z-column"),
-            args.min_qv,
+            args.min_qv.unwrap_or(0.0),
             args.ignore_z_coord,
             args.coordinate_scale.unwrap_or(1.0),
         )

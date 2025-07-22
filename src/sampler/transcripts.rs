@@ -1058,16 +1058,11 @@ where
     }
 
     let ncells = compact_priorseg(&mut priorseg);
+
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
     }
-
-    let nucleus_population = postprocess_cell_assignments(
-        &mut nucleus_assignments,
-        &mut cell_assignments,
-        &mut original_cell_ids,
-    );
 
     TranscriptDataset {
         transcripts,
