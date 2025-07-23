@@ -98,6 +98,10 @@ where
         self.len
     }
 
+    // pub fn nruns(&self) -> usize {
+    //     self.runs.len()
+    // }
+
     pub fn iter_runs(&self) -> impl Iterator<Item = &Run<I, T>> {
         self.runs.iter()
     }

@@ -3,6 +3,7 @@
 
 use super::connectivity::MooreConnectivityChecker;
 use super::math::logistic;
+use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
@@ -20,6 +21,8 @@ use flate2::write::GzEncoder;
 use geo::geometry::{MultiPolygon, Polygon};
 use half::f16;
 use itertools::izip;
+use kiddo::SquaredEuclidean;
+use kiddo::float::kdtree::KdTree;
 use log::info;
 use log::trace;
 use ndarray::{Array2, Zip};
@@ -27,7 +30,9 @@ use ndarray_npy::{ReadNpyExt, read_npy};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
-use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
+use rayon::iter::{
+    IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
+};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -947,27 +952,6 @@ impl UndirectedVoxelPair {
 
 type GeneIndex = u32;
 
-// TODO: Honestly, what is the point of having a separate B-tree for every voxel?
-// What if we were to just have one huge BTree that's like
-// BTreeMap<(Voxel, VoxelOffset, GeneIndex), GeneCount>
-//
-// Wouldn't that have less overhead? We could even linearize the Voxel indexe
-// to get better locality?
-//
-// We might even index by gene first, like:
-// Vec<BTreeMap<(Voxel, VoxelOffset), GeneCount>>
-//
-// Let's think about acces patterns. When evaluating voxel copy proposals
-// we need to get the counts for gene for the voxel. Breaking up by
-// gene would involve a lot of lookups, so probably shouldn't do this.
-
-// Represent a sparse count vector indexed by gene, and by
-// a voxel offset, to keep track of repositioned transcripts.
-// struct SparseTranscriptsVec {
-//     // transcript count for transcripts repositioned to this voxel
-//     counts: BTreeMap<(VoxelOffset, GeneIndex), GeneCount>,
-// }
-
 // Ok, so each key is 8 + 8 + 4 = 20 bytes
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
 pub struct VoxelCountKey {
@@ -1138,6 +1122,9 @@ pub struct VoxelQuad {
     // voxel set. We also have to keep track of repositioned transcripts here.
     pub counts: RwLock<QuadCounts>,
 
+    // Local transcript density, used for noise rate estimation
+    pub densities: RwLock<BTreeMap<Voxel, f32>>,
+
     // Allocates some matrices to be re-used for connectivity checks
     pub connectivity: RwLock<MooreConnectivityChecker>,
 
@@ -1155,6 +1142,7 @@ impl VoxelQuad {
         VoxelQuad {
             states: RwLock::new(QuadStates::new()),
             counts: RwLock::new(QuadCounts::new()),
+            densities: RwLock::new(BTreeMap::new()),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
             kmax,
             quadsize,
@@ -1232,6 +1220,8 @@ impl VoxelCheckerboard {
         nucprior: f32,
         cellprior: f32,
         expansion: usize,
+        density_bandwidth: f32,
+        density_nbins: usize,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let voxelsize_z = 1.0 / nzlayers as f32;
@@ -1396,7 +1386,7 @@ impl VoxelCheckerboard {
         trace!("assigned voxel counts: {:?}", t0.elapsed());
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
-        checkerboard.finish_initialization(expansion);
+        checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
 
@@ -1408,6 +1398,8 @@ impl VoxelCheckerboard {
         nzlayers: usize,
         nucprior: f32,
         expansion: usize,
+        density_bandwidth: f32,
+        density_nbins: usize,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let voxelsize_z = 1.0 / nzlayers as f32;
@@ -1524,7 +1516,7 @@ impl VoxelCheckerboard {
         }
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
-        checkerboard.finish_initialization(expansion);
+        checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
 
@@ -1628,6 +1620,8 @@ impl VoxelCheckerboard {
         pixel_transform: &PixelTransform,
         cellprior: f32,
         expansion: usize,
+        density_bandwidth: f32,
+        density_nbins: usize,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
             |_err| panic!("Unable to read cellpose masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
@@ -1808,11 +1802,18 @@ impl VoxelCheckerboard {
 
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
 
-        checkerboard.finish_initialization(expansion);
+        checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
 
-    fn finish_initialization(&mut self, expansion: usize) {
+    fn finish_initialization(
+        &mut self,
+        dataset: &TranscriptDataset,
+        expansion: usize,
+        density_bandwidth: f32,
+        density_nbins: usize,
+    ) {
+        self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
         self.pop_bubbles();
         self.mirror_quad_edges();
@@ -2054,10 +2055,14 @@ impl VoxelCheckerboard {
         }
     }
 
-    fn estimate_local_transcript_density(&mut self, dataset: &TranscriptDataset) {
-        let mut kdtrees: Vec<_> = (0..self.nzlayers)
-            .map(|_k| KdTree::<f32, u32, 2, 32, u32>::new())
-            .collect();
+    fn estimate_local_transcript_density(
+        &mut self,
+        dataset: &TranscriptDataset,
+        bandwidth: f32,
+        nbins: usize,
+    ) {
+        let mut kdtrees: Vec<KdTree<f32, u32, 2, 32, u32>> =
+            (0..self.nzlayers).map(|_k| KdTree::new()).collect();
         for run in dataset.transcripts.iter_runs() {
             let xy = [run.value.x, run.value.y];
             let k = (((run.value.z - self.zmin) / self.voxelsize_z) as usize)
@@ -2066,18 +2071,77 @@ impl VoxelCheckerboard {
             kdtrees[k].add(&xy, run.len);
         }
 
-        self.quads.par_iter_mut().for_each(|((u, v), quad)| {
+        let bandwidth_sq = bandwidth * bandwidth;
+        let kernel_norm = 1.0 / (bandwidth * (2.0 * f32::consts::PI).sqrt());
+        let eps = 1e-3_f32;
+        let max_distance = -2.0 * bandwidth_sq * eps.ln();
+        self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
             let counts = quad.counts.read().unwrap();
+            let mut density = quad.densities.write().unwrap();
             counts.counts.iter().for_each(|(count_key, _count)| {
                 let [i, j, k] = count_key.voxel.coords();
-
                 let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
                 let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
-                
-                let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
-                // TODO: now for every occupied voxel, compute local density from the centroid of the voxel.
-                // stick in a quad-specific voxel map
+
+                let mut voxel_density = 0.0;
+                for neighbor in
+                    kdtrees[k as usize].within::<SquaredEuclidean>(&[x, y], max_distance)
+                {
+                    let d = neighbor.distance;
+                    let count = neighbor.item;
+                    voxel_density += (count as f32) * (-d / (2.0 * bandwidth_sq)).exp();
+                }
+                voxel_density /= kernel_norm;
+                density.insert(count_key.voxel, voxel_density);
             });
+        });
+
+        // Estimate density quantiles on a per-layer basis
+        let mut quant_est = (0..self.nzlayers)
+            .map(|_k| {
+                (1..nbins + 1)
+                    .map(|i| ScalarQuantileEstimator::new((i as f32) / (nbins as f32)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        self.quads.iter().for_each(|((_u, _v), quad)| {
+            let density = quad.densities.read().unwrap();
+            for (voxel, &density) in density.iter() {
+                let k = voxel.k();
+                for quant_est_k in quant_est[k as usize].iter_mut() {
+                    quant_est_k.update(density);
+                }
+            }
+        });
+
+        let quants = quant_est
+            .iter()
+            .map(|quant_est_k| {
+                quant_est_k
+                    .iter()
+                    .map(|quant_est_kq| quant_est_kq.estimate())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        dbg!(&quants);
+
+        // Replace densities with their quantiles
+        self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
+            let mut densities = quad.densities.write().unwrap();
+            for (voxel, density) in densities.iter_mut() {
+                let quants = &quants[voxel.k() as usize];
+                let mut quantile_index = 0;
+                for (idx, &quant) in quants.iter().enumerate() {
+                    if quant <= *density {
+                        quantile_index = idx;
+                    } else {
+                        break;
+                    }
+                }
+                *density = quantile_index as f32;
+            }
         });
     }
 
@@ -2553,6 +2617,8 @@ impl VoxelCheckerboard {
         mut self,
         params: &mut ModelParams,
         dataset: &TranscriptDataset,
+        density_bandwidth: f32,
+        density_nbins: usize,
     ) -> VoxelCheckerboard {
         let quadsize = 2 * self.quadsize;
         let voxelsize = 0.5 * self.voxelsize;
@@ -2621,6 +2687,12 @@ impl VoxelCheckerboard {
         new_checkerboard.compute_cell_volume_surface_area(
             &mut params.cell_voxel_count,
             &mut params.cell_surface_area,
+        );
+
+        new_checkerboard.estimate_local_transcript_density(
+            dataset,
+            density_bandwidth,
+            density_nbins,
         );
 
         params.voxel_volume *= 0.25;

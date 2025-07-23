@@ -96,9 +96,47 @@ impl P2Values {
         }
     }
 
-    // pub fn estimate(&self) -> f32 {
-    //     self.h[2]
-    // }
+    fn estimate(&self) -> f32 {
+        self.h[2]
+    }
+}
+
+pub struct ScalarQuantileEstimator {
+    estimates: P2Values,
+    dn: [f32; 5],
+    quantile: f32,
+    t: usize,
+}
+
+impl ScalarQuantileEstimator {
+    pub fn new(quantile: f32) -> Self {
+        ScalarQuantileEstimator {
+            estimates: P2Values::new(),
+            dn: [
+                1.0,
+                1.0 + 2.0 * quantile,
+                1.0 + 4.0 * quantile,
+                3.0 + 2.0 * quantile,
+                5.0,
+            ],
+            quantile,
+            t: 0,
+        }
+    }
+
+    pub fn update(&mut self, value: f32) {
+        // increment desired positions
+        self.dn[1] += self.quantile / 2.0;
+        self.dn[2] += self.quantile;
+        self.dn[3] += (1.0 + self.quantile) / 2.0;
+        self.dn[4] += 1.0;
+        self.estimates.update(self.t, &self.dn, value);
+        self.t += 1;
+    }
+
+    pub fn estimate(&self) -> f32 {
+        self.estimates.estimate()
+    }
 }
 
 // Estimating transcript count quantiles using the P² algorithm

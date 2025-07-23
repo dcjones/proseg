@@ -428,6 +428,12 @@ struct Args {
 
     #[arg(long, default_value_t = 0.1)]
     hyperparam_tau_phi: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    density_bandwidth: f32,
+
+    #[arg(long, default_value_t = 5)]
+    density_bins: usize,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -751,6 +757,8 @@ fn main() {
             &pixel_transform,
             1.0 - args.prior_seg_reassignment_prob,
             args.expand_initialized_cells,
+            args.density_bandwidth,
+            args.density_bins,
         )
     } else if let Some(spaceranger_barcode_mappings) = args.spaceranger_barcode_mappings {
         VoxelCheckerboard::from_visium_barcode_mappings(
@@ -761,6 +769,8 @@ fn main() {
             args.voxel_layers,
             1.0 - args.nuclear_reassignment_prob,
             args.expand_initialized_cells,
+            args.density_bandwidth,
+            args.density_bins,
         )
     } else {
         VoxelCheckerboard::from_prior_transcript_assignments(
@@ -771,6 +781,8 @@ fn main() {
             1.0 - args.nuclear_reassignment_prob,
             1.0 - args.prior_seg_reassignment_prob,
             args.expand_initialized_cells,
+            args.density_bandwidth,
+            args.density_bins,
         )
     };
 
@@ -903,7 +915,12 @@ fn main() {
         voxels
     } else {
         (0..voxel_double_count).fold(voxels, |voxels, _| {
-            voxels.double_resolution(&mut params, &dataset)
+            voxels.double_resolution(
+                &mut params,
+                &dataset,
+                args.density_bandwidth,
+                args.density_bins,
+            )
         })
     };
 
