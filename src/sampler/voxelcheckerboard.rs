@@ -2054,6 +2054,33 @@ impl VoxelCheckerboard {
         }
     }
 
+    fn estimate_local_transcript_density(&mut self, dataset: &TranscriptDataset) {
+        let mut kdtrees: Vec<_> = (0..self.nzlayers)
+            .map(|_k| KdTree::<f32, u32, 2, 32, u32>::new())
+            .collect();
+        for run in dataset.transcripts.iter_runs() {
+            let xy = [run.value.x, run.value.y];
+            let k = (((run.value.z - self.zmin) / self.voxelsize_z) as usize)
+                .min(self.nzlayers - 1)
+                .max(0);
+            kdtrees[k].add(&xy, run.len);
+        }
+
+        self.quads.par_iter_mut().for_each(|((u, v), quad)| {
+            let counts = quad.counts.read().unwrap();
+            counts.counts.iter().for_each(|(count_key, _count)| {
+                let [i, j, k] = count_key.voxel.coords();
+
+                let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+                let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+                
+                let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
+                // TODO: now for every occupied voxel, compute local density from the centroid of the voxel.
+                // stick in a quad-specific voxel map
+            });
+        });
+    }
+
     pub fn compute_cell_volume_surface_area(
         &self,
         volume: &mut ShardedVec<u32>,

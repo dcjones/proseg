@@ -70,7 +70,7 @@ impl P2Values {
 
                 // parabolic predictor
                 let h_adj = self.h[i]
-                    + (d / (self.h[i + 1] - self.h[i - 1]))
+                    + (d / (self.n[i + 1] - self.n[i - 1]))
                         * ((self.n[i] - self.n[i - 1] + d) * (self.h[i + 1] - self.h[i])
                             / (self.n[i + 1] - self.n[i])
                             + (self.n[i + 1] - self.n[i] - d) * (self.h[i] - self.h[i - 1])
