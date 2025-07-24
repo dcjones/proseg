@@ -870,6 +870,7 @@ fn main() {
         args.nunfactored,
         args.ncomponents,
         layer_volume,
+        args.density_bins,
     );
 
     let param_sampler = ParamSampler::new();

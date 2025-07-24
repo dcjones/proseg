@@ -5,7 +5,7 @@ use arrow::error::ArrowError;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use geo::MultiPolygon;
-use ndarray::Array2;
+use ndarray::{Array2, Axis};
 use num::traits::Zero;
 use ordered_float::OrderedFloat;
 use parquet::arrow::ArrowWriter;
@@ -739,16 +739,20 @@ pub fn write_gene_metadata(
         ];
 
         // background rates
-        for i in 0..params.nlayers() {
-            schema_fields.push(Field::new(format!("λ_bg_{i}"), DataType::Float32, false));
-            columns.push(Arc::new(
-                params
-                    .λ_bg
-                    .column(i)
-                    .iter()
-                    .cloned()
-                    .collect::<arrow::array::Float32Array>(),
-            ));
+        for (l, λ_bg_l) in params.λ_bg.axis_iter(Axis(2)).enumerate() {
+            for (d, λ_bg_dl) in λ_bg_l.axis_iter(Axis(1)).enumerate() {
+                schema_fields.push(Field::new(
+                    format!("λ_bg_{l}_{d}"),
+                    DataType::Float32,
+                    false,
+                ));
+                columns.push(Arc::new(
+                    λ_bg_dl
+                        .iter()
+                        .cloned()
+                        .collect::<arrow::array::Float32Array>(),
+                ));
+            }
         }
 
         let schema = Schema::new(schema_fields);

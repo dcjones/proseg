@@ -2,7 +2,7 @@ use log::trace;
 use rand_distr::{Binomial, Distribution};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
 use super::math::{halfnormal_x2_pdf, uniformly_imprecise_normal_prob};
@@ -106,10 +106,10 @@ impl TranscriptRepo {
                 continue;
             }
 
-            let k0 = voxel.k();
             let gene = *gene as usize;
+            let origin = voxel.offset(offset.neg());
             let [di0, dj0, dk0] = offset.coords();
-            let k_origin = k0 - dk0;
+            let k_origin = origin.k();
 
             let cell = quad_states
                 .states
@@ -117,8 +117,10 @@ impl TranscriptRepo {
                 .map(|state| state.cell)
                 .unwrap_or(BACKGROUND_CELL);
 
-            // let t0 = Instant::now();
-            let λ_bg = params.λ_bg[[gene, k_origin as usize]];
+            let density = voxels.get_voxel_density_hint(quad, origin);
+
+            let λ_bg = params.λ_bg[[gene, k_origin as usize, density]];
+
             let mut λ_current = λ_bg;
             if cell != BACKGROUND_CELL {
                 λ_current += params.λ(cell as usize, gene);
@@ -218,11 +220,11 @@ impl TranscriptRepo {
             if total_moved > 0 {
                 *count -= total_moved;
                 if cell == BACKGROUND_CELL {
-                    params.unassigned_counts[k_origin as usize].sub(gene, total_moved);
+                    params.unassigned_counts[density][k_origin as usize].sub(gene, total_moved);
                 } else {
                     let counts_c = params.counts.row(cell as usize);
                     counts_c.write().sub(
-                        CountMatRowKey::new(gene as u32, k_origin as u32),
+                        CountMatRowKey::new(gene as u32, k_origin as u32, density as u8),
                         total_moved,
                     );
                 }

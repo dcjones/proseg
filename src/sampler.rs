@@ -16,10 +16,11 @@ pub mod voxelsampler;
 
 use clustering::kmeans;
 use dashmap::DashMap;
+use itertools::izip;
 use math::randn;
 use multinomial::Multinomial;
 use ndarray::linalg::general_mat_vec_mul;
-use ndarray::{Array1, Array2, Axis, Zip, s};
+use ndarray::{Array1, Array2, Array3, Axis, Zip, s};
 use num::traits::Zero;
 use onlinestats::{CountMeanEstimator, CountQuantileEstimator};
 use rand::rng;
@@ -103,11 +104,16 @@ pub struct ModelPriors {
 pub struct CountMatRowKey {
     gene: u32,
     layer: u32,
+    density: u8,
 }
 
 impl CountMatRowKey {
-    pub fn new(gene: u32, layer: u32) -> Self {
-        CountMatRowKey { gene, layer }
+    pub fn new(gene: u32, layer: u32, density: u8) -> Self {
+        CountMatRowKey {
+            gene,
+            layer,
+            density,
+        }
     }
 }
 
@@ -118,6 +124,7 @@ impl Add for CountMatRowKey {
         CountMatRowKey {
             gene: self.gene + other.gene,
             layer: self.layer + other.layer,
+            density: self.density + other.density,
         }
     }
 }
@@ -126,30 +133,46 @@ impl AddAssign for CountMatRowKey {
     fn add_assign(&mut self, other: Self) {
         self.gene += other.gene;
         self.layer += other.layer;
+        self.density += other.density;
     }
 }
 
 impl Zero for CountMatRowKey {
     fn zero() -> Self {
-        CountMatRowKey { gene: 0, layer: 0 }
+        CountMatRowKey {
+            gene: 0,
+            layer: 0,
+            density: 0,
+        }
     }
 
     fn is_zero(&self) -> bool {
-        self.gene == 0 && self.layer == 0
+        self.gene == 0 && self.layer == 0 && self.density == 0
     }
 }
 
 impl Increment for CountMatRowKey {
     fn inc(&self, bound: CountMatRowKey) -> CountMatRowKey {
-        if self.gene < bound.gene && self.layer + 1 == bound.layer {
-            CountMatRowKey {
-                layer: 0,
-                gene: self.gene + 1,
+        // treating this as three digits, incrementing density then layer then gene
+        if self.density + 1 == bound.density {
+            if self.layer + 1 == bound.layer {
+                CountMatRowKey {
+                    gene: self.gene + 1,
+                    layer: 0,
+                    density: 0,
+                }
+            } else {
+                CountMatRowKey {
+                    gene: self.gene,
+                    layer: self.layer + 1,
+                    density: 0,
+                }
             }
         } else {
             CountMatRowKey {
-                layer: self.layer + 1,
                 gene: self.gene,
+                layer: self.layer,
+                density: self.density + 1,
             }
         }
     }
@@ -189,11 +212,11 @@ pub struct ModelParams {
     foreground_counts_upper: CountQuantileEstimator,
     pub foreground_counts_mean: CountMeanEstimator,
 
-    // [nlayers, ngenes] background transcripts counts
-    unassigned_counts: Vec<ShardedVec<u32>>,
+    // [density_nbins, nlayers, ngenes] background transcripts counts
+    unassigned_counts: Vec<Vec<ShardedVec<u32>>>,
 
-    // [nlayers, ngenes]
-    background_counts: Vec<ShardedVec<u32>>,
+    // [density_nbins, nlayers, ngenes]
+    background_counts: Vec<Vec<ShardedVec<u32>>>,
 
     // [ncells, nhidden]
     pub cell_latent_counts: SparseMat<u32, u32>,
@@ -272,10 +295,10 @@ pub struct ModelParams {
     // memoization of the ModelParams::λ method
     λ: DashMap<(u32, u32), f32>,
 
-    // [ngenes, nlayers] background rate: rate at which halucinate transcripts
+    // [ngenes, nlayers, nquantiles] background rate: rate at which halucinate transcripts
     // across the entire layer
-    pub λ_bg: Array2<f32>,
-    pub logλ_bg: Array2<f32>,
+    pub λ_bg: Array3<f32>,
+    pub logλ_bg: Array3<f32>,
 
     // Size of the upper block of θ that is the identity matrix
     nunfactored: usize,
@@ -298,6 +321,7 @@ impl ModelParams {
         nunfactored: usize,
         ncomponents: usize,
         layer_volume: f32,
+        density_nbins: usize,
     ) -> ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
@@ -323,11 +347,15 @@ impl ModelParams {
 
         let mut counts = SparseMat::zeros(
             ncells,
-            CountMatRowKey::new(ngenes as u32, nlayers as u32),
+            CountMatRowKey::new(ngenes as u32, nlayers as u32, density_nbins as u8),
             CELL_SHARDSIZE,
         );
-        let mut unassigned_counts = (0..nlayers)
-            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+        let mut unassigned_counts = (0..density_nbins)
+            .map(|_density| {
+                (0..nlayers)
+                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
 
@@ -350,8 +378,12 @@ impl ModelParams {
         let foreground_counts_upper =
             CountQuantileEstimator::new(ncells, ngenes, 0.95, CELL_SHARDSIZE);
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
-        let background_counts = (0..nlayers)
-            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+        let background_counts = (0..density_nbins)
+            .map(|_density| {
+                (0..nlayers)
+                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
 
         let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32, CELL_SHARDSIZE);
@@ -405,8 +437,8 @@ impl ModelParams {
             });
 
         let λ = DashMap::new();
-        let λ_bg = Array2::<f32>::zeros((ngenes, nlayers));
-        let logλ_bg = Array2::<f32>::zeros((ngenes, nlayers));
+        let λ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
+        let logλ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
 
         let t = 0;
 
@@ -504,11 +536,13 @@ impl ModelParams {
         ll += self
             .background_counts
             .par_iter()
-            .zip(self.λ_bg.axis_iter(Axis(1)))
-            .map(|(x_l, λ_l)| {
+            .zip(self.λ_bg.axis_iter(Axis(2)))
+            .map(|(x_d, λ_d)| {
                 let mut accum_l = 0.0;
-                for (x_lg, &λ_lg) in x_l.iter().zip(λ_l) {
-                    accum_l += (x_lg as f32) * λ_lg.ln() - λ_lg * self.layer_volume;
+                for (x_ld, λ_ld) in izip!(x_d, λ_d.axis_iter(Axis(1))) {
+                    for (x_lg, &λ_lg) in x_ld.iter().zip(λ_ld) {
+                        accum_l += (x_lg as f32) * λ_lg.ln() - λ_lg * self.layer_volume;
+                    }
                 }
                 accum_l
             })
@@ -543,14 +577,15 @@ impl ModelParams {
         self.θ.shape()[1]
     }
 
-    pub fn nlayers(&self) -> usize {
-        self.background_counts.len()
-    }
+    // pub fn nlayers(&self) -> usize {
+    //     self.background_counts.len()
+    // }
 
     pub fn check_consistency(&self, voxels: &VoxelCheckerboard) {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
+        let density_nbins = voxels.density_nbins;
 
         let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
         let mut cell_surface_area = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
@@ -561,11 +596,15 @@ impl ModelParams {
 
         let mut counts = SparseMat::zeros(
             ncells,
-            CountMatRowKey::new(ngenes as u32, nlayers as u32),
+            CountMatRowKey::new(ngenes as u32, nlayers as u32, density_nbins as u8),
             CELL_SHARDSIZE,
         );
-        let mut unassigned_counts = (0..nlayers)
-            .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+        let mut unassigned_counts = (0..density_nbins)
+            .map(|_density| {
+                (0..nlayers)
+                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
         assert!(self.counts == counts);
@@ -582,6 +621,7 @@ fn initial_component_assignments(
         CountMatRowKey {
             gene: ngenes,
             layer: _nlayers,
+            density: _density_nbins,
         },
     ) = counts.shape();
     let ngenes = ngenes as usize;
@@ -615,6 +655,7 @@ fn initial_component_assignments(
             CountMatRowKey {
                 gene,
                 layer: _layer,
+                density: _density,
             },
             count,
         ) in counts_c.read().iter_nonzeros()

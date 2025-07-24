@@ -5,6 +5,7 @@ use super::math::halfnormal_logpdf;
 use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 use log::trace;
+use ndarray::s;
 use rand::{Rng, rng};
 use rayon::prelude::*;
 use std::f32;
@@ -105,7 +106,8 @@ impl VoxelSampler {
                 }
                 let proposal = proposal.unwrap();
 
-                let mut logu = self.evaluate_proposal(quad, priors, params, voxelsize_z, proposal);
+                let mut logu =
+                    self.evaluate_proposal(voxels, quad, priors, params, voxelsize_z, proposal);
                 if temperature < 1.0 {
                     logu /= temperature;
                 } else {
@@ -260,6 +262,7 @@ impl VoxelSampler {
 
     fn evaluate_proposal(
         &self,
+        voxels: &VoxelCheckerboard,
         quad: &VoxelQuad,
         priors: &ModelPriors,
         params: &ModelParams,
@@ -268,6 +271,7 @@ impl VoxelSampler {
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
         let quad_counts = quad.counts.read().unwrap();
+        // let quad_densities = quad.densities.read().unwrap();
 
         let proposed_cell = proposal.proposed_cell;
         let (current_cell, prior_cell, log_prior_prob, log_1m_prior_prob) =
@@ -308,8 +312,11 @@ impl VoxelSampler {
             &count,
         ) in quad_counts.voxel_counts(proposal.voxel)
         {
+            let origin = voxel.offset(-offset);
+            let density = voxels.get_voxel_density_hint(quad, origin);
             let k = voxel.k() - offset.dk();
-            let λ_bg_k = params.λ_bg.column(k as usize);
+            assert!(origin.k() == k);
+            let λ_bg_k = params.λ_bg.slice(s![.., k as usize, density]);
 
             if count == 0 {
                 continue;
@@ -492,13 +499,22 @@ impl VoxelSampler {
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let k_origin = key.voxel.k() - key.offset.dk();
-                counts_row_write.sub(CountMatRowKey::new(key.gene, k_origin as u32), count);
+                let origin = key.voxel.offset(-key.offset);
+                let k_origin = origin.k();
+                let density = voxels.get_voxel_density_hint(quad, origin);
+
+                counts_row_write.sub(
+                    CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
+                    count,
+                );
             }
         } else {
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let k_origin = key.voxel.k() - key.offset.dk();
-                let background_counts_k = &params.unassigned_counts[k_origin as usize];
+                let origin = key.voxel.offset(-key.offset);
+                let k_origin = origin.k();
+                let density = voxels.get_voxel_density_hint(quad, origin);
+
+                let background_counts_k = &params.unassigned_counts[density][k_origin as usize];
                 background_counts_k.sub(key.gene as usize, count);
             }
         }
@@ -520,13 +536,22 @@ impl VoxelSampler {
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let k_origin = key.voxel.k() - key.offset.dk();
-                counts_row_write.add(CountMatRowKey::new(key.gene, k_origin as u32), count);
+                let origin = key.voxel.offset(-key.offset);
+                let k_origin = origin.k();
+                let density = voxels.get_voxel_density_hint(quad, origin);
+
+                counts_row_write.add(
+                    CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
+                    count,
+                );
             }
         } else {
             for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let k_origin = key.voxel.k() - key.offset.dk();
-                let background_counts_k = &params.unassigned_counts[k_origin as usize];
+                let origin = key.voxel.offset(-key.offset);
+                let k_origin = origin.k();
+                let density = voxels.get_voxel_density_hint(quad, origin);
+
+                let background_counts_k = &params.unassigned_counts[density][k_origin as usize];
                 background_counts_k.add(key.gene as usize, count);
             }
         }

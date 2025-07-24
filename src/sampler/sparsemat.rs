@@ -311,7 +311,7 @@ where
         let count = self
             .shard
             .get_mut(&key)
-            .expect("Subtracting from a 0 entry in a sparse matrix. ");
+            .expect("Subtracting from a 0 entry in a sparse matrix.");
         assert!(*count >= delta);
         *count -= delta;
         if *count == T::zero() {

@@ -125,12 +125,14 @@ impl ParamSampler {
 
     fn sample_foreground_background(&self, params: &mut ModelParams, purge: bool) {
         // overwrite params.background_counts with params.unassigned_counts
-        for (b_lyr, u_lyr) in params
+        for (b_d, u_d) in params
             .background_counts
             .iter_mut()
             .zip(&params.unassigned_counts)
         {
-            b_lyr.copy_from(u_lyr);
+            for (b_dl, u_dl) in b_d.iter_mut().zip(u_d) {
+                b_dl.copy_from(u_dl);
+            }
         }
 
         if purge {
@@ -152,12 +154,16 @@ impl ParamSampler {
                 let mut λ_cg = 0.0;
                 let mut gene = u32::MAX;
 
-                for (gene_layer, count) in row.read().iter_nonzeros() {
-                    if gene_layer.gene != gene {
-                        gene = gene_layer.gene;
+                for (gene_layer_density, count) in row.read().iter_nonzeros() {
+                    if gene_layer_density.gene != gene {
+                        gene = gene_layer_density.gene;
                         λ_cg = params.λ(cell, gene as usize);
                     }
-                    let λ_bg = params.λ_bg[[gene as usize, gene_layer.layer as usize]];
+                    let λ_bg = params.λ_bg[[
+                        gene as usize,
+                        gene_layer_density.layer as usize,
+                        gene_layer_density.density as usize,
+                    ]];
 
                     let count_fg = Binomial::new(count as u64, (λ_cg / (λ_cg + λ_bg)) as f64)
                         .unwrap()
@@ -165,7 +171,8 @@ impl ParamSampler {
                     let count_bg = count - count_fg;
 
                     foreground_row.add(gene, count_fg);
-                    params.background_counts[gene_layer.layer as usize]
+                    params.background_counts[gene_layer_density.density as usize]
+                        [gene_layer_density.layer as usize]
                         .add(gene as usize, count_bg);
                 }
             });
@@ -683,13 +690,15 @@ impl ParamSampler {
     fn sample_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
         // TODO: worth doing ethier of these loops in parallel?
         let mut rng = rng();
-        Zip::from(params.λ_bg.columns_mut())
+        Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
             .and(&params.background_counts)
-            .for_each(|λ_l, x_l| {
-                for (λ_lg, x_lg) in izip!(λ_l, x_l.iter()) {
-                    let α = priors.α_bg + x_lg as f32;
-                    let β = priors.β_bg + params.layer_volume;
-                    *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+            .for_each(|mut λ_d, x_d| {
+                for (λ_dl, x_dl) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d) {
+                    for (λ_dlg, x_dlg) in izip!(λ_dl, x_dl.iter()) {
+                        let α = priors.α_bg + x_dlg as f32;
+                        let β = priors.β_bg + params.layer_volume;
+                        *λ_dlg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+                    }
                 }
             });
 

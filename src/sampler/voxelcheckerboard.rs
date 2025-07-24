@@ -1183,6 +1183,9 @@ pub struct VoxelCheckerboard {
     // number of voxel z layers
     nzlayers: usize,
 
+    // number of transcript density bins
+    pub density_nbins: usize,
+
     // maximum z layer
     pub kmax: i32,
 
@@ -1212,6 +1215,7 @@ pub struct VoxelCheckerboard {
 }
 
 impl VoxelCheckerboard {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_prior_transcript_assignments(
         dataset: &TranscriptDataset,
         voxelsize: f32,
@@ -1261,6 +1265,7 @@ impl VoxelCheckerboard {
             ncells: 0,
             ngenes: dataset.ngenes(),
             nzlayers,
+            density_nbins,
             voxel_volume,
             xmin,
             ymin,
@@ -1390,6 +1395,7 @@ impl VoxelCheckerboard {
         checkerboard
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_visium_barcode_mappings(
         dataset: &mut TranscriptDataset,
         barcode_mappings_filename: &str,
@@ -1414,6 +1420,7 @@ impl VoxelCheckerboard {
             ncells: 0,
             ngenes: dataset.ngenes(),
             nzlayers,
+            density_nbins,
             voxel_volume,
             xmin,
             ymin,
@@ -1680,6 +1687,7 @@ impl VoxelCheckerboard {
             ncells: 0,
             ngenes: dataset.ngenes(),
             nzlayers,
+            density_nbins,
             voxel_volume,
             xmin,
             ymin,
@@ -1861,6 +1869,22 @@ impl VoxelCheckerboard {
             .get(&self.quad_index(voxel))
             .map(|quad| quad.states.read().unwrap().get_voxel_cell(voxel))
             .unwrap_or(BACKGROUND_CELL)
+    }
+
+    pub fn get_voxel_density(&self, voxel: Voxel) -> usize {
+        self.quads
+            .get(&self.quad_index(voxel))
+            .map(|quad| quad.densities.read().unwrap()[&voxel] as usize)
+            .unwrap()
+    }
+
+    // Same as get_voxel_density, but faster when the voxel is probably in the given quad
+    pub fn get_voxel_density_hint(&self, quad: &VoxelQuad, voxel: Voxel) -> usize {
+        if quad.voxel_in_bounds(voxel) {
+            quad.densities.read().unwrap()[&voxel] as usize
+        } else {
+            self.get_voxel_density(voxel)
+        }
     }
 
     fn coords_to_voxel(&self, x: f32, y: f32, z: f32) -> Voxel {
@@ -2106,8 +2130,8 @@ impl VoxelCheckerboard {
             .collect::<Vec<_>>();
 
         self.quads.iter().for_each(|((_u, _v), quad)| {
-            let density = quad.densities.read().unwrap();
-            for (voxel, &density) in density.iter() {
+            let densities = quad.densities.read().unwrap();
+            for (voxel, &density) in densities.iter() {
                 let k = voxel.k();
                 for quant_est_k in quant_est[k as usize].iter_mut() {
                     quant_est_k.update(density);
@@ -2124,8 +2148,6 @@ impl VoxelCheckerboard {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-
-        dbg!(&quants);
 
         // Replace densities with their quantiles
         self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
@@ -2186,9 +2208,15 @@ impl VoxelCheckerboard {
     pub fn compute_counts(
         &self,
         counts: &mut SparseMat<u32, CountMatRowKey>,
-        unassigned_counts: &mut [ShardedVec<u32>],
+        unassigned_counts: &mut [Vec<ShardedVec<u32>>],
     ) {
         counts.zero();
+        unassigned_counts.iter_mut().for_each(|c_d| {
+            c_d.iter_mut().for_each(|c_ld| {
+                c_ld.zero();
+            })
+        });
+
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
             let quad_states = quad.states.read().unwrap();
             let quad_counts = quad.counts.read().unwrap();
@@ -2196,19 +2224,23 @@ impl VoxelCheckerboard {
                 &VoxelCountKey {
                     voxel,
                     gene,
-                    offset: _offset,
+                    offset,
                 },
                 &count,
             ) in &quad_counts.counts
             {
+                let origin = voxel.offset(-offset);
+                let k_origin = origin.k();
+                let density = self.get_voxel_density_hint(quad, origin);
+
                 let cell = quad_states.get_voxel_cell(voxel);
                 if cell != BACKGROUND_CELL {
-                    counts
-                        .row(cell as usize)
-                        .write()
-                        .add(CountMatRowKey::new(gene, voxel.k() as u32), count);
+                    counts.row(cell as usize).write().add(
+                        CountMatRowKey::new(gene, k_origin as u32, density as u8),
+                        count,
+                    );
                 } else {
-                    unassigned_counts[voxel.k() as usize].add(gene as usize, count);
+                    unassigned_counts[density][k_origin as usize].add(gene as usize, count);
                 }
             }
         });
@@ -2597,15 +2629,19 @@ impl VoxelCheckerboard {
                         .map(|state| state.cell)
                         .unwrap_or(BACKGROUND_CELL);
 
-                    let k_origin = key.voxel.k() - key.offset.dk();
+                    let origin = key.voxel.offset(-key.offset);
+                    let k_origin = origin.k() as usize;
+                    let density = self.get_voxel_density_hint(quad, origin);
+
                     if cell == BACKGROUND_CELL {
-                        params.unassigned_counts[k_origin as usize]
+                        params.unassigned_counts[density][k_origin]
                             .add(key.gene as usize, count_delta);
                     } else {
                         let counts_c = params.counts.row(cell as usize);
-                        counts_c
-                            .write()
-                            .add(CountMatRowKey::new(key.gene, k_origin as u32), count_delta);
+                        counts_c.write().add(
+                            CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
+                            count_delta,
+                        );
                     }
                 }
             }
@@ -2655,6 +2691,7 @@ impl VoxelCheckerboard {
             ncells: self.ncells,
             ngenes: dataset.ngenes(),
             nzlayers: self.nzlayers,
+            density_nbins: self.density_nbins,
             voxel_volume,
             xmin: self.xmin,
             ymin: self.ymin,
@@ -2696,6 +2733,9 @@ impl VoxelCheckerboard {
         );
 
         params.voxel_volume *= 0.25;
+
+        // Need to recompute these count matrices because density values will have changed for some voxels.
+        new_checkerboard.compute_counts(&mut params.counts, &mut params.unassigned_counts);
 
         new_checkerboard
     }
