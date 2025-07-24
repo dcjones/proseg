@@ -860,8 +860,9 @@ fn main() {
         τv: 10.0,
     };
 
-    let full_volume = dataset.estimate_full_volume();
-    let layer_volume = full_volume / args.voxel_layers as f32;
+    // let full_volume = dataset.estimate_full_volume();
+    // let layer_volume = full_volume / args.voxel_layers as f32;
+    // dbg!(full_volume, layer_volume);
 
     let mut params = ModelParams::new(
         &voxels,
@@ -869,7 +870,6 @@ fn main() {
         args.nhidden,
         args.nunfactored,
         args.ncomponents,
-        layer_volume,
         args.density_bins,
     );
 

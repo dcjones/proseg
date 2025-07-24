@@ -692,11 +692,12 @@ impl ParamSampler {
         let mut rng = rng();
         Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
             .and(&params.background_counts)
-            .for_each(|mut λ_d, x_d| {
+            .and(&params.background_region_volume)
+            .for_each(|mut λ_d, x_d, &v_d| {
                 for (λ_dl, x_dl) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d) {
                     for (λ_dlg, x_dlg) in izip!(λ_dl, x_dl.iter()) {
                         let α = priors.α_bg + x_dlg as f32;
-                        let β = priors.β_bg + params.layer_volume;
+                        let β = priors.β_bg + v_d;
                         *λ_dlg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
                     }
                 }

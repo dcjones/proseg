@@ -295,7 +295,7 @@ pub struct ModelParams {
     // memoization of the ModelParams::λ method
     λ: DashMap<(u32, u32), f32>,
 
-    // [ngenes, nlayers, nquantiles] background rate: rate at which halucinate transcripts
+    // [ngenes, nlayers, density_nbins] background rate: rate at which halucinate transcripts
     // across the entire layer
     pub λ_bg: Array3<f32>,
     pub logλ_bg: Array3<f32>,
@@ -306,8 +306,10 @@ pub struct ModelParams {
     // volume of a single voxel (in μm)
     pub voxel_volume: f32,
 
-    // volume of a single voxel layer (in μm)
-    layer_volume: f32,
+    // volume (in μm) of a particular subset of the sample, partitioned by layer
+    // and transcript density
+    // [density_nbins]
+    background_region_volume: Array1<f32>,
 
     // time, which is incremented after every iteration
     t: u32,
@@ -320,7 +322,6 @@ impl ModelParams {
         nhidden: usize,
         nunfactored: usize,
         ncomponents: usize,
-        layer_volume: f32,
         density_nbins: usize,
     ) -> ModelParams {
         let ncells = voxels.ncells;
@@ -440,6 +441,11 @@ impl ModelParams {
         let λ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
         let logλ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
 
+        // Initialize this here to the layer volume, and voxelcheckerboard will
+        // update it when it computes density values.
+        let mut background_region_volume = Array1::zeros(density_nbins);
+        voxels.compute_background_region_volumes(&mut background_region_volume);
+
         let t = 0;
 
         ModelParams {
@@ -486,7 +492,7 @@ impl ModelParams {
             logλ_bg,
             nunfactored,
             voxel_volume,
-            layer_volume,
+            background_region_volume,
             t,
         }
     }
@@ -537,11 +543,12 @@ impl ModelParams {
             .background_counts
             .par_iter()
             .zip(self.λ_bg.axis_iter(Axis(2)))
-            .map(|(x_d, λ_d)| {
+            .zip(self.background_region_volume.as_slice().unwrap())
+            .map(|((x_d, λ_d), &v_d)| {
                 let mut accum_l = 0.0;
                 for (x_ld, λ_ld) in izip!(x_d, λ_d.axis_iter(Axis(1))) {
                     for (x_lg, &λ_lg) in x_ld.iter().zip(λ_ld) {
-                        accum_l += (x_lg as f32) * λ_lg.ln() - λ_lg * self.layer_volume;
+                        accum_l += (x_lg as f32) * λ_lg.ln() - λ_lg * v_d;
                     }
                 }
                 accum_l

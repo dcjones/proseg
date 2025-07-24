@@ -25,7 +25,7 @@ use kiddo::SquaredEuclidean;
 use kiddo::float::kdtree::KdTree;
 use log::info;
 use log::trace;
-use ndarray::{Array2, Zip};
+use ndarray::{Array1, Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
@@ -562,6 +562,50 @@ const OOB_VOXEL: u64 = 0xffffffffffffffff;
 //     (0, 0, 1),
 // ];
 
+// pub const SELF_RADIUS2_2D_OFFSETS: [(i32, i32, i32); 13] = [
+//     (0, 0, 0),
+//     (0, -2, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     (-2, 0, 0),
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (2, 0, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (0, 2, 0),
+// ];
+
+pub const SELF_RADIUS3_2D_OFFSETS: [(i32, i32, i32); 25] = [
+    (0, 0, 0),
+    (0, -3, 0),
+    (-1, -2, 0),
+    (0, -2, 0),
+    (1, -2, 0),
+    (-2, -1, 0),
+    (-1, -1, 0),
+    (0, -1, 0),
+    (1, -1, 0),
+    (2, -1, 0),
+    (-3, 0, 0),
+    (-2, 0, 0),
+    (-1, 0, 0),
+    (1, 0, 0),
+    (2, 0, 0),
+    (3, 0, 0),
+    (-2, 1, 0),
+    (-1, 1, 0),
+    (0, 1, 0),
+    (1, 1, 0),
+    (2, 1, 0),
+    (-1, 2, 0),
+    (0, 2, 0),
+    (1, 2, 0),
+    (0, 3, 0),
+];
+
 pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
     (0, -3, 0),
     (-1, -2, 0),
@@ -743,6 +787,11 @@ impl Voxel {
 
     pub fn k(&self) -> i32 {
         (self.index & 0xFFFF) as i32
+    }
+
+    pub fn setk(&self, k: i32) -> Voxel {
+        let new_index = (self.index & !(0xFFFF)) | (k as u64);
+        Voxel { index: new_index }
     }
 
     pub fn offset(&self, d: VoxelOffset) -> Voxel {
@@ -1872,6 +1921,7 @@ impl VoxelCheckerboard {
     }
 
     pub fn get_voxel_density(&self, voxel: Voxel) -> usize {
+        let voxel = voxel.setk(0);
         self.quads
             .get(&self.quad_index(voxel))
             .map(|quad| quad.densities.read().unwrap()[&voxel] as usize)
@@ -1880,6 +1930,7 @@ impl VoxelCheckerboard {
 
     // Same as get_voxel_density, but faster when the voxel is probably in the given quad
     pub fn get_voxel_density_hint(&self, quad: &VoxelQuad, voxel: Voxel) -> usize {
+        let voxel = voxel.setk(0);
         if quad.voxel_in_bounds(voxel) {
             quad.densities.read().unwrap()[&voxel] as usize
         } else {
@@ -2085,14 +2136,10 @@ impl VoxelCheckerboard {
         bandwidth: f32,
         nbins: usize,
     ) {
-        let mut kdtrees: Vec<KdTree<f32, u32, 2, 32, u32>> =
-            (0..self.nzlayers).map(|_k| KdTree::new()).collect();
+        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::new();
         for run in dataset.transcripts.iter_runs() {
             let xy = [run.value.x, run.value.y];
-            let k = (((run.value.z - self.zmin) / self.voxelsize_z) as usize)
-                .min(self.nzlayers - 1)
-                .max(0);
-            kdtrees[k].add(&xy, run.len);
+            kdtree.add(&xy, run.len);
         }
 
         let bandwidth_sq = bandwidth * bandwidth;
@@ -2101,67 +2148,62 @@ impl VoxelCheckerboard {
         let max_distance = -2.0 * bandwidth_sq * eps.ln();
         self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
             let counts = quad.counts.read().unwrap();
-            let mut density = quad.densities.write().unwrap();
+            let mut densities = quad.densities.write().unwrap();
             counts.counts.iter().for_each(|(count_key, _count)| {
-                let [i, j, k] = count_key.voxel.coords();
+                let [i, j, _k] = count_key.voxel.coords();
                 let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
                 let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
 
-                let mut voxel_density = 0.0;
-                for neighbor in
-                    kdtrees[k as usize].within::<SquaredEuclidean>(&[x, y], max_distance)
-                {
-                    let d = neighbor.distance;
-                    let count = neighbor.item;
-                    voxel_density += (count as f32) * (-d / (2.0 * bandwidth_sq)).exp();
+                let voxel = count_key.voxel.setk(0);
+                for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
+                    let neighbor = voxel.offset_coords(di, dj, dk);
+                    densities.entry(neighbor).or_insert_with(|| {
+                        let mut voxel_density = 0.0;
+                        for neighbor in kdtree.within::<SquaredEuclidean>(&[x, y], max_distance) {
+                            let d = neighbor.distance;
+                            let count = neighbor.item;
+                            voxel_density += (count as f32) * (-d / (2.0 * bandwidth_sq)).exp();
+                        }
+                        voxel_density / kernel_norm
+                    });
                 }
-                voxel_density /= kernel_norm;
-                density.insert(count_key.voxel, voxel_density);
             });
         });
 
-        // Estimate density quantiles on a per-layer basis
-        let mut quant_est = (0..self.nzlayers)
-            .map(|_k| {
-                (1..nbins + 1)
-                    .map(|i| ScalarQuantileEstimator::new((i as f32) / (nbins as f32)))
-                    .collect::<Vec<_>>()
-            })
+        // Estimate density quantiles
+        let mut quant_est = (1..nbins + 1)
+            .map(|i| ScalarQuantileEstimator::new((i as f32) / (nbins as f32)))
             .collect::<Vec<_>>();
 
         self.quads.iter().for_each(|((_u, _v), quad)| {
             let densities = quad.densities.read().unwrap();
-            for (voxel, &density) in densities.iter() {
-                let k = voxel.k();
-                for quant_est_k in quant_est[k as usize].iter_mut() {
-                    quant_est_k.update(density);
+            for (_voxel, &density) in densities.iter() {
+                for quant_est_q in quant_est.iter_mut() {
+                    quant_est_q.update(density);
                 }
             }
         });
 
         let quants = quant_est
             .iter()
-            .map(|quant_est_k| {
-                quant_est_k
-                    .iter()
-                    .map(|quant_est_kq| quant_est_kq.estimate())
-                    .collect::<Vec<_>>()
-            })
+            .map(|quant_est_q| quant_est_q.estimate())
             .collect::<Vec<_>>();
+
+        info!("Density quantiles: {quants:?}");
 
         // Replace densities with their quantiles
         self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
             let mut densities = quad.densities.write().unwrap();
-            for (voxel, density) in densities.iter_mut() {
-                let quants = &quants[voxel.k() as usize];
+            for (_voxel, density) in densities.iter_mut() {
                 let mut quantile_index = 0;
                 for (idx, &quant) in quants.iter().enumerate() {
                     if quant <= *density {
-                        quantile_index = idx;
+                        quantile_index = idx + 1;
                     } else {
                         break;
                     }
                 }
+                quantile_index = quantile_index.min(quants.len() - 1);
                 *density = quantile_index as f32;
             }
         });
@@ -2244,6 +2286,19 @@ impl VoxelCheckerboard {
                 }
             }
         });
+    }
+
+    pub fn compute_background_region_volumes(&self, background_region_volume: &mut Array1<f32>) {
+        background_region_volume.fill(0.0);
+        for ((_u, _v), quad) in self.quads.iter() {
+            let densities = quad.densities.read().unwrap();
+            for (_voxel, &density) in densities.iter() {
+                background_region_volume[density as usize] += self.voxel_volume;
+            }
+        }
+
+        dbg!(self.voxel_volume);
+        dbg!(&background_region_volume);
     }
 
     pub fn cell_centroids(&self, params: &ModelParams) -> Array2<f32> {
@@ -2736,6 +2791,7 @@ impl VoxelCheckerboard {
 
         // Need to recompute these count matrices because density values will have changed for some voxels.
         new_checkerboard.compute_counts(&mut params.counts, &mut params.unassigned_counts);
+        new_checkerboard.compute_background_region_volumes(&mut params.background_region_volume);
 
         new_checkerboard
     }
