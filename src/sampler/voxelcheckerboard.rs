@@ -28,8 +28,8 @@ use log::trace;
 use ndarray::{Array1, Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rand::rng;
 use rand::seq::SliceRandom;
+use rand::{Rng, rng};
 use rayon::iter::{
     IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
 };
@@ -2136,9 +2136,13 @@ impl VoxelCheckerboard {
         bandwidth: f32,
         nbins: usize,
     ) {
-        let mut kdtree: KdTree<f32, u32, 2, 64, u32> = KdTree::new();
+        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::new();
+        let mut rng = rng();
         for run in dataset.transcripts.iter_runs() {
-            let xy = [run.value.x, run.value.y];
+            // Inject a tiny bit of noise here to avoid the kdtree breaking from too many identical x/y values
+            let dx = 1e-5_f32 * rng.random::<f32>();
+            let dy = 1e-5_f32 * rng.random::<f32>();
+            let xy = [run.value.x + dx, run.value.y + dy];
             kdtree.add(&xy, run.len);
         }
 
@@ -2170,7 +2174,6 @@ impl VoxelCheckerboard {
             });
         });
 
-        // Estimate density quantiles
         let mut quant_est = (1..nbins + 1)
             .map(|i| ScalarQuantileEstimator::new((i as f32) / (nbins as f32)))
             .collect::<Vec<_>>();
