@@ -193,28 +193,6 @@ impl TranscriptDataset {
         (min_x, max_x, min_y, max_y, min_z, max_z)
     }
 
-    pub fn estimate_full_volume(&self) -> f32 {
-        let (xmin, xmax, ymin, ymax, zmin, zmax) = self.coordinate_span();
-
-        const BINSIZE: f32 = 10.0;
-
-        let xbins = ((xmax - xmin) / BINSIZE).ceil() as usize;
-        let ybins = ((ymax - ymin) / BINSIZE).ceil() as usize;
-
-        let mut occupied = Array2::from_elem((xbins, ybins), false);
-
-        for run in self.transcripts.iter_runs() {
-            let xbin = ((run.value.x - xmin) / BINSIZE).floor() as usize;
-            let ybin = ((run.value.y - ymin) / BINSIZE).floor() as usize;
-
-            occupied[[xbin, ybin]] = true;
-        }
-
-        let zspan = if zmin == zmax { 1.0 } else { zmax - zmin };
-
-        occupied.iter().filter(|&&x| x).count() as f32 * BINSIZE * BINSIZE * zspan
-    }
-
     pub fn prior_nuclei_populations(&self) -> Array1<u32> {
         let mut counts = Array1::zeros(self.ncells);
         for run in self.priorseg.iter_runs() {

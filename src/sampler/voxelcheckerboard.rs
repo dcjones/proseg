@@ -2136,7 +2136,7 @@ impl VoxelCheckerboard {
         bandwidth: f32,
         nbins: usize,
     ) {
-        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::new();
+        let mut kdtree: KdTree<f32, u32, 2, 64, u32> = KdTree::new();
         for run in dataset.transcripts.iter_runs() {
             let xy = [run.value.x, run.value.y];
             kdtree.add(&xy, run.len);
@@ -2296,9 +2296,6 @@ impl VoxelCheckerboard {
                 background_region_volume[density as usize] += self.voxel_volume;
             }
         }
-
-        dbg!(self.voxel_volume);
-        dbg!(&background_region_volume);
     }
 
     pub fn cell_centroids(&self, params: &ModelParams) -> Array2<f32> {

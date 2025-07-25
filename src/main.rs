@@ -201,10 +201,6 @@ struct Args {
     #[arg(long, default_value_t = 50)]
     hillclimb: usize,
 
-    /// Whether to double the z-layers when doubling resolution
-    #[arg(long, default_value_t = false)]
-    double_z_layers: bool,
-
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
     #[arg(long, default_value_t = 100)]
@@ -221,9 +217,6 @@ struct Args {
     /// Number of sub-iterations sampling cell morphology per overall iteration
     #[arg(short, long, default_value_t = 4000)]
     morphology_steps_per_iter: usize,
-
-    #[arg(long, default_value_t = 1.3_f32)]
-    perimeter_bound: f32,
 
     #[arg(long, default_value_t = 2e-1_f32)]
     nuclear_reassignment_prob: f32,
@@ -321,15 +314,6 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_rates_fmt: OutputFormat,
 
-    // /// Output per-component parameter values
-    // #[arg(long, default_value = None)]
-    // output_component_params: Option<String>,
-    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
-    output_component_params_fmt: OutputFormat,
-
-    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
-    output_expected_counts_fmt: OutputFormat,
-
     /// Output cell metadata
     #[arg(long, default_value = None)]
     output_cell_metadata: Option<String>,
@@ -364,13 +348,6 @@ struct Args {
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
     output_metagene_loadings_fmt: OutputFormat,
-
-    /// Output a table of each voxel in each cell
-    #[arg(long, default_value=None)]
-    output_cell_voxels: Option<String>,
-
-    #[arg(long, value_enum, default_value_t = OutputFormat::Infer)]
-    output_cell_voxels_fmt: OutputFormat,
 
     /// Output consensus non-overlapping 2D polygons, formed by taking the
     /// dominant cell at each x/y location.
@@ -429,7 +406,7 @@ struct Args {
     #[arg(long, default_value_t = 0.1)]
     hyperparam_tau_phi: f32,
 
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.5)]
     density_bandwidth: f32,
 
     #[arg(long, default_value_t = 5)]
