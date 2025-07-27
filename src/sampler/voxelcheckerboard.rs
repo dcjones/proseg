@@ -2,7 +2,7 @@
 // sparse transcript vector.
 
 use super::connectivity::MooreConnectivityChecker;
-use super::math::logistic;
+use super::math::{logistic, randn};
 use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
@@ -28,8 +28,8 @@ use log::trace;
 use ndarray::{Array1, Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rand::rng;
 use rand::seq::SliceRandom;
-use rand::{Rng, rng};
 use rayon::iter::{
     IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
 };
@@ -606,34 +606,34 @@ pub const SELF_RADIUS3_2D_OFFSETS: [(i32, i32, i32); 25] = [
     (0, 3, 0),
 ];
 
-pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
-    (0, -3, 0),
-    (-1, -2, 0),
-    (0, -2, 0),
-    (1, -2, 0),
-    (-2, -1, 0),
-    (-1, -1, 0),
-    (0, -1, 0),
-    (1, -1, 0),
-    (2, -1, 0),
-    (-3, 0, 0),
-    (-2, 0, 0),
-    (-1, 0, 0),
-    (1, 0, 0),
-    (2, 0, 0),
-    (3, 0, 0),
-    (-2, 1, 0),
-    (-1, 1, 0),
-    (0, 1, 0),
-    (1, 1, 0),
-    (2, 1, 0),
-    (-1, 2, 0),
-    (0, 2, 0),
-    (1, 2, 0),
-    (0, 3, 0),
-    (0, 0, -1),
-    (0, 0, 1),
-];
+// pub const RADIUS3_OFFSETS: [(i32, i32, i32); 26] = [
+//     (0, -3, 0),
+//     (-1, -2, 0),
+//     (0, -2, 0),
+//     (1, -2, 0),
+//     (-2, -1, 0),
+//     (-1, -1, 0),
+//     (0, -1, 0),
+//     (1, -1, 0),
+//     (2, -1, 0),
+//     (-3, 0, 0),
+//     (-2, 0, 0),
+//     (-1, 0, 0),
+//     (1, 0, 0),
+//     (2, 0, 0),
+//     (3, 0, 0),
+//     (-2, 1, 0),
+//     (-1, 1, 0),
+//     (0, 1, 0),
+//     (1, 1, 0),
+//     (2, 1, 0),
+//     (-1, 2, 0),
+//     (0, 2, 0),
+//     (1, 2, 0),
+//     (0, 3, 0),
+//     (0, 0, -1),
+//     (0, 0, 1),
+// ];
 
 pub const MOORE_OFFSETS: [(i32, i32, i32); 26] = [
     // top layer
@@ -2140,8 +2140,8 @@ impl VoxelCheckerboard {
         let mut rng = rng();
         for run in dataset.transcripts.iter_runs() {
             // Inject a tiny bit of noise here to avoid the kdtree breaking from too many identical x/y values
-            let dx = 1e-5_f32 * rng.random::<f32>();
-            let dy = 1e-5_f32 * rng.random::<f32>();
+            let dx = 1e-4_f32 * randn(&mut rng);
+            let dy = 1e-4_f32 * randn(&mut rng);
             let xy = [run.value.x + dx, run.value.y + dy];
             kdtree.add(&xy, run.len);
         }

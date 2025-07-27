@@ -1,7 +1,7 @@
 use libm::{erff, lgammaf};
 use rand::Rng;
 use rand::rngs::ThreadRng;
-use rand_distr::StandardNormal;
+use rand_distr::{Binomial, Distribution, StandardNormal};
 use std::f32;
 
 // pub fn logit(p: f32) -> f32 {
@@ -113,4 +113,54 @@ pub fn uniformly_imprecise_normal_prob(a: f32, b: f32, a0: f32, b0: f32, σ: f32
     0.5 * (b0 - a0).recip()
         * (b - a).recip()
         * (erfint(b - b0, σ) + erfint(a - a0, σ) - erfint(b - a0, σ) - erfint(a - b0, σ))
+}
+
+// Multinomial iterator
+pub struct MultinomialSampler<'a> {
+    rng: &'a mut ThreadRng,
+    probs: &'a [f64],
+    ρ: f64, // remaining probability
+    s: u32, // remaining count
+    i: usize,
+}
+
+impl<'a> MultinomialSampler<'a> {
+    pub fn new(rng: &'a mut ThreadRng, probs: &'a [f64], n: u32) -> Self {
+        MultinomialSampler {
+            rng,
+            probs,
+            ρ: probs.iter().sum(),
+            s: n,
+            i: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for MultinomialSampler<'a> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        if self.i == self.probs.len() {
+            return None;
+        }
+
+        if self.s == 0 {
+            self.i += 1;
+            return Some(0);
+        }
+
+        if self.i == self.probs.len() - 1 {
+            self.i += 1;
+            return Some(self.s);
+        }
+
+        let pi = self.probs[self.i];
+        let r = (pi / self.ρ).min(1.0);
+        let x = Binomial::new(self.s as u64, r).unwrap().sample(self.rng) as u32;
+        self.ρ -= pi;
+        self.s -= x;
+        self.i += 1;
+
+        Some(x)
+    }
 }

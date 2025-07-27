@@ -264,6 +264,13 @@ struct Args {
     #[arg(long, default_value_t = 0.2)]
     diffusion_sigma_z: f32,
 
+    /// Stddev parameter for sampler proposals during transcript repo
+    #[arg(long, default_value_t = 4.0)]
+    diffusion_proposal_sigma: f32,
+
+    #[arg(long, default_value_t = 0.2)]
+    diffusion_proposal_sigma_z: f32,
+
     /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
     variable_burnin_dispersion: bool,
@@ -834,6 +841,8 @@ fn main() {
         σ_xy_diffusion_near: args.diffusion_sigma_near,
         σ_xy_diffusion_far: args.diffusion_sigma_far,
         σ_z_diffusion: args.diffusion_sigma_z,
+        σ_xy_diffusion_proposal: args.diffusion_proposal_sigma,
+        σ_z_diffusion_proposal: args.diffusion_proposal_sigma_z,
         τv: 10.0,
     };
 
