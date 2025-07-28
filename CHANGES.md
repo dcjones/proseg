@@ -1,3 +1,8 @@
+
+# 2.0.6
+  - Fix docker image for some nextflow configurations.
+  - Fix negative controls included in newer CosMx data.
+
 # 2.0.5
   - Fix potentially incorrect `original_cell_id` in cell metadata.
 
