@@ -634,17 +634,17 @@ fn main() {
     }
 
     let burnin_voxel_size = args.burnin_voxel_size.unwrap_or(DEFAULT_BURNIN_VOXEL_SIZE);
-    let voxel_size = args.burnin_voxel_size.unwrap_or(DEFAULT_VOXEL_SIZE);
+    let voxel_size = args.voxel_size.unwrap_or(DEFAULT_VOXEL_SIZE);
     if voxel_size > burnin_voxel_size {
         panic!("Voxel size must be less than or equal to burnin voxel size");
     }
 
     // We arrive at voxel size by doubling resolution k times, so the ratio has to be a power of two.
-    let voxel_double_count = (voxel_size / burnin_voxel_size).log2();
-    if voxel_double_count.fract().abs() > 1e-5 {
-        panic!("Ratio between voxel size and burnin voxel size must be a power of two");
+    let voxel_burnin_scale = burnin_voxel_size / voxel_size;
+    if voxel_burnin_scale < 1.0 || voxel_burnin_scale.fract().abs() > 1e-5 {
+        panic!("Ratio between --burnin-voxel-size and --voxel-size must an integer");
     }
-    let voxel_double_count = -voxel_double_count as u32;
+    let burnin_voxel_scale = voxel_burnin_scale as usize;
 
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
@@ -898,17 +898,16 @@ fn main() {
         );
     }
 
-    let mut voxels = if voxel_double_count == 0 {
-        voxels
+    let mut voxels = if burnin_voxel_scale != 1 {
+        voxels.increase_resolution(
+            burnin_voxel_scale,
+            &mut params,
+            &dataset,
+            args.density_bandwidth,
+            args.density_bins,
+        )
     } else {
-        (0..voxel_double_count).fold(voxels, |voxels, _| {
-            voxels.double_resolution(
-                &mut params,
-                &dataset,
-                args.density_bandwidth,
-                args.density_bins,
-            )
-        })
+        voxels
     };
 
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize);

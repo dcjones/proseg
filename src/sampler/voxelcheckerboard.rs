@@ -25,6 +25,7 @@ use log::info;
 use log::trace;
 use ndarray::{Array1, Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
+
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
@@ -750,16 +751,6 @@ impl Voxel {
     // pub fn zero() -> Voxel {
     //     Voxel::new(0, 0, 0)
     // }
-
-    fn subvoxels_xy(&self) -> [Voxel; 4] {
-        let [i, j, k] = self.coords();
-        [
-            Voxel::new(2 * i, 2 * j, k),
-            Voxel::new(2 * i + 1, 2 * j, k),
-            Voxel::new(2 * i, 2 * j + 1, k),
-            Voxel::new(2 * i + 1, 2 * j + 1, k),
-        ]
-    }
 
     pub fn oob() -> Voxel {
         Voxel { index: OOB_VOXEL }
@@ -2700,31 +2691,37 @@ impl VoxelCheckerboard {
         info!("merge counts merge: {:?}", t0.elapsed());
     }
 
-    pub fn double_resolution(
+    // Scale the number of voxels on the x/y axis by `scale`
+    pub fn increase_resolution(
         mut self,
+        scale: usize,
         params: &mut ModelParams,
         dataset: &TranscriptDataset,
         density_bandwidth: f32,
         density_nbins: usize,
     ) -> VoxelCheckerboard {
-        let quadsize = 2 * self.quadsize;
-        let voxelsize = 0.5 * self.voxelsize;
+        let quadsize = scale * self.quadsize;
+        let voxelsize = (scale as f32).recip() * self.voxelsize;
         let voxelsize_z = self.voxelsize_z;
-        let voxel_volume = 0.25 * self.voxel_volume;
+        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let quads = Mutex::new(HashMap::new());
-
         self.quads.par_drain().for_each(|((u, v), old_quad)| {
             let new_quad = VoxelQuad::new(self.kmax, quadsize, u, v);
-
             {
                 let old_quad_states = old_quad.states.read().unwrap();
                 let mut new_quad_states = new_quad.states.write().unwrap();
                 old_quad_states.states.iter().for_each(|(voxel, state)| {
-                    for subvoxel in voxel.subvoxels_xy() {
-                        // excluding mirrored edge states
-                        if new_quad.voxel_in_bounds(subvoxel) {
-                            new_quad_states.states.insert(subvoxel, *state);
+                    let [i, j, k] = voxel.coords();
+                    for s in 0..scale as i32 {
+                        for t in 0..scale as i32 {
+                            let subvoxel =
+                                Voxel::new(i * (scale as i32) + s, j * (scale as i32) + t, k);
+
+                            // excluding mirrored edge states
+                            if new_quad.voxel_in_bounds(subvoxel) {
+                                new_quad_states.states.insert(subvoxel, *state);
+                            }
                         }
                     }
                 });
@@ -2783,7 +2780,7 @@ impl VoxelCheckerboard {
             density_nbins,
         );
 
-        params.voxel_volume *= 0.25;
+        params.voxel_volume = voxel_volume;
 
         // Need to recompute these count matrices because density values will have changed for some voxels.
         new_checkerboard.compute_counts(&mut params.counts, &mut params.unassigned_counts);
