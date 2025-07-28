@@ -3,13 +3,13 @@ use csv;
 use flate2::read::{GzDecoder, MultiGzDecoder};
 use itertools::izip;
 use json;
-use kiddo::SquaredEuclidean;
-use kiddo::float::kdtree::KdTree;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 use ndarray::{Array1, Array2, Zip};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use rand::Rng;
 use regex::Regex;
+use rstar::primitives::GeomWithData;
+use rstar::{PointDistance, RTree};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
@@ -101,21 +101,22 @@ impl TranscriptDataset {
         let max_distance_squared = max_distance * max_distance;
 
         let centroids = self.estimate_cell_centroids();
+        let mut rtree = RTree::new();
 
-        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::with_capacity(centroids.len());
         for (i, xy) in centroids.rows().into_iter().enumerate() {
             if !xy[0].is_finite() || !xy[1].is_finite() {
                 continue;
             }
-            kdtree.add(&[xy[0], xy[1]], i as u32);
+            rtree.insert(GeomWithData::new([xy[0], xy[1]], i as u32));
         }
 
         let mut mask = vec![false; self.transcripts.len()];
         for (i, t) in self.transcripts.iter().enumerate() {
-            let d = kdtree.nearest_one::<SquaredEuclidean>(&[t.x, t.y]).distance;
-
-            if d <= max_distance_squared {
-                mask[i] = true;
+            if let Some(neighbor) = rtree.nearest_neighbor(&[t.x, t.y]) {
+                let d2 = neighbor.distance_2(&[t.x, t.y]);
+                if d2 <= max_distance_squared {
+                    mask[i] = true;
+                }
             }
         }
 

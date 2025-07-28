@@ -2,7 +2,7 @@
 // sparse transcript vector.
 
 use super::connectivity::MooreConnectivityChecker;
-use super::math::{logistic, randn};
+use super::math::logistic;
 use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
@@ -21,8 +21,6 @@ use flate2::write::GzEncoder;
 use geo::geometry::{MultiPolygon, Polygon};
 use half::f16;
 use itertools::izip;
-use kiddo::SquaredEuclidean;
-use kiddo::float::kdtree::KdTree;
 use log::info;
 use log::trace;
 use ndarray::{Array1, Array2, Zip};
@@ -33,6 +31,8 @@ use rand::seq::SliceRandom;
 use rayon::iter::{
     IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
 };
+use rstar::primitives::GeomWithData;
+use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -2136,14 +2136,9 @@ impl VoxelCheckerboard {
         bandwidth: f32,
         nbins: usize,
     ) {
-        let mut kdtree: KdTree<f32, u32, 2, 32, u32> = KdTree::new();
-        let mut rng = rng();
+        let mut rtree = RTree::new();
         for run in dataset.transcripts.iter_runs() {
-            // Inject a tiny bit of noise here to avoid the kdtree breaking from too many identical x/y values
-            let dx = 1e-4_f32 * randn(&mut rng);
-            let dy = 1e-4_f32 * randn(&mut rng);
-            let xy = [run.value.x + dx, run.value.y + dy];
-            kdtree.add(&xy, run.len);
+            rtree.insert(GeomWithData::new([run.value.x, run.value.y], run.len));
         }
 
         let bandwidth_sq = bandwidth * bandwidth;
@@ -2163,10 +2158,11 @@ impl VoxelCheckerboard {
                     let neighbor = voxel.offset_coords(di, dj, dk);
                     densities.entry(neighbor).or_insert_with(|| {
                         let mut voxel_density = 0.0;
-                        for neighbor in kdtree.within::<SquaredEuclidean>(&[x, y], max_distance) {
-                            let d = neighbor.distance;
-                            let count = neighbor.item;
-                            voxel_density += (count as f32) * (-d / (2.0 * bandwidth_sq)).exp();
+
+                        for neighbor in rtree.locate_within_distance([x, y], max_distance) {
+                            let d2 = neighbor.distance_2(&[x, y]);
+                            let count = neighbor.data;
+                            voxel_density += (count as f32) * (-d2 / (2.0 * bandwidth_sq)).exp();
                         }
                         voxel_density / kernel_norm
                     });
