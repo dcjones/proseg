@@ -804,6 +804,11 @@ impl Voxel {
         Voxel::new(new_i, new_j, new_k)
     }
 
+    pub fn z_neighborhood(&self) -> [Voxel; 2] {
+        let [i, j, k] = self.coords();
+        [Voxel::new(i, j, k - 1), Voxel::new(i, j, k + 1)]
+    }
+
     pub fn von_neumann_neighborhood(&self) -> [Voxel; 6] {
         let [i, j, k] = self.coords();
         [
@@ -1863,6 +1868,7 @@ impl VoxelCheckerboard {
     ) {
         self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
+        self.expand_cells_vertically();
         self.pop_bubbles();
         self.mirror_quad_edges();
         self.build_edge_sets();
@@ -2562,6 +2568,37 @@ impl VoxelCheckerboard {
         }
 
         metadata
+    }
+
+    fn expand_cells_vertically(&mut self) {
+        for _ in 0..self.nzlayers - 1 {
+            self.quads.par_iter().for_each(|(_quad_pos, quad)| {
+                let mut quad_states = quad.states.write().unwrap();
+
+                let mut state_changes = Vec::new();
+                quad_states.states.iter().for_each(|(voxel, state)| {
+                    if state.cell == BACKGROUND_CELL {
+                        return;
+                    }
+
+                    for neighbor in voxel.z_neighborhood() {
+                        if !neighbor.is_oob()
+                            && quad.voxel_in_bounds(neighbor)
+                            && quad_states.get_voxel_cell(neighbor) == BACKGROUND_CELL
+                        {
+                            state_changes.push((neighbor, state.cell));
+                        }
+                    }
+                });
+
+                let mut rng = rng();
+                state_changes.shuffle(&mut rng);
+
+                for (neighbor, cell) in state_changes {
+                    quad_states.set_voxel_cell(neighbor, cell);
+                }
+            });
+        }
     }
 
     // Copy occupied voxel states to unoccupied neighbors
