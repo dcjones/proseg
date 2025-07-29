@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
-use super::math::{MultinomialSampler, halfnormal_x2_pdf, uniformly_imprecise_normal_prob};
+use super::math::{MultinomialSampler, uniformly_imprecise_normal_prob};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
@@ -16,6 +16,7 @@ use rand::rngs::ThreadRng;
 pub struct TranscriptRepo {
     prior_near: VoxelDiffusionPrior,
     prior_far: VoxelDiffusionPrior,
+    prior_z: VoxelDiffusionPrior,
     proposal_xy_probs: Vec<f64>,
     proposal_z_probs: Vec<f64>,
 }
@@ -53,6 +54,7 @@ impl TranscriptRepo {
         TranscriptRepo {
             prior_near: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS),
             prior_far: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS),
+            prior_z: VoxelDiffusionPrior::new(voxelsize, priors.σ_z_diffusion, EPS),
             proposal_xy_probs,
             proposal_z_probs,
         }
@@ -91,6 +93,7 @@ impl TranscriptRepo {
             VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, self.prior_near.eps);
         self.prior_far =
             VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, self.prior_far.eps);
+        self.prior_z = VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion, eps);
     }
 
     pub fn sample(
@@ -114,7 +117,6 @@ impl TranscriptRepo {
                     &voxels.quads_coords,
                     voxels.quadsize as u32,
                     voxels.voxelsize,
-                    voxels.voxelsize_z,
                     temperature,
                 );
             });
@@ -136,7 +138,6 @@ impl TranscriptRepo {
         quads_coords: &HashSet<(u32, u32)>,
         quadsize: u32,
         _voxelsize: f32,
-        voxelsize_z: f32,
         _temperature: f32,
     ) {
         let quad_states = quad.states.read().unwrap();
@@ -188,8 +189,7 @@ impl TranscriptRepo {
                 λ_current += params.λ(cell as usize, gene);
             }
 
-            let dist_prob_current =
-                self.diffusion_distance_prior(priors, voxelsize_z, di0, dj0, dk0);
+            let dist_prob_current = self.diffusion_distance_prior(priors, di0, dj0, dk0);
             let current_prob = dist_prob_current * λ_current;
 
             let mut total_moved = 0;
@@ -258,8 +258,7 @@ impl TranscriptRepo {
                         let dj = dj + dj0;
                         let dk = dk + dk0;
 
-                        let dist_prob_proposed =
-                            self.diffusion_distance_prior(priors, voxelsize_z, di, dj, dk);
+                        let dist_prob_proposed = self.diffusion_distance_prior(priors, di, dj, dk);
 
                         let proposal_prob = dist_prob_proposed * λ_proposed;
 
@@ -325,19 +324,8 @@ impl TranscriptRepo {
         quad_counts.counts.retain(|_key, count| *count > 0);
     }
 
-    fn diffusion_distance_prior(
-        &self,
-        priors: &ModelPriors,
-        voxelsize_z: f32,
-        di: i32,
-        dj: i32,
-        dk: i32,
-    ) -> f32 {
-        // TODO: We need to know how many layers to normalize to [0, 1]
-
-        let dz = dk as f32 * voxelsize_z;
-        let z_prob = halfnormal_x2_pdf(priors.σ_z_diffusion, dz * dz);
-
+    fn diffusion_distance_prior(&self, priors: &ModelPriors, di: i32, dj: i32, dk: i32) -> f32 {
+        let z_prob = self.prior_z.prob(dk);
         let xy_prob = priors.p_diffusion * self.prior_far.prob(di) * self.prior_far.prob(dj)
             + (1.0 - priors.p_diffusion) * self.prior_near.prob(di) * self.prior_near.prob(dj);
 

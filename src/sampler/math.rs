@@ -31,7 +31,7 @@ pub fn odds_to_prob(q: f32) -> f32 {
 
 // const SQRT_TWO_PI: f32 = 2.506_628_3_f32;
 const LN_SQRT_TWO_PI: f32 = 0.918_938_5_f32;
-const SQRT_2_DIV_SQRT_PI: f32 = 0.797_884_6_f32;
+// const SQRT_2_DIV_SQRT_PI: f32 = 0.797_884_6_f32;
 
 // pub fn normal_x2_pdf(σ: f32, x2: f32) -> f32 {
 //     (-x2 / (2.0 * σ.powi(2))).exp() / (σ * SQRT_TWO_PI)
@@ -94,9 +94,9 @@ pub fn halfnormal_logpdf(σ: f32, x: f32) -> f32 {
     -LN_SQRT_TWO_PI - σ.ln() - x.powi(2) / (2.0 * σ.powi(2))
 }
 
-pub fn halfnormal_x2_pdf(σ: f32, x2: f32) -> f32 {
-    (SQRT_2_DIV_SQRT_PI / σ) * (-x2 / (2.0 * σ.powi(2))).exp()
-}
+// pub fn halfnormal_x2_pdf(σ: f32, x2: f32) -> f32 {
+//     (SQRT_2_DIV_SQRT_PI / σ) * (-x2 / (2.0 * σ.powi(2))).exp()
+// }
 
 fn erfint(span: f32, σ: f32) -> f32 {
     -span * erff(span / (f32::consts::SQRT_2 * σ))
