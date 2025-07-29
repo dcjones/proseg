@@ -863,7 +863,7 @@ fn main() {
     let mut voxel_sampler =
         VoxelSampler::new(0, args.voxel_layers as i32 - 1, args.ab_nihlo_bubble_prob);
 
-    let mut transcript_repo = TranscriptRepo::new(&priors, voxels.voxelsize);
+    let mut transcript_repo = TranscriptRepo::new(&priors, voxels.voxelsize, voxels.voxelsize_z);
 
     const INIT_ITERATIONS: usize = 20;
 
@@ -910,7 +910,7 @@ fn main() {
         voxels
     };
 
-    transcript_repo.set_voxel_size(&priors, voxels.voxelsize);
+    transcript_repo.set_voxel_size(&priors, voxels.voxelsize, voxels.voxelsize_z);
 
     let cooling_factor = (0.01_f32.ln() / args.burnin_samples as f32).exp();
     let mut temperature = 1.0;

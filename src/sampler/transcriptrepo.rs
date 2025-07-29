@@ -21,7 +21,7 @@ pub struct TranscriptRepo {
 }
 
 impl TranscriptRepo {
-    pub fn new(priors: &ModelPriors, voxelsize: f32) -> Self {
+    pub fn new(priors: &ModelPriors, voxelsize: f32, voxelsize_z: f32) -> Self {
         const EPS: f32 = 1e-5;
 
         let mut proposal_xy_probs =
@@ -38,7 +38,7 @@ impl TranscriptRepo {
         }
 
         let mut proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_z_diffusion_proposal, EPS)
+            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, EPS)
                 .pmf
                 .iter()
                 .map(|v| *v as f64)
@@ -58,7 +58,7 @@ impl TranscriptRepo {
         }
     }
 
-    pub fn set_voxel_size(&mut self, priors: &ModelPriors, voxelsize: f32) {
+    pub fn set_voxel_size(&mut self, priors: &ModelPriors, voxelsize: f32, voxelsize_z: f32) {
         let eps = self.prior_near.eps;
 
         self.proposal_xy_probs =
@@ -75,7 +75,7 @@ impl TranscriptRepo {
         }
 
         self.proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_z_diffusion_proposal, eps)
+            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, eps)
                 .pmf
                 .iter()
                 .map(|v| *v as f64)
