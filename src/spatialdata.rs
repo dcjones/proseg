@@ -965,6 +965,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
     let mut indptr = Array1::<i32>::zeros(counts.m + 1);
     let mut offset = 0;
     for (i, row) in counts.rows().enumerate() {
+        indptr[i] = offset as i32;
         let row_lock = row.read();
         for (j, count) in row_lock.iter_nonzeros() {
             if count > 0 {
@@ -973,7 +974,6 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
                 offset += 1;
             }
         }
-        indptr[i] = offset as i32;
     }
     indptr[counts.m] = nnz as i32;
 
