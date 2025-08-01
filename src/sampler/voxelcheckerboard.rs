@@ -2286,12 +2286,22 @@ impl VoxelCheckerboard {
 
     pub fn compute_background_region_volumes(&self, background_region_volume: &mut Array1<f32>) {
         background_region_volume.fill(0.0);
+
+        let mut background_region_voxel_count =
+            Array1::<u32>::zeros(background_region_volume.len());
+
         for ((_u, _v), quad) in self.quads.iter() {
             let densities = quad.densities.read().unwrap();
             for (_voxel, &density) in densities.iter() {
-                background_region_volume[density as usize] += self.voxel_volume;
+                background_region_voxel_count[density as usize] += 1;
             }
         }
+
+        Zip::from(background_region_volume)
+            .and(&background_region_voxel_count)
+            .for_each(|volume, &voxel_count| {
+                *volume = self.voxel_volume * (voxel_count as f32);
+            });
     }
 
     pub fn cell_centroids(&self, params: &ModelParams) -> Array2<f32> {
