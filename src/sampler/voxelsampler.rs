@@ -20,7 +20,7 @@ fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
 }
 
 fn count_matching_neighbors(
-    neighbor_cells: &[Option<CellIndex>; 10],
+    neighbor_cells: &[Option<CellIndex>; 8],
     current_cell: CellIndex,
     proposed_cell: CellIndex,
 ) -> (u32, u32, u32) {
@@ -236,7 +236,7 @@ impl VoxelSampler {
 
         let (current_cell_neighbors, proposed_cell_neighbors, other_cell_neighbors) =
             count_matching_neighbors(
-                &target.moorish_neighborhood().map(|voxel| {
+                &target.moore2d_neighborhood().map(|voxel| {
                     let k = voxel.k();
                     if k < self.kmin || k > self.kmax {
                         None
@@ -359,10 +359,7 @@ impl VoxelSampler {
             // averaging 2d perimeters across voxel layers.
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    voxelsize_z * current_surface_area as f32,
-                    current_volume,
-                ),
+                inv_isoperimetric_quotient(current_surface_area as f32, current_volume),
             );
 
             let other_cell_neighbors =
@@ -372,10 +369,7 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    voxelsize_z * proposed_surface_area as f32,
-                    proposed_volume,
-                ),
+                inv_isoperimetric_quotient(proposed_surface_area as f32, proposed_volume),
             );
         }
 

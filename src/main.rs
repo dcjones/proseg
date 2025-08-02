@@ -211,7 +211,7 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (smaller numbers induce more compact cells)
-    #[arg(long, default_value_t = 0.0025)]
+    #[arg(long, default_value_t = 0.03)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
