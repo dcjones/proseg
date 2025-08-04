@@ -119,7 +119,9 @@ sdata = spatialdata.read_zarr("proseg-output.zarr")
 ```
 
 This object contains:
-  * Transcript positions and metadatai in `sdata.points["transcripts"]`
+  * Transcript positions and metadatai in `sdata.points["transcripts"]`. (This
+    can use significant space, so can be excluded if not needed with
+    `--exclude-spatialdata-transcripts`).
   * Cell polygons in `sdata.shapes["cell_boundaries"]`
   * Cell level information in AnnData format in `sdata.tables["table"]`, which contains:
     * Cell metadata in `obs`
