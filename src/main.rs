@@ -299,6 +299,10 @@ struct Args {
     #[arg(long, default_value = "proseg-output.zarr")]
     output_spatialdata: Option<String>,
 
+    /// Exclude transcript data from spatialdata output
+    #[arg(long, default_value_t = false)]
+    exclude_spatialdata_transcripts: bool,
+
     /// Overwrite existing spatialdata file (other output is always overwritten)
     #[arg(long, default_value_t = false)]
     overwrite: bool,
@@ -1076,8 +1080,6 @@ fn main() {
 
     if let Some(output_spatialdata) = args.output_spatialdata {
         let t0 = Instant::now();
-
-        // TODO: I want to make outputing transcripts optional and default to false on visium hd
         write_spatialdata_zarr(
             &args.output_path,
             &output_spatialdata,
@@ -1092,8 +1094,8 @@ fn main() {
             &transcript_metadata,
             &cell_flattened_polygons,
             &run_metadata,
+            args.exclude_spatialdata_transcripts,
         );
-
         info!("write SpatialData: {:?}", t0.elapsed());
     }
 }

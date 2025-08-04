@@ -45,6 +45,7 @@ pub fn write_spatialdata_zarr(
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &[MultiPolygon<f32>],
     run_metadata: &HashMap<String, String>,
+    exclude_transcripts: bool,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -65,6 +66,7 @@ pub fn write_spatialdata_zarr(
         transcript_metadata,
         polygons,
         run_metadata,
+        exclude_transcripts,
     ) {
         panic!(
             "Failed to write spatial data zarr file to {}: {}",
@@ -88,6 +90,7 @@ fn write_spatialdata_parts(
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &[MultiPolygon<f32>],
     run_metadata: &HashMap<String, String>,
+    exclude_transcripts: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
@@ -104,15 +107,20 @@ fn write_spatialdata_parts(
     )?;
 
     write_shapes_zarr(path, store.clone(), polygons)?;
-    write_transcripts_zarr(
-        path,
-        store.clone(),
-        transcripts,
-        transcript_ids,
-        transcript_metadata,
-        voxels,
-        gene_names,
-    )?;
+
+    if exclude_transcripts {
+        new_zarr_group(store.clone(), "/points", None)?.store_metadata()?;
+    } else {
+        write_transcripts_zarr(
+            path,
+            store.clone(),
+            transcripts,
+            transcript_ids,
+            transcript_metadata,
+            voxels,
+            gene_names,
+        )?;
+    }
 
     Ok(())
 }
