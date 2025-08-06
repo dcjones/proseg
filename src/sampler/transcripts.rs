@@ -331,7 +331,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
             .map(|(j, i)| (i, j))
             .collect()
     } else {
-        (1..gene_names.len()).enumerate().collect()
+        (0..gene_names.len()).enumerate().collect()
     };
 
     let barcodes = read_visium_barcodes_tsv(
