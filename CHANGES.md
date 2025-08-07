@@ -1,4 +1,8 @@
 
+
+# 3.0.1
+ - Fix an error on xenium data where cells crossing fov boundaries were split.
+
 # 3.0.0
   This is a major revision which has some potentially breaking changes. See
   the "Migrating to Proseg 3" section in the README.md file.

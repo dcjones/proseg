@@ -76,6 +76,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     visiumhd: bool,
 
+    /// Specify if ids may be re-used in different fovs in the input data
+    #[arg(long, default_value_t = false)]
+    non_unique_cell_ids: bool,
+
     /// Name of column containing the feature/gene name
     #[arg(long, default_value = None)]
     gene_column: Option<String>,
@@ -477,6 +481,7 @@ fn set_cosmx_presets(args: &mut Args) {
         args.excluded_genes
             .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
     }
+    args.non_unique_cell_ids = true;
 
     // CosMx reports values in pixels and pixel size appears to always be 0.12028 microns.
     args.coordinate_scale.get_or_insert(0.12028);
@@ -498,6 +503,7 @@ fn set_cosmx_micron_presets(args: &mut Args) {
         args.excluded_genes
             .get_or_insert(String::from("^(FalseCode|SystemControl|NegPrb|Negative)"));
     }
+    args.non_unique_cell_ids = true;
 }
 
 fn set_merfish_presets(args: &mut Args) {
@@ -674,6 +680,7 @@ fn main() {
             args.min_qv.unwrap_or(0.0),
             args.ignore_z_coord,
             args.coordinate_scale.unwrap_or(1.0),
+            args.non_unique_cell_ids,
         )
     };
     if dataset.ncells > 0 {

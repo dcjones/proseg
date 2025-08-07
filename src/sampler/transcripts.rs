@@ -440,6 +440,7 @@ pub fn read_transcripts_csv(
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    non_unique_cell_ids: bool,
 ) -> TranscriptDataset {
     let fmt = infer_format_from_filename(path);
 
@@ -465,6 +466,7 @@ pub fn read_transcripts_csv(
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                non_unique_cell_ids,
             )
         }
         OutputFormat::CsvGz => {
@@ -488,6 +490,7 @@ pub fn read_transcripts_csv(
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                non_unique_cell_ids,
             )
         }
         OutputFormat::Parquet => read_xenium_transcripts_parquet(
@@ -507,6 +510,7 @@ pub fn read_transcripts_csv(
             min_qv,
             ignore_z_column,
             coordinate_scale,
+            non_unique_cell_ids,
         ),
         OutputFormat::Infer => panic!("Could not infer format of file '{path}'"),
     }
@@ -576,6 +580,7 @@ fn read_transcripts_csv_xyz<T>(
     min_qv: f32,
     no_z_column: bool,
     coordinate_scale: f32,
+    non_unique_cell_ids: bool,
 ) -> TranscriptDataset
 where
     T: std::io::Read,
@@ -696,6 +701,7 @@ where
             }
         };
 
+        let cell_id_fov = if non_unique_cell_ids { fov } else { 0 };
         let cell_id_str = &row[cell_id_col];
         if cell_id_str == cell_id_unassigned {
             priorseg.push(PriorTranscriptSeg {
@@ -705,7 +711,7 @@ where
         } else {
             let next_cell_id = cell_id_map.len() as CellIndex;
             let cell_id = *cell_id_map
-                .entry((fov, cell_id_str.to_string()))
+                .entry((cell_id_fov, cell_id_str.to_string()))
                 .or_insert(next_cell_id);
 
             let is_nuclear = if let Some(compartment_col) = compartment_col {
@@ -785,6 +791,7 @@ fn read_xenium_transcripts_parquet(
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    non_unique_cell_ids: bool,
 ) -> TranscriptDataset {
     let input_file =
         File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
@@ -819,6 +826,7 @@ fn read_xenium_transcripts_parquet(
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                non_unique_cell_ids,
             )
         }
         arrow::datatypes::DataType::LargeUtf8 => {
@@ -840,6 +848,7 @@ fn read_xenium_transcripts_parquet(
                 min_qv,
                 ignore_z_column,
                 coordinate_scale,
+                non_unique_cell_ids,
             )
         }
         _ => panic!("Unexpected string array type in Xenium parquet file"),
@@ -865,6 +874,7 @@ fn read_xenium_transcripts_parquet_str_type<T>(
     min_qv: f32,
     ignore_z_column: bool,
     coordinate_scale: f32,
+    non_unique_cell_ids: bool,
 ) -> TranscriptDataset
 where
     T: 'static,
@@ -1007,6 +1017,7 @@ where
             transcript_ids.push(transcript_id);
             fovs.push(fov);
 
+            let cell_id_fov = if non_unique_cell_ids { fov } else { 0 };
             if cell_id == cell_id_unassigned {
                 priorseg.push(PriorTranscriptSeg {
                     nucleus: BACKGROUND_CELL,
@@ -1015,7 +1026,7 @@ where
             } else {
                 let next_cell_id = cell_id_map.len() as CellIndex;
                 let cell_id = *cell_id_map
-                    .entry((fov, cell_id.to_string()))
+                    .entry((cell_id_fov, cell_id.to_string()))
                     .or_insert_with(|| next_cell_id);
 
                 let is_nuclear = compartment == compartment_nuclear;
