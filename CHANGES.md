@@ -1,4 +1,15 @@
 
+# 3.0.0
+  This is a major revision which has some potentially breaking changes. See
+  the "Migrating to Proseg 3" section in the README.md file.
+
+  - Support for Visium HD
+  - Extensive optimization work (runs should significantly less memory and be up to twice as fast now).
+  - Outputting zarr formatted spatialdata objects
+  - Outputting sparse matrices in mtx format
+  - Ability to initialize directly from cell masks from Cellpose and similar image based segmentation methods
+  - Revisions to the noise model to capture the dependency on local transcript density
+
 # 2.0.6
   - Fix docker image for some nextflow configurations.
   - Fix negative controls included in newer CosMx data.

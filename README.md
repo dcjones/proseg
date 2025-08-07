@@ -19,7 +19,7 @@ Read the paper:
 
 🗎 [Jones, D.C., Elz, A.E., Hadadianpour, A. et al. **Cell simulation as cell segmentation.** Nat Methods (2025). https://doi.org/10.1038/s41592-025-02697-0](https://doi.org/10.1038/s41592-025-02697-0)
 
-Any the Research Brief:
+And the Research Brief:
 
 🗎 [**Confronting the challenge of cell segmentation in spatial transcriptomics.** Nat Methods (2025). https://doi.org/10.1038/s41592-025-02717-z](https://doi.org/10.1038/s41592-025-02717-z)
 
@@ -38,6 +38,7 @@ Any the Research Brief:
     * [CosMx](#cosmx)
     * [MERSCOPE](#merscope)
     * [VisiumHD](#visiumhd)
+    * [Initializing using Cellpose masks](#initializing-using-cellpose-masks)
   * [Getting help](#getting-help)
 
 
@@ -45,11 +46,27 @@ Any the Research Brief:
 
 Proseg can be built and installed with cargo by running.
 
-```shell
+```sh
 cargo install proseg
 ```
 
 The easiest way to install cargo for most is [rustup](https://rustup.rs/).
+
+## From source
+
+It can also be build manually from source, which is useful mainly if you want to try a specific revision or make changes
+
+```sh
+git clone https://github.com/dcjones/proseg.git
+cd proseg
+cargo build --release
+```
+
+Proseg can then be run with:
+```sh
+target/release/proseg
+```
+
 
 # Migrating to Proseg 3
 
@@ -91,7 +108,7 @@ all provide this out of the box in some form.
 
 Proseg is invoked from the command line like:
 
-```shell
+```sh
 proseg [arguments...] /path/to/transcripts.csv.gz
 ```
 
@@ -299,6 +316,18 @@ proseg --visiumhd
 There isn't a standardized cellpose output format. See the `extras/cellpose-xenium.py` file for code
 to run cellpose and output to format proseg can read.
 
+## Initializing using Cellpose masks
+
+Typically Proseg is run with prior segmentation in the form of a transcript table with prior cell assignments. It's also possible to initialize directly using Cellpose (or similar) masks,
+and there is potentially some benefit to doing this, because it can provide a more detailed pixel-level prior to proseg.
+
+This does require more effort and care, since it's critical that coordinates are properly registered and scaled from mask pixels to transcripts micron positions. There are the relevant arguments.
+
+  * `--cellpose-masks masks.npy.gz`: An (optionally gzipped) npy file with a 2d masks array with uint32 type, where 0 represents unassigned state and `[1, ncells]` gives the pixels cell assignment.
+  * `--cellpose-cellprobs cellprobs.npy.gz`: An (optionally gzipped) npy file giving segmentation uncertainty. This should be a float32 array matching the dimensionality of the masks array.
+  * `--cellpose-scale 0.324`: Microns per pixel of the cellpose mask.
+  * `--cellpose-x-transform a b c`: Affine transformation from pixels to microns for the x-coordinate (where `x_micron = a*x_pixel + b*y_pixel + c`)
+  * `--cellpose-y-transform a b c`: Affine transformation from pixels to microns from the y-coordinate (where `y_micron = a*x_pixel + b*y_pixel + c`)
 
 # Getting help
 
