@@ -167,8 +167,8 @@ impl CountQuantileEstimator {
     where
         T: AsPrimitive<f32> + Sync + Send + Zero,
     {
-        assert!(self.estimates.m == counts.m);
-        assert!(self.estimates.n == counts.n);
+        assert_eq!(self.estimates.m, counts.m);
+        assert_eq!(self.estimates.n, counts.n);
 
         // increment desired positions
         self.dn[1] += self.quantile / 2.0;

@@ -366,7 +366,7 @@ impl ModelParams {
             .collect::<Vec<_>>();
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
 
-        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32, CELL_SHARDSIZE);
+        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32 - 1, CELL_SHARDSIZE);
 
         // Initializing with everything assigned as foreground
         counts
@@ -393,7 +393,7 @@ impl ModelParams {
             })
             .collect::<Vec<_>>();
 
-        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32, CELL_SHARDSIZE);
+        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32 - 1, CELL_SHARDSIZE);
         let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
         let gene_latent_counts_tl = ThreadLocal::new();
         let latent_counts = Array1::<u32>::zeros(nhidden);

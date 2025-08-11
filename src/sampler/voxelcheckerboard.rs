@@ -2525,7 +2525,9 @@ impl VoxelCheckerboard {
             let row_lock = row.read();
             let cell = row.i;
             for (gene, count) in row_lock.iter_nonzeros() {
-                foreground_counts.insert((cell as CellIndex, gene), count);
+                if count > 0 {
+                    foreground_counts.insert((cell as CellIndex, gene), count);
+                }
             }
         }
 
@@ -2545,37 +2547,60 @@ impl VoxelCheckerboard {
                 offset: VoxelOffset::zero(),
             };
 
-            let mut found = false;
+            // look for foreground count
+            let mut key_match = None;
+            let mut cell = BACKGROUND_CELL;
             for (key, count) in counts.range_mut((Included(from), Excluded(to))) {
-                if *count > 0 {
-                    let cell = self.get_voxel_cell(voxel.offset(key.offset));
-                    let foreground =
-                        if let Some(c) = foreground_counts.get_mut(&(cell, transcript.gene)) {
-                            if *c > 0 {
-                                *c -= 1;
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                    metadata.push(TranscriptMetadata {
-                        offset: key.offset,
-                        cell,
-                        foreground,
-                    });
-                    *count -= 1;
-                    found = true;
-                    break;
+                if *count == 0 {
+                    continue;
+                }
+                let voxel_cell = self.get_voxel_cell(voxel.offset(key.offset));
+                if let Some(c) = foreground_counts.get_mut(&(voxel_cell, transcript.gene)) {
+                    if *c > 0 {
+                        *c -= 1;
+                        key_match = Some(*key);
+                        cell = voxel_cell;
+                        break;
+                    }
                 }
             }
 
-            if !found {
-                panic!("Unable to find a matching transcript. Inconsistent count structure.");
+            if let Some(key) = key_match {
+                counts.entry(key).and_modify(|c| *c -= 1);
+                metadata.push(TranscriptMetadata {
+                    offset: key.offset,
+                    cell,
+                    foreground: true,
+                });
+            } else {
+                // non for a matching non-background -count
+                let mut found = false;
+                for (key, count) in counts.range_mut((Included(from), Excluded(to))) {
+                    if *count > 0 {
+                        *count -= 1;
+                        found = true;
+                        metadata.push(TranscriptMetadata {
+                            offset: key.offset,
+                            cell: BACKGROUND_CELL,
+                            foreground: false,
+                        });
+                        break;
+                    }
+                }
+                if !found {
+                    panic!("Unable to find a matching transcript. Inconsistent count structure.");
+                }
             }
         }
+
+        let remaining_counts = counts.values().map(|v| *v as usize).sum::<usize>();
+        let remaining_foreground_counts = foreground_counts
+            .values()
+            .map(|v| *v as usize)
+            .sum::<usize>();
+
+        assert!(remaining_counts == 0);
+        assert!(remaining_foreground_counts == 0);
 
         metadata
     }

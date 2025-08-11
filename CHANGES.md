@@ -1,4 +1,10 @@
 
+# 3.0.2
+ - Fix `proseg-to-baysor` not correctly marking transcripts as noise resulting in an inconsistent
+   count matrix after importing with xenium ranger.
+ - Fix an error when `--check-consistency` is used.
+ - Fix a minor inconsistency between the count matrix and transcript metadata
+   caused by them being out of sync by one sample.
 
 # 3.0.1
  - Fix an error on xenium data where cells crossing fov boundaries were split.

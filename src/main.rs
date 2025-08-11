@@ -1123,16 +1123,6 @@ fn run_sampler(
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
-    param_sampler.sample(
-        priors,
-        params,
-        burnin,
-        temperature,
-        record_samples,
-        true,
-        true,
-    );
-
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, priors, params, temperature);
     }
@@ -1143,10 +1133,15 @@ fn run_sampler(
         info!("repo transcripts: {:?}", t0.elapsed());
     }
 
-    // TODO:
-    // At what cadence do we do transcript repo?
-    // Maybe we add floating point `morphology_sample_cadence` and `transcript_repo_cadence`.
-    // then work it out from there? Then we have to support
+    param_sampler.sample(
+        priors,
+        params,
+        burnin,
+        temperature,
+        record_samples,
+        true,
+        true,
+    );
 
     prog.inc(1);
 

@@ -155,6 +155,10 @@ impl ParamSampler {
                 let mut gene = u32::MAX;
 
                 for (gene_layer_density, count) in row.read().iter_nonzeros() {
+                    if count == 0 {
+                        continue;
+                    }
+
                     if gene_layer_density.gene != gene {
                         gene = gene_layer_density.gene;
                         λ_cg = params.λ(cell, gene as usize);
