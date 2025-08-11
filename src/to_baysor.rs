@@ -73,6 +73,7 @@ fn find_column_index(schema: &Schema, column: &str) -> usize {
 struct TranscriptMetadata {
     transcript_id: Vec<u64>,
     cell: Vec<u32>,
+    is_noise: Vec<bool>,
     x: Vec<f32>,
     y: Vec<f32>,
     z: Vec<f32>,
@@ -104,6 +105,7 @@ fn read_proseg_transcript_metadata_from_zarr(
     let mut metadata = TranscriptMetadata {
         transcript_id: Vec::new(),
         cell: Vec::new(),
+        is_noise: Vec::new(),
         x: Vec::new(),
         y: Vec::new(),
         z: Vec::new(),
@@ -113,6 +115,7 @@ fn read_proseg_transcript_metadata_from_zarr(
     let schema = transcript_metadata_schema();
     let transcript_id_col = find_column_index(&schema, "transcript_id");
     let assignment_col = find_column_index(&schema, "assignment");
+    let background_col = find_column_index(&schema, "background");
     let x_col = find_column_index(&schema, "x");
     let y_col = find_column_index(&schema, "y");
     let z_col = find_column_index(&schema, "z");
@@ -135,6 +138,16 @@ fn read_proseg_transcript_metadata_from_zarr(
             } else {
                 metadata.cell.push(BACKGROUND_CELL);
             }
+        }
+
+        for background in rec_batch
+            .column(background_col)
+            .as_any()
+            .downcast_ref::<arrow::array::BooleanArray>()
+            .unwrap()
+            .iter()
+        {
+            metadata.is_noise.push(background.unwrap_or(false));
         }
 
         for transcript_id in rec_batch
@@ -237,9 +250,10 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
         ),
         Arc::new(
             metadata
-                .cell
+                .is_noise
                 .iter()
-                .map(|x| Some(*x == u32::MAX))
+                .cloned()
+                .map(Some)
                 .collect::<arrow::array::BooleanArray>(),
         ),
         Arc::new(
