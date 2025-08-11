@@ -156,8 +156,8 @@ impl Zero for CountMatRowKey {
 impl Increment for CountMatRowKey {
     fn inc(&self, bound: CountMatRowKey) -> CountMatRowKey {
         // treating this as three digits, incrementing density then layer then gene
-        if self.density + 1 == bound.density {
-            if self.layer + 1 == bound.layer {
+        if self.density + 1 > bound.density {
+            if self.layer + 1 > bound.layer {
                 CountMatRowKey {
                     gene: self.gene + 1,
                     layer: 0,
@@ -350,7 +350,11 @@ impl ModelParams {
 
         let mut counts = SparseMat::zeros(
             ncells,
-            CountMatRowKey::new(ngenes as u32, nlayers as u32, density_nbins as u8),
+            CountMatRowKey::new(
+                ngenes as u32 - 1,
+                nlayers as u32 - 1,
+                density_nbins as u8 - 1,
+            ),
             CELL_SHARDSIZE,
         );
         let mut unassigned_counts = (0..density_nbins)
@@ -605,7 +609,11 @@ impl ModelParams {
 
         let mut counts = SparseMat::zeros(
             ncells,
-            CountMatRowKey::new(ngenes as u32, nlayers as u32, density_nbins as u8),
+            CountMatRowKey::new(
+                ngenes as u32 - 1,
+                nlayers as u32 - 1,
+                density_nbins as u8 - 1,
+            ),
             CELL_SHARDSIZE,
         );
         let mut unassigned_counts = (0..density_nbins)
@@ -625,15 +633,8 @@ fn initial_component_assignments(
     counts: &SparseMat<u32, CountMatRowKey>,
     ncomponents: usize,
 ) -> Array1<u32> {
-    let (
-        ncells,
-        CountMatRowKey {
-            gene: ngenes,
-            layer: _nlayers,
-            density: _density_nbins,
-        },
-    ) = counts.shape();
-    let ngenes = ngenes as usize;
+    let (ncells, j_bound) = counts.shape();
+    let ngenes = j_bound.gene as usize + 1;
 
     const EMBEDDING_DIM: usize = 25;
     let mut rng = rng();

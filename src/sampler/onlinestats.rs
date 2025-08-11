@@ -150,7 +150,7 @@ pub struct CountQuantileEstimator {
 impl CountQuantileEstimator {
     pub fn new(m: usize, n: usize, quantile: f32, shardsize: usize) -> Self {
         CountQuantileEstimator {
-            estimates: SparseMat::zeros(m, n as u32, shardsize),
+            estimates: SparseMat::zeros(m, n as u32 - 1, shardsize),
             dn: [
                 1.0,
                 1.0 + 2.0 * quantile,
@@ -208,7 +208,7 @@ pub struct CountMeanEstimator {
 impl CountMeanEstimator {
     pub fn new(m: usize, n: usize, shardsize: usize) -> Self {
         CountMeanEstimator {
-            estimates: SparseMat::zeros(m, n as u32, shardsize),
+            estimates: SparseMat::zeros(m, n as u32 - 1, shardsize),
             t: 0,
         }
     }
