@@ -1057,9 +1057,9 @@ fn main() {
         info!("write polygon layers: {:?}", t0.elapsed());
     }
 
+    let consensus_cell_polygons = voxels.consensus_cell_polygons();
     if args.output_cell_polygons.is_some() {
         let t0 = Instant::now();
-        let consensus_cell_polygons = voxels.consensus_cell_polygons();
         info!("generate consensus polygons: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -1099,7 +1099,7 @@ fn main() {
             &dataset.transcripts,
             &dataset.transcript_ids,
             &transcript_metadata,
-            &cell_flattened_polygons,
+            &consensus_cell_polygons,
             &run_metadata,
             args.exclude_spatialdata_transcripts,
         );
