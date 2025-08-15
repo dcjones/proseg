@@ -1,4 +1,8 @@
 
+# 3.0.3
+ - Change spatialdata output to use consensus 2d polygons, rather than union polygons
+   which tend to exagerrate the degree of overlap.
+
 # 3.0.2
  - Fix `proseg-to-baysor` not correctly marking transcripts as noise resulting in an inconsistent
    count matrix after importing with xenium ranger.
