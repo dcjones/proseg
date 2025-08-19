@@ -520,6 +520,11 @@ pub fn write_transcript_metadata(
         File::create(output_transcript_metadata).unwrap()
     };
 
+    assert_eq!(transcripts.len(), metadata.len());
+    if let Some(transcript_ids) = transcript_ids {
+        assert_eq!(transcript_ids.len(), transcripts.len());
+    }
+
     match fmt {
         OutputFormat::Csv => {
             let mut writer = csv::WriterBuilder::new().with_header(true).build(output);

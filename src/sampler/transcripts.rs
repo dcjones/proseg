@@ -120,6 +120,14 @@ impl TranscriptDataset {
             }
         }
 
+        if let Some(transcript_ids) = self.transcript_ids.as_mut() {
+            let transcript_ids = transcript_ids
+                .iter()
+                .zip(mask.iter())
+                .filter_map(|(id, &mask)| if mask { Some(*id) } else { None })
+                .collect::<Vec<_>>();
+            self.transcript_ids = Some(transcript_ids);
+        }
         self.transcripts.retain_masked(&mask);
         self.priorseg.retain_masked(&mask);
         self.fovs.retain_masked(&mask);

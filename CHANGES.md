@@ -1,4 +1,8 @@
 
+# 3.0.4
+ - Fix an error keeping track of original transcript ids which can cause
+   incorrect counts when converted with `xeniumranger import-segmentation`.
+
 # 3.0.3
  - Change spatialdata output to use consensus 2d polygons, rather than union polygons
    which tend to exagerrate the degree of overlap.
