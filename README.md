@@ -67,6 +67,20 @@ Proseg can then be run with:
 target/release/proseg
 ```
 
+# Limitations of the algorithm
+
+Proseg segments cells based on the observed spatial distribution of transcripts. This
+generally works well at reducing spurious coexpression and transcript
+misassignment, but has some limitations to be aware of:
+
+ * Cells with very few observed transcripts will tend to have unreliable boundaries.
+
+ * Proseg relies on prior (usually image-based) segmentation to determine the number and
+   approximate location of cells. It doesn't introduce new cells, so if the prior segmentation
+   missed many cells, Proseg is not able to correct for that error.
+
+ * In highly homogeneous regions consisting of cells with very similar expression
+   profiles, boundaries between cells will be much less reliable.
 
 # Migrating to Proseg 3
 
