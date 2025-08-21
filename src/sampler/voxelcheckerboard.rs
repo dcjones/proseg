@@ -1366,6 +1366,7 @@ impl VoxelCheckerboard {
 
             let next_cell_id = used_cells.len() as CellIndex;
             used_cells.entry(vote_winner).or_insert(next_cell_id);
+            checkerboard.used_cell_mask[vote_winner as usize] = true;
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
         checkerboard.ncells = used_cells.len();
