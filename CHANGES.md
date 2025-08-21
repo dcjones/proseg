@@ -1,4 +1,7 @@
 
+# 3.0.5
+ - Fix an occasional error where the last original cell id was missing causing cell metadata output to panic.
+
 # 3.0.4
  - Fix an error keeping track of original transcript ids which can cause
    incorrect counts when converted with `xeniumranger import-segmentation`.
