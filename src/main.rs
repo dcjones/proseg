@@ -233,11 +233,12 @@ struct Args {
     coordinate_scale: Option<f32>,
 
     /// Size x/y size of voxels during initial burn-in phase.
-    #[arg(long, default_value=None)]
+    #[arg(long, default_value=None, help=format!("Size x/y size in microns of voxels during initial burn-in phase. [default: {DEFAULT_BURNIN_VOXEL_SIZE}, on most platforms]"))]
     burnin_voxel_size: Option<f32>,
 
     /// Size x/y size of voxels.
     #[arg(long, default_value=None)]
+    #[arg(long, default_value=None, help=format!("Size x/y size in microns of voxels. [default: {DEFAULT_VOXEL_SIZE}, on most platforms]"))]
     voxel_size: Option<f32>,
 
     /// Size of quads in voxel checkerboard
