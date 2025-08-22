@@ -1,3 +1,5 @@
+# 3.0.6
+ - Fix an error generating transcript metadata when run using `--cellpose-masks`
 
 # 3.0.5
  - Fix an occasional error where the last original cell id was missing causing cell metadata output to panic.

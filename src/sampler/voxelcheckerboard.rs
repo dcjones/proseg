@@ -1691,8 +1691,8 @@ impl VoxelCheckerboard {
         let zmid = dataset.z_mean();
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).round().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).round().max(0.0) as i32;
+            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
+            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
             let k = (((z - zmin) / voxelsize_z) as i32)
                 .min(nzlayers as i32 - 1)
                 .max(0);
