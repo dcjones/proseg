@@ -1,0 +1,138 @@
+# This is an example showing how to run proseg on Visium HD using
+# a Cellpose mask (as opposed to spaceranger segmentation).
+#
+# We are using a data public dataset available from:
+# https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-libraries-of-human-lung-cancer-if
+#
+# This is a snakemake file with a few rules, but can easily be adapted to just
+# a shell script and some python code.
+
+
+DATA_ROOT = "data"
+
+# Should point to the "extra" directory available in the proseg repository.
+PROSEG_EXTRA = "/home/dcjones/prj/proseg/extra"
+
+# Should point to the proseg executable
+PROSEG = "/home/dcjones/prj/proseg/target/release/proseg"
+
+# This number can be found in the the metadata of
+# Visium_HD_Human_Lung_Cancer_tissue_image.tif
+#
+# "Resolution" gives the number of pixels per micron. We take the recriprocal
+# because proseg expects microns per pixel.
+#
+# Right now we don't support a transformation beyond just scaling pixels to
+# microns, so we are assuming that the image that Cellpose is being run on
+# is properly registered and transformed already.
+MASKS_SCALE = 1 / 3.07701
+
+rule cellpose:
+    input:
+        DATA_ROOT + "/Visium_HD_Human_Lung_Cancer_tissue_image.tif"
+    output:
+        masks="cellpose-masks.npy.gz",
+        probs="cellpose-cellprobs.npy.gz",
+    shell:
+        # We are using a cellpose script included with proseg. This isn't
+        # necessary, but at minimum, the masks array needs to be written with
+        # the same format to work with proseg.
+        # 
+        # The --tile-size parameter is to reduce memory usage. It's better to
+        # run without this to avoid missegmented cells on the tile borders, if
+        # enough GPU and system memory is available.
+        """
+        python {PROSEG_EXTRA}/cellpose-xenium.py \
+            --tile-size 4000 \
+            {input} \
+            {output.masks} \
+            {output.probs} \
+        """
+
+rule proseg:
+    input:
+        masks="cellpose-masks.npy.gz",
+        probs="cellpose-cellprobs.npy.gz",
+    output:
+        directory("proseg-output.zarr")
+    shell:
+        """
+        {PROSEG} \
+            --visiumhd \
+            --output-spatialdata {output} \
+            --cellpose-scale {MASKS_SCALE} \
+            --cellpose-masks {input.masks} \
+            --cellpose-cellprobs {input.probs} \
+            {DATA_ROOT}
+        """
+
+
+rule example_plot:
+    input:
+        image=DATA_ROOT + "/Visium_HD_Human_Lung_Cancer_tissue_image.tif",
+        spatialdata="proseg-output.zarr",
+    output:
+        "example-plot.png"
+    run:
+        import spatialdata
+        import spatialdata_io
+        import spatialdata_plot
+        import matplotlib.pyplot as plt
+
+        sdata = spatialdata.read_zarr(input.spatialdata)
+
+        # These are some fields that are technically optional, that proseg
+        # doesn't output, but spatialdata_plot seems to expect to exist.
+        adata = sdata.tables["table"]
+        adata.obs["region"] = "cell_boundaries"
+        adata.uns["spatialdata_attrs"] = {
+            "instance_key": "cell",
+            "region_key": "region",
+            "region": "cell_boundaries"
+        }
+
+        # Proseg doesn't include any images in it's spatialdata output (since
+        # none are provided as input). We add the image used for segmentation
+        # here so we can plot it.
+        img = spatialdata_io.image(
+            input.image,
+            data_axes=["c", "y", "x"],
+            coordinate_system="global")
+
+        img.attrs["transform"] = {
+            "global": spatialdata.transformations.Scale(
+                axes=["y", "x"],
+                scale=[MASKS_SCALE, MASKS_SCALE])
+        }
+
+        sdata.images["tissue_if"] = img
+
+        # Subsetting the data into a smaller region
+        sdata_sub = spatialdata.bounding_box_query(
+            sdata,
+            min_coordinate=[3000, 3000],
+            max_coordinate=[3500, 3500],
+            axes=["x", "y"],
+            target_coordinate_system="global"
+        )
+
+        # Plotting cell boundaries with proseg's component assignment. It's not
+        # recommended to use these component assignments as the basis of
+        # downstream analysis, but it's useful rough clustering and comes for
+        # free.
+        fig, ax = plt.subplots(figsize=(30, 30))
+        sdata_sub.pl.render_images(
+                "tissue_if"
+        ).pl.render_shapes(
+            color="component",
+            cmap="tab10",
+            fill_alpha=0.25,
+            outline_width=1,
+            outline_alpha=0.5,
+        ).pl.show(ax=ax)
+
+        fig.savefig(output[0])
+
+        # See the documentation for the 'spatialdata_plot' packages for
+        # more plotting options. The spatialdata output doesn't include images
+        # by default, but these can be added.
