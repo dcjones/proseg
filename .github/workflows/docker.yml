@@ -1,7 +1,6 @@
 name: Create and publish proseg image
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - '*'
