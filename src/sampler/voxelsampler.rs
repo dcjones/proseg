@@ -399,10 +399,7 @@ impl VoxelSampler {
             let current_surface_area = params.cell_surface_area.get(proposed_cell as usize);
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    voxelsize_z * current_surface_area as f32,
-                    current_volume,
-                ),
+                inv_isoperimetric_quotient(current_surface_area as f32, current_volume),
             );
 
             let other_cell_neighbors =
@@ -412,10 +409,7 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    voxelsize_z * proposed_surface_area as f32,
-                    proposed_volume,
-                ),
+                inv_isoperimetric_quotient(proposed_surface_area as f32, proposed_volume),
             );
         }
 
