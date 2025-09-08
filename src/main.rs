@@ -810,8 +810,8 @@ fn main() {
         // min_cell_volume: 1e-6 * μ_vol0,
         μ_μ_volume: (μ_vol0).ln(),
         σ_μ_volume: 3.0_f32,
-        α_σ_volume: 0.1,
-        β_σ_volume: 0.1,
+        α_σ_volume: 4.0,
+        β_σ_volume: 1.0,
 
         use_factorization: !args.no_factorization,
         enforce_connectivity: args.enforce_connectivity,
