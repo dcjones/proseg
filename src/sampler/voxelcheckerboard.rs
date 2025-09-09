@@ -2209,10 +2209,12 @@ impl VoxelCheckerboard {
     pub fn compute_cell_volume_surface_area(
         &self,
         volume: &mut ShardedVec<u32>,
-        surface_area: &mut ShardedVec<u32>,
+        layer_volume: &mut [ShardedVec<u32>],
+        layer_surface_area: &mut [ShardedVec<u32>],
     ) {
         volume.zero();
-        surface_area.zero();
+        layer_volume.iter_mut().for_each(|v_k| v_k.zero());
+        layer_surface_area.iter_mut().for_each(|a_k| a_k.zero());
 
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
             let quad_states = quad.states.read().unwrap();
@@ -2222,8 +2224,11 @@ impl VoxelCheckerboard {
                     continue;
                 }
 
+                let k = voxel.k() as usize;
+
                 if state.cell != BACKGROUND_CELL {
                     volume.add(state.cell as usize, 1);
+                    layer_volume[k].add(state.cell as usize, 1);
 
                     let mut voxel_surface_area = 0;
                     for neighbor in voxel.moore2d_neighborhood() {
@@ -2238,7 +2243,7 @@ impl VoxelCheckerboard {
                             voxel_surface_area += 1;
                         }
                     }
-                    surface_area.add(state.cell as usize, voxel_surface_area);
+                    layer_surface_area[k].add(state.cell as usize, voxel_surface_area);
                 }
             }
         });
@@ -2844,7 +2849,8 @@ impl VoxelCheckerboard {
 
         new_checkerboard.compute_cell_volume_surface_area(
             &mut params.cell_voxel_count,
-            &mut params.cell_surface_area,
+            &mut params.cell_layer_voxel_count,
+            &mut params.cell_layer_surface_area,
         );
 
         new_checkerboard.estimate_local_transcript_density(

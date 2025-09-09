@@ -16,29 +16,16 @@ use std::time::Instant;
 // to but exaggerates surface area.
 const ISOPERIMETRIC_ADJUSTMENT: f32 = 9.43;
 
-// TODO: Maybe we also clamp this at 1?
-// fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
-//     surface_area.powi(2) / (ISOPERIMETRIC_ADJUSTMENT * 4.0 * f32::consts::PI * (volume as f32))
-// }
-
-fn inv_isoperimetric_quotient(surface_area: f32, volume: u32, voxel_height: f32) -> f32 {
-    // TODO:
-    // I don't think me analysis really works beacuse we are not actually doing this in 2d.
-    // We are doing this in quasi-3d. How does that change things?
-
-    // OK, I think we also
-
-    ((voxel_height * surface_area.powi(2))
-        / (ISOPERIMETRIC_ADJUSTMENT * 4.0 * f32::consts::PI * (volume as f32)))
-        .max(1.0)
-        .ln()
+fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
+    if volume == 0 {
+        0.0
+    } else {
+        (surface_area.powi(2)
+            / (ISOPERIMETRIC_ADJUSTMENT * 4.0 * f32::consts::PI * (volume as f32)))
+            .max(1.0)
+            .ln()
+    }
 }
-
-// fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
-//     (surface_area.powi(2) / (ISOPERIMETRIC_ADJUSTMENT * 4.0 * f32::consts::PI * (volume as f32)))
-//         .max(1.0)
-//         - 1.0
-// }
 
 fn count_matching_neighbors(
     neighbor_cells: &[Option<CellIndex>; 8],
@@ -287,7 +274,7 @@ impl VoxelSampler {
         quad: &VoxelQuad,
         priors: &ModelPriors,
         params: &ModelParams,
-        voxelsize_z: f32,
+        _voxelsize_z: f32,
         proposal: Proposal,
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
@@ -351,11 +338,15 @@ impl VoxelSampler {
             δ += (count as f32) * (λ_proposed_g + λ_bg).ln();
         }
 
+        let k = proposal.voxel.k() as usize;
+
         if current_cell != BACKGROUND_CELL {
             let z = params.z[current_cell as usize];
             let current_volume = params.cell_voxel_count.get(current_cell as usize);
+            let current_layer_volume = params.cell_layer_voxel_count[k].get(current_cell as usize);
 
             let proposed_volume = current_volume - 1;
+            let proposed_layer_volume = current_layer_volume - 1;
             let current_volume_μm = current_volume as f32 * params.voxel_volume;
             let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
             let log_current_volume_μm = current_volume_μm.ln();
@@ -375,31 +366,14 @@ impl VoxelSampler {
                 + log_current_volume_μm
                 - log_proposed_volume_μm;
 
-            let current_surface_area = params.cell_surface_area.get(current_cell as usize);
+            let current_surface_area = params.cell_layer_surface_area[k].get(current_cell as usize);
 
             // We scale by voxelsize_z here, because that's always fractional in [0,1], so the effect is
             // averaging 2d perimeters across voxel layers.
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    current_surface_area as f32,
-                    current_volume,
-                    voxelsize_z,
-                ),
+                inv_isoperimetric_quotient(current_surface_area as f32, current_layer_volume),
             );
-
-            let mut rng = rand::rng();
-            if rng.random_bool(1e-3) {
-                let iiq = inv_isoperimetric_quotient(
-                    current_surface_area as f32,
-                    current_volume,
-                    voxelsize_z,
-                );
-                dbg!(iiq);
-                if iiq == 0.0 {
-                    dbg!((current_surface_area, current_volume, voxelsize_z));
-                }
-            }
 
             let other_cell_neighbors =
                 proposal.proposed_cell_neighbors + proposal.other_cell_neighbors;
@@ -408,18 +382,16 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    proposed_surface_area as f32,
-                    proposed_volume,
-                    voxelsize_z,
-                ),
+                inv_isoperimetric_quotient(proposed_surface_area as f32, proposed_layer_volume),
             );
         }
 
         if proposed_cell != BACKGROUND_CELL {
             let z = params.z[proposed_cell as usize];
             let current_volume = params.cell_voxel_count.get(proposed_cell as usize);
+            let current_layer_volume = params.cell_layer_voxel_count[k].get(proposed_cell as usize);
             let proposed_volume = current_volume + 1;
+            let proposed_layer_volume = current_layer_volume + 1;
             let current_volume_μm = current_volume as f32 * params.voxel_volume;
             let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
             let log_current_volume_μm = current_volume_μm.ln();
@@ -439,14 +411,11 @@ impl VoxelSampler {
                 + log_current_volume_μm
                 - log_proposed_volume_μm;
 
-            let current_surface_area = params.cell_surface_area.get(proposed_cell as usize);
+            let current_surface_area =
+                params.cell_layer_surface_area[k].get(proposed_cell as usize);
             δ -= halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    current_surface_area as f32,
-                    current_volume,
-                    voxelsize_z,
-                ),
+                inv_isoperimetric_quotient(current_surface_area as f32, current_layer_volume),
             );
 
             let other_cell_neighbors =
@@ -456,11 +425,7 @@ impl VoxelSampler {
 
             δ += halfnormal_logpdf(
                 priors.σ_iiq,
-                inv_isoperimetric_quotient(
-                    proposed_surface_area as f32,
-                    proposed_volume,
-                    voxelsize_z,
-                ),
+                inv_isoperimetric_quotient(proposed_surface_area as f32, proposed_layer_volume),
             );
         }
 
@@ -503,7 +468,7 @@ impl VoxelSampler {
 
         // Update neighboring quads to mirror voxel states on the edge
         let (u, v) = (quad.u, quad.v);
-        let [i, j, _k] = proposal.voxel.coords();
+        let [i, j, k] = proposal.voxel.coords();
 
         let (min_i, max_i, min_j, max_j) = quad.bounds();
         assert!((min_i..max_i + 1).contains(&i) && (min_j..max_j + 1).contains(&j));
@@ -526,14 +491,18 @@ impl VoxelSampler {
                 .cell_voxel_count
                 .modify(current_cell as usize, |volume| *volume -= 1);
 
+            params.cell_layer_voxel_count[k as usize]
+                .modify(current_cell as usize, |volume| *volume -= 1);
+
             let other_cell_neighbors =
                 proposal.proposed_cell_neighbors + proposal.other_cell_neighbors;
-            params
-                .cell_surface_area
-                .modify(current_cell as usize, |surface_area| {
+            params.cell_layer_surface_area[k as usize].modify(
+                current_cell as usize,
+                |surface_area| {
                     *surface_area += proposal.current_cell_neighbors;
                     *surface_area -= other_cell_neighbors;
-                });
+                },
+            );
 
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
@@ -563,14 +532,18 @@ impl VoxelSampler {
                 .cell_voxel_count
                 .modify(proposed_cell as usize, |volume| *volume += 1);
 
+            params.cell_layer_voxel_count[k as usize]
+                .modify(proposed_cell as usize, |volume| *volume += 1);
+
             let other_cell_neighbors =
                 proposal.current_cell_neighbors + proposal.other_cell_neighbors;
-            params
-                .cell_surface_area
-                .modify(proposed_cell as usize, |surface_area| {
+            params.cell_layer_surface_area[k as usize].modify(
+                proposed_cell as usize,
+                |surface_area| {
                     *surface_area += other_cell_neighbors;
                     *surface_area -= proposal.proposed_cell_neighbors;
-                });
+                },
+            );
 
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();

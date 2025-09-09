@@ -461,8 +461,9 @@ pub fn write_cell_metadata(
             ),
             Arc::new(
                 params
-                    .cell_surface_area
+                    .total_cell_surface_area()
                     .iter()
+                    .cloned()
                     .collect::<arrow::array::UInt32Array>(),
             ),
             Arc::new(

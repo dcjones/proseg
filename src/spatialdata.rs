@@ -761,9 +761,9 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     arr.store_array_subset_ndarray(
         &[0],
         params
-            .cell_surface_area
+            .total_cell_surface_area()
             .iter()
-            .map(|v| v as f32)
+            .map(|v| *v as f32)
             .collect::<Array1<f32>>(),
     )?;
     arr.store_metadata()?;

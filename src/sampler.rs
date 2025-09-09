@@ -190,8 +190,11 @@ pub struct ModelParams {
     // [ncells] cell volume in voxel count
     pub cell_voxel_count: ShardedVec<u32>,
 
-    // [ncells] cell volume in exposed voxel surface count
-    pub cell_surface_area: ShardedVec<u32>,
+    // [nlayers, ncells] cell volume in exposed voxel surface count
+    pub cell_layer_voxel_count: Vec<ShardedVec<u32>>,
+
+    // [nlayers, ncells] cell volume in exposed voxel surface count
+    pub cell_layer_surface_area: Vec<ShardedVec<u32>>,
 
     // [ncells] cell volume in cubic microns
     pub log_cell_volume: Array1<f32>,
@@ -336,8 +339,18 @@ impl ModelParams {
         };
 
         let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
-        let mut cell_surface_area = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
-        voxels.compute_cell_volume_surface_area(&mut cell_voxel_count, &mut cell_surface_area);
+        let mut cell_layer_voxel_count = Vec::new();
+        let mut cell_layer_surface_area = Vec::new();
+        for _ in 0..nlayers {
+            cell_layer_voxel_count.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+            cell_layer_surface_area.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+        }
+
+        voxels.compute_cell_volume_surface_area(
+            &mut cell_voxel_count,
+            &mut cell_layer_voxel_count,
+            &mut cell_layer_surface_area,
+        );
         let voxel_volume = voxels.voxel_volume;
 
         let effective_cell_volume = cell_voxel_count
@@ -456,7 +469,8 @@ impl ModelParams {
 
         ModelParams {
             cell_voxel_count,
-            cell_surface_area,
+            cell_layer_voxel_count,
+            cell_layer_surface_area,
             log_cell_volume,
             effective_cell_volume,
             cell_scale,
@@ -578,7 +592,7 @@ impl ModelParams {
         self.π.shape()[0]
     }
 
-    pub fn _ncells(&self) -> usize {
+    pub fn ncells(&self) -> usize {
         self.φ.shape()[0]
     }
 
@@ -601,11 +615,21 @@ impl ModelParams {
         let density_nbins = voxels.density_nbins;
 
         let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
-        let mut cell_surface_area = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
-        voxels.compute_cell_volume_surface_area(&mut cell_voxel_count, &mut cell_surface_area);
+        let mut cell_layer_voxel_count = Vec::new();
+        let mut cell_layer_surface_area = Vec::new();
+        for _ in 0..nlayers {
+            cell_layer_voxel_count.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+            cell_layer_surface_area.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+        }
+        voxels.compute_cell_volume_surface_area(
+            &mut cell_voxel_count,
+            &mut cell_layer_voxel_count,
+            &mut cell_layer_surface_area,
+        );
 
         assert!(self.cell_voxel_count == cell_voxel_count);
-        assert!(self.cell_surface_area == cell_surface_area);
+        assert!(self.cell_layer_voxel_count == cell_layer_voxel_count);
+        assert!(self.cell_layer_surface_area == cell_layer_surface_area);
 
         let mut counts = SparseMat::zeros(
             ncells,
@@ -626,6 +650,17 @@ impl ModelParams {
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
         assert!(self.counts == counts);
         assert!(self.unassigned_counts == unassigned_counts);
+    }
+
+    pub fn total_cell_surface_area(&self) -> Array1<u32> {
+        let mut total_surface_area = Array1::<u32>::zeros(self.ncells());
+        for sa_k in self.cell_layer_surface_area.iter() {
+            for (tsa_c, sa_kc) in izip!(total_surface_area.iter_mut(), sa_k.iter()) {
+                *tsa_c += sa_kc;
+            }
+        }
+
+        total_surface_area
     }
 }
 
