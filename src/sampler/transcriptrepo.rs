@@ -343,15 +343,15 @@ impl VoxelDiffusionPrior {
     fn new(voxelsize: f32, σ: f32, eps: f32) -> VoxelDiffusionPrior {
         let mut pmf = Vec::new();
 
-        let mut d = 0;
+        let mut d = 0.0;
         loop {
             let p =
-                uniformly_imprecise_normal_prob(0.0, voxelsize, d as f32, d as f32 + voxelsize, σ);
+                voxelsize * uniformly_imprecise_normal_prob(0.0, voxelsize, d, d + voxelsize, σ);
             pmf.push(p);
             if p < eps {
                 break;
             }
-            d += 1;
+            d += voxelsize;
         }
 
         VoxelDiffusionPrior { eps, pmf }
