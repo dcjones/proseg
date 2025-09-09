@@ -214,8 +214,8 @@ struct Args {
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
 
-    // Exponential pior on cell compactness. (smaller numbers induce more compact cells)
-    #[arg(long, default_value_t = 0.15)]
+    // Exponential pior on cell jompactness. (smaller numbers induce more compact cells)
+    #[arg(long, default_value_t = 0.04)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
@@ -266,7 +266,7 @@ struct Args {
     diffusion_sigma_far: f32,
 
     /// Stddev parameter for repositioning transcripts on the z-axis.
-    #[arg(long, default_value_t = 0.2)]
+    #[arg(long, default_value_t = 0.1)]
     diffusion_sigma_z: f32,
 
     /// Stddev parameter for sampler proposals during transcript repo
