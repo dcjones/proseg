@@ -215,7 +215,7 @@ struct Args {
     nthreads: Option<usize>,
 
     // Exponential pior on cell compactness. (smaller numbers induce more compact cells)
-    #[arg(long, default_value_t = 0.03)]
+    #[arg(long, default_value_t = 0.15)]
     cell_compactness: f32,
 
     /// Number of sub-iterations sampling cell morphology per overall iteration
@@ -659,6 +659,7 @@ fn main() {
 
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
+    let t0 = Instant::now();
     let mut dataset = if args.visiumhd {
         read_visium_data(&args.transcript_csv, excluded_genes)
     } else {
@@ -687,6 +688,7 @@ fn main() {
     if dataset.ncells > 0 {
         dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
     }
+    info!("loaded transcripts: {:?}", t0.elapsed());
 
     if args.nunfactored >= dataset.ngenes() {
         args.no_factorization = true;
@@ -708,6 +710,7 @@ fn main() {
     }
 
     // We are going to try to initialize at full resolution.
+    let t0 = Instant::now();
     let mut voxels = if let Some(cellpose_masks) = args.cellpose_masks {
         if args.cellpose_scale.is_some()
             && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
@@ -781,6 +784,7 @@ fn main() {
             args.density_bins,
         )
     };
+    info!("initialized voxels: {:?}", t0.elapsed());
 
     println!("Read dataset:");
     println!("{:>9} transcripts", dataset.transcripts.len());
@@ -1124,9 +1128,11 @@ fn run_sampler(
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
+    let t0 = Instant::now();
     for _ in 0..morphology_steps_per_iter {
         voxel_sampler.sample(voxels, priors, params, temperature);
     }
+    info!("morphology sampling: {:?}", t0.elapsed());
 
     if !burnin && priors.use_diffusion_model {
         let t0 = Instant::now();
