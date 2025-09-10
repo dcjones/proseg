@@ -1,3 +1,8 @@
+
+# 3.0.7
+ - Reworks the prior on cell compactness to fix excessive expansion of empty or near-empty cells.
+ - Fix a bug that made transcript repositioning on the z-axis very unlikely.
+
 # 3.0.6
  - Fix an error generating transcript metadata when run using `--cellpose-masks`
 
