@@ -29,6 +29,8 @@ use spatialdata::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
 const DEFAULT_VOXEL_SIZE: f32 = 1.0;
+const DEFAULT_DIFFUSION_SIGMA_NEAR: f32 = 1.0;
+const DEFAULT_DIFFUSION_SIGMA_FAR: f32 = 4.0;
 
 #[derive(Parser)]
 #[command(version)]
@@ -237,7 +239,6 @@ struct Args {
     burnin_voxel_size: Option<f32>,
 
     /// Size x/y size of voxels.
-    #[arg(long, default_value=None)]
     #[arg(long, default_value=None, help=format!("Size x/y size in microns of voxels. [default: {DEFAULT_VOXEL_SIZE}, on most platforms]"))]
     voxel_size: Option<f32>,
 
@@ -258,12 +259,12 @@ struct Args {
     diffusion_probability: f32,
 
     /// Stddev parameter for repositioning of un-diffused transcripts
-    #[arg(long, default_value_t = 1.0)]
-    diffusion_sigma_near: f32,
+    #[arg(long, default_value=None, help="Stddev parameter for repositioning of un-diffused transcripts. [default: {DEFAULT_DIFFUSION_SIGMA_NEAR}]]")]
+    diffusion_sigma_near: Option<f32>,
 
     /// Stddev parameter for repositioning of diffused transcripts
-    #[arg(long, default_value_t = 4.0)]
-    diffusion_sigma_far: f32,
+    #[arg(long, default_value=None, help="Stddev parameter for repositioning of diffused transcripts. [default: {DEFAULT_DIFFUSION_SIGMA_FAR}]]")]
+    diffusion_sigma_far: Option<f32>,
 
     /// Stddev parameter for repositioning transcripts on the z-axis.
     #[arg(long, default_value_t = 0.1)]
@@ -538,6 +539,8 @@ fn set_visiumhd_presets(args: &mut Args) {
     args.voxel_size = Some(2.0);
     args.voxel_layers = 1;
     args.ignore_z_coord = true;
+    args.diffusion_sigma_near.get_or_insert(2.0);
+    args.diffusion_sigma_far.get_or_insert(8.0);
 }
 
 fn main() {
@@ -854,8 +857,12 @@ fn main() {
         // prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
         use_diffusion_model: !args.no_diffusion,
         p_diffusion: args.diffusion_probability,
-        σ_xy_diffusion_near: args.diffusion_sigma_near,
-        σ_xy_diffusion_far: args.diffusion_sigma_far,
+        σ_xy_diffusion_near: args
+            .diffusion_sigma_near
+            .unwrap_or(DEFAULT_DIFFUSION_SIGMA_NEAR),
+        σ_xy_diffusion_far: args
+            .diffusion_sigma_far
+            .unwrap_or(DEFAULT_DIFFUSION_SIGMA_FAR),
         σ_z_diffusion: args.diffusion_sigma_z,
         σ_xy_diffusion_proposal: args.diffusion_proposal_sigma,
         σ_z_diffusion_proposal: args.diffusion_proposal_sigma_z,
