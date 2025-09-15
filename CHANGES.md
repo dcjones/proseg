@@ -1,4 +1,7 @@
 
+# 3.0.8
+ - Fix an issue where `original_cell_id` was incorrectly assigned for some data.
+
 # 3.0.7
  - Reworks the prior on cell compactness to fix excessive expansion of empty or near-empty cells.
  - Fix a bug that made transcript repositioning on the z-axis very unlikely.

@@ -1244,8 +1244,8 @@ pub struct VoxelCheckerboard {
     pub voxelsize: f32,
     pub voxelsize_z: f32,
 
-    // boolean mask of cells from initialization that are used in inference
-    pub used_cell_mask: Vec<bool>,
+    // map cells indexes after initialization to their indexed prior to removing usused cells
+    pub used_cells_map: Vec<u32>,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
@@ -1317,7 +1317,7 @@ impl VoxelCheckerboard {
             zmin,
             voxelsize,
             voxelsize_z,
-            used_cell_mask: vec![false; dataset.ncells],
+            used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
         };
@@ -1343,7 +1343,6 @@ impl VoxelCheckerboard {
                     );
                     let next_cell_id = used_cells.len() as CellIndex;
                     used_cells.entry(vote_winner).or_insert(next_cell_id);
-                    checkerboard.used_cell_mask[vote_winner as usize] = true;
                 }
                 vote_winner = cell;
                 vote_winner_count = count;
@@ -1366,10 +1365,13 @@ impl VoxelCheckerboard {
 
             let next_cell_id = used_cells.len() as CellIndex;
             used_cells.entry(vote_winner).or_insert(next_cell_id);
-            checkerboard.used_cell_mask[vote_winner as usize] = true;
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
         checkerboard.ncells = used_cells.len();
+        checkerboard.used_cells_map.resize(checkerboard.ncells, 0);
+        for (old_cell_id, new_cell_id) in used_cells.iter() {
+            checkerboard.used_cells_map[*new_cell_id as usize] = *old_cell_id;
+        }
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
@@ -1473,7 +1475,7 @@ impl VoxelCheckerboard {
             zmin,
             voxelsize,
             voxelsize_z,
-            used_cell_mask: vec![false; 0],
+            used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
         };
@@ -1551,7 +1553,7 @@ impl VoxelCheckerboard {
         for (cell_id, i) in cell_id_map {
             dataset.original_cell_ids[i as usize] = cell_id;
         }
-        checkerboard.used_cell_mask = vec![true; checkerboard.ncells];
+        checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
 
         // count transcripts
         for run in dataset.transcripts.iter_runs() {
@@ -1740,7 +1742,7 @@ impl VoxelCheckerboard {
             zmin,
             voxelsize,
             voxelsize_z,
-            used_cell_mask: vec![false; 0],
+            used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
         };
@@ -1807,7 +1809,7 @@ impl VoxelCheckerboard {
                 .iter()
                 .map(|(_, original_cell_id)| (original_cell_id + 1).to_string()),
         );
-        checkerboard.used_cell_mask = vec![true; used_cells.len()];
+        checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
 
         let mut minprior = f32::INFINITY;
         let mut maxprior = f32::NEG_INFINITY;
@@ -2824,7 +2826,7 @@ impl VoxelCheckerboard {
             zmin: self.zmin,
             voxelsize,
             voxelsize_z,
-            used_cell_mask: self.used_cell_mask,
+            used_cells_map: self.used_cells_map,
             quads,
             quads_coords,
         };

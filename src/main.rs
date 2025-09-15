@@ -984,12 +984,11 @@ fn main() {
     let cell_centroids = voxels.cell_centroids(&params);
     let transcript_metadata = voxels.transcript_metadata(&params, &dataset.transcripts);
 
-    let original_cell_ids = dataset
-        .original_cell_ids
+    let original_cell_ids: Vec<_> = voxels
+        .used_cells_map
         .iter()
-        .zip(voxels.used_cell_mask.iter())
-        .filter_map(|(id, &mask)| if mask { Some(id.clone()) } else { None })
-        .collect::<Vec<_>>();
+        .map(|old_cell_id| dataset.original_cell_ids[*old_cell_id as usize].clone())
+        .collect();
 
     let t0 = Instant::now();
     write_cell_metadata(
