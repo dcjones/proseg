@@ -67,6 +67,14 @@ impl MooreConnectivityChecker {
             0.0,
             &mut self.cell_adj,
         );
+        general_mat_mul(
+            1.0,
+            &self.cell_adj,
+            &self.cell_mask,
+            0.0,
+            &mut self.cell_adj_kp1, // using this as temporary space
+        );
+        self.cell_adj.assign(&self.cell_adj_kp1);
 
         // The longest possibly connecting path we have to consider is k=4
         // so we compute connectivity info for that many steps.
