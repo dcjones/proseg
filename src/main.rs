@@ -5,7 +5,7 @@ use clap::Parser;
 mod output;
 mod sampler;
 mod schemas;
-mod spatialdata;
+mod spatialdata_output;
 
 use core::f32;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use output::*;
 use schemas::OutputFormat;
-use spatialdata::write_spatialdata_zarr;
+use spatialdata_output::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
 const DEFAULT_VOXEL_SIZE: f32 = 1.0;
