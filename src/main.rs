@@ -5,6 +5,7 @@ use clap::Parser;
 mod output;
 mod sampler;
 mod schemas;
+mod spatialdata_input;
 mod spatialdata_output;
 
 use core::f32;
@@ -25,6 +26,7 @@ use std::time::Instant;
 
 use output::*;
 use schemas::OutputFormat;
+use spatialdata_input::read_zarr;
 use spatialdata_output::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
@@ -65,6 +67,10 @@ struct Args {
     /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
+
+    /// Input file is a spatialdata zarr directory or zip file
+    #[arg(long, default_value_t = false)]
+    zarr: bool,
 
     /// Regex pattern matching names of genes/features to be excluded
     #[arg(long, default_value = None)]
@@ -621,10 +627,13 @@ fn main() {
         set_visiumhd_presets(&mut args);
     }
 
-    if args.visiumhd && args.cellpose_masks.is_none() && args.spaceranger_barcode_mappings.is_none()
+    if args.visiumhd
+        && args.cellpose_masks.is_none()
+        && args.spaceranger_barcode_mappings.is_none()
+        && !args.zarr
     {
         panic!(
-            "Visium HD input must be initialized with either --cellpose-masks or --spacerange-barcode-mappings."
+            "Visium HD input must be initialized with either --cellpose-masks, --spacerange-barcode-mappings, or --spatialdata"
         );
     }
 
@@ -663,7 +672,18 @@ fn main() {
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
     let t0 = Instant::now();
-    let mut dataset = if args.visiumhd {
+    let mut dataset = if args.zarr {
+        read_zarr(
+            &args.transcript_csv,
+            &excluded_genes,
+            &expect_arg(args.x_column, "x"),
+            &expect_arg(args.y_column, "y"),
+            &args.z_column,
+            &expect_arg(args.gene_column, "gene"),
+            &args.cell_id_column,
+            &args.cell_id_unassigned.unwrap_or("".to_string()),
+        )
+    } else if args.visiumhd {
         read_visium_data(&args.transcript_csv, excluded_genes)
     } else {
         read_transcripts_csv(
@@ -688,6 +708,11 @@ fn main() {
             args.non_unique_cell_ids,
         )
     };
+
+    if args.zarr {
+        panic!("read_spatialdata_zarr is WIP");
+    }
+
     if dataset.ncells > 0 {
         dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
     }

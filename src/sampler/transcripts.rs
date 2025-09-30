@@ -541,7 +541,7 @@ fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) ->
 }
 
 // Make sure numerical cell ids are sequential with no empty cells.
-fn compact_priorseg(priorseg: &mut RunVec<u32, PriorTranscriptSeg>) -> usize {
+pub fn compact_priorseg(priorseg: &mut RunVec<u32, PriorTranscriptSeg>) -> usize {
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
 
     for assignment_run in priorseg.iter_runs() {
