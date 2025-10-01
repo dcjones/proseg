@@ -682,6 +682,7 @@ fn main() {
             &expect_arg(args.gene_column, "gene"),
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("".to_string()),
+            args.coordinate_scale.unwrap_or(1.0),
         )
     } else if args.visiumhd {
         read_visium_data(&args.transcript_csv, excluded_genes)
@@ -708,10 +709,6 @@ fn main() {
             args.non_unique_cell_ids,
         )
     };
-
-    if args.zarr {
-        panic!("read_spatialdata_zarr is WIP");
-    }
 
     if dataset.ncells > 0 {
         dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
