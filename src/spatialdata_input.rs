@@ -113,6 +113,7 @@ fn read_transcript_parquet_files(
 ) -> TranscriptDataset {
     let mut gene_name_map = HashMap::new();
     let mut cell_id_map = HashMap::new();
+    let mut gene_names = Vec::new();
     let mut gene_exclusion_mask = Vec::new();
     let mut transcripts = RunVec::new();
     let mut priorseg = RunVec::new();
@@ -130,6 +131,7 @@ fn read_transcript_parquet_files(
             coordinate_scale,
             &mut cell_id_map,
             &mut gene_name_map,
+            &mut gene_names,
             &mut gene_exclusion_mask,
             &mut transcripts,
             &mut priorseg,
@@ -148,7 +150,7 @@ fn read_transcript_parquet_files(
         priorseg,
         fovs: RunVec::new(),
         barcode_positions: None,
-        gene_names: Vec::new(),
+        gene_names,
         fov_names: Vec::new(),
         original_cell_ids,
         ncells,
@@ -168,6 +170,7 @@ fn read_transcript_parquet(
     coordinate_scale: f32,
     cell_id_map: &mut HashMap<String, u32>,
     gene_name_map: &mut HashMap<String, usize>,
+    gene_names: &mut Vec<String>,
     gene_exclusion_mask: &mut Vec<bool>,
     transcripts: &mut RunVec<u32, Transcript>,
     priorseg: &mut RunVec<u32, PriorTranscriptSeg>,
@@ -224,6 +227,7 @@ fn read_transcript_parquet(
         read_gene_names(
             rec_batch.column(feature_col_idx),
             gene_name_map,
+            gene_names,
             gene_exclusion_mask,
             &mut gene_batch,
             excluded_genes,
@@ -364,12 +368,13 @@ fn read_cell_ids_int<T: ArrowPrimitiveType>(
 fn read_gene_names(
     arr: &Arc<dyn arrow::array::Array>,
     gene_name_map: &mut HashMap<String, usize>,
+    gene_names: &mut Vec<String>,
     gene_exclusion_map: &mut Vec<bool>,
-    gene_names: &mut Vec<usize>,
+    gene_names_batch: &mut Vec<usize>,
     excluded_genes: &Option<Regex>,
 ) {
-    gene_names.clear();
-    gene_names.reserve(arr.len());
+    gene_names_batch.clear();
+    gene_names_batch.reserve(arr.len());
 
     let mut get_gene_index = |gene: String| {
         let gene_name_map_len = gene_name_map.len();
@@ -379,6 +384,7 @@ fn read_gene_names(
             } else {
                 false
             });
+            gene_names.push(gene);
             gene_name_map_len
         });
         *idx
@@ -388,7 +394,7 @@ fn read_gene_names(
         arr => match arr.values().data_type() {
             arrow::datatypes::DataType::Utf8 => {
                 for v in arr.downcast_dict::<arrow::array::StringArray>().unwrap() {
-                    gene_names.push(get_gene_index(v.unwrap().to_string()))
+                    gene_names_batch.push(get_gene_index(v.unwrap().to_string()))
                 }
             },
             _ => panic!(
@@ -403,7 +409,7 @@ fn read_gene_names(
                 .unwrap()
                 .iter()
                 .for_each(|v| {
-                    gene_names.push(get_gene_index(v.unwrap().to_string()))
+                    gene_names_batch.push(get_gene_index(v.unwrap().to_string()))
                 });
         },
         arrow::datatypes::DataType::LargeUtf8 => {
@@ -413,7 +419,7 @@ fn read_gene_names(
                 .unwrap()
                 .iter()
                 .for_each(|v| {
-                    gene_names.push(get_gene_index(v.unwrap().to_string()))
+                    gene_names_batch.push(get_gene_index(v.unwrap().to_string()))
                 });
         },
         _ => {
