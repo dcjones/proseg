@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use output::*;
 use schemas::OutputFormat;
-use spatialdata_input::read_zarr;
+use spatialdata_input::{read_cell_polygons_zarr, read_transcripts_zarr};
 use spatialdata_output::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
@@ -170,6 +170,18 @@ struct Args {
     /// Name of column containing the quality value
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
+
+    /// Spatialdata cell boundary geometry to use as prior segmentation
+    #[arg(long, default_value = None)]
+    zarr_shape: Option<String>,
+
+    /// Geometry column name for spatialdata cell boundaries
+    #[arg(long, default_value = None)]
+    zarr_shape_geometry_column: Option<String>,
+
+    /// Cell ID column name for spatialdata cell boundaries
+    #[arg(long, default_value = None)]
+    zarr_shape_cell_id_column: Option<String>,
 
     /// Ignore the z coordinate if any, treating the data as 2D
     #[arg(long, default_value_t = false)]
@@ -672,8 +684,9 @@ fn main() {
     let excluded_genes = args.excluded_genes.map(|pat| Regex::new(&pat).unwrap());
 
     let t0 = Instant::now();
+
     let mut dataset = if args.zarr {
-        read_zarr(
+        read_transcripts_zarr(
             &args.transcript_csv,
             &excluded_genes,
             &expect_arg(args.x_column, "x"),
@@ -736,7 +749,34 @@ fn main() {
 
     // We are going to try to initialize at full resolution.
     let t0 = Instant::now();
-    let mut voxels = if let Some(cellpose_masks) = args.cellpose_masks {
+    let mut voxels = if args.zarr && args.zarr_shape.is_some() {
+        if args.zarr_shape_geometry_column.is_none() || args.zarr_shape_cell_id_column.is_none() {
+            panic!(
+                "--zarr-shape-geometry-column and --zarr-shape-cell-id-column must be specified."
+            );
+        }
+        let cell_polygons = read_cell_polygons_zarr(
+            &args.transcript_csv,
+            &args.zarr_shape.unwrap(),
+            &args.zarr_shape_geometry_column.unwrap(),
+            &args.zarr_shape_cell_id_column.unwrap(),
+            args.coordinate_scale.unwrap_or(1.0),
+        );
+
+        let cell_polygons = cell_polygons.unwrap_or_else(|| panic!("Could not read cell polygons"));
+
+        VoxelCheckerboard::from_cell_polygons(
+            &mut dataset,
+            &cell_polygons,
+            burnin_voxel_size,
+            args.quad_size,
+            args.voxel_layers,
+            1.0 - args.prior_seg_reassignment_prob,
+            args.expand_initialized_cells,
+            args.density_bandwidth,
+            args.density_bins,
+        )
+    } else if let Some(cellpose_masks) = args.cellpose_masks {
         if args.cellpose_scale.is_some()
             && (args.cellpose_x_transform.is_some() || args.cellpose_y_transform.is_some())
         {

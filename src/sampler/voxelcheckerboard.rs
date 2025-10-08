@@ -1,6 +1,7 @@
 // Data structures for maintaining a set of voxels each with an associated:
 // sparse transcript vector.
 
+use super::super::spatialdata_input::CellPolygons;
 use super::connectivity::MooreConnectivityChecker;
 use super::math::logistic;
 use super::onlinestats::ScalarQuantileEstimator;
@@ -1860,6 +1861,20 @@ impl VoxelCheckerboard {
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
+    }
+
+    pub fn from_cell_polygons(
+        dataset: &mut TranscriptDataset,
+        cell_polygons: &CellPolygons,
+        voxelsize: f32,
+        quadsize: f32,
+        nzlayers: usize,
+        cellprior: f32,
+        expansion: usize,
+        density_bandwidth: f32,
+        density_nbins: usize,
+    ) -> VoxelCheckerboard {
+        todo!("VoxelCheckerboard::from_cell_polygons");
     }
 
     fn finish_initialization(

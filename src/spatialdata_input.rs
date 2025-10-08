@@ -1,5 +1,6 @@
-use arrow::array::ArrowPrimitiveType;
+use arrow::array::{Array, ArrowPrimitiveType};
 use arrow::downcast_dictionary_array;
+use geo_traits::{CoordTrait, GeometryTrait, LineStringTrait, MultiPolygonTrait, PolygonTrait};
 use itertools::izip;
 use num::traits::AsPrimitive;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use wkb::reader::{GeometryType, read_wkb};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::Group;
 use zarrs::storage::StoreKey;
@@ -17,8 +19,50 @@ use crate::sampler::transcripts::{
     BACKGROUND_CELL, CellIndex, PriorTranscriptSeg, Transcript, TranscriptDataset, compact_priorseg,
 };
 
+// Efficient representation of a set of simple polygons
+pub struct CellPolygons {
+    // [ncells]
+    cells: Vec<CellIndex>,
+
+    // [ncells+1] ith polygon is specified by coords[idxs[i]]...coords[idxs[i+1]]
+    idxs: Vec<u32>,
+
+    // [ncoords]
+    coords: Vec<(f32, f32)>,
+}
+
+impl CellPolygons {
+    fn new() -> Self {
+        Self {
+            cells: Vec::new(),
+            idxs: Vec::new(),
+            coords: Vec::new(),
+        }
+    }
+
+    // Nicer, but has weird lifetime issues in practic.
+    // fn append_polygon<L, T>(&mut self, cell: CellIndex, polygon_exterior: &L, coordinate_scale: f32)
+    // where
+    //     L: LineStringTrait<T = T>,
+    //     T: AsPrimitive<f32>,
+    //     for<'a> L::CoordType<'a>: CoordTrait<T = T>,
+    // {
+    //     for coord in polygon_exterior.coords() {
+    //         self.coords.push((
+    //             coord.x().as_() * coordinate_scale,
+    //             coord.y().as_() * coordinate_scale,
+    //         ));
+    //     }
+    //     self.cells.push(cell);
+    //     self.idxs.push(self.coords.len() as u32);
+    // }
+}
+
+// TODO: Ok, can we make something with the Polygon trait so we can
+// use some existing intersection testing code?
+
 #[allow(clippy::too_many_arguments)]
-pub fn read_zarr(
+pub fn read_transcripts_zarr(
     filename: &str,
     excluded_genes: &Option<Regex>,
     x_column: &str,
@@ -36,7 +80,7 @@ pub fn read_zarr(
 
     if path.is_dir() {
         let store = Arc::new(FilesystemStore::new(path).unwrap());
-        read_zarr_from_store(
+        read_transcripts_zarr_store(
             store,
             excluded_genes,
             x_column,
@@ -53,7 +97,7 @@ pub fn read_zarr(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_zarr_from_store(
+fn read_transcripts_zarr_store(
     store: Arc<FilesystemStore>,
     excluded_genes: &Option<Regex>,
     x_column: &str,
@@ -65,8 +109,6 @@ fn read_zarr_from_store(
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let _root_group = Group::open(store.clone(), "/").unwrap();
-
-    // dbg!(root_group.child_group_paths());
 
     let transcripts_group = Group::open(store.clone(), "/points/transcripts");
 
@@ -97,6 +139,145 @@ fn read_zarr_from_store(
     } else {
         unimplemented!("AnnData zarr files are not yet supported.")
     }
+}
+
+pub fn read_cell_polygons_zarr(
+    filename: &str,
+    cell_shapes: &str,
+    cell_shapes_geometry: &str,
+    // TODO: we could make this optional and just count to get cell ids
+    cell_shapes_id: &str,
+    coordinate_scale: f32,
+) -> Option<CellPolygons> {
+    let path = Path::new(filename).to_path_buf();
+    if !path.exists() {
+        panic!("File/directory not found: {filename}");
+    }
+
+    if path.is_dir() {
+        let store = Arc::new(FilesystemStore::new(path).unwrap());
+        read_cell_polygons_zarr_store(
+            store,
+            cell_shapes,
+            cell_shapes_geometry,
+            cell_shapes_id,
+            coordinate_scale,
+        )
+    } else {
+        unimplemented!("Zipped zarr input is not supoorted. Uncompress the file first.");
+    }
+}
+
+fn read_cell_polygons_zarr_store(
+    store: Arc<FilesystemStore>,
+    cell_shapes: &str,
+    cell_shapes_geometry: &str,
+    cell_shapes_id: &str,
+    coordinate_scale: f32,
+) -> Option<CellPolygons> {
+    let shape_group = Group::open(store.clone(), "/shapes");
+    if let Ok(_shape_group) = shape_group {
+        let parquet_path = store
+            .key_to_fspath(&StoreKey::new(format!("shapes/{cell_shapes}/shapes.parquet")).unwrap());
+
+        Some(read_cell_polygons(
+            &parquet_path,
+            cell_shapes_geometry,
+            cell_shapes_id,
+            coordinate_scale,
+        ))
+    } else {
+        panic!("Failed to open shape group");
+    }
+}
+
+fn read_cell_polygons(
+    filename: &PathBuf,
+    geometry_column: &str,
+    cell_id_column: &str,
+    coordinate_scale: f32,
+) -> CellPolygons {
+    let input_file =
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{filename:?}'."));
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
+    let schema = builder.schema().as_ref().clone();
+    let rdr = builder
+        .build()
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {filename:?}"));
+
+    let geometry_col_idx = schema.index_of(geometry_column).unwrap();
+    let cell_id_col_idx = schema.index_of(cell_id_column).unwrap();
+    let cell_id_unassigned = "";
+    let mut cell_id_map = HashMap::new();
+    let mut cell_ids = Vec::new();
+
+    let mut cell_polygons = CellPolygons::new();
+
+    for rec_batch in rdr {
+        let rec_batch = rec_batch.expect("Unable to read record batch.");
+        cell_ids.clear();
+        read_cell_ids(
+            rec_batch.column(cell_id_col_idx),
+            cell_id_unassigned,
+            &mut cell_id_map,
+            &mut cell_ids,
+        );
+
+        let geometry_byte_arrays = rec_batch
+            .column(geometry_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::BinaryArray>()
+            .unwrap();
+
+        assert!(geometry_byte_arrays.len() == cell_ids.len());
+
+        for (geometry_byte_array, &cell_id) in geometry_byte_arrays.iter().zip(cell_ids.iter()) {
+            let geometry_byte_array = geometry_byte_array.unwrap();
+            let geometry = read_wkb(geometry_byte_array).unwrap();
+
+            match geometry.geometry_type() {
+                GeometryType::Polygon => {
+                    if let geo_traits::GeometryType::Polygon(polygon) = geometry.as_type() {
+                        let ext = polygon.exterior().unwrap();
+                        ext.coords().for_each(|coord| {
+                            cell_polygons.coords.push((
+                                coordinate_scale * coord.x() as f32,
+                                coordinate_scale * coord.y() as f32,
+                            ));
+                        });
+                        cell_polygons.cells.push(cell_id);
+                        cell_polygons.idxs.push(cell_polygons.coords.len() as u32);
+                    } else {
+                        panic!("Incorrectly encoded Polygon");
+                    }
+                }
+                GeometryType::MultiPolygon => {
+                    if let geo_traits::GeometryType::MultiPolygon(multi_polygon) =
+                        geometry.as_type()
+                    {
+                        for polygon in multi_polygon.polygons() {
+                            let ext = polygon.exterior().unwrap();
+                            ext.coords().for_each(|coord| {
+                                cell_polygons.coords.push((
+                                    coordinate_scale * coord.x() as f32,
+                                    coordinate_scale * coord.y() as f32,
+                                ));
+                            });
+                            cell_polygons.cells.push(cell_id);
+                            cell_polygons.idxs.push(cell_polygons.coords.len() as u32);
+                        }
+                        // TODO: I think we just split this up into its parts.
+                    } else {
+                        panic!("Incorrectly encoded MultiPolygon");
+                    }
+                }
+                _ => {
+                    panic!("Unsupported geometry type: {:?}", geometry.geometry_type());
+                }
+            }
+        }
+    }
+    cell_polygons
 }
 
 #[allow(clippy::too_many_arguments)]
