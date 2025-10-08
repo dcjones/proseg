@@ -133,11 +133,9 @@ impl TranscriptDataset {
                 .collect::<Vec<_>>();
             self.transcript_ids = Some(transcript_ids);
         }
-        dbg!(self.transcripts.len());
         self.transcripts.retain_masked(&mask);
         self.priorseg.retain_masked(&mask);
         self.fovs.retain_masked(&mask);
-        dbg!(self.transcripts.len());
         info!("Transcripts filtered: {:?}", t0.elapsed());
     }
 

@@ -3,6 +3,7 @@ use arrow::downcast_dictionary_array;
 use geo::geometry::{Coord, LineString, Polygon};
 use geo_traits::{CoordTrait, GeometryTrait, LineStringTrait, MultiPolygonTrait, PolygonTrait};
 use itertools::izip;
+use log::info;
 use num::traits::AsPrimitive;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use regex::Regex;
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use wkb::reader::{GeometryType, read_wkb};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::Group;
@@ -180,12 +182,16 @@ fn read_cell_polygons_zarr_store(
         let parquet_path = store
             .key_to_fspath(&StoreKey::new(format!("shapes/{cell_shapes}/shapes.parquet")).unwrap());
 
-        Some(read_cell_polygons(
+        let t0 = Instant::now();
+        let cell_polygons = read_cell_polygons(
             &parquet_path,
             cell_shapes_geometry,
             cell_shapes_id,
             coordinate_scale,
-        ))
+        );
+        info!("Read cell polygons from zarr: {:?}", t0.elapsed());
+
+        Some(cell_polygons)
     } else {
         panic!("Failed to open shape group");
     }

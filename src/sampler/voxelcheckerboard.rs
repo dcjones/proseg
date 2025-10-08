@@ -1864,6 +1864,7 @@ impl VoxelCheckerboard {
         checkerboard
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_cell_polygons(
         dataset: &mut TranscriptDataset,
         cell_polygons: &CellPolygons,
@@ -1982,6 +1983,7 @@ impl VoxelCheckerboard {
         }
 
         // assign voxel counts
+        let t0 = Instant::now();
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
             let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
@@ -1995,6 +1997,7 @@ impl VoxelCheckerboard {
             let count = quad_counts.counts.entry(key).or_insert(0_u32);
             *count += run.len;
         }
+        trace!("assigned voxel counts: {:?}", t0.elapsed());
 
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
