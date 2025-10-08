@@ -722,6 +722,7 @@ fn main() {
             args.non_unique_cell_ids,
         )
     };
+    println!("Finished reading zarr");
 
     if dataset.ncells > 0 {
         dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);

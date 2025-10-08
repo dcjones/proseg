@@ -28,7 +28,7 @@ arrow = "54.2.1"
 clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
-geo = "0.28.0"
+geo = "0.31.0"
 indicatif = "0.17.5"
 itertools = "0.12.1"
 json = "0.12.4"

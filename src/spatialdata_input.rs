@@ -1,5 +1,6 @@
 use arrow::array::{Array, ArrowPrimitiveType};
 use arrow::downcast_dictionary_array;
+use geo::geometry::{Coord, LineString, Polygon};
 use geo_traits::{CoordTrait, GeometryTrait, LineStringTrait, MultiPolygonTrait, PolygonTrait};
 use itertools::izip;
 use num::traits::AsPrimitive;
@@ -19,47 +20,46 @@ use crate::sampler::transcripts::{
     BACKGROUND_CELL, CellIndex, PriorTranscriptSeg, Transcript, TranscriptDataset, compact_priorseg,
 };
 
-// Efficient representation of a set of simple polygons
+// Representation of a set of polygons
 pub struct CellPolygons {
+    // [npolygons]
+    pub cells: Vec<CellIndex>,
+
+    // [npolygons]
+    pub polygons: Vec<Polygon<f32>>,
+
     // [ncells]
-    cells: Vec<CellIndex>,
-
-    // [ncells+1] ith polygon is specified by coords[idxs[i]]...coords[idxs[i+1]]
-    idxs: Vec<u32>,
-
-    // [ncoords]
-    coords: Vec<(f32, f32)>,
+    pub original_cell_ids: Vec<String>,
 }
 
 impl CellPolygons {
     fn new() -> Self {
         Self {
             cells: Vec::new(),
-            idxs: Vec::new(),
-            coords: Vec::new(),
+            polygons: Vec::new(),
+            original_cell_ids: Vec::new(),
         }
     }
 
-    // Nicer, but has weird lifetime issues in practic.
-    // fn append_polygon<L, T>(&mut self, cell: CellIndex, polygon_exterior: &L, coordinate_scale: f32)
-    // where
-    //     L: LineStringTrait<T = T>,
-    //     T: AsPrimitive<f32>,
-    //     for<'a> L::CoordType<'a>: CoordTrait<T = T>,
-    // {
-    //     for coord in polygon_exterior.coords() {
-    //         self.coords.push((
-    //             coord.x().as_() * coordinate_scale,
-    //             coord.y().as_() * coordinate_scale,
-    //         ));
-    //     }
-    //     self.cells.push(cell);
-    //     self.idxs.push(self.coords.len() as u32);
-    // }
-}
+    pub fn bounding_box(&self) -> (f32, f32, f32, f32) {
+        let mut x0 = f32::MAX;
+        let mut x1 = f32::MIN;
+        let mut y0 = f32::MAX;
+        let mut y1 = f32::MIN;
 
-// TODO: Ok, can we make something with the Polygon trait so we can
-// use some existing intersection testing code?
+        for polygon in &self.polygons {
+            for coord in polygon.exterior().coords() {
+                let (x, y) = coord.x_y();
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+            }
+        }
+
+        (x0, x1, y0, y1)
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_zarr(
@@ -239,14 +239,16 @@ fn read_cell_polygons(
                 GeometryType::Polygon => {
                     if let geo_traits::GeometryType::Polygon(polygon) = geometry.as_type() {
                         let ext = polygon.exterior().unwrap();
-                        ext.coords().for_each(|coord| {
-                            cell_polygons.coords.push((
-                                coordinate_scale * coord.x() as f32,
-                                coordinate_scale * coord.y() as f32,
-                            ));
-                        });
+                        let ext_coords = ext
+                            .coords()
+                            .map(|coord| Coord {
+                                x: coordinate_scale * coord.x() as f32,
+                                y: coordinate_scale * coord.y() as f32,
+                            })
+                            .collect();
+                        let polygon = Polygon::new(LineString(ext_coords), vec![]);
+                        cell_polygons.polygons.push(polygon);
                         cell_polygons.cells.push(cell_id);
-                        cell_polygons.idxs.push(cell_polygons.coords.len() as u32);
                     } else {
                         panic!("Incorrectly encoded Polygon");
                     }
@@ -257,16 +259,17 @@ fn read_cell_polygons(
                     {
                         for polygon in multi_polygon.polygons() {
                             let ext = polygon.exterior().unwrap();
-                            ext.coords().for_each(|coord| {
-                                cell_polygons.coords.push((
-                                    coordinate_scale * coord.x() as f32,
-                                    coordinate_scale * coord.y() as f32,
-                                ));
-                            });
+                            let ext_coords = ext
+                                .coords()
+                                .map(|coord| Coord {
+                                    x: coordinate_scale * coord.x() as f32,
+                                    y: coordinate_scale * coord.y() as f32,
+                                })
+                                .collect();
+                            let polygon = Polygon::new(LineString(ext_coords), vec![]);
+                            cell_polygons.polygons.push(polygon);
                             cell_polygons.cells.push(cell_id);
-                            cell_polygons.idxs.push(cell_polygons.coords.len() as u32);
                         }
-                        // TODO: I think we just split this up into its parts.
                     } else {
                         panic!("Incorrectly encoded MultiPolygon");
                     }
@@ -277,6 +280,14 @@ fn read_cell_polygons(
             }
         }
     }
+
+    cell_polygons
+        .original_cell_ids
+        .resize(cell_polygons.cells.len(), String::new());
+    for (original_cell_id, cell_id) in cell_id_map.iter() {
+        cell_polygons.original_cell_ids[*cell_id as usize] = original_cell_id.clone();
+    }
+
     cell_polygons
 }
 

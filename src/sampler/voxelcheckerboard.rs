@@ -19,7 +19,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use geo::geometry::{MultiPolygon, Polygon};
+use geo::algorithm::{BoundingRect, Contains};
+use geo::geometry::{MultiPolygon, Point, Polygon};
 use half::f16;
 use itertools::izip;
 use log::info;
@@ -1869,12 +1870,135 @@ impl VoxelCheckerboard {
         voxelsize: f32,
         quadsize: f32,
         nzlayers: usize,
-        cellprior: f32,
+        prior: f32,
         expansion: usize,
         density_bandwidth: f32,
         density_nbins: usize,
     ) -> VoxelCheckerboard {
-        todo!("VoxelCheckerboard::from_cell_polygons");
+        let (mut xmin, _xmax, mut ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
+        let (xmin_poly, _xmax_poly, ymin_poly, _ymax_poly) = cell_polygons.bounding_box();
+        xmin = xmin.min(xmin_poly);
+        ymin = ymin.min(ymin_poly);
+        let log_prior = f16::from_f32(prior.ln());
+        let log_1m_prior = f16::from_f32((1.0 - prior).ln());
+
+        let voxelsize_z = 1.0 / nzlayers as f32;
+        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
+
+        let coords_to_voxel = |x: f32, y: f32, z: f32| {
+            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
+            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
+            let k = (((z - zmin) / voxelsize_z) as i32)
+                .min(nzlayers as i32 - 1)
+                .max(0);
+            Voxel::new(i, j, k)
+        };
+
+        let mut checkerboard = VoxelCheckerboard {
+            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
+            kmax: (nzlayers - 1) as i32,
+            ncells: 0,
+            ngenes: dataset.ngenes(),
+            nzlayers,
+            density_nbins,
+            voxel_volume,
+            xmin,
+            ymin,
+            zmin,
+            voxelsize,
+            voxelsize_z,
+            used_cells_map: Vec::new(),
+            quads: HashMap::new(),
+            quads_coords: HashSet::new(),
+        };
+
+        // TODO: Maybe we can shuffle the order of the polygons and do this more efficiently parallel.
+        for (cell_id, cell_polygon) in cell_polygons
+            .cells
+            .iter()
+            .zip(cell_polygons.polygons.iter())
+        {
+            let bounding_rect = cell_polygon.bounding_rect().unwrap();
+            let (poly_x_min, poly_y_min) = bounding_rect.min().x_y();
+            let (poly_x_max, poly_y_max) = bounding_rect.max().x_y();
+
+            // converting the bounding box to voxel coordinates
+            let poly_i_min = ((poly_x_min - xmin) / voxelsize).floor().max(0.0) as i32;
+            let poly_i_max = ((poly_x_max - xmin) / voxelsize).ceil().max(0.0) as i32;
+            let poly_j_min = ((poly_y_min - ymin) / voxelsize).floor().max(0.0) as i32;
+            let poly_j_max = ((poly_y_max - ymin) / voxelsize).ceil().max(0.0) as i32;
+
+            // test every voxel in the bounding box to see if it intersects the cell's polygon
+            for i in poly_i_min..poly_i_max + 1 {
+                let x = xmin + (i as f32) * voxelsize;
+                for j in poly_j_min..poly_j_max {
+                    let y = ymin + (j as f32) * voxelsize;
+                    if cell_polygon.contains(&Point::new(x, y)) {
+                        // Note: this can overwrite an existing state
+                        checkerboard.insert_state(
+                            Voxel::new(i, j, 0),
+                            VoxelState {
+                                cell: *cell_id,
+                                prior_cell: *cell_id,
+                                log_prior,
+                                log_1m_prior,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // figure out which cells we are actually using
+        let mut used_cells = HashMap::new();
+        checkerboard.quads.values().for_each(|quad| {
+            for (_voxel, state) in quad.states.read().unwrap().states.iter() {
+                if state.cell != BACKGROUND_CELL {
+                    let next_cell_id = used_cells.len() as u32;
+                    used_cells.entry(state.cell).or_insert(next_cell_id);
+                }
+            }
+        });
+        checkerboard.ncells = used_cells.len();
+
+        // reassign cell ids
+        checkerboard.used_cells_map.resize(checkerboard.ncells, 0);
+        dataset.original_cell_ids = vec![String::new(); checkerboard.ncells];
+        for (old_cell_id, new_cell_id) in used_cells.iter() {
+            checkerboard.used_cells_map[*new_cell_id as usize] = *old_cell_id;
+            dataset.original_cell_ids[*new_cell_id as usize] =
+                cell_polygons.original_cell_ids[*old_cell_id as usize].clone();
+        }
+        checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
+
+        // re-assign cell indices so that there are no cells without any assigned voxel
+        for quad in &mut checkerboard.quads.values() {
+            let mut quad_states = quad.states.write().unwrap();
+            for state in quad_states.states.values_mut() {
+                let cell = *used_cells.get(&state.cell).unwrap();
+                state.cell = cell;
+                state.prior_cell = cell;
+            }
+        }
+
+        // assign voxel counts
+        for run in dataset.transcripts.iter_runs() {
+            let transcript = &run.value;
+            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+
+            let mut quad_counts = checkerboard.write_quad_counts(voxel);
+            let count = quad_counts.counts.entry(key).or_insert(0_u32);
+            *count += run.len;
+        }
+
+        checkerboard.quads_coords.extend(checkerboard.quads.keys());
+        checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
+        checkerboard
     }
 
     fn finish_initialization(

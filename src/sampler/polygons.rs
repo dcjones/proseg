@@ -37,7 +37,7 @@ pub fn union_all_into_multipolygon(
 
     let mut result = geo::MultiPolygon(vec![list.pop().unwrap()]);
     for p in list {
-        result = result.union(&p.into());
+        result = result.union(&p);
 
         if no_interiors {
             result = drop_interiors(result);
