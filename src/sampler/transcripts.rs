@@ -4,16 +4,18 @@ use flate2::read::{GzDecoder, MultiGzDecoder};
 use itertools::izip;
 use json;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
+use log::info;
 use ndarray::{Array1, Array2, Zip};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use rand::Rng;
 use regex::Regex;
+use rstar::RTree;
 use rstar::primitives::GeomWithData;
-use rstar::{PointDistance, RTree};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::str;
+use std::time::Instant;
 
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = u32::MAX;
@@ -102,23 +104,26 @@ impl TranscriptDataset {
 
         let centroids = self.estimate_cell_centroids();
         let mut rtree = RTree::new();
-
+        let t0 = Instant::now();
         for (i, xy) in centroids.rows().into_iter().enumerate() {
             if !xy[0].is_finite() || !xy[1].is_finite() {
                 continue;
             }
             rtree.insert(GeomWithData::new([xy[0], xy[1]], i as u32));
         }
+        info!("R-tree constructed: {:?}", t0.elapsed());
 
-        let mut mask = vec![false; self.transcripts.len()];
-        for (i, t) in self.transcripts.iter().enumerate() {
-            if let Some(neighbor) = rtree.nearest_neighbor(&[t.x, t.y]) {
-                let d2 = neighbor.distance_2(&[t.x, t.y]);
-                if d2 <= max_distance_squared {
-                    mask[i] = true;
-                }
-            }
-        }
+        let t0 = Instant::now();
+        let mask: Vec<bool> = self
+            .transcripts
+            .iter()
+            .map(|t| {
+                rtree
+                    .locate_within_distance([t.x, t.y], max_distance_squared)
+                    .next()
+                    .is_some()
+            })
+            .collect();
 
         if let Some(transcript_ids) = self.transcript_ids.as_mut() {
             let transcript_ids = transcript_ids
@@ -128,9 +133,12 @@ impl TranscriptDataset {
                 .collect::<Vec<_>>();
             self.transcript_ids = Some(transcript_ids);
         }
+        dbg!(self.transcripts.len());
         self.transcripts.retain_masked(&mask);
         self.priorseg.retain_masked(&mask);
         self.fovs.retain_masked(&mask);
+        dbg!(self.transcripts.len());
+        info!("Transcripts filtered: {:?}", t0.elapsed());
     }
 
     pub fn normalize_z_coordinates(&mut self) -> (f32, f32) {
