@@ -1931,9 +1931,9 @@ impl VoxelCheckerboard {
 
             // test every voxel in the bounding box to see if it intersects the cell's polygon
             for i in poly_i_min..poly_i_max + 1 {
-                let x = xmin + (i as f32) * voxelsize;
+                let x = xmin + (0.5 + i as f32) * voxelsize;
                 for j in poly_j_min..poly_j_max {
-                    let y = ymin + (j as f32) * voxelsize;
+                    let y = ymin + (0.5 + j as f32) * voxelsize;
                     if cell_polygon.contains(&Point::new(x, y)) {
                         // Note: this can overwrite an existing state
                         checkerboard.insert_state(
