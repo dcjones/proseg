@@ -1266,6 +1266,39 @@ pub struct VoxelCheckerboard {
 
 impl VoxelCheckerboard {
     #[allow(clippy::too_many_arguments)]
+    fn empty(
+        voxelsize: f32,
+        quadsize: f32,
+        nzlayers: usize,
+        density_nbins: usize,
+        ngenes: usize,
+        xmin: f32,
+        ymin: f32,
+        zmin: f32,
+    ) -> VoxelCheckerboard {
+        let voxelsize_z = 1.0 / nzlayers as f32;
+        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
+        VoxelCheckerboard {
+            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
+            kmax: (nzlayers - 1) as i32,
+            ncells: 0,
+            ngenes,
+            nzlayers,
+            density_nbins,
+            voxel_volume,
+            xmin,
+            ymin,
+            zmin,
+            voxelsize,
+            voxelsize_z,
+            used_cells_map: Vec::new(),
+            quads: HashMap::new(),
+            quads_coords: HashSet::new(),
+            frozen_cells: Vec::new(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn from_prior_transcript_assignments(
         dataset: &TranscriptDataset,
         voxelsize: f32,
@@ -1279,8 +1312,6 @@ impl VoxelCheckerboard {
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let voxelsize_z = 1.0 / nzlayers as f32;
-
-        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
             let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
@@ -1309,24 +1340,16 @@ impl VoxelCheckerboard {
             }
         }
 
-        let mut checkerboard = VoxelCheckerboard {
-            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
-            kmax: (nzlayers - 1) as i32,
-            ncells: 0,
-            ngenes: dataset.ngenes(),
+        let mut checkerboard = VoxelCheckerboard::empty(
+            voxelsize,
+            quadsize,
             nzlayers,
             density_nbins,
-            voxel_volume,
+            dataset.ngenes(),
             xmin,
             ymin,
             zmin,
-            voxelsize,
-            voxelsize_z,
-            used_cells_map: Vec::new(),
-            quads: HashMap::new(),
-            quads_coords: HashSet::new(),
-            frozen_cells: Vec::new(),
-        };
+        );
 
         // assign voxels based on vote winners
         let log_nucprior = f16::from_f32(nucprior.ln());
@@ -1463,30 +1486,20 @@ impl VoxelCheckerboard {
         density_nbins: usize,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
-        let voxelsize_z = 1.0 / nzlayers as f32;
-        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
         let zmid = dataset.z_mean();
         let log_nucprior = f16::from_f32(nucprior.ln());
         let log_1m_nucprior = f16::from_f32((1.0 - nucprior).ln());
 
-        let mut checkerboard = VoxelCheckerboard {
-            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
-            kmax: (nzlayers - 1) as i32,
-            ncells: 0,
-            ngenes: dataset.ngenes(),
+        let mut checkerboard = VoxelCheckerboard::empty(
+            voxelsize,
+            quadsize,
             nzlayers,
             density_nbins,
-            voxel_volume,
+            dataset.ngenes(),
             xmin,
             ymin,
             zmin,
-            voxelsize,
-            voxelsize_z,
-            used_cells_map: Vec::new(),
-            quads: HashMap::new(),
-            quads_coords: HashSet::new(),
-            frozen_cells: Vec::new(),
-        };
+        );
 
         let barcode_positions = dataset.barcode_positions.as_ref().unwrap();
 
@@ -1698,7 +1711,6 @@ impl VoxelCheckerboard {
 
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let voxelsize_z = 1.0 / nzlayers as f32;
-        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
         let zmid = dataset.z_mean();
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
@@ -1738,24 +1750,16 @@ impl VoxelCheckerboard {
         // save memory where we can
         drop(masks);
 
-        let mut checkerboard = VoxelCheckerboard {
-            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
-            kmax: (nzlayers - 1) as i32,
-            ncells: 0,
-            ngenes: dataset.ngenes(),
+        let mut checkerboard = VoxelCheckerboard::empty(
+            voxelsize,
+            quadsize,
             nzlayers,
             density_nbins,
-            voxel_volume,
+            dataset.ngenes(),
             xmin,
             ymin,
             zmin,
-            voxelsize,
-            voxelsize_z,
-            used_cells_map: Vec::new(),
-            quads: HashMap::new(),
-            quads_coords: HashSet::new(),
-            frozen_cells: Vec::new(),
-        };
+        );
 
         let t0 = Instant::now();
         let pixels_per_voxel = pixel_transform.det().abs().recip();
@@ -1891,9 +1895,7 @@ impl VoxelCheckerboard {
         ymin = ymin.min(ymin_poly);
         let log_prior = f16::from_f32(prior.ln());
         let log_1m_prior = f16::from_f32((1.0 - prior).ln());
-
         let voxelsize_z = 1.0 / nzlayers as f32;
-        let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
         let coords_to_voxel = |x: f32, y: f32, z: f32| {
             let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
@@ -1904,24 +1906,16 @@ impl VoxelCheckerboard {
             Voxel::new(i, j, k)
         };
 
-        let mut checkerboard = VoxelCheckerboard {
-            quadsize: (quadsize / voxelsize).round().max(1.0) as usize,
-            kmax: (nzlayers - 1) as i32,
-            ncells: 0,
-            ngenes: dataset.ngenes(),
+        let mut checkerboard = VoxelCheckerboard::empty(
+            voxelsize,
+            quadsize,
             nzlayers,
             density_nbins,
-            voxel_volume,
+            dataset.ngenes(),
             xmin,
             ymin,
             zmin,
-            voxelsize,
-            voxelsize_z,
-            used_cells_map: Vec::new(),
-            quads: HashMap::new(),
-            quads_coords: HashSet::new(),
-            frozen_cells: Vec::new(),
-        };
+        );
 
         // TODO: Maybe we can shuffle the order of the polygons and do this more efficiently parallel.
         for (cell_id, cell_polygon) in cell_polygons
