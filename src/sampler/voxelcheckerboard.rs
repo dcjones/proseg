@@ -1600,71 +1600,44 @@ impl VoxelCheckerboard {
         }
     }
 
-    fn tally_cellpose_pixels_with_probs(
+    fn tally_seg_mask_pixels(
         &self,
-        cellprob_filename: &str,
-        cellprob_discount: f32,
         masks: &Array2<u32>,
+        cellprobs: &Array2<f32>,
+        frozen_masks: &Array2<u32>,
         pixel_transform: &PixelTransform,
-        cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
+        cell_votes: &mut BTreeMap<(Voxel, CellIndex, bool), f32>,
         zmid: f32,
     ) {
-        let cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
-            |_err| panic!("Unable to read cellpose cellprob from {cellprob_filename}. Make sure it an npy file (possibly gzipped) containing a float32 matrix")
-        );
-        assert!(masks.shape() == cellprobs.shape());
-
         Zip::indexed(masks)
-            .and(&cellprobs)
-            .for_each(|(i, j), &masks_ij, &cellprobs_ij| {
+            .and(frozen_masks)
+            .and(cellprobs)
+            .for_each(|(i, j), &masks_ij, &frozen_masks_ij, &cellprobs_ij| {
                 if masks_ij == 0 {
                     return;
                 }
 
                 let (x, y) = pixel_transform.transform(j, i);
                 let voxel = self.coords_to_voxel(x, y, zmid);
-                let cell = masks_ij - 1;
-                let prior = logistic(cellprobs_ij);
+                let vote = cell_votes.entry((voxel, masks_ij, false)).or_insert(0.0);
+                *vote += cellprobs_ij;
 
-                let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
-
-                // TODO: I think I'm misusing the prior here.
-                // We treat p = 0.5 as having no opinion, but here that would be significant evidence in favor
-                // of that pixel being in the cell. How should we be doing this? Scale everything to be in [0.5, 1.0]
-                //
-                // *vote += cellprob_discount * prior;
-                *vote += 0.5 + 0.5 * cellprob_discount * prior;
+                if frozen_masks_ij != 0 {
+                    let vote = cell_votes
+                        .entry((voxel, frozen_masks_ij, true))
+                        .or_insert(0.0);
+                    *vote += 1.0;
+                }
             });
     }
 
-    fn tally_cellpose_pixels_without_probs(
-        &self,
-        prior: f32,
-        masks: &Array2<u32>,
-        pixel_transform: &PixelTransform,
-        cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
-        zmid: f32,
-    ) {
-        Zip::indexed(masks).for_each(|(i, j), &masks_ij| {
-            if masks_ij == 0 {
-                return;
-            }
-
-            let (x, y) = pixel_transform.transform(j, i);
-            let voxel = self.coords_to_voxel(x, y, zmid);
-            let cell = masks_ij - 1;
-
-            let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
-            *vote += prior;
-        });
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn from_cellpose_masks(
+    pub fn from_seg_masks(
         dataset: &mut TranscriptDataset,
         masks_filename: &str,
         cellprob_filename: &Option<String>,
         cellprob_discount: f32,
+        frozen_masks_filename: &Option<String>,
         voxelsize: f32,
         quadsize: f32,
         nzlayers: usize,
@@ -1675,13 +1648,43 @@ impl VoxelCheckerboard {
         density_nbins: usize,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
-            |_err| panic!("Unable to read cellpose masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
+            |_err| panic!("Unable to read cell masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
         );
         info!(
-            "Read {} by {} cellpose mask.",
+            "Read {} by {} cell segmentation mask.",
             masks.shape()[0],
             masks.shape()[1]
         );
+
+        let cellprobs = if let Some(cellprob_filename) = cellprob_filename {
+            let mut cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
+                |_err| panic!("Unable to read cellpose cellprob from {cellprob_filename}. Make sure it an npy file (possibly gzipped) containing a float32 matrix")
+            );
+            if cellprobs.shape() != masks.shape() {
+                panic!("Cellprobs must have the same shape as the segmentation mask");
+            }
+
+            // transform to probs, discount, and scale everything to be in [0.5, 1.0]
+            cellprobs.map_inplace(|v| *v = logistic(*v));
+            cellprobs *= 0.5 * cellprob_discount;
+            cellprobs += 0.5;
+            cellprobs
+        } else {
+            Array2::from_elem((masks.shape()[0], masks.shape()[1]), cellprior)
+        };
+
+        let frozen_masks = if let Some(frozen_masks_filename) = frozen_masks_filename {
+            let frozen_masks: Array2<u32> = Self::read_npy_gz(frozen_masks_filename).unwrap_or_else(
+                |_err| panic!("Unable to read fixed cell masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
+            );
+            if frozen_masks.shape() != masks.shape() {
+                panic!("Fixed cell masks must have the same shape as the segmentation mask");
+            }
+
+            frozen_masks
+        } else {
+            Array2::zeros((masks.shape()[0], masks.shape()[1]))
+        };
 
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let zmid = dataset.z_mean();
@@ -1698,58 +1701,51 @@ impl VoxelCheckerboard {
         );
 
         let t0 = Instant::now();
-        let mut cell_votes: BTreeMap<(Voxel, CellIndex), f32> = BTreeMap::new();
+        let mut cell_votes: BTreeMap<(Voxel, CellIndex, bool), f32> = BTreeMap::new();
 
-        if let Some(cellprob_filename) = cellprob_filename {
-            checkerboard.tally_cellpose_pixels_with_probs(
-                cellprob_filename,
-                cellprob_discount,
-                &masks,
-                pixel_transform,
-                &mut cell_votes,
-                zmid,
-            );
-        } else {
-            checkerboard.tally_cellpose_pixels_without_probs(
-                cellprior,
-                &masks,
-                pixel_transform,
-                &mut cell_votes,
-                zmid,
-            );
-        }
+        checkerboard.tally_seg_mask_pixels(
+            &masks,
+            &cellprobs,
+            &frozen_masks,
+            pixel_transform,
+            &mut cell_votes,
+            zmid,
+        );
+
         trace!("Voting on voxel states: {:?}", t0.elapsed());
 
         // save memory where we can
         drop(masks);
+        drop(cellprobs);
+        drop(frozen_masks);
 
         let t0 = Instant::now();
         let pixels_per_voxel = pixel_transform.det().abs().recip();
         let mut used_cells = HashMap::new();
         let mut current_voxel = Voxel::oob();
-        let mut vote_winner = BACKGROUND_CELL;
+        let mut vote_winner = (BACKGROUND_CELL, false);
         let mut vote_winner_prior_sum: f32 = 0.0;
-        for ((voxel, cell), prior_sum) in cell_votes {
+        for ((voxel, cell, frozen), prior_sum) in cell_votes {
             if voxel != current_voxel {
                 if !current_voxel.is_oob() {
                     let prior = (prior_sum / pixels_per_voxel).min(0.99);
+                    let next_cell_id = used_cells.len() as CellIndex;
+                    let cell_id = *used_cells.entry(vote_winner).or_insert(next_cell_id);
                     checkerboard.insert_state(
                         current_voxel,
                         VoxelState {
-                            cell: vote_winner,
-                            prior_cell: vote_winner,
+                            cell: cell_id,
+                            prior_cell: cell_id,
                             log_prior: f16::from_f32(prior.ln()),
                             log_1m_prior: f16::from_f32((1.0 - prior).ln()),
                         },
                     );
-                    let next_cell_id = used_cells.len() as CellIndex;
-                    used_cells.entry(vote_winner).or_insert(next_cell_id);
                 }
-                vote_winner = cell;
+                vote_winner = (cell, frozen);
                 vote_winner_prior_sum = prior_sum;
                 current_voxel = voxel;
             } else if prior_sum > vote_winner_prior_sum {
-                vote_winner = cell;
+                vote_winner = (cell, frozen);
                 vote_winner_prior_sum = prior_sum;
             }
         }
@@ -1757,18 +1753,17 @@ impl VoxelCheckerboard {
 
         if !current_voxel.is_oob() {
             let prior = (vote_winner_prior_sum / pixels_per_voxel).min(0.99);
+            let next_cell_id = used_cells.len() as CellIndex;
+            let cell_id = *used_cells.entry(vote_winner).or_insert(next_cell_id);
             checkerboard.insert_state(
                 current_voxel,
                 VoxelState {
-                    cell: vote_winner,
-                    prior_cell: vote_winner,
+                    cell: cell_id,
+                    prior_cell: cell_id,
                     log_prior: f16::from_f32(prior.ln()),
                     log_1m_prior: f16::from_f32((1.0 - prior).ln()),
                 },
             );
-
-            let next_cell_id = used_cells.len() as CellIndex;
-            used_cells.entry(vote_winner).or_insert(next_cell_id);
         }
 
         checkerboard.ncells = used_cells.len();
@@ -1777,46 +1772,54 @@ impl VoxelCheckerboard {
         // Rewrite original ids
         let mut cell_id_pairs: Vec<_> = used_cells
             .iter()
-            .map(|(original_cell_id, cell_id)| (*cell_id, *original_cell_id))
+            .map(|((original_cell_id, frozen), cell_id)| (*cell_id, *original_cell_id, *frozen))
             .collect();
         cell_id_pairs.sort();
         dataset.original_cell_ids.clear();
-        dataset.original_cell_ids.extend(
-            cell_id_pairs
-                .iter()
-                .map(|(_, original_cell_id)| (original_cell_id + 1).to_string()),
-        );
+        dataset.original_cell_ids.extend(cell_id_pairs.iter().map(
+            |&(_, original_cell_id, frozen)| {
+                if frozen {
+                    format!("{original_cell_id}-fixed")
+                } else {
+                    original_cell_id.to_string()
+                }
+            },
+        ));
         checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
 
-        let mut minprior = f32::INFINITY;
-        let mut maxprior = f32::NEG_INFINITY;
-        checkerboard.quads.values().for_each(|quad| {
-            let mut quad_states = quad.states.write().unwrap();
+        // TODO: I don't think any of this stuff is necessary anymore, but let's make sure.
+        // let mut minprior = f32::INFINITY;
+        // let mut maxprior = f32::NEG_INFINITY;
+        // checkerboard.quads.values().for_each(|quad| {
+        //     let mut quad_states = quad.states.write().unwrap();
 
-            // re-assign cell indices so that there are no cells without any assigned voxel
-            for state in quad_states.states.values_mut() {
-                let cell = *used_cells.get(&state.cell).unwrap();
-                state.cell = cell;
-                state.prior_cell = cell;
+        //     // TODO: I don't think we should have to do this.
+        //     //
+        //     // re-assign cell indices so that there are no cells without any assigned voxel
+        //     for state in quad_states.states.values_mut() {
+        //         let cell = *used_cells.get(&state.cell).unwrap();
+        //         state.cell = cell;
+        //         state.prior_cell = cell;
 
-                let prior = state.log_prior.to_f32().exp();
-                minprior = minprior.min(prior);
-                maxprior = maxprior.max(prior);
-            }
+        //         let prior = state.log_prior.to_f32().exp();
+        //         minprior = minprior.min(prior);
+        //         maxprior = maxprior.max(prior);
+        //     }
 
-            // copy the state along the z-axis
-            let states_2d = quad_states.states.clone();
-            for (voxel, state) in states_2d {
-                let [i, j, k] = voxel.coords();
-                for k_down in (0..k).rev() {
-                    quad_states.states.insert(Voxel::new(i, j, k_down), state);
-                }
+        //     // TODO: Aren't we doing this already when we finalize???
+        //     // copy the state along the z-axis
+        //     let states_2d = quad_states.states.clone();
+        //     for (voxel, state) in states_2d {
+        //         let [i, j, k] = voxel.coords();
+        //         for k_down in (0..k).rev() {
+        //             quad_states.states.insert(Voxel::new(i, j, k_down), state);
+        //         }
 
-                for k_up in (k + 1)..(quad.kmax + 1) {
-                    quad_states.states.insert(Voxel::new(i, j, k_up), state);
-                }
-            }
-        });
+        //         for k_up in (k + 1)..(quad.kmax + 1) {
+        //             quad_states.states.insert(Voxel::new(i, j, k_up), state);
+        //         }
+        //     }
+        // });
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard

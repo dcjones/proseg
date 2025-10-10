@@ -100,6 +100,10 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_masks: Option<String>,
 
+    /// Cellpose cell masks matrix in .npy format which proseg will leave fixed.
+    #[arg(long, default_value = None)]
+    cellpose_masks_fixed: Option<String>,
+
     /// Spaceranger Visium HD segmentation parquet file.
     #[arg(long, default_value = None)]
     spaceranger_barcode_mappings: Option<String>,
@@ -811,11 +815,12 @@ fn main() {
             PixelTransform { tx, ty }
         };
 
-        VoxelCheckerboard::from_cellpose_masks(
+        VoxelCheckerboard::from_seg_masks(
             &mut dataset,
             &cellpose_masks,
             &args.cellpose_cellprobs,
             args.cellpose_cellprob_discount,
+            &args.cellpose_masks_fixed,
             burnin_voxel_size,
             args.quad_size,
             args.voxel_layers,
