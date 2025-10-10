@@ -1298,6 +1298,15 @@ impl VoxelCheckerboard {
         }
     }
 
+    fn initialize_counts(&mut self, dataset: &TranscriptDataset) {
+        let t0 = Instant::now();
+        for run in dataset.transcripts.iter_runs() {
+            let transcript = &run.value;
+            // TODO: Ahhh, need to pass a coords to voxel transform
+        }
+        trace!("assigned voxel counts: {:?}", t0.elapsed());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn from_prior_transcript_assignments(
         dataset: &TranscriptDataset,
@@ -1313,21 +1322,23 @@ impl VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let voxelsize_z = 1.0 / nzlayers as f32;
 
-        let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
-            let k = (((z - zmin) / voxelsize_z) as i32)
-                .min(nzlayers as i32 - 1)
-                .max(0);
-            Voxel::new(i, j, k)
-        };
+        let mut checkerboard = VoxelCheckerboard::empty(
+            voxelsize,
+            quadsize,
+            nzlayers,
+            density_nbins,
+            dataset.ngenes(),
+            xmin,
+            ymin,
+            zmin,
+        );
 
         // tally votes: count transcripts in each voxel aggregated by prior cell assignment
         let t0 = Instant::now();
         let mut nuc_votes: BTreeMap<(Voxel, CellIndex), u32> = BTreeMap::new();
         let mut cell_votes: BTreeMap<(Voxel, CellIndex), u32> = BTreeMap::new();
         for (transcript, prior) in dataset.transcripts.iter().zip(dataset.priorseg.iter()) {
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
 
             if prior.nucleus != BACKGROUND_CELL {
                 let key = (voxel, prior.nucleus);
@@ -1339,17 +1350,6 @@ impl VoxelCheckerboard {
                 *cell_votes.entry(key).or_insert(0) += 1;
             }
         }
-
-        let mut checkerboard = VoxelCheckerboard::empty(
-            voxelsize,
-            quadsize,
-            nzlayers,
-            density_nbins,
-            dataset.ngenes(),
-            xmin,
-            ymin,
-            zmin,
-        );
 
         // assign voxels based on vote winners
         let log_nucprior = f16::from_f32(nucprior.ln());
@@ -1455,7 +1455,7 @@ impl VoxelCheckerboard {
         let t0 = Instant::now();
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             let key = VoxelCountKey {
                 voxel,
                 gene: transcript.gene,
@@ -1627,12 +1627,12 @@ impl VoxelCheckerboard {
     }
 
     fn tally_cellpose_pixels_with_probs(
+        &self,
         cellprob_filename: &str,
         cellprob_discount: f32,
         masks: &Array2<u32>,
         pixel_transform: &PixelTransform,
         cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
-        coords_to_voxel: impl Fn(f32, f32, f32) -> Voxel,
         zmid: f32,
     ) {
         let cellprobs: Array2<f32> = Self::read_npy_gz(cellprob_filename).unwrap_or_else(
@@ -1648,7 +1648,7 @@ impl VoxelCheckerboard {
                 }
 
                 let (x, y) = pixel_transform.transform(j, i);
-                let voxel = coords_to_voxel(x, y, zmid);
+                let voxel = self.coords_to_voxel(x, y, zmid);
                 let cell = masks_ij - 1;
                 let prior = logistic(cellprobs_ij);
 
@@ -1664,11 +1664,11 @@ impl VoxelCheckerboard {
     }
 
     fn tally_cellpose_pixels_without_probs(
+        &self,
         prior: f32,
         masks: &Array2<u32>,
         pixel_transform: &PixelTransform,
         cell_votes: &mut BTreeMap<(Voxel, CellIndex), f32>,
-        coords_to_voxel: impl Fn(f32, f32, f32) -> Voxel,
         zmid: f32,
     ) {
         Zip::indexed(masks).for_each(|(i, j), &masks_ij| {
@@ -1677,7 +1677,7 @@ impl VoxelCheckerboard {
             }
 
             let (x, y) = pixel_transform.transform(j, i);
-            let voxel = coords_to_voxel(x, y, zmid);
+            let voxel = self.coords_to_voxel(x, y, zmid);
             let cell = masks_ij - 1;
 
             let vote = cell_votes.entry((voxel, cell)).or_insert(0.0);
@@ -1713,43 +1713,6 @@ impl VoxelCheckerboard {
         let voxelsize_z = 1.0 / nzlayers as f32;
         let zmid = dataset.z_mean();
 
-        let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
-            let k = (((z - zmin) / voxelsize_z) as i32)
-                .min(nzlayers as i32 - 1)
-                .max(0);
-            Voxel::new(i, j, k)
-        };
-
-        let t0 = Instant::now();
-        let mut cell_votes: BTreeMap<(Voxel, CellIndex), f32> = BTreeMap::new();
-
-        if let Some(cellprob_filename) = cellprob_filename {
-            Self::tally_cellpose_pixels_with_probs(
-                cellprob_filename,
-                cellprob_discount,
-                &masks,
-                pixel_transform,
-                &mut cell_votes,
-                coords_to_voxel,
-                zmid,
-            );
-        } else {
-            Self::tally_cellpose_pixels_without_probs(
-                cellprior,
-                &masks,
-                pixel_transform,
-                &mut cell_votes,
-                coords_to_voxel,
-                zmid,
-            );
-        }
-        trace!("Voting on voxel states: {:?}", t0.elapsed());
-
-        // save memory where we can
-        drop(masks);
-
         let mut checkerboard = VoxelCheckerboard::empty(
             voxelsize,
             quadsize,
@@ -1760,6 +1723,32 @@ impl VoxelCheckerboard {
             ymin,
             zmin,
         );
+
+        let t0 = Instant::now();
+        let mut cell_votes: BTreeMap<(Voxel, CellIndex), f32> = BTreeMap::new();
+
+        if let Some(cellprob_filename) = cellprob_filename {
+            checkerboard.tally_cellpose_pixels_with_probs(
+                cellprob_filename,
+                cellprob_discount,
+                &masks,
+                pixel_transform,
+                &mut cell_votes,
+                zmid,
+            );
+        } else {
+            checkerboard.tally_cellpose_pixels_without_probs(
+                cellprior,
+                &masks,
+                pixel_transform,
+                &mut cell_votes,
+                zmid,
+            );
+        }
+        trace!("Voting on voxel states: {:?}", t0.elapsed());
+
+        // save memory where we can
+        drop(masks);
 
         let t0 = Instant::now();
         let pixels_per_voxel = pixel_transform.det().abs().recip();
@@ -1859,7 +1848,7 @@ impl VoxelCheckerboard {
         // assign voxel counts
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             let key = VoxelCountKey {
                 voxel,
                 gene: transcript.gene,
@@ -1895,16 +1884,6 @@ impl VoxelCheckerboard {
         ymin = ymin.min(ymin_poly);
         let log_prior = f16::from_f32(prior.ln());
         let log_1m_prior = f16::from_f32((1.0 - prior).ln());
-        let voxelsize_z = 1.0 / nzlayers as f32;
-
-        let coords_to_voxel = |x: f32, y: f32, z: f32| {
-            let i = ((x - xmin) / voxelsize).floor().max(0.0) as i32;
-            let j = ((y - ymin) / voxelsize).floor().max(0.0) as i32;
-            let k = (((z - zmin) / voxelsize_z) as i32)
-                .min(nzlayers as i32 - 1)
-                .max(0);
-            Voxel::new(i, j, k)
-        };
 
         let mut checkerboard = VoxelCheckerboard::empty(
             voxelsize,
@@ -1991,7 +1970,7 @@ impl VoxelCheckerboard {
         let t0 = Instant::now();
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            let voxel = coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             let key = VoxelCountKey {
                 voxel,
                 gene: transcript.gene,
