@@ -1459,8 +1459,6 @@ impl VoxelCheckerboard {
         }
         trace!("assigned cell priors: {:?}", t0.elapsed());
 
-        checkerboard.initialize_counts(dataset);
-        checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1569,8 +1567,6 @@ impl VoxelCheckerboard {
         }
         checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
 
-        checkerboard.initialize_counts(dataset);
-        checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1822,8 +1818,6 @@ impl VoxelCheckerboard {
             }
         });
 
-        checkerboard.initialize_counts(dataset);
-        checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1928,9 +1922,6 @@ impl VoxelCheckerboard {
             }
         }
 
-        // assign voxel counts
-        checkerboard.initialize_counts(dataset);
-        checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1942,6 +1933,8 @@ impl VoxelCheckerboard {
         density_bandwidth: f32,
         density_nbins: usize,
     ) {
+        self.initialize_counts(dataset);
+        self.quads_coords.extend(self.quads.keys());
         self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
         self.expand_cells_vertically();
