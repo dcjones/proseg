@@ -105,7 +105,7 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let proposal = self.generate_proposal(quad, priors);
+                let proposal = self.generate_proposal(quad, priors, &voxels.frozen_cells);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
                     // In that case we should just regenerate, but we have to be careful we
@@ -133,7 +133,12 @@ impl VoxelSampler {
         trace!("sample voxels: {:?}", t0.elapsed());
     }
 
-    fn generate_proposal(&self, quad: &VoxelQuad, priors: &ModelPriors) -> Option<Proposal> {
+    fn generate_proposal(
+        &self,
+        quad: &VoxelQuad,
+        priors: &ModelPriors,
+        frozen_cells: &[bool],
+    ) -> Option<Proposal> {
         let quad_states = quad.states.read().unwrap();
         let mut connectivity = quad.connectivity.write().unwrap();
         let mut rng = rng();
@@ -156,6 +161,12 @@ impl VoxelSampler {
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
         assert!(proposed_cell != current_cell);
+
+        if (proposed_cell != BACKGROUND_CELL && frozen_cells[proposed_cell as usize])
+            || (current_cell != BACKGROUND_CELL && frozen_cells[current_cell as usize])
+        {
+            return None;
+        }
 
         if proposed_cell != BACKGROUND_CELL && rng.random::<f32>() < self.bubble_formation_prob {
             proposed_cell = BACKGROUND_CELL;

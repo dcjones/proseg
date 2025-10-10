@@ -1259,6 +1259,9 @@ pub struct VoxelCheckerboard {
     // Set of keys in `quads`. This is obviously redundant, but a
     // contrivance to avoid multiple borrows of quads in some places.
     pub quads_coords: HashSet<(u32, u32)>,
+
+    // [ncells] False where morphology updates are prohibited.
+    pub frozen_cells: Vec<bool>,
 }
 
 impl VoxelCheckerboard {
@@ -1322,6 +1325,7 @@ impl VoxelCheckerboard {
             used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
+            frozen_cells: Vec::new(),
         };
 
         // assign voxels based on vote winners
@@ -1370,6 +1374,7 @@ impl VoxelCheckerboard {
         }
         trace!("initialized voxel state: {:?}", t0.elapsed());
         checkerboard.ncells = used_cells.len();
+        checkerboard.frozen_cells = vec![false; checkerboard.ncells];
         checkerboard.used_cells_map.resize(checkerboard.ncells, 0);
         for (old_cell_id, new_cell_id) in used_cells.iter() {
             checkerboard.used_cells_map[*new_cell_id as usize] = *old_cell_id;
@@ -1480,6 +1485,7 @@ impl VoxelCheckerboard {
             used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
+            frozen_cells: Vec::new(),
         };
 
         let barcode_positions = dataset.barcode_positions.as_ref().unwrap();
@@ -1550,6 +1556,7 @@ impl VoxelCheckerboard {
         }
 
         checkerboard.ncells = cell_id_map.len();
+        checkerboard.frozen_cells = vec![false; checkerboard.ncells];
 
         dataset.original_cell_ids = vec![String::new(); cell_id_map.len()];
         for (cell_id, i) in cell_id_map {
@@ -1747,6 +1754,7 @@ impl VoxelCheckerboard {
             used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
+            frozen_cells: Vec::new(),
         };
 
         let t0 = Instant::now();
@@ -1798,6 +1806,7 @@ impl VoxelCheckerboard {
         }
 
         checkerboard.ncells = used_cells.len();
+        checkerboard.frozen_cells = vec![false; checkerboard.ncells];
 
         // Rewrite original ids
         let mut cell_id_pairs: Vec<_> = used_cells
@@ -1911,6 +1920,7 @@ impl VoxelCheckerboard {
             used_cells_map: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
+            frozen_cells: Vec::new(),
         };
 
         // TODO: Maybe we can shuffle the order of the polygons and do this more efficiently parallel.
@@ -1961,6 +1971,7 @@ impl VoxelCheckerboard {
             }
         });
         checkerboard.ncells = used_cells.len();
+        checkerboard.frozen_cells = vec![false; checkerboard.ncells];
 
         // reassign cell ids
         checkerboard.used_cells_map.resize(checkerboard.ncells, 0);
@@ -2793,7 +2804,7 @@ impl VoxelCheckerboard {
 
             let mut state_changes = Vec::new();
             quad_states.states.iter().for_each(|(voxel, state)| {
-                if state.cell == BACKGROUND_CELL {
+                if state.cell == BACKGROUND_CELL || self.frozen_cells[state.cell as usize] {
                     return;
                 }
 
@@ -2971,6 +2982,7 @@ impl VoxelCheckerboard {
             used_cells_map: self.used_cells_map,
             quads,
             quads_coords,
+            frozen_cells: self.frozen_cells,
         };
 
         for run in dataset.transcripts.iter_runs() {
