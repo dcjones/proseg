@@ -1302,7 +1302,16 @@ impl VoxelCheckerboard {
         let t0 = Instant::now();
         for run in dataset.transcripts.iter_runs() {
             let transcript = &run.value;
-            // TODO: Ahhh, need to pass a coords to voxel transform
+            let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelCountKey {
+                voxel,
+                gene: transcript.gene,
+                offset: VoxelOffset::zero(),
+            };
+
+            let mut quad_counts = self.write_quad_counts(voxel);
+            let count = quad_counts.counts.entry(key).or_insert(0_u32);
+            *count += run.len;
         }
         trace!("assigned voxel counts: {:?}", t0.elapsed());
     }
@@ -1320,7 +1329,6 @@ impl VoxelCheckerboard {
         density_nbins: usize,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
-        let voxelsize_z = 1.0 / nzlayers as f32;
 
         let mut checkerboard = VoxelCheckerboard::empty(
             voxelsize,
@@ -1451,24 +1459,8 @@ impl VoxelCheckerboard {
         }
         trace!("assigned cell priors: {:?}", t0.elapsed());
 
-        // assign voxel counts
-        let t0 = Instant::now();
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let mut quad_counts = checkerboard.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
-        }
-        trace!("assigned voxel counts: {:?}", t0.elapsed());
+        checkerboard.initialize_counts(dataset);
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
-
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1577,22 +1569,8 @@ impl VoxelCheckerboard {
         }
         checkerboard.used_cells_map = (0..checkerboard.ncells as u32).collect();
 
-        // count transcripts
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let mut quad_counts = checkerboard.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
-        }
+        checkerboard.initialize_counts(dataset);
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
-
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1710,7 +1688,6 @@ impl VoxelCheckerboard {
         );
 
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
-        let voxelsize_z = 1.0 / nzlayers as f32;
         let zmid = dataset.z_mean();
 
         let mut checkerboard = VoxelCheckerboard::empty(
@@ -1845,23 +1822,8 @@ impl VoxelCheckerboard {
             }
         });
 
-        // assign voxel counts
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let mut quad_counts = checkerboard.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
-        }
-
+        checkerboard.initialize_counts(dataset);
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
-
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
     }
@@ -1967,22 +1929,7 @@ impl VoxelCheckerboard {
         }
 
         // assign voxel counts
-        let t0 = Instant::now();
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let mut quad_counts = checkerboard.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
-        }
-        trace!("assigned voxel counts: {:?}", t0.elapsed());
-
+        checkerboard.initialize_counts(dataset);
         checkerboard.quads_coords.extend(checkerboard.quads.keys());
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
@@ -2958,19 +2905,7 @@ impl VoxelCheckerboard {
             frozen_cells: self.frozen_cells,
         };
 
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = new_checkerboard.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let mut quad_counts = new_checkerboard.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
-        }
+        new_checkerboard.initialize_counts(dataset);
 
         // initialize edge voxel sets
         new_checkerboard.mirror_quad_edges();
