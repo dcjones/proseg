@@ -1768,6 +1768,9 @@ impl VoxelCheckerboard {
 
         checkerboard.ncells = used_cells.len();
         checkerboard.frozen_cells = vec![false; checkerboard.ncells];
+        for (&(_original_cell_id, frozen), &cell_id) in used_cells.iter() {
+            checkerboard.frozen_cells[cell_id as usize] = frozen;
+        }
 
         // Rewrite original ids
         let mut cell_id_pairs: Vec<_> = used_cells
