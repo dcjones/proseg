@@ -1,4 +1,10 @@
 
+# 3.0.9
+ - Add a `--cellpose-masks-fixed` to allow a second auxiliary segmentation mask to include
+   additional prior cell boundaries that will not be modified by proseg.
+ - Support reading transcripts and cell polygon from spatialdata zarr files.
+ - Fix some cases missed by `--enforce-connectivity`.
+
 # 3.0.8
  - Fix an issue where `original_cell_id` was incorrectly assigned for some data.
 
