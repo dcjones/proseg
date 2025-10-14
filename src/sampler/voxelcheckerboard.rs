@@ -1620,16 +1620,17 @@ impl VoxelCheckerboard {
             .and(frozen_masks)
             .and(cellprobs)
             .for_each(|(i, j), &masks_ij, &frozen_masks_ij, &cellprobs_ij| {
-                if masks_ij == 0 {
+                if masks_ij == 0 && frozen_masks_ij == 0 {
                     return;
                 }
 
                 let (x, y) = pixel_transform.transform(j, i);
                 let voxel = self.coords_to_voxel(x, y, zmid);
-                let vote = cell_votes.entry((voxel, masks_ij, false)).or_insert(0.0);
-                *vote += cellprobs_ij;
 
-                if frozen_masks_ij != 0 {
+                if masks_ij != 0 {
+                    let vote = cell_votes.entry((voxel, masks_ij, false)).or_insert(0.0);
+                    *vote += cellprobs_ij;
+                } else if frozen_masks_ij != 0 {
                     let vote = cell_votes
                         .entry((voxel, frozen_masks_ij, true))
                         .or_insert(0.0);
