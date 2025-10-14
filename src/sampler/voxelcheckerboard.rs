@@ -61,7 +61,7 @@ pub struct TranscriptMetadata {
 }
 
 // Simple affine transform matrix to map pixel coordinates onto slide microns
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct PixelTransform {
     pub tx: [f32; 3],
     pub ty: [f32; 3],
@@ -1262,6 +1262,11 @@ pub struct VoxelCheckerboard {
 
     // [ncells] False where morphology updates are prohibited.
     pub frozen_cells: Vec<bool>,
+
+    // [nxpixels, nypixels] If initialized using a auxiliary frozen mask, we neeed to
+    // store it here so we can re-initialize at a higher resolution when `increase_resuliton` is called.
+    frozen_masks: Option<Array2<u32>>,
+    frozen_masks_transform: Option<PixelTransform>,
 }
 
 impl VoxelCheckerboard {
@@ -1295,6 +1300,8 @@ impl VoxelCheckerboard {
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
             frozen_cells: Vec::new(),
+            frozen_masks: None,
+            frozen_masks_transform: None,
         }
     }
 
@@ -1673,7 +1680,7 @@ impl VoxelCheckerboard {
             Array2::from_elem((masks.shape()[0], masks.shape()[1]), cellprior)
         };
 
-        let frozen_masks = if let Some(frozen_masks_filename) = frozen_masks_filename {
+        let mut frozen_masks = if let Some(frozen_masks_filename) = frozen_masks_filename {
             let frozen_masks: Array2<u32> = Self::read_npy_gz(frozen_masks_filename).unwrap_or_else(
                 |_err| panic!("Unable to read fixed cell masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
             );
@@ -1717,7 +1724,6 @@ impl VoxelCheckerboard {
         // save memory where we can
         drop(masks);
         drop(cellprobs);
-        drop(frozen_masks);
 
         let t0 = Instant::now();
         let pixels_per_voxel = pixel_transform.det().abs().recip();
@@ -1728,7 +1734,7 @@ impl VoxelCheckerboard {
         for ((voxel, cell, frozen), prior_sum) in cell_votes {
             if voxel != current_voxel {
                 if !current_voxel.is_oob() {
-                    let prior = (prior_sum / pixels_per_voxel).min(0.99);
+                    let prior = (vote_winner_prior_sum / pixels_per_voxel).min(0.99);
                     let next_cell_id = used_cells.len() as CellIndex;
                     let cell_id = *used_cells.entry(vote_winner).or_insert(next_cell_id);
                     checkerboard.insert_state(
@@ -1764,6 +1770,21 @@ impl VoxelCheckerboard {
                     log_1m_prior: f16::from_f32((1.0 - prior).ln()),
                 },
             );
+        }
+
+        if frozen_masks_filename.is_some() {
+            // Rewriting the frozen segmentation mask to use assigned cell ids so we can more easily re-use
+            // it when changing voxel resolution.
+            frozen_masks.iter_mut().for_each(|value| {
+                *value = used_cells
+                    .get(&(*value, true))
+                    .cloned()
+                    .unwrap_or(BACKGROUND_CELL);
+            });
+            checkerboard.frozen_masks = Some(frozen_masks);
+            checkerboard.frozen_masks_transform = Some(*pixel_transform);
+        } else {
+            drop(frozen_masks);
         }
 
         checkerboard.ncells = used_cells.len();
@@ -1823,6 +1844,7 @@ impl VoxelCheckerboard {
         //         }
         //     }
         // });
+        //
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
         checkerboard
@@ -1943,7 +1965,7 @@ impl VoxelCheckerboard {
         self.quads_coords.extend(self.quads.keys());
         self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
-        self.expand_cells_vertically();
+        self.expand_cells_vertically(false);
         self.pop_bubbles();
         self.mirror_quad_edges();
         self.build_edge_sets();
@@ -2685,7 +2707,7 @@ impl VoxelCheckerboard {
         metadata
     }
 
-    fn expand_cells_vertically(&mut self) {
+    fn expand_cells_vertically(&mut self, only_frozen: bool) {
         for _ in 0..self.nzlayers - 1 {
             self.quads.par_iter().for_each(|(_quad_pos, quad)| {
                 let mut quad_states = quad.states.write().unwrap();
@@ -2693,6 +2715,10 @@ impl VoxelCheckerboard {
                 let mut state_changes = Vec::new();
                 quad_states.states.iter().for_each(|(voxel, state)| {
                     if state.cell == BACKGROUND_CELL {
+                        return;
+                    }
+
+                    if only_frozen && !self.frozen_cells[state.cell as usize] {
                         return;
                     }
 
@@ -2857,6 +2883,8 @@ impl VoxelCheckerboard {
         let voxelsize_z = self.voxelsize_z;
         let voxel_volume = voxelsize * voxelsize * voxelsize_z;
 
+        let reinit_frozen = self.frozen_masks.is_some();
+
         let quads = Mutex::new(HashMap::new());
         self.quads.par_drain().for_each(|((u, v), old_quad)| {
             let new_quad = VoxelQuad::new(self.kmax, quadsize, u, v);
@@ -2864,6 +2892,13 @@ impl VoxelCheckerboard {
                 let old_quad_states = old_quad.states.read().unwrap();
                 let mut new_quad_states = new_quad.states.write().unwrap();
                 old_quad_states.states.iter().for_each(|(voxel, state)| {
+                    if state.cell != BACKGROUND_CELL
+                        && self.frozen_cells[state.cell as usize]
+                        && reinit_frozen
+                    {
+                        return;
+                    }
+
                     let [i, j, k] = voxel.coords();
                     for s in 0..scale as i32 {
                         for t in 0..scale as i32 {
@@ -2902,7 +2937,68 @@ impl VoxelCheckerboard {
             quads,
             quads_coords,
             frozen_cells: self.frozen_cells,
+            frozen_masks: self.frozen_masks,
+            frozen_masks_transform: self.frozen_masks_transform,
         };
+
+        // If we are using an auxiliary frozen segmentation mask, we need to
+        // reinitialize those cells at this higher resolution.
+        if let Some(frozen_masks) = &new_checkerboard.frozen_masks {
+            let pixel_transform = &new_checkerboard.frozen_masks_transform.unwrap();
+            let pixels_per_voxel = pixel_transform.det().abs().recip();
+            let zmid = new_checkerboard.zmin
+                + (new_checkerboard.nzlayers as f32) * new_checkerboard.voxelsize_z;
+
+            let mut cell_votes = BTreeMap::new();
+            Zip::indexed(frozen_masks).for_each(|(i, j), &frozen_masks_ij| {
+                if frozen_masks_ij == BACKGROUND_CELL {
+                    return;
+                }
+
+                let (x, y) = pixel_transform.transform(j, i);
+                let voxel = new_checkerboard.coords_to_voxel(x, y, zmid);
+                let vote = cell_votes
+                    .entry((voxel, frozen_masks_ij))
+                    .or_insert(0.0_f32);
+                *vote += 1_f32;
+            });
+
+            let mut current_voxel = Voxel::oob();
+            let mut vote_winner = BACKGROUND_CELL;
+            let mut vote_winner_prior_sum: f32 = 0.0;
+            for ((voxel, cell), prior_sum) in cell_votes {
+                if voxel != current_voxel {
+                    if !current_voxel.is_oob() {
+                        let prior = (vote_winner_prior_sum / pixels_per_voxel).min(0.99);
+                        new_checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                            cell: vote_winner,
+                            prior_cell: vote_winner,
+                            log_prior: f16::from_f32(prior.ln()),
+                            log_1m_prior: f16::from_f32((1.0 - prior).ln()),
+                        });
+                    }
+
+                    vote_winner = cell;
+                    vote_winner_prior_sum = prior_sum;
+                    current_voxel = voxel;
+                } else if prior_sum > vote_winner_prior_sum {
+                    vote_winner = cell;
+                    vote_winner_prior_sum = prior_sum;
+                }
+            }
+
+            if !current_voxel.is_oob() {
+                let prior = (vote_winner_prior_sum / pixels_per_voxel).min(0.99);
+                new_checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                    cell: vote_winner,
+                    prior_cell: vote_winner,
+                    log_prior: f16::from_f32(prior.ln()),
+                    log_1m_prior: f16::from_f32((1.0 - prior).ln()),
+                });
+            }
+
+            new_checkerboard.expand_cells_vertically(true);
+        }
 
         new_checkerboard.initialize_counts(dataset);
 
