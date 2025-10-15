@@ -1,4 +1,8 @@
 
+# 3.0.10
+
+ - Fix compile errors due to breaking changes in zarrs.
+
 # 3.0.9
  - Add a `--cellpose-masks-fixed` to allow a second auxiliary segmentation mask to include
    additional prior cell boundaries that will not be modified by proseg.

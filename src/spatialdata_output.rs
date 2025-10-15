@@ -4,7 +4,7 @@
 use arrow::array::RecordBatch;
 use geo::geometry::Coord;
 use geo::{MapCoords, MultiPolygon};
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, s};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
@@ -520,7 +520,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
         attr.insert("encoding-type".to_string(), "string".into());
         attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-        arr.store_chunk_elements(&[], &[value.clone()])?;
+        arr.store_array_subset_elements(&arr.subset_all(), &[value.clone()])?;
         arr.store_metadata()?;
     }
 
@@ -621,11 +621,9 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     attr.insert("encoding-type".to_string(), "string-array".into());
     attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-    arr.store_array_subset_ndarray(
-        &[0],
-        (0..ncells)
-            .map(|i| format!("{i}"))
-            .collect::<Array1<String>>(),
+    arr.store_array_subset_elements(
+        &arr.subset_all(),
+        &(0..ncells).map(|i| format!("{i}")).collect::<Vec<String>>(),
     )?;
     arr.store_metadata()?;
 
@@ -641,7 +639,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_ndarray(&[0], (0..ncells as u32).collect::<Array1<u32>>())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &(0..ncells as u32).collect::<Vec<u32>>())?;
     arr.store_metadata()?;
 
     // original_cell_id
@@ -661,13 +659,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     attr.insert("encoding-type".to_string(), "string-array".into());
     attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-    arr.store_array_subset_ndarray(
-        &[0],
-        original_cell_ids
-            .iter()
-            .cloned()
-            .collect::<Array1<String>>(),
-    )?;
+    arr.store_array_subset_elements(&arr.subset_all(), original_cell_ids)?;
     arr.store_metadata()?;
 
     // centroid_x
@@ -681,7 +673,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(&[0], cell_centroids.column(0).to_owned())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(0).to_vec())?;
     arr.store_metadata()?;
 
     // centroid_y
@@ -695,7 +687,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(&[0], cell_centroids.column(1).to_owned())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(1).to_vec())?;
     arr.store_metadata()?;
 
     // centroid_z
@@ -709,7 +701,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(&[0], cell_centroids.column(2).to_owned())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(2).to_vec())?;
     arr.store_metadata()?;
 
     // cluster
@@ -723,7 +715,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(&[0], params.z.clone())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &params.z.to_vec())?;
     arr.store_metadata()?;
 
     // volume
@@ -737,13 +729,13 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(
-        &[0],
-        params
+    arr.store_array_subset_elements(
+        &arr.subset_all(),
+        &params
             .cell_voxel_count
             .iter()
             .map(|v| v as f32 * params.voxel_volume)
-            .collect::<Array1<f32>>(),
+            .collect::<Vec<f32>>(),
     )?;
     arr.store_metadata()?;
 
@@ -758,13 +750,13 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(
-        &[0],
-        params
+    arr.store_array_subset_elements(
+        &arr.subset_all(),
+        &params
             .total_cell_surface_area()
             .iter()
             .map(|v| *v as f32)
-            .collect::<Array1<f32>>(),
+            .collect::<Vec<f32>>(),
     )?;
     arr.store_metadata()?;
 
@@ -779,7 +771,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
-    arr.store_array_subset_ndarray(&[0], params.cell_scale.clone())?;
+    arr.store_array_subset_elements(&arr.subset_all(), &params.cell_scale.to_vec())?;
     arr.store_metadata()?;
 
     Ok(())
@@ -834,7 +826,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     attr.insert("encoding-type".to_string(), "string-array".into());
     attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-    arr.store_array_subset_ndarray(&[0], gene_names.iter().cloned().collect::<Array1<String>>())?;
+    arr.store_array_subset_elements(&arr.subset_all(), gene_names)?;
     arr.store_metadata()?;
 
     // gene (which is just a copy of _index)
@@ -854,7 +846,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     attr.insert("encoding-type".to_string(), "string-array".into());
     attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-    arr.store_array_subset_ndarray(&[0], gene_names.iter().cloned().collect::<Array1<String>>())?;
+    arr.store_array_subset_elements(&arr.subset_all(), gene_names)?;
     arr.store_metadata()?;
 
     // total_count
@@ -874,7 +866,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
         total_counts[run.value.gene as usize] += run.len;
     }
 
-    arr.store_array_subset_ndarray(&[0], total_counts)?;
+    arr.store_array_subset_elements(&arr.subset_all(), &total_counts.to_vec())?;
     arr.store_metadata()?;
 
     // λ_bg_k
@@ -890,7 +882,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
             None,
         )?;
 
-        arr.store_array_subset_ndarray(&[0], λ_bg_k.to_owned())?;
+        arr.store_array_subset_elements(&arr.subset_all(), &λ_bg_k.to_vec())?;
         arr.store_metadata()?;
     }
 
@@ -929,7 +921,18 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_ndarray(&[0, 0], cell_centroids.clone())?;
+    // Convert Array2 to Vec in row-major (C) order for zarrs
+    let cell_centroids_vec: Vec<f32> = if cell_centroids.is_standard_layout() {
+        cell_centroids.slice(s![.., 0..2]).iter().copied().collect()
+    } else {
+        cell_centroids
+            .as_standard_layout()
+            .slice(s![.., 0..2])
+            .iter()
+            .copied()
+            .collect()
+    };
+    arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids_vec)?;
     arr.store_metadata()?;
 
     Ok(())
@@ -996,7 +999,8 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_ndarray(&[0], data).unwrap();
+    arr.store_array_subset_elements(&arr.subset_all(), &data.to_vec())
+        .unwrap();
     arr.store_metadata()?;
 
     let arr = new_zarr_array(
@@ -1010,7 +1014,8 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_ndarray(&[0], indices).unwrap();
+    arr.store_array_subset_elements(&arr.subset_all(), &indices.to_vec())
+        .unwrap();
     arr.store_metadata()?;
 
     let arr = new_zarr_array(
@@ -1024,7 +1029,8 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_ndarray(&[0], indptr).unwrap();
+    arr.store_array_subset_elements(&arr.subset_all(), &indptr.to_vec())
+        .unwrap();
     arr.store_metadata()?;
 
     Ok(())
