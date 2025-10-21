@@ -104,6 +104,10 @@ struct Args {
     #[arg(long, default_value = None)]
     cellpose_masks_fixed: Option<String>,
 
+    /// Exclude fixed cells from the background noise model.
+    #[arg(long, default_value_t = false)]
+    unmodeled_fixed_cells: bool,
+
     /// Spaceranger Visium HD segmentation parquet file.
     #[arg(long, default_value = None)]
     spaceranger_barcode_mappings: Option<String>,
@@ -881,6 +885,7 @@ fn main() {
         },
 
         use_cell_scales: args.use_scaled_cells,
+        unmodeled_fixed_cells: args.unmodeled_fixed_cells,
 
         // min_cell_volume: 1e-6 * μ_vol0,
         μ_μ_volume: (μ_vol0).ln(),

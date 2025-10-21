@@ -38,7 +38,7 @@ impl ParamSampler {
         trace!("sample_volume_params: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_foreground_background(params, purge_sparse_mats);
+        self.sample_foreground_background(priors, params, purge_sparse_mats);
         trace!("sample_foreground_background: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -123,7 +123,12 @@ impl ParamSampler {
             });
     }
 
-    fn sample_foreground_background(&self, params: &mut ModelParams, purge: bool) {
+    fn sample_foreground_background(
+        &self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        purge: bool,
+    ) {
         // overwrite params.background_counts with params.unassigned_counts
         for (b_d, u_d) in params
             .background_counts
@@ -146,9 +151,10 @@ impl ParamSampler {
             .counts
             .par_rows()
             .zip(params.foreground_counts.par_rows())
+            .zip(&params.frozen_cells)
             .enumerate()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (cell, (row, foreground_row))| {
+            .for_each_init(rng, |rng, (cell, ((row, foreground_row), &is_frozen))| {
                 let mut foreground_row = foreground_row.write();
 
                 let mut λ_cg = 0.0;
@@ -169,7 +175,13 @@ impl ParamSampler {
                         gene_layer_density.density as usize,
                     ]];
 
-                    let count_fg = Binomial::new(count as u64, (λ_cg / (λ_cg + λ_bg)) as f64)
+                    let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
+                        1.0
+                    } else {
+                        λ_cg / (λ_cg + λ_bg)
+                    };
+
+                    let count_fg = Binomial::new(count as u64, fg_prob as f64)
                         .unwrap()
                         .sample(rng) as u32;
                     let count_bg = count - count_fg;

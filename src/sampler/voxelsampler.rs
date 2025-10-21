@@ -105,7 +105,7 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let proposal = self.generate_proposal(quad, priors, &voxels.frozen_cells);
+                let proposal = self.generate_proposal(quad, priors, &params.frozen_cells);
                 if proposal.is_none() {
                     // TODO: We may be here because we randomly generated an oob proposal.
                     // In that case we should just regenerate, but we have to be careful we

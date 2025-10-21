@@ -46,6 +46,7 @@ pub struct ModelPriors {
     pub burnin_dispersion: Option<f32>,
 
     pub use_cell_scales: bool,
+    pub unmodeled_fixed_cells: bool,
 
     // pub min_cell_volume: f32,
 
@@ -316,6 +317,9 @@ pub struct ModelParams {
     // [density_nbins]
     background_region_volume: Array1<f32>,
 
+    // [ncells] True where morphology updates are prohibited.
+    pub frozen_cells: Vec<bool>,
+
     // time, which is incremented after every iteration
     t: u32,
 }
@@ -465,6 +469,8 @@ impl ModelParams {
         let mut background_region_volume = Array1::zeros(density_nbins);
         voxels.compute_background_region_volumes(&mut background_region_volume);
 
+        let frozen_cells = voxels.frozen_cells.clone();
+
         let t = 0;
 
         ModelParams {
@@ -513,6 +519,7 @@ impl ModelParams {
             nunfactored,
             voxel_volume,
             background_region_volume,
+            frozen_cells,
             t,
         }
     }
