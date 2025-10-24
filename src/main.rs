@@ -2,6 +2,7 @@
 
 use clap::Parser;
 
+mod anndata_input;
 mod output;
 mod sampler;
 mod schemas;
@@ -24,9 +25,10 @@ use std::env;
 use std::path::Path;
 use std::time::Instant;
 
+use anndata_input::read_anndata_zarr_transcripts;
 use output::*;
 use schemas::OutputFormat;
-use spatialdata_input::{read_cell_polygons_zarr, read_transcripts_zarr};
+use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::write_spatialdata_zarr;
 
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
@@ -68,7 +70,11 @@ struct Args {
     #[arg(long, default_value_t = false)]
     merfish: bool,
 
-    /// Input file is a spatialdata zarr directory or zip file
+    /// Input is a zarr encoded AnnData object
+    #[arg(long, default_value_t = false)]
+    anndata: bool,
+
+    /// Input file is a zarr encoded spatialdata object
     #[arg(long, default_value_t = false)]
     zarr: bool,
 
@@ -693,8 +699,11 @@ fn main() {
 
     let t0 = Instant::now();
 
-    let mut dataset = if args.zarr {
-        read_transcripts_zarr(
+    let spatialdata_zarr = args.zarr && !args.anndata;
+    let anndata_zarr = args.anndata;
+
+    let mut dataset = if spatialdata_zarr {
+        read_spatialdata_zarr_transcripts(
             &args.transcript_csv,
             &excluded_genes,
             &expect_arg(args.x_column, "x"),
@@ -703,6 +712,15 @@ fn main() {
             &expect_arg(args.gene_column, "gene"),
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("".to_string()),
+            args.coordinate_scale.unwrap_or(1.0),
+        )
+    } else if anndata_zarr {
+        read_anndata_zarr_transcripts(
+            &args.transcript_csv,
+            &excluded_genes,
+            &args.gene_column,
+            &args.cell_id_column,
+            &args.cell_id_unassigned.unwrap_or("0".to_string()),
             args.coordinate_scale.unwrap_or(1.0),
         )
     } else if args.visiumhd {
@@ -730,7 +748,7 @@ fn main() {
             args.non_unique_cell_ids,
         )
     };
-    println!("Finished reading zarr");
+    println!("Finished reading input");
 
     if dataset.ncells > 0 {
         dataset.filter_cellfree_transcripts(args.max_transcript_nucleus_distance);
@@ -764,7 +782,7 @@ fn main() {
                 "--zarr-shape-geometry-column and --zarr-shape-cell-id-column must be specified."
             );
         }
-        let cell_polygons = read_cell_polygons_zarr(
+        let cell_polygons = read_spatialdata_zarr_cell_polygons(
             &args.transcript_csv,
             &args.zarr_shape.unwrap(),
             &args.zarr_shape_geometry_column.unwrap(),

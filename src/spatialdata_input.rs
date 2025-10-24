@@ -64,7 +64,7 @@ impl CellPolygons {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn read_transcripts_zarr(
+pub fn read_spatialdata_zarr_transcripts(
     filename: &str,
     excluded_genes: &Option<Regex>,
     x_column: &str,
@@ -143,7 +143,7 @@ fn read_transcripts_zarr_store(
     }
 }
 
-pub fn read_cell_polygons_zarr(
+pub fn read_spatialdata_zarr_cell_polygons(
     filename: &str,
     cell_shapes: &str,
     cell_shapes_geometry: &str,
