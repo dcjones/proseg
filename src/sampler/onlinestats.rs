@@ -139,6 +139,7 @@ impl ScalarQuantileEstimator {
     }
 }
 
+/*
 // Estimating transcript count quantiles using the P² algorithm
 pub struct CountQuantileEstimator {
     estimates: SparseMat<P2Values, u32>,
@@ -199,6 +200,7 @@ impl CountQuantileEstimator {
         self.t += 1;
     }
 }
+*/
 
 pub struct CountMeanEstimator {
     pub estimates: SparseMat<f32, u32>,

@@ -50,12 +50,12 @@ impl ParamSampler {
         trace!("sample_background_rates: {:?}", t0.elapsed());
 
         if !burnin && record_samples {
-            params
-                .foreground_counts_lower
-                .update(&params.foreground_counts);
-            params
-                .foreground_counts_upper
-                .update(&params.foreground_counts);
+            // params
+            //     .foreground_counts_lower
+            //     .update(&params.foreground_counts);
+            // params
+            //     .foreground_counts_upper
+            //     .update(&params.foreground_counts);
             params
                 .foreground_counts_mean
                 .update(&params.foreground_counts);

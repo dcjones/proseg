@@ -22,7 +22,7 @@ use multinomial::Multinomial;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, Array3, Axis, Zip, s};
 use num::traits::Zero;
-use onlinestats::{CountMeanEstimator, CountQuantileEstimator};
+use onlinestats::CountMeanEstimator;
 use rand::rng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use shardedvec::ShardedVec;
@@ -214,8 +214,8 @@ pub struct ModelParams {
     pub foreground_counts: SparseMat<u32, u32>,
 
     // [ncells, ngenes] upper and lower credible intervals for cell-by-gene counts
-    foreground_counts_lower: CountQuantileEstimator,
-    foreground_counts_upper: CountQuantileEstimator,
+    // foreground_counts_lower: CountQuantileEstimator,
+    // foreground_counts_upper: CountQuantileEstimator,
     pub foreground_counts_mean: CountMeanEstimator,
 
     // [density_nbins, nlayers, ngenes] background transcripts counts
@@ -397,10 +397,10 @@ impl ModelParams {
                 }
             });
 
-        let foreground_counts_lower =
-            CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
-        let foreground_counts_upper =
-            CountQuantileEstimator::new(ncells, ngenes, 0.95, CELL_SHARDSIZE);
+        // let foreground_counts_lower =
+        //     CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
+        // let foreground_counts_upper =
+        //     CountQuantileEstimator::new(ncells, ngenes, 0.95, CELL_SHARDSIZE);
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
         let background_counts = (0..density_nbins)
             .map(|_density| {
@@ -482,8 +482,8 @@ impl ModelParams {
             cell_scale,
             counts,
             foreground_counts,
-            foreground_counts_lower,
-            foreground_counts_upper,
+            // foreground_counts_lower,
+            // foreground_counts_upper,
             foreground_counts_mean,
             unassigned_counts,
             background_counts,

@@ -280,19 +280,19 @@ where
     }
 }
 
-impl<T, J> SparseRowReadLock<'_, T, J>
-where
-    T: Clone + Copy + Zero,
-    J: Clone + Increment + Copy + Ord + Zero + Debug,
-{
-    pub fn get(&self, j: J) -> T {
-        assert!(j < self.j_bound.inc(self.j_bound));
-        self.shard
-            .get(&(self.i as u32, j))
-            .copied()
-            .unwrap_or(T::zero())
-    }
-}
+// impl<T, J> SparseRowReadLock<'_, T, J>
+// where
+//     T: Clone + Copy + Zero,
+//     J: Clone + Increment + Copy + Ord + Zero + Debug,
+// {
+//     pub fn get(&self, j: J) -> T {
+//         assert!(j < self.j_bound.inc(self.j_bound));
+//         self.shard
+//             .get(&(self.i as u32, j))
+//             .copied()
+//             .unwrap_or(T::zero())
+//     }
+// }
 
 // impl<'a, T, J> IntoIterator for &'a SparseRowReadLock<'a, T, J>
 // where
@@ -366,14 +366,14 @@ where
     }
 }
 
-impl<T, J> SparseRowWriteLock<'_, T, J>
-where
-    J: Ord + Increment + Copy + Debug + Zero,
-{
-    pub fn iter_nonzeros_mut(&mut self) -> SparseRowMutNonzeroIterator<'_, T, J> {
-        SparseRowMutNonzeroIterator::new(self, self.i)
-    }
-}
+// impl<T, J> SparseRowWriteLock<'_, T, J>
+// where
+//     J: Ord + Increment + Copy + Debug + Zero,
+// {
+//     pub fn iter_nonzeros_mut(&mut self) -> SparseRowMutNonzeroIterator<'_, T, J> {
+//         SparseRowMutNonzeroIterator::new(self, self.i)
+//     }
+// }
 
 pub struct SparseRowNonzeroIterator<'a, T, J> {
     _row: &'a SparseRowReadLock<'a, T, J>,
@@ -502,19 +502,19 @@ pub struct SparseRowMutNonzeroIterator<'a, T, J> {
     pub iter: std::collections::btree_map::RangeMut<'a, (u32, J), T>,
 }
 
-impl<'a, T, J> SparseRowMutNonzeroIterator<'a, T, J>
-where
-    J: Ord + Increment + Zero + Copy + Debug,
-{
-    fn new(row: &'a mut SparseRowWriteLock<'_, T, J>, i: usize) -> Self {
-        let iter = row.shard.range_mut((
-            Included((i as u32, J::zero())),
-            Excluded((i as u32, row.j_bound.inc(row.j_bound))),
-        ));
+// impl<'a, T, J> SparseRowMutNonzeroIterator<'a, T, J>
+// where
+//     J: Ord + Increment + Zero + Copy + Debug,
+// {
+//     fn new(row: &'a mut SparseRowWriteLock<'_, T, J>, i: usize) -> Self {
+//         let iter = row.shard.range_mut((
+//             Included((i as u32, J::zero())),
+//             Excluded((i as u32, row.j_bound.inc(row.j_bound))),
+//         ));
 
-        SparseRowMutNonzeroIterator { iter }
-    }
-}
+//         SparseRowMutNonzeroIterator { iter }
+//     }
+// }
 
 impl<'a, T, J> Iterator for SparseRowMutNonzeroIterator<'a, T, J>
 where
