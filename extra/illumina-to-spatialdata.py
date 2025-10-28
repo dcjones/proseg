@@ -43,7 +43,7 @@ if __name__ == "__main__":
         print(f"Matrix root path does not exist: {matrix_root_path}")
         exit(1)
 
-    X = mmread(matrix_root_path / "matrix.mtx.gz").tocsr().transpose()
+    X = mmread(matrix_root_path / "matrix.mtx.gz").transpose().tocsr()
     genes = pd.read_csv(
         matrix_root_path / "features.tsv.gz",
         header=None,
@@ -53,8 +53,9 @@ if __name__ == "__main__":
     )
 
     coords = pd.read_csv(
-        matrix_root_path / "coords.tsv.gz", header=None, sep=":", names=["x", "y"]
+        matrix_root_path / "coords.tsv.gz", header=None, sep=":", names=["y", "x"]
     )
+    coords = coords[["x", "y"]]
 
     # nanometers to micrometers (nuclei polygons are already in microns)
     coords["x"] /= 1000
