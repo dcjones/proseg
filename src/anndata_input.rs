@@ -79,7 +79,7 @@ fn read_anndata_zarr_transcripts_from_store(
     let (xs, ys) = read_coordinates(store.clone());
 
     let (cell_ids, original_cell_ids) =
-        read_cell_assignments(store.clone(), cell_id_column, cell_id_unassigned);
+        read_cell_assignments(store.clone(), cell_id_column, cell_id_unassigned, xs.len());
 
     let mut nruns = 0;
     for (&count, &j) in data.iter().zip(&indices) {
@@ -213,22 +213,24 @@ fn read_cell_assignments(
     store: Arc<FilesystemStore>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    n: usize,
 ) -> (Vec<u32>, HashMap<String, u32>) {
-    let cell_id_column = cell_id_column
-        .as_ref()
-        .unwrap_or_else(|| panic!("No cell ID column specified"));
-    let path = format!("/obs/{cell_id_column}");
+    if let Some(cell_id_column) = cell_id_column {
+        let path = format!("/obs/{cell_id_column}");
 
-    let arr = zarrs::array::Array::open(store.clone(), &path)
-        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", "/obsm/spatial"));
+        let arr = zarrs::array::Array::open(store.clone(), &path)
+            .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", "/obsm/spatial"));
 
-    match arr.data_type() {
-        DataType::String => read_ids_from_str(&arr, cell_id_unassigned),
-        DataType::Int32 => read_ids_from_int::<i32, FilesystemStore>(&arr, cell_id_unassigned),
-        DataType::Int64 => read_ids_from_int::<i64, FilesystemStore>(&arr, cell_id_unassigned),
-        DataType::UInt32 => read_ids_from_int::<u32, FilesystemStore>(&arr, cell_id_unassigned),
-        DataType::UInt64 => read_ids_from_int::<u64, FilesystemStore>(&arr, cell_id_unassigned),
-        _ => panic!("Unsupported data type for cell IDs"),
+        match arr.data_type() {
+            DataType::String => read_ids_from_str(&arr, cell_id_unassigned),
+            DataType::Int32 => read_ids_from_int::<i32, FilesystemStore>(&arr, cell_id_unassigned),
+            DataType::Int64 => read_ids_from_int::<i64, FilesystemStore>(&arr, cell_id_unassigned),
+            DataType::UInt32 => read_ids_from_int::<u32, FilesystemStore>(&arr, cell_id_unassigned),
+            DataType::UInt64 => read_ids_from_int::<u64, FilesystemStore>(&arr, cell_id_unassigned),
+            _ => panic!("Unsupported data type for cell IDs"),
+        }
+    } else {
+        (vec![BACKGROUND_CELL; n], HashMap::new())
     }
 }
 

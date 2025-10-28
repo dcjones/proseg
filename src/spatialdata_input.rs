@@ -17,6 +17,7 @@ use zarrs::filesystem::FilesystemStore;
 use zarrs::group::Group;
 use zarrs::storage::StoreKey;
 
+use crate::anndata_input::read_anndata_zarr_transcripts;
 use crate::sampler::runvec::RunVec;
 use crate::sampler::transcripts::{
     BACKGROUND_CELL, CellIndex, PriorTranscriptSeg, Transcript, TranscriptDataset, compact_priorseg,
@@ -66,11 +67,12 @@ impl CellPolygons {
 #[allow(clippy::too_many_arguments)]
 pub fn read_spatialdata_zarr_transcripts(
     filename: &str,
+    table: &Option<String>,
     excluded_genes: &Option<Regex>,
     x_column: &str,
     y_column: &str,
     z_column: &Option<String>,
-    feature_column: &str,
+    feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
     coordinate_scale: f32,
@@ -80,6 +82,22 @@ pub fn read_spatialdata_zarr_transcripts(
         panic!("File/directory not found: {filename}");
     }
 
+    if let Some(table) = table {
+        let table_path = path.join("tables").join(table);
+        return read_anndata_zarr_transcripts(
+            table_path.to_str().unwrap(),
+            excluded_genes,
+            feature_column,
+            cell_id_column,
+            cell_id_unassigned,
+            coordinate_scale,
+        );
+    }
+
+    let feature_column = feature_column
+        .as_ref()
+        .map(|v| v.as_str())
+        .unwrap_or("gene");
     if path.is_dir() {
         let store = Arc::new(FilesystemStore::new(path).unwrap());
         read_transcripts_zarr_store(

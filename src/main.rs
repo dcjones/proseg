@@ -78,6 +78,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     zarr: bool,
 
+    /// If specified, transcripts are read from the table, rather than from points
+    #[arg(long, default_value = None)]
+    spatialdata_table: Option<String>,
+
     /// Regex pattern matching names of genes/features to be excluded
     #[arg(long, default_value = None)]
     excluded_genes: Option<String>,
@@ -705,11 +709,12 @@ fn main() {
     let mut dataset = if spatialdata_zarr {
         read_spatialdata_zarr_transcripts(
             &args.transcript_csv,
+            &args.spatialdata_table,
             &excluded_genes,
             &expect_arg(args.x_column, "x"),
             &expect_arg(args.y_column, "y"),
             &args.z_column,
-            &expect_arg(args.gene_column, "gene"),
+            &args.gene_column,
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("".to_string()),
             args.coordinate_scale.unwrap_or(1.0),
