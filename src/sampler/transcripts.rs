@@ -421,6 +421,8 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
         })
         .collect();
 
+    let gene_names = filter_unexpressed_genes(&mut transcripts, gene_names);
+
     TranscriptDataset {
         transcripts,
         transcript_ids: None,
@@ -1172,4 +1174,36 @@ fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     for (x, y, z) in izip!(xs, ys, zs) {
         *z = *z - b - wx * x - wy * y;
     }
+}
+
+pub fn filter_unexpressed_genes(
+    transcripts: &mut RunVec<u32, Transcript>,
+    gene_names: Vec<String>,
+) -> Vec<String> {
+    let mut counts: Vec<usize> = vec![0; gene_names.len()];
+    for run in transcripts.iter_runs() {
+        counts[run.value.gene as usize] += 1;
+    }
+
+    // reassign ids
+    let mut id_map: Vec<u32> = vec![0; gene_names.len()];
+    let mut next_id = 0;
+    for (i, &count) in counts.iter().enumerate() {
+        if count > 0 {
+            id_map[i] = next_id;
+            next_id += 1;
+        }
+    }
+
+    for run in transcripts.iter_runs_mut() {
+        run.value.gene = id_map[run.value.gene as usize];
+    }
+
+    let mut filtered_gene_names = Vec::new();
+    for (gene_name, count) in gene_names.into_iter().zip(counts) {
+        if count > 0 {
+            filtered_gene_names.push(gene_name);
+        }
+    }
+    filtered_gene_names
 }

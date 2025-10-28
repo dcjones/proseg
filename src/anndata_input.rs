@@ -1,6 +1,7 @@
 use crate::sampler::runvec::RunVec;
 use crate::sampler::transcripts::{
     BACKGROUND_CELL, CellIndex, PriorTranscriptSeg, Transcript, TranscriptDataset,
+    filter_unexpressed_genes,
 };
 use itertools::izip;
 use num::traits::AsPrimitive;
@@ -137,7 +138,7 @@ fn read_anndata_zarr_transcripts_from_store(
         })
         .collect();
 
-    // TODO: Do we have to remap cells again since we may have lost some after filtering genes?
+    let gene_names = filter_unexpressed_genes(&mut transcripts, gene_names);
 
     let ncells = original_cell_ids.len();
     let mut original_cell_ids_vec = vec![String::new(); ncells];
