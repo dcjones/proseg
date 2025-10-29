@@ -490,6 +490,39 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     new_zarr_group(
         store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/spatialdata_attrs"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    write_single_string(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/spatialdata_attrs/region"),
+        "cell_boundaries",
+    )?;
+
+    write_single_string(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/spatialdata_attrs/region_key"),
+        "region",
+    )?;
+
+    write_single_string(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/spatialdata_attrs/instance_key"),
+        "cell",
+    )?;
+
+    new_zarr_group(
+        store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/proseg_run"),
         Some(
             json!({
@@ -557,6 +590,32 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     Ok(())
 }
 
+fn write_single_string<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    path: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut arr = new_zarr_array(
+        store.clone(),
+        path,
+        vec![],
+        ChunkShape::from(vec![]),
+        DataTypeMetadataV2::Simple(format!("|O")),
+        FillValueMetadataV2::String("".to_string()),
+        None,
+        Some(vec![serde_json::from_value(json!({
+                    "id": "vlen-utf8"
+                } ))?]),
+    )?;
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "string".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+    arr.store_array_subset_elements(&arr.subset_all(), &[value.to_string()])?;
+    arr.store_metadata()?;
+
+    Ok(())
+}
+
 fn default_blosc_compressor() -> Result<MetadataV2, serde_json::Error> {
     serde_json::from_value(json!({
         "id": "blosc",
@@ -585,6 +644,7 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         "volume".to_string(),
         "surface_area".to_string(),
         "scale".to_string(),
+        "region".to_string(),
     ];
 
     new_zarr_group(
@@ -772,6 +832,28 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &params.cell_scale.to_vec())?;
+    arr.store_metadata()?;
+
+    // region
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/region"),
+        vec![ncells as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("|O")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        Some(vec![serde_json::from_value(json!({
+                    "id": "vlen-utf8"
+                } ))?]),
+    )?;
+
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "string-array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+
+    let regions = vec!["cell_boundaries".to_string(); ncells];
+    arr.store_array_subset_elements(&arr.subset_all(), &regions)?;
     arr.store_metadata()?;
 
     Ok(())
