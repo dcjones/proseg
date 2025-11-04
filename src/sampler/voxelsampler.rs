@@ -517,15 +517,25 @@ impl VoxelSampler {
 
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
+            let mut total_count = 0;
+
             for (key, &count) in quad_counts.voxel_counts(voxel) {
                 let origin = key.voxel.offset(-key.offset);
                 let k_origin = origin.k();
                 let density = voxels.get_voxel_density_hint(quad, origin);
+                total_count += count;
 
                 counts_row_write.sub(
                     CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
                     count,
                 );
+            }
+
+            // update the count transition matrix
+            if proposed_cell != BACKGROUND_CELL {
+                let transitions_row = params.transition_counts.row(current_cell as usize);
+                let mut transitions_row_write = transitions_row.write();
+                transitions_row_write.add(proposed_cell, total_count);
             }
         } else {
             for (key, &count) in quad_counts.voxel_counts(voxel) {

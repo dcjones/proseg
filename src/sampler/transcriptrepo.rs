@@ -180,6 +180,9 @@ impl TranscriptRepo {
                 .map(|state| state.cell)
                 .unwrap_or(BACKGROUND_CELL);
 
+            let transition_counts_row = params.transition_counts.row(cell as usize);
+            let mut transition_counts_row_write = transition_counts_row.write();
+
             let density = voxels.get_voxel_density_hint(quad, origin);
 
             let λ_bg = params.λ_bg[[gene, k_origin as usize, density]];
@@ -280,6 +283,10 @@ impl TranscriptRepo {
 
                         if accepted_count == 0 {
                             continue;
+                        }
+
+                        if neighbor_cell != BACKGROUND_CELL {
+                            transition_counts_row_write.add(neighbor_cell, accepted_count);
                         }
 
                         quad_counts_ref.counts_deltas.push((
