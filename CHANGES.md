@@ -1,4 +1,12 @@
 
+# 3.0.11
+
+  - Minor optimizations to zarr output size.
+  - Exclude unexpressed genes with visium or anndata input.
+  - Don't track count credible intervals, reducing memory usage.
+  - Support zarr-encoded AnnData input with the `--anndata` argument.
+  - Add an `--unmodeled-fixed-cells` argument to exclude the fixed cells from the background model.
+
 # 3.0.10
 
  - Fix compile errors due to breaking changes in zarrs.
