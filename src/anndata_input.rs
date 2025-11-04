@@ -177,9 +177,9 @@ fn read_counts_matrix(store: Arc<FilesystemStore>) -> (Vec<u32>, Vec<u32>, Vec<u
         panic!("Expected AnnData input to encode a csr_matrix");
     }
 
-    let data = read_array1d_fram_path::<u32, FilesystemStore>(store.clone(), "/X/data");
-    let indices = read_array1d_fram_path::<u32, FilesystemStore>(store.clone(), "/X/indices");
-    let indptr = read_array1d_fram_path::<u32, FilesystemStore>(store.clone(), "/X/indptr");
+    let data = read_array1d_fram_path::<u32>(store.clone(), "/X/data");
+    let indices = read_array1d_fram_path::<u32>(store.clone(), "/X/indices");
+    let indptr = read_array1d_fram_path::<u32>(store.clone(), "/X/indptr");
 
     (data, indices, indptr)
 }
@@ -255,7 +255,7 @@ where
 
     for i in 0..nchunks {
         let chunk_els = arr
-            .retrieve_chunk_elements::<String>(&[i as u64])
+            .retrieve_chunk_elements::<String>(&[i])
             .unwrap_or_else(|_err| panic!(""));
         for el in chunk_els.iter() {
             if el == cell_id_unassigned {
@@ -291,7 +291,7 @@ where
 
     for i in 0..nchunks {
         let chunk_els = arr
-            .retrieve_chunk_elements::<F>(&[i as u64])
+            .retrieve_chunk_elements::<F>(&[i])
             .unwrap_or_else(|_err| panic!(""));
 
         for el in chunk_els.iter() {
@@ -299,7 +299,7 @@ where
                 cell_ids.push(BACKGROUND_CELL)
             } else {
                 let next_id = original_ids.len() as CellIndex;
-                cell_ids.push(*original_ids.entry(el.clone()).or_insert(next_id));
+                cell_ids.push(*original_ids.entry(*el).or_insert(next_id));
             }
         }
     }
@@ -340,10 +340,9 @@ where
         .collect()
 }
 
-fn read_array1d_fram_path<T, S>(store: Arc<FilesystemStore>, path: &str) -> Vec<T>
+fn read_array1d_fram_path<T>(store: Arc<FilesystemStore>, path: &str) -> Vec<T>
 where
     T: 'static + Copy,
-    S: 'static + ReadableStorageTraits,
     i16: AsPrimitive<T>,
     i32: AsPrimitive<T>,
     i64: AsPrimitive<T>,
@@ -354,7 +353,7 @@ where
     f64: AsPrimitive<T>,
 {
     let arr = zarrs::array::Array::open(store.clone(), path)
-        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", path));
+        .unwrap_or_else(|_err| panic!("Array {path} not found in zarr store"));
     read_array1d::<T, FilesystemStore>(&arr)
 }
 

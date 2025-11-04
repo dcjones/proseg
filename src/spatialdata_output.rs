@@ -600,7 +600,7 @@ fn write_single_string<T: ReadableWritableStorageTraits + 'static>(
         path,
         vec![],
         ChunkShape::from(vec![]),
-        DataTypeMetadataV2::Simple(format!("|O")),
+        DataTypeMetadataV2::Simple("|O".to_string()),
         FillValueMetadataV2::String("".to_string()),
         None,
         Some(vec![serde_json::from_value(json!({
