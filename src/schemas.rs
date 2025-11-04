@@ -23,7 +23,11 @@ pub fn transcript_metadata_schema() -> Schema {
         Field::new("observed_x", DataType::Float32, false),
         Field::new("observed_y", DataType::Float32, false),
         Field::new("observed_z", DataType::Float32, false),
-        Field::new("gene", DataType::LargeUtf8, false),
+        Field::new(
+            "gene",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        ),
         Field::new("assignment", DataType::UInt32, true),
         Field::new("background", DataType::Boolean, false),
     ])

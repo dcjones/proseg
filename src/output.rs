@@ -575,7 +575,6 @@ pub fn write_transcript_metadata(
     }
 }
 
-// TODO: need to pass in transcript_ids
 #[allow(clippy::too_many_arguments)]
 fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     schema: Arc<Schema>,
@@ -598,6 +597,15 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     let mut assignment = Vec::new();
     let mut background = Vec::new();
 
+    // keys for the dictionary arrays
+    let gene_names_arr = Arc::new(
+        gene_names
+            .iter()
+            .clone()
+            .map(Some)
+            .collect::<arrow::array::StringArray>(),
+    );
+
     const BATCH_SIZE: usize = 65536;
     let mut count = 0;
     for (i, (transcript, metadata)) in transcripts.iter().zip(metadata.iter()).enumerate() {
@@ -615,7 +623,8 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
         observed_x.push(transcript.x);
         observed_y.push(transcript.y);
         observed_z.push(transcript.z);
-        gene.push(gene_names[transcript.gene as usize].clone());
+        gene.push(transcript.gene as i32);
+
         assignment.push(if metadata.cell == BACKGROUND_CELL {
             None
         } else {
@@ -639,11 +648,12 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                     Arc::new(observed_x.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(observed_y.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(observed_z.drain(..).collect::<arrow::array::Float32Array>()),
-                    Arc::new(
+                    Arc::new(arrow::array::DictionaryArray::new(
                         gene.drain(..)
                             .map(Some)
-                            .collect::<arrow::array::LargeStringArray>(),
-                    ),
+                            .collect::<arrow::array::Int32Array>(),
+                        gene_names_arr.clone(),
+                    )),
                     Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
                     Arc::new(
                         background
@@ -674,11 +684,12 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                 Arc::new(observed_x.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(observed_y.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(observed_z.drain(..).collect::<arrow::array::Float32Array>()),
-                Arc::new(
+                Arc::new(arrow::array::DictionaryArray::new(
                     gene.drain(..)
                         .map(Some)
-                        .collect::<arrow::array::LargeStringArray>(),
-                ),
+                        .collect::<arrow::array::Int32Array>(),
+                    gene_names_arr.clone(),
+                )),
                 Arc::new(assignment.drain(..).collect::<arrow::array::UInt32Array>()),
                 Arc::new(
                     background
