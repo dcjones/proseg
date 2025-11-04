@@ -75,6 +75,7 @@ pub fn read_spatialdata_zarr_transcripts(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    anndata_coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let path = Path::new(filename).to_path_buf();
@@ -90,6 +91,7 @@ pub fn read_spatialdata_zarr_transcripts(
             feature_column,
             cell_id_column,
             cell_id_unassigned,
+            anndata_coordinate_key,
             coordinate_scale,
         );
     }

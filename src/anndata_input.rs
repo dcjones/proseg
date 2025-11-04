@@ -24,6 +24,7 @@ pub fn read_anndata_zarr_transcripts(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let path = Path::new(filename).to_path_buf();
@@ -39,6 +40,7 @@ pub fn read_anndata_zarr_transcripts(
             feature_column,
             cell_id_column,
             cell_id_unassigned,
+            coordinate_key,
             coordinate_scale,
         )
     } else {
@@ -52,6 +54,7 @@ fn read_anndata_zarr_transcripts_from_store(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
     let _root_group = Group::open(store.clone(), "/").unwrap();
@@ -77,7 +80,7 @@ fn read_anndata_zarr_transcripts_from_store(
         (0..gene_names.len()).enumerate().collect()
     };
 
-    let (xs, ys) = read_coordinates(store.clone());
+    let (xs, ys) = read_coordinates(store.clone(), coordinate_key);
 
     let (cell_ids, original_cell_ids) =
         read_cell_assignments(store.clone(), cell_id_column, cell_id_unassigned, xs.len());
@@ -195,9 +198,10 @@ fn read_gene_names(store: Arc<FilesystemStore>, gene_column_name: &Option<String
         .unwrap_or_else(|_err| panic!("Unable to read gene names"))
 }
 
-fn read_coordinates(store: Arc<FilesystemStore>) -> (Vec<f32>, Vec<f32>) {
-    let arr = zarrs::array::Array::open(store.clone(), "/obsm/spatial")
-        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", "/obsm/spatial"));
+fn read_coordinates(store: Arc<FilesystemStore>, coordinate_key: &str) -> (Vec<f32>, Vec<f32>) {
+    let coordinate_path = format!("/obsm/{coordinate_key}");
+    let arr = zarrs::array::Array::open(store.clone(), &coordinate_path)
+        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", &coordinate_path));
 
     // Should be a [ncells, 2] matrix
     let shape = arr.shape();

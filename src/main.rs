@@ -82,6 +82,10 @@ struct Args {
     #[arg(long, default_value = None)]
     spatialdata_table: Option<String>,
 
+    /// Key in the AnnData obsm dict holding spot coordinates
+    #[arg(long, default_value = "spatial")]
+    anndata_coordinate_key: String,
+
     /// Regex pattern matching names of genes/features to be excluded
     #[arg(long, default_value = None)]
     excluded_genes: Option<String>,
@@ -717,6 +721,7 @@ fn main() {
             &args.gene_column,
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("".to_string()),
+            &args.anndata_coordinate_key,
             args.coordinate_scale.unwrap_or(1.0),
         )
     } else if anndata_zarr {
@@ -726,6 +731,7 @@ fn main() {
             &args.gene_column,
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("0".to_string()),
+            &args.anndata_coordinate_key,
             args.coordinate_scale.unwrap_or(1.0),
         )
     } else if args.visiumhd {
