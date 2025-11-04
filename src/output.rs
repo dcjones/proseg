@@ -9,7 +9,7 @@ use ndarray::{Array2, Axis};
 use num::traits::Zero;
 use ordered_float::OrderedFloat;
 use parquet::arrow::ArrowWriter;
-use parquet::basic::{Compression::ZSTD, ZstdLevel};
+use parquet::basic::{Compression::ZSTD, Encoding, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
@@ -554,8 +554,10 @@ pub fn write_transcript_metadata(
         }
         OutputFormat::Parquet => {
             let props = WriterProperties::builder()
+                .set_column_encoding("transcript_id".into(), Encoding::DELTA_BINARY_PACKED)
                 .set_column_dictionary_enabled("gene".into(), true)
-                .set_compression(ZSTD(ZstdLevel::try_new(3).unwrap()))
+                .set_column_dictionary_enabled("assignment".into(), true)
+                .set_compression(ZSTD(ZstdLevel::try_new(9).unwrap()))
                 .build();
             let mut writer = ArrowWriter::try_new(output, schema.clone(), Some(props)).unwrap();
             write_transcript_metadata_with_fn(
@@ -606,7 +608,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
             .collect::<arrow::array::StringArray>(),
     );
 
-    const BATCH_SIZE: usize = 65536;
+    const BATCH_SIZE: usize = 1048576;
     let mut count = 0;
     for (i, (transcript, metadata)) in transcripts.iter().zip(metadata.iter()).enumerate() {
         let [dx, dy, dz] = metadata.offset.coords();
