@@ -473,6 +473,8 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     )?
     .store_metadata()?;
 
+    write_anndata_transition_counts_zarr(store.clone(), &params.transition_counts)?;
+
     new_zarr_group(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns"),
@@ -1020,13 +1022,14 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
     Ok(())
 }
 
-fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
+fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
+    path: &str,
     counts: &SparseMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/X"),
+        path,
         Some(
             json!({
                 "encoding-type": "csr_matrix",
@@ -1072,7 +1075,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/X/data"),
+        &format!("{path}/data"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<u4")),
@@ -1087,7 +1090,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/X/indices"),
+        &format!("{path}/indices"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<i4")),
@@ -1102,7 +1105,7 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let arr = new_zarr_array(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/X/indptr"),
+        &format!("{path}/indptr"),
         vec![indptr.len() as u64],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<i4")),
@@ -1116,4 +1119,22 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
     arr.store_metadata()?;
 
     Ok(())
+}
+
+fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    counts: &SparseMat<u32, u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_anndata_csr_matrix(store, &format!("/tables/{SD_TABLE_NAME}/X"), counts)
+}
+
+fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    transition_counts: &SparseMat<u32, u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_anndata_csr_matrix(
+        store,
+        &format!("/tables/{SD_TABLE_NAME}/obsp/transition_counts"),
+        transition_counts,
+    )
 }

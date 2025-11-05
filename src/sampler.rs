@@ -473,7 +473,7 @@ impl ModelParams {
         let mut background_region_volume = Array1::zeros(density_nbins);
         voxels.compute_background_region_volumes(&mut background_region_volume);
 
-        let transition_counts = SparseMat::zeros(ncells, ncells as u32, CELL_SHARDSIZE);
+        let transition_counts = SparseMat::zeros(ncells, ncells as u32 - 1, CELL_SHARDSIZE);
 
         let frozen_cells = voxels.frozen_cells.clone();
 
