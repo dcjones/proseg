@@ -180,8 +180,14 @@ impl TranscriptRepo {
                 .map(|state| state.cell)
                 .unwrap_or(BACKGROUND_CELL);
 
-            let transition_counts_row = params.transition_counts.row(cell as usize);
-            let mut transition_counts_row_write = transition_counts_row.write();
+            let transition_counts_row = if cell != BACKGROUND_CELL {
+                Some(params.transition_counts.row(cell as usize))
+            } else {
+                None
+            };
+
+            let mut transition_counts_row_write =
+                transition_counts_row.as_ref().map(|row| row.write());
 
             let density = voxels.get_voxel_density_hint(quad, origin);
 
@@ -285,7 +291,10 @@ impl TranscriptRepo {
                             continue;
                         }
 
-                        if neighbor_cell != BACKGROUND_CELL {
+                        if neighbor_cell != BACKGROUND_CELL
+                            && let Some(transition_counts_row_write) =
+                                transition_counts_row_write.as_mut()
+                        {
                             transition_counts_row_write.add(neighbor_cell, accepted_count);
                         }
 
