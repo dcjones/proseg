@@ -1238,13 +1238,13 @@ fn run_sampler(
 ) {
     let t0 = Instant::now();
     for _ in 0..morphology_steps_per_iter {
-        voxel_sampler.sample(voxels, priors, params, temperature);
+        voxel_sampler.sample(voxels, priors, params, temperature, record_samples);
     }
     info!("morphology sampling: {:?}", t0.elapsed());
 
     if !burnin && priors.use_diffusion_model {
         let t0 = Instant::now();
-        transcript_repo.sample(voxels, priors, params, temperature);
+        transcript_repo.sample(voxels, priors, params, temperature, record_samples);
         info!("repo transcripts: {:?}", t0.elapsed());
     }
 

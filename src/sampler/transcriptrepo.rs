@@ -102,6 +102,7 @@ impl TranscriptRepo {
         priors: &ModelPriors,
         params: &mut ModelParams,
         temperature: f32,
+        record_samples: bool,
     ) {
         let t0 = Instant::now();
         voxels
@@ -118,6 +119,7 @@ impl TranscriptRepo {
                     voxels.quadsize as u32,
                     voxels.voxelsize,
                     temperature,
+                    record_samples,
                 );
             });
         trace!("transcript repo: compute deltas: {:?}", t0.elapsed());
@@ -139,6 +141,7 @@ impl TranscriptRepo {
         quadsize: u32,
         _voxelsize: f32,
         _temperature: f32,
+        record_samples: bool,
     ) {
         let quad_states = quad.states.read().unwrap();
         let mut quad_counts = quad.counts.write().unwrap();
@@ -291,7 +294,8 @@ impl TranscriptRepo {
                             continue;
                         }
 
-                        if neighbor_cell != BACKGROUND_CELL
+                        if record_samples
+                            && neighbor_cell != BACKGROUND_CELL
                             && let Some(transition_counts_row_write) =
                                 transition_counts_row_write.as_mut()
                         {

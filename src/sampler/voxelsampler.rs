@@ -87,6 +87,7 @@ impl VoxelSampler {
         priors: &ModelPriors,
         params: &ModelParams,
         temperature: f32,
+        record_samples: bool,
     ) {
         let t0 = Instant::now();
 
@@ -124,7 +125,7 @@ impl VoxelSampler {
                 let s = rng().random::<f32>().ln();
 
                 if s < logu {
-                    self.accept_proposal(voxels, quad, params, proposal);
+                    self.accept_proposal(voxels, quad, params, proposal, record_samples);
                 }
             });
 
@@ -449,6 +450,7 @@ impl VoxelSampler {
         quad: &VoxelQuad,
         params: &ModelParams,
         proposal: Proposal,
+        record_samples: bool,
     ) {
         let mut quad_states = quad.states.write().unwrap();
         let quad_counts = quad.counts.read().unwrap();
@@ -532,7 +534,7 @@ impl VoxelSampler {
             }
 
             // update the count transition matrix
-            if proposed_cell != BACKGROUND_CELL {
+            if record_samples && proposed_cell != BACKGROUND_CELL {
                 let transitions_row = params.transition_counts.row(current_cell as usize);
                 let mut transitions_row_write = transitions_row.write();
                 transitions_row_write.add(proposed_cell, total_count);
