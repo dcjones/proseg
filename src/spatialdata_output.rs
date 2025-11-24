@@ -10,6 +10,7 @@ use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::json;
+use std::any::Any;
 use std::collections::HashMap;
 use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
@@ -837,11 +838,28 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     arr.store_metadata()?;
 
     // region
-    let mut arr = new_zarr_array(
+    new_zarr_group(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/region"),
-        vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        Some(
+            json!({
+                "encoding-type": "categorical",
+                "encoding-version": "0.2.0",
+                "ordered": "false"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    // region categories
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/region/categories"),
+        vec![1],
+        vec![1].try_into()?,
         DataTypeMetadataV2::Simple(String::from("|O")),
         FillValueMetadataV2::NaN,
         Some(default_blosc_compressor()?),
@@ -854,7 +872,27 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
     attr.insert("encoding-type".to_string(), "string-array".into());
     attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-    let regions = vec!["cell_boundaries".to_string(); ncells];
+    let regions = vec!["cell_boundaries".to_string(); 1];
+    arr.store_array_subset_elements(&arr.subset_all(), &regions)?;
+    arr.store_metadata()?;
+
+    // region codes
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/region/codes"),
+        vec![ncells as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("|i1")),
+        FillValueMetadataV2::Number(serde_json::Number::from(0)),
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+
+    let regions: Vec<i8> = vec![0; ncells];
     arr.store_array_subset_elements(&arr.subset_all(), &regions)?;
     arr.store_metadata()?;
 
