@@ -10,7 +10,6 @@ use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::json;
-use std::any::Any;
 use std::collections::HashMap;
 use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
