@@ -2,6 +2,7 @@
 name = "proseg"
 description = "Probabilistic cell segmentation for in situ spatial transcriptomics"
 version = "3.0.12"
+rust-version = "1.88.0"
 edition = "2024"
 authors = ["Daniel C. Jones <djones3@fredhutch.org>"]
 repository = "https://github.com/dcjones/proseg"

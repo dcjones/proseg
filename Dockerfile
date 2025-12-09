@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.87 AS builder
+FROM rust:1.88 AS builder
 WORKDIR /app
 COPY . .
 RUN cargo install --path . \
