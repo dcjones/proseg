@@ -1543,23 +1543,21 @@ impl VoxelCheckerboard {
                 if let Some(cell_id_str) = cell_id_str {
                     let (x, y) = barcode_positions[barcode.unwrap()];
 
-                    let next_cell_id = cell_id_map.len() as CellIndex;
-                    let cell_id = *cell_id_map
-                        .entry(cell_id_str.to_string())
-                        .or_insert(next_cell_id);
-
                     let voxel = checkerboard.coords_to_voxel(x, y, zmid);
 
                     if !voxel.is_oob() {
-                        checkerboard.insert_state(
-                            voxel,
+                        checkerboard.insert_state_if_missing(voxel, || {
+                            let next_cell_id = cell_id_map.len() as CellIndex;
+                            let cell_id = *cell_id_map
+                                .entry(cell_id_str.to_string())
+                                .or_insert(next_cell_id);
                             VoxelState {
                                 cell: cell_id,
                                 prior_cell: cell_id,
                                 log_prior: log_nucprior,
                                 log_1m_prior: log_1m_nucprior,
-                            },
-                        );
+                            }
+                        });
                     }
                 }
             }
