@@ -1,4 +1,8 @@
 
+# 3.0.12
+  - Fix numerical error crash occurring in some Visium HD data.
+  - Fix an incompatibility with spatialdata zarr output and newer versions of the python package.
+
 # 3.0.11
 
   - Minor optimizations to zarr output size.
