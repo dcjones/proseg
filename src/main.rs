@@ -31,6 +31,10 @@ use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::write_spatialdata_zarr;
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 const DEFAULT_BURNIN_VOXEL_SIZE: f32 = 2.0;
 const DEFAULT_VOXEL_SIZE: f32 = 1.0;
 const DEFAULT_DIFFUSION_SIGMA_NEAR: f32 = 1.0;
@@ -584,6 +588,9 @@ fn set_visiumhd_presets(args: &mut Args) {
 }
 
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     env_logger::init();
     let start_time = Instant::now();
 
