@@ -98,7 +98,7 @@ where
 {
     pub fn clear(&mut self) {
         self.rows.par_iter().for_each(|row| {
-            *row.write() = SparseCountVec::new();
+            row.write().clear();
         });
     }
 

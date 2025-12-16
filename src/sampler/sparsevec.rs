@@ -40,6 +40,30 @@ where
         }
     }
 
+    /// Create a new SparseCountVec with pre-allocated capacity for leaf nodes.
+    /// Use this when you know roughly how many elements will be stored.
+    /// A good estimate is `(expected_elements / LEAF_SIZE) + 1`.
+    pub fn with_capacity(leaf_capacity: usize) -> Self {
+        let root = LeafNode::new();
+        let mut leaf_arena = Vec::with_capacity(leaf_capacity.max(1));
+        leaf_arena.push(root);
+        SparseCountVec {
+            leaf_arena,
+            internal_arena: Vec::new(),
+            root: NodePtr::Leaf(0),
+        }
+    }
+
+    /// Clear all entries, reusing existing arena allocations.
+    /// This is much more efficient than creating a new SparseCountVec
+    /// when the structure will be immediately repopulated.
+    pub fn clear(&mut self) {
+        self.leaf_arena.clear();
+        self.leaf_arena.push(LeafNode::new());
+        self.internal_arena.clear();
+        self.root = NodePtr::Leaf(0);
+    }
+
     // Create an iterator over non-zero key-value pairs
     pub fn iter(&self) -> SparseCountVecIter<K, V> {
         // Find the leftmost leaf
@@ -629,6 +653,45 @@ mod tests {
         assert_eq!(vec.leaf_arena.len(), 1);
         assert_eq!(vec.internal_arena.len(), 0);
         matches!(vec.root, NodePtr::Leaf(0));
+    }
+
+    #[test]
+    fn test_clear_and_reuse() {
+        let mut vec: SparseCountVec<u32, i32> = SparseCountVec::new();
+
+        // Insert enough to cause splits
+        for i in 0..100 {
+            vec.update_count(i, |v| *v += i as i32);
+        }
+
+        // Verify data is there
+        assert_eq!(vec.get(50), Some(50));
+        assert!(vec.leaf_arena.len() > 1); // Should have multiple leaves
+
+        // Remember the capacity before clear
+        let leaf_capacity = vec.leaf_arena.capacity();
+        let internal_capacity = vec.internal_arena.capacity();
+
+        // Clear and verify structure is reset
+        vec.clear();
+        assert_eq!(vec.leaf_arena.len(), 1);
+        assert_eq!(vec.internal_arena.len(), 0);
+        matches!(vec.root, NodePtr::Leaf(0));
+
+        // Verify capacity is retained (no reallocation)
+        assert_eq!(vec.leaf_arena.capacity(), leaf_capacity);
+        assert_eq!(vec.internal_arena.capacity(), internal_capacity);
+
+        // Verify old data is gone
+        assert_eq!(vec.get(50), None);
+
+        // Verify we can reuse the structure
+        for i in 0..50 {
+            vec.update_count(i * 2, |v| *v += 100);
+        }
+        assert_eq!(vec.get(10), Some(100));
+        assert_eq!(vec.get(11), None); // Odd numbers not inserted
+        assert!(vec.verify_sorted());
     }
 
     #[test]
