@@ -1,10 +1,11 @@
+use arrayvec::ArrayVec;
 use num::traits::Zero;
-use smallvec::SmallVec;
 use std::cmp::Ord;
 
 use super::csrmat::Increment;
 
 const INTERNAL_SIZE: usize = 8;
+const INTERNAL_SIZE_MINUS_1: usize = INTERNAL_SIZE - 1;
 const LEAF_SIZE: usize = 32;
 
 type LeafIdx = u32;
@@ -264,7 +265,6 @@ where
         match leaf.binary_search(key) {
             Ok(pos) => {
                 update_fn(&mut leaf.keyvals[pos].1);
-                return;
             }
             Err(pos) => {
                 let mut val = V::zero();
@@ -281,7 +281,7 @@ where
 
     fn insert_splitting(&mut self, key: K, val: V) {
         // trace path down to leaf node
-        let mut path: SmallVec<[(InternalIdx, usize); 16]> = SmallVec::new();
+        let mut path: ArrayVec<(InternalIdx, usize), 16> = ArrayVec::new();
         let mut ptr = self.root;
 
         let leaf_idx = loop {
@@ -306,7 +306,7 @@ where
         let mid = LEAF_SIZE / 2;
         let split_key = leaf.keyvals[mid].0;
 
-        let right_keyvals: SmallVec<[_; LEAF_SIZE]> = leaf.keyvals.drain(mid..).collect();
+        let right_keyvals: ArrayVec<_, LEAF_SIZE> = leaf.keyvals.drain(mid..).collect();
         let right = LeafNode {
             keyvals: right_keyvals,
             sibling: leaf.sibling,
@@ -336,10 +336,10 @@ where
                 let mid = node.keys.len() / 2;
                 let promote_key = node.keys[mid];
 
-                let right_keys: SmallVec<[_; INTERNAL_SIZE - 1]> =
+                let right_keys: ArrayVec<_, INTERNAL_SIZE_MINUS_1> =
                     node.keys.drain(mid + 1..).collect();
                 node.keys.pop(); // Remove the promoted key from left node
-                let right_children: SmallVec<[_; INTERNAL_SIZE]> =
+                let right_children: ArrayVec<_, INTERNAL_SIZE> =
                     node.children.drain(mid + 1..).collect();
 
                 let right = InternalNode {
@@ -371,9 +371,14 @@ where
 
         // If we get here, we've split all the way to the root
         // Create a new root internal node
+        let mut root_keys = ArrayVec::new();
+        root_keys.push(new_key);
+        let mut root_children = ArrayVec::new();
+        root_children.push(old_child);
+        root_children.push(new_child);
         let new_root = InternalNode {
-            keys: SmallVec::from_slice(&[new_key]),
-            children: SmallVec::from_slice(&[old_child, new_child]),
+            keys: root_keys,
+            children: root_children,
         };
         let new_root_idx = self.new_internal(new_root);
         self.root = NodePtr::Internal(new_root_idx);
@@ -523,8 +528,8 @@ where
 
 #[derive(Debug)]
 struct InternalNode<K> {
-    keys: SmallVec<[K; INTERNAL_SIZE - 1]>,
-    children: SmallVec<[NodePtr; INTERNAL_SIZE]>,
+    keys: ArrayVec<K, INTERNAL_SIZE_MINUS_1>,
+    children: ArrayVec<NodePtr, INTERNAL_SIZE>,
 }
 
 impl<K> InternalNode<K>
@@ -533,8 +538,8 @@ where
 {
     fn new() -> Self {
         InternalNode {
-            keys: SmallVec::new(),
-            children: SmallVec::new(),
+            keys: ArrayVec::new(),
+            children: ArrayVec::new(),
         }
     }
 
@@ -545,7 +550,7 @@ where
 
 #[derive(Debug)]
 struct LeafNode<K, V> {
-    keyvals: SmallVec<[(K, V); LEAF_SIZE]>,
+    keyvals: ArrayVec<(K, V), LEAF_SIZE>,
     sibling: LeafIdx,
 }
 
@@ -555,7 +560,7 @@ where
 {
     fn new() -> Self {
         LeafNode {
-            keyvals: SmallVec::new(),
+            keyvals: ArrayVec::new(),
             sibling: NULL_IDX,
         }
     }
