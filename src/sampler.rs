@@ -17,6 +17,7 @@ pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
 use clustering::kmeans;
+use csrmat::CSRMat;
 use dashmap::DashMap;
 use itertools::izip;
 use math::randn;
@@ -28,7 +29,7 @@ use onlinestats::CountMeanEstimator;
 use rand::rng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use shardedvec::ShardedVec;
-use sparsemat::{Increment, SparseMat};
+use sparsemat::Increment;
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
@@ -210,10 +211,10 @@ pub struct ModelParams {
 
     // [ncells, (ngenes x nlayers)] transcripts counts, split into total
     // transcript count in each cell and gene and layer.
-    counts: SparseMat<u32, CountMatRowKey>,
+    counts: CSRMat<CountMatRowKey, u32>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
-    pub foreground_counts: SparseMat<u32, u32>,
+    pub foreground_counts: CSRMat<u32, u32>,
 
     // [ncells, ngenes] upper and lower credible intervals for cell-by-gene counts
     // foreground_counts_lower: CountQuantileEstimator,
@@ -222,7 +223,7 @@ pub struct ModelParams {
 
     // [ncells, ncells] sparse matrix recording the number of times the sampler
     // moved transcripts between pairs of cells.
-    pub transition_counts: SparseMat<u32, u32>,
+    pub transition_counts: CSRMat<u32, u32>,
 
     // [density_nbins, nlayers, ngenes] background transcripts counts
     unassigned_counts: Vec<Vec<ShardedVec<u32>>>,
@@ -231,7 +232,7 @@ pub struct ModelParams {
     background_counts: Vec<Vec<ShardedVec<u32>>>,
 
     // [ncells, nhidden]
-    pub cell_latent_counts: SparseMat<u32, u32>,
+    pub cell_latent_counts: CSRMat<u32, u32>,
 
     // [ngenes, nhidden]
     pub gene_latent_counts: Array2<u32>,
@@ -371,14 +372,13 @@ impl ModelParams {
         let log_cell_volume = effective_cell_volume.map(|v| v.ln());
         let cell_scale = Array1::<f32>::ones(ncells);
 
-        let mut counts = SparseMat::zeros(
+        let mut counts = CSRMat::zeros(
             ncells,
             CountMatRowKey::new(
                 ngenes as u32 - 1,
                 nlayers as u32 - 1,
                 density_nbins as u8 - 1,
             ),
-            CELL_SHARDSIZE,
         );
         let mut unassigned_counts = (0..density_nbins)
             .map(|_density| {
@@ -389,7 +389,7 @@ impl ModelParams {
             .collect::<Vec<_>>();
         voxels.compute_counts(&mut counts, &mut unassigned_counts);
 
-        let foreground_counts = SparseMat::zeros(ncells, ngenes as u32 - 1, CELL_SHARDSIZE);
+        let foreground_counts = CSRMat::zeros(ncells, ngenes as u32 - 1);
 
         // Initializing with everything assigned as foreground
         counts
@@ -416,7 +416,7 @@ impl ModelParams {
             })
             .collect::<Vec<_>>();
 
-        let cell_latent_counts = SparseMat::zeros(ncells, nhidden as u32 - 1, CELL_SHARDSIZE);
+        let cell_latent_counts = CSRMat::zeros(ncells, nhidden as u32 - 1);
         let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
         let gene_latent_counts_tl = ThreadLocal::new();
         let latent_counts = Array1::<u32>::zeros(nhidden);
@@ -475,7 +475,7 @@ impl ModelParams {
         let mut background_region_volume = Array1::zeros(density_nbins);
         voxels.compute_background_region_volumes(&mut background_region_volume);
 
-        let transition_counts = SparseMat::zeros(ncells, ncells as u32 - 1, CELL_SHARDSIZE);
+        let transition_counts = CSRMat::zeros(ncells, ncells as u32 - 1);
 
         let frozen_cells = voxels.frozen_cells.clone();
 
@@ -647,14 +647,13 @@ impl ModelParams {
         assert!(self.cell_layer_voxel_count == cell_layer_voxel_count);
         assert!(self.cell_layer_surface_area == cell_layer_surface_area);
 
-        let mut counts = SparseMat::zeros(
+        let mut counts = CSRMat::zeros(
             ncells,
             CountMatRowKey::new(
                 ngenes as u32 - 1,
                 nlayers as u32 - 1,
                 density_nbins as u8 - 1,
             ),
-            CELL_SHARDSIZE,
         );
         let mut unassigned_counts = (0..density_nbins)
             .map(|_density| {
@@ -681,7 +680,7 @@ impl ModelParams {
 }
 
 fn initial_component_assignments(
-    counts: &SparseMat<u32, CountMatRowKey>,
+    counts: &CSRMat<CountMatRowKey, u32>,
     ncomponents: usize,
 ) -> Array1<u32> {
     let (ncells, j_bound) = counts.shape();

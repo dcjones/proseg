@@ -3,13 +3,13 @@
 
 use super::super::spatialdata_input::CellPolygons;
 use super::connectivity::MooreConnectivityChecker;
+use super::csrmat::CSRMat;
 use super::math::logistic;
 use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
-use super::sparsemat::SparseMat;
 use super::transcripts::{BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset};
 use super::{CountMatRowKey, ModelParams};
 
@@ -2346,7 +2346,7 @@ impl VoxelCheckerboard {
 
     pub fn compute_counts(
         &self,
-        counts: &mut SparseMat<u32, CountMatRowKey>,
+        counts: &mut CSRMat<CountMatRowKey, u32>,
         unassigned_counts: &mut [Vec<ShardedVec<u32>>],
     ) {
         counts.zero();

@@ -5,19 +5,20 @@ use std::cmp::Ord;
 use super::sparsemat::Increment;
 
 const INTERNAL_SIZE: usize = 8;
-const LEAF_SIZE: usize = 8;
+const LEAF_SIZE: usize = 32;
 
 type LeafIdx = u32;
 type InternalIdx = u32;
 const NULL_IDX: u32 = u32::MAX;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum NodePtr {
     Internal(InternalIdx),
     Leaf(LeafIdx),
 }
 
 // This is mutable sparse vector implemeted as a B+ tree.
+#[derive(Debug)]
 pub struct SparseCountVec<K, V> {
     leaf_arena: Vec<LeafNode<K, V>>,
     internal_arena: Vec<InternalNode<K>>,
@@ -520,6 +521,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct InternalNode<K> {
     keys: SmallVec<[K; INTERNAL_SIZE - 1]>,
     children: SmallVec<[NodePtr; INTERNAL_SIZE]>,
@@ -541,6 +543,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct LeafNode<K, V> {
     keyvals: SmallVec<[(K, V); LEAF_SIZE]>,
     sibling: LeafIdx,

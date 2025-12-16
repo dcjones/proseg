@@ -22,8 +22,8 @@ use std::sync::Arc;
 use crate::sampler::transcripts::BACKGROUND_CELL;
 
 use super::sampler::ModelParams;
+use super::sampler::csrmat::CSRMat;
 use super::sampler::runvec::RunVec;
-use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::{TranscriptMetadata, VoxelCheckerboard};
 use crate::schemas::{OutputFormat, transcript_metadata_schema};
@@ -140,7 +140,7 @@ pub fn infer_format_from_filename(filename: &str) -> OutputFormat {
 pub fn write_sparse_mtx<T>(
     output_path: &Option<String>,
     filename: &Option<String>,
-    mat: &SparseMat<T, u32>,
+    mat: &CSRMat<u32, T>,
 ) where
     T: Copy + Clone + Zero + PartialEq + Display,
 {
@@ -714,7 +714,7 @@ pub fn write_gene_metadata(
     params: &ModelParams,
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
-    expected_counts: &SparseMat<f32, u32>,
+    expected_counts: &CSRMat<u32, f32>,
 ) {
     let ngenes = gene_names.len();
     let mut total_gene_counts = vec![0; ngenes];

@@ -2,7 +2,7 @@ use num::{Signed, Zero, cast::AsPrimitive};
 use rayon::prelude::*;
 use std::f32;
 
-use super::sparsemat::SparseMat;
+use super::csrmat::CSRMat;
 
 // Bookkeeping for P² algorithm
 #[derive(Clone, Copy)]
@@ -203,19 +203,19 @@ impl CountQuantileEstimator {
 */
 
 pub struct CountMeanEstimator {
-    pub estimates: SparseMat<f32, u32>,
+    pub estimates: CSRMat<u32, f32>,
     t: usize, // iteration number
 }
 
 impl CountMeanEstimator {
-    pub fn new(m: usize, n: usize, shardsize: usize) -> Self {
+    pub fn new(m: usize, n: usize, _shardsize: usize) -> Self {
         CountMeanEstimator {
-            estimates: SparseMat::zeros(m, n as u32 - 1, shardsize),
+            estimates: CSRMat::zeros(m, n as u32 - 1),
             t: 0,
         }
     }
 
-    pub fn update<T>(&mut self, counts: &SparseMat<T, u32>)
+    pub fn update<T>(&mut self, counts: &CSRMat<u32, T>)
     where
         T: AsPrimitive<f32> + Sync + Send + Zero,
     {

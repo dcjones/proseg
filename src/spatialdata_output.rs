@@ -21,8 +21,8 @@ use zarrs::storage::ReadableWritableStorageTraits;
 
 use super::output::write_transcript_metadata;
 use super::sampler::ModelParams;
+use super::sampler::csrmat::CSRMat;
 use super::sampler::runvec::RunVec;
-use super::sampler::sparsemat::SparseMat;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::TranscriptMetadata;
 use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
@@ -34,7 +34,7 @@ pub const SD_TABLE_NAME: &str = "table";
 pub fn write_spatialdata_zarr(
     output_path: &Option<String>,
     filename: &str,
-    counts: &SparseMat<u32, u32>,
+    counts: &CSRMat<u32, u32>,
     params: &ModelParams,
     voxels: &VoxelCheckerboard,
     cell_centroids: &Array2<f32>,
@@ -79,7 +79,7 @@ pub fn write_spatialdata_zarr(
 #[allow(clippy::too_many_arguments)]
 fn write_spatialdata_parts(
     path: &PathBuf,
-    counts: &SparseMat<u32, u32>,
+    counts: &CSRMat<u32, u32>,
     params: &ModelParams,
     voxels: &VoxelCheckerboard,
     cell_centroids: &Array2<f32>,
@@ -408,7 +408,7 @@ fn new_zarr_array<T: ReadableWritableStorageTraits>(
 #[allow(clippy::too_many_arguments)]
 fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
-    counts: &SparseMat<u32, u32>,
+    counts: &CSRMat<u32, u32>,
     params: &ModelParams,
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
@@ -1062,7 +1062,7 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
 fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
     path: &str,
-    counts: &SparseMat<u32, u32>,
+    counts: &CSRMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
@@ -1160,14 +1160,14 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
 
 fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
-    counts: &SparseMat<u32, u32>,
+    counts: &CSRMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     write_anndata_csr_matrix(store, &format!("/tables/{SD_TABLE_NAME}/X"), counts)
 }
 
 fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
-    transition_counts: &SparseMat<u32, u32>,
+    transition_counts: &CSRMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     write_anndata_csr_matrix(
         store,
