@@ -1,4 +1,3 @@
-use super::sparsemat::Increment;
 use super::sparsevec::SparseCountVec;
 use num::traits::AsPrimitive;
 use num::traits::Zero;
@@ -9,6 +8,17 @@ use rayon::prelude::*;
 use std::fmt::Debug;
 use std::iter::{Iterator, Sum};
 use std::ops::{Add, AddAssign, SubAssign};
+
+// Main trait that the column index type is expected to implement.
+pub trait Increment {
+    fn inc(&self, bound: Self) -> Self;
+}
+
+impl Increment for u32 {
+    fn inc(&self, _bound: Self) -> Self {
+        *self + 1
+    }
+}
 
 // CSR sparse matrix using per-row locks and SparseCountVec for each row
 //

@@ -2,7 +2,7 @@ use num::traits::Zero;
 use smallvec::SmallVec;
 use std::cmp::Ord;
 
-use super::sparsemat::Increment;
+use super::csrmat::Increment;
 
 const INTERNAL_SIZE: usize = 8;
 const LEAF_SIZE: usize = 32;
