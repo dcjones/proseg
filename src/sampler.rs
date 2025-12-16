@@ -1,4 +1,5 @@
 pub mod connectivity;
+pub mod csrmat;
 mod math;
 mod multinomial;
 pub mod onlinestats;
@@ -9,6 +10,7 @@ pub mod runvec;
 mod sampleset;
 mod shardedvec;
 pub mod sparsemat;
+pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcripts;
 pub mod voxelcheckerboard;
