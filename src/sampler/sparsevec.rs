@@ -177,7 +177,6 @@ where
         match leaf.binary_search(key) {
             Ok(pos) => {
                 update_fn(&mut leaf.keyvals[pos].1);
-                return;
             }
             Err(pos) => {
                 let mut val = insert_fn();
@@ -532,21 +531,21 @@ struct InternalNode<K> {
     children: ArrayVec<NodePtr, INTERNAL_SIZE>,
 }
 
-impl<K> InternalNode<K>
-where
-    K: Copy + Ord,
-{
-    fn new() -> Self {
-        InternalNode {
-            keys: ArrayVec::new(),
-            children: ArrayVec::new(),
-        }
-    }
+// impl<K> InternalNode<K>
+// where
+//     K: Copy + Ord,
+// {
+//     fn new() -> Self {
+//         InternalNode {
+//             keys: ArrayVec::new(),
+//             children: ArrayVec::new(),
+//         }
+//     }
 
-    fn binary_search(&self, key: K) -> Result<usize, usize> {
-        self.keys.binary_search(&key)
-    }
-}
+//     fn binary_search(&self, key: K) -> Result<usize, usize> {
+//         self.keys.binary_search(&key)
+//     }
+// }
 
 #[derive(Debug)]
 struct LeafNode<K, V> {

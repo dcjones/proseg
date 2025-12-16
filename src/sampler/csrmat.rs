@@ -272,7 +272,6 @@ where
         CSRRowReadLock {
             guard: self.row_lock.read(),
             j_bound: self.j_bound,
-            i: self.i,
         }
     }
 
@@ -285,7 +284,6 @@ where
         CSRRowWriteLock {
             guard: self.row_lock.write(),
             j_bound: self.j_bound,
-            i: self.i,
         }
     }
 }
@@ -294,7 +292,6 @@ where
 pub struct CSRRowReadLock<'a, J, T> {
     guard: RwLockReadGuard<'a, SparseCountVec<J, T>>,
     j_bound: J,
-    i: usize,
 }
 
 impl<'a, J, T> CSRRowReadLock<'a, J, T>
@@ -635,7 +632,6 @@ mod tests {
 pub struct CSRRowWriteLock<'a, J, T> {
     pub guard: RwLockWriteGuard<'a, SparseCountVec<J, T>>,
     j_bound: J,
-    i: usize,
 }
 
 impl<'a, J, T> CSRRowWriteLock<'a, J, T>
