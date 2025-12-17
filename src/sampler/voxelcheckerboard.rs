@@ -1028,14 +1028,14 @@ impl VoxelState {
 
 pub struct QuadStates {
     // Voxel state and prior.
-    pub states: BTreeMap<Voxel, VoxelState>,
+    pub states: HashMap<Voxel, VoxelState>,
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
 }
 
 impl QuadStates {
     pub fn new() -> QuadStates {
         QuadStates {
-            states: BTreeMap::new(),
+            states: HashMap::new(),
             mismatch_edges: SampleSet::new(),
         }
     }
