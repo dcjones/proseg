@@ -1,150 +1,138 @@
+use num::traits::{AsPrimitive, Float, One, Zero};
 use rand::Rng;
-use rand_distr::{Binomial, Distribution};
+use rand_distr::Distribution;
+use std::ops::AddAssign;
 
-#[derive(Copy, Clone, Debug)]
-pub struct MultinomialOutcome {
-    pub prob: f32,
-    pub index: u32,
-}
+const BINOMIAL_DIRECT_CUTOFF: u32 = 10;
+const BINOMIAL_INVERSE_CUTOFF: f64 = 20.0;
 
-pub struct Multinomial {
-    pub outcomes: Vec<MultinomialOutcome>,
-}
+/// Inverse transform with symmetry optimization
+/// When p > 0.5, sample from Binomial(n, 1-p) and return n - result
+fn binomial_inversion_symmetric<R: Rng>(rng: &mut R, n: u64, p: f64) -> u64 {
+    if p == 0.0 {
+        return 0;
+    }
+    if p >= 1.0 {
+        return n;
+    }
 
-// Idea here is to speed up sampling sparse multinomial vectors by sorting the outcome
-// in descending order by probability, so we can hopefully bail out early.
-impl Multinomial {
-    pub fn with_k(k: usize) -> Multinomial {
-        Multinomial {
-            outcomes: vec![
-                MultinomialOutcome {
-                    prob: 0.0,
-                    index: 0
-                };
-                k
-            ],
+    // Use symmetry to always work with p <= 0.5
+    let (p_eff, flip) = if p > 0.5 { (1.0 - p, true) } else { (p, false) };
+
+    let q = 1.0 - p_eff;
+    let s = p_eff / q;
+    let mut prob = q.powi(n as i32);
+    let mut cdf = prob;
+    let u: f64 = rng.random();
+
+    for k in 0..n {
+        if u <= cdf {
+            return if flip { n - k } else { k };
         }
+        prob *= s * (n - k) as f64 / (k + 1) as f64;
+        cdf += prob;
     }
-
-    pub fn sample<R, F>(&mut self, rng: &mut R, n: u32, mut nonzero_sample: F)
-    where
-        R: Rng,
-        F: FnMut(usize, u32),
-    {
-        // sort in descending order by probability
-        self.outcomes
-            .sort_unstable_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap());
-
-        let norm = self
-            .outcomes
-            .iter()
-            .fold(0.0, |accum, outcome| accum + outcome.prob as f64);
-
-        let mut ρ = 1.0;
-        let mut s = n;
-        for outcome in self.outcomes.iter() {
-            let p = outcome.prob as f64 / norm;
-            let mut x = 0;
-            if ρ > 0.0 {
-                x = Binomial::new(s as u64, (p / ρ).min(1.0))
-                    .unwrap()
-                    .sample(rng) as u32;
-                if x > 0 {
-                    nonzero_sample(outcome.index as usize, x);
-                }
-            }
-
-            s -= x;
-            ρ -= p;
-
-            if s == 0 {
-                break;
-            }
-        }
-        assert!(s == 0);
-    }
+    if flip { 0 } else { n }
 }
 
-// A Binomial sampler with an optimized path for small `n`
-struct SmallBinomial {
-    p: f64,
-    n: u32,
-}
-
-impl SmallBinomial {
-    fn new(p: f64, n: u32) -> SmallBinomial {
-        SmallBinomial { p, n }
+pub fn rand_binomial<R: Rng>(rng: &mut R, p: f64, n: u32) -> u32 {
+    if n == 0 || p == 0.0 {
+        return 0;
     }
 
-    fn sample<R: Rng>(&self, rng: &mut R) -> u32 {
-        let mut successes = 0;
-        for _ in 0..self.n {
-            if rng.random_bool(self.p) {
-                successes += 1;
-            }
-        }
-        successes
+    if p >= 1.0 {
+        return n;
     }
+
+    if n <= BINOMIAL_DIRECT_CUTOFF {
+        return (0..n).filter(|_| rng.random_bool(p)).count() as u32;
+    }
+
+    if n as f64 * p.min(1.0 - p) <= BINOMIAL_INVERSE_CUTOFF {
+        return binomial_inversion_symmetric(rng, n as u64, p) as u32;
+    }
+
+    rand_distr::Binomial::new(n as u64, p).unwrap().sample(rng) as u32
 }
 
-// Multinomial distribution sampler optimized for a smsall n and a small
-// number of outcomes.
-pub struct SmallMultinomial<'a, R> {
-    rng: &'a mut R,
-    probs: &'a [f32],
-    ρ: f32, // remaining probability
-    s: u32, // remaining count
-    i: usize,
+pub struct Multinomial<T> {
+    cumprobs: Vec<T>,
 }
 
-impl<'a, R> SmallMultinomial<'a, R>
+impl<T> Multinomial<T>
 where
-    R: Rng,
+    T: Float + Zero + One + AddAssign + AsPrimitive<f64>,
 {
-    pub fn new(rng: &'a mut R, probs: &'a [f32], n: u32) -> Self {
-        SmallMultinomial {
-            rng,
-            probs,
-            ρ: probs.iter().sum(),
-            s: n,
-            i: 0,
+    pub fn new(len: usize) -> Self {
+        Self {
+            cumprobs: vec![T::zero(); len + 1],
         }
     }
-}
 
-impl<'a, R> Iterator for SmallMultinomial<'a, R>
-where
-    R: Rng,
-{
-    type Item = u32;
+    pub fn from_probs(probs: &[T]) -> Self {
+        let mut dist = Self::new(probs.len());
+        dist.set_probs(probs);
+        dist
+    }
 
-    fn next(&mut self) -> Option<u32> {
-        if self.i == self.probs.len() {
-            return None;
+    pub fn set_probs(&mut self, probs: &[T]) {
+        assert!(probs.len() + 1 == self.cumprobs.len());
+
+        let mut cumprob = T::zero();
+        for (cumprob_i, prob) in self.cumprobs.iter_mut().zip(probs.iter()) {
+            *cumprob_i = cumprob;
+            cumprob += *prob;
+        }
+        *self.cumprobs.last_mut().unwrap() = cumprob;
+    }
+
+    pub fn set_probs_from_iter(&mut self, probs: impl IntoIterator<Item = T>) {
+        let mut cumprob = T::zero();
+        for (cumprob_i, prob) in self.cumprobs.iter_mut().zip(probs.into_iter()) {
+            *cumprob_i = cumprob;
+            cumprob += prob;
+        }
+        *self.cumprobs.last_mut().unwrap() = cumprob;
+    }
+
+    // Recursive divide-and conqueror sampling. When n is small or outcome probabilities are skewed
+    // this lets us prune many branches, speeding up the sampling.
+    pub fn sample<R: Rng, F: FnMut(usize, u32)>(&self, rng: &mut R, n: u32, mut report: F) {
+        if n == 0 {
+            return;
         }
 
-        if self.s == 0 {
-            self.i += 1;
-            return Some(0);
+        self.sample_recursion(rng, 0, self.cumprobs.len() - 1, n, &mut report);
+    }
+
+    // Sample on the interval [from, to)
+    fn sample_recursion<R: Rng, F: FnMut(usize, u32)>(
+        &self,
+        rng: &mut R,
+        from: usize,
+        to: usize,
+        n: u32,
+        report: &mut F,
+    ) {
+        if n == 0 {
+            return;
         }
 
-        if self.i == self.probs.len() - 1 {
-            self.i += 1;
-            return Some(self.s);
+        if to - from == 1 {
+            if n > 0 {
+                report(from, n);
+            }
+            return;
         }
 
-        let pi = self.probs[self.i];
-        let r = (pi / self.ρ).min(1.0);
-        let x = SmallBinomial::new(r as f64, self.s).sample(self.rng);
-        self.ρ -= pi;
-        self.s -= x;
-        self.i += 1;
+        let mid = (from + to) / 2;
+        let left_prob = self.cumprobs[mid] - self.cumprobs[from];
+        let total_prob = self.cumprobs[to] - self.cumprobs[from];
 
-        Some(x)
+        let p = (left_prob / total_prob).min(T::one()).max(T::zero());
+        let n_left = rand_binomial(rng, p.as_(), n);
+
+        self.sample_recursion(rng, from, mid, n_left, report);
+        self.sample_recursion(rng, mid, to, n - n_left, report);
     }
 }
-
-// TODO:
-// Multinomial distribution sampler optimized for a large number of outcomes,
-// when many have low probability.
-// struct LargeMultinomial {}

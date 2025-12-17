@@ -1,12 +1,11 @@
 use log::trace;
-use rand_distr::{Binomial, Distribution};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;
 use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
 use super::math::uniformly_imprecise_normal_prob;
-use super::multinomial::SmallMultinomial;
+use super::multinomial::{Multinomial, rand_binomial};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
@@ -20,6 +19,8 @@ pub struct TranscriptRepo {
     prior_z: VoxelDiffusionPrior,
     proposal_xy_probs: Vec<f32>,
     proposal_z_probs: Vec<f32>,
+    proposal_xy: Multinomial<f32>,
+    proposal_z: Multinomial<f32>,
 }
 
 impl TranscriptRepo {
@@ -44,12 +45,17 @@ impl TranscriptRepo {
             proposal_z_probs[(n - 1) + i] = proposal_z_probs[(n - 1) - i];
         }
 
+        let proposal_xy = Multinomial::from_probs(&proposal_xy_probs);
+        let proposal_z = Multinomial::from_probs(&proposal_z_probs);
+
         TranscriptRepo {
             prior_near: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS),
             prior_far: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS),
             prior_z: VoxelDiffusionPrior::new(voxelsize, priors.σ_z_diffusion, EPS),
             proposal_xy_probs,
             proposal_z_probs,
+            proposal_xy,
+            proposal_z,
         }
     }
 
@@ -79,6 +85,9 @@ impl TranscriptRepo {
         self.prior_far =
             VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, self.prior_far.eps);
         self.prior_z = VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion, eps);
+
+        self.proposal_xy = Multinomial::from_probs(&self.proposal_xy_probs);
+        self.proposal_z = Multinomial::from_probs(&self.proposal_z_probs);
     }
 
     pub fn sample(
@@ -190,115 +199,108 @@ impl TranscriptRepo {
             let current_prob = dist_prob_current * λ_current;
 
             let mut total_moved = 0;
-            for (dk, c_k) in
-                SmallMultinomial::new(&mut rng.clone(), &self.proposal_z_probs, *count).enumerate()
-            {
+
+            self.proposal_z.sample(&mut rng.clone(), *count, |dk, c_k| {
                 if c_k == 0 {
-                    continue;
+                    return;
                 }
 
                 let dk = (dk as i32) - ((self.proposal_z_probs.len() - 1) / 2) as i32;
 
                 if k0 + dk < 0 || k0 + dk > quad.kmax {
-                    continue;
+                    return;
                 }
 
-                for (dj, c_jk) in
-                    SmallMultinomial::new(&mut rng.clone(), &self.proposal_xy_probs, c_k)
-                        .enumerate()
-                {
+                self.proposal_xy.sample(&mut rng.clone(), c_k, |dj, c_jk| {
                     if c_jk == 0 {
-                        continue;
+                        return;
                     }
 
                     let dj = (dj as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
 
-                    for (di, c_ijk) in
-                        SmallMultinomial::new(&mut rng.clone(), &self.proposal_xy_probs, c_jk)
-                            .enumerate()
-                    {
-                        if c_ijk == 0 {
-                            continue;
-                        }
+                    self.proposal_xy
+                        .sample(&mut rng.clone(), c_jk, |di, c_ijk| {
+                            if c_ijk == 0 {
+                                return;
+                            }
 
-                        let di = (di as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
-                        let neighbor = voxel.offset_coords(di, dj, dk);
-                        if neighbor.is_oob() {
-                            continue;
-                        }
+                            let di = (di as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
+                            let neighbor = voxel.offset_coords(di, dj, dk);
+                            if neighbor.is_oob() {
+                                return;
+                            }
 
-                        // don't repo into a quad that doesn't exist
-                        let u = neighbor.i() as u32 / quadsize;
-                        let v = neighbor.j() as u32 / quadsize;
-                        if !quads_coords.contains(&(u, v)) {
-                            continue;
-                        }
+                            // don't repo into a quad that doesn't exist
+                            let u = neighbor.i() as u32 / quadsize;
+                            let v = neighbor.j() as u32 / quadsize;
+                            if !quads_coords.contains(&(u, v)) {
+                                return;
+                            }
 
-                        // sample from another binomial to determine how many of these move we accept
-                        let mut λ_proposed = λ_bg;
-                        let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
-                            quad_states
-                                .states
-                                .get(&neighbor)
-                                .map(|state| state.cell)
-                                .unwrap_or(BACKGROUND_CELL)
-                        } else {
-                            voxels.get_voxel_cell(neighbor)
-                        };
+                            // sample from another binomial to determine how many of these move we accept
+                            let mut λ_proposed = λ_bg;
+                            let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
+                                quad_states
+                                    .states
+                                    .get(&neighbor)
+                                    .map(|state| state.cell)
+                                    .unwrap_or(BACKGROUND_CELL)
+                            } else {
+                                voxels.get_voxel_cell(neighbor)
+                            };
 
-                        if neighbor_cell != BACKGROUND_CELL {
-                            λ_proposed += params.λ(neighbor_cell as usize, gene);
-                        }
+                            if neighbor_cell != BACKGROUND_CELL {
+                                λ_proposed += params.λ(neighbor_cell as usize, gene);
+                            }
 
-                        let di = di + di0;
-                        let dj = dj + dj0;
-                        let dk = dk + dk0;
+                            let di = di + di0;
+                            let dj = dj + dj0;
+                            let dk = dk + dk0;
 
-                        let dist_prob_proposed = self.diffusion_distance_prior(priors, di, dj, dk);
+                            let dist_prob_proposed =
+                                self.diffusion_distance_prior(priors, di, dj, dk);
 
-                        let proposal_prob = dist_prob_proposed * λ_proposed;
+                            let proposal_prob = dist_prob_proposed * λ_proposed;
 
-                        // if proposal_prob == current_prob {
-                        //     eq_proposal_total += c_ijk;
-                        // } else if proposal_prob < current_prob {
-                        //     dec_proposal_total += c_ijk;
-                        // } else {
-                        //     inc_proposal_total += c_ijk;
-                        // }
+                            // if proposal_prob == current_prob {
+                            //     eq_proposal_total += c_ijk;
+                            // } else if proposal_prob < current_prob {
+                            //     dec_proposal_total += c_ijk;
+                            // } else {
+                            //     inc_proposal_total += c_ijk;
+                            // }
 
-                        let accept_prob = (proposal_prob.ln() - current_prob.ln()).exp() as f64;
-                        let accepted_count = Binomial::new(c_ijk as u64, accept_prob.min(1.0))
-                            .unwrap()
-                            .sample(rng) as u32;
+                            let accept_prob = (proposal_prob.ln() - current_prob.ln()).exp() as f64;
+                            let accepted_count = rand_binomial(rng, accept_prob.min(1.0), c_ijk);
 
-                        // proposed_total += c_ijk as usize;
-                        // accept_total += accepted_count as usize;
+                            // proposed_total += c_ijk as usize;
+                            // accept_total += accepted_count as usize;
 
-                        if accepted_count == 0 {
-                            continue;
-                        }
+                            if accepted_count == 0 {
+                                return;
+                            }
 
-                        if record_samples
-                            && neighbor_cell != BACKGROUND_CELL
-                            && let Some(transition_counts_row_write) =
-                                transition_counts_row_write.as_mut()
-                        {
-                            transition_counts_row_write.add(neighbor_cell, accepted_count);
-                        }
+                            if record_samples
+                                && neighbor_cell != BACKGROUND_CELL
+                                && let Some(transition_counts_row_write) =
+                                    transition_counts_row_write.as_mut()
+                            {
+                                transition_counts_row_write.add(neighbor_cell, accepted_count);
+                            }
 
-                        quad_counts_ref.counts_deltas.push((
-                            VoxelCountKey {
-                                voxel: neighbor,
-                                gene: gene as u32,
-                                offset: VoxelOffset::new(di, dj, dk),
-                            },
-                            accepted_count,
-                        ));
+                            quad_counts_ref.counts_deltas.push((
+                                VoxelCountKey {
+                                    voxel: neighbor,
+                                    gene: gene as u32,
+                                    offset: VoxelOffset::new(di, dj, dk),
+                                },
+                                accepted_count,
+                            ));
 
-                        total_moved += accepted_count;
-                    }
-                }
-            }
+                            total_moved += accepted_count;
+                        });
+                });
+            });
 
             if total_moved > 0 {
                 assert!(total_moved <= *count);

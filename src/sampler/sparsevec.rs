@@ -40,20 +40,6 @@ where
         }
     }
 
-    /// Create a new SparseCountVec with pre-allocated capacity for leaf nodes.
-    /// Use this when you know roughly how many elements will be stored.
-    /// A good estimate is `(expected_elements / LEAF_SIZE) + 1`.
-    pub fn with_capacity(leaf_capacity: usize) -> Self {
-        let root = LeafNode::new();
-        let mut leaf_arena = Vec::with_capacity(leaf_capacity.max(1));
-        leaf_arena.push(root);
-        SparseCountVec {
-            leaf_arena,
-            internal_arena: Vec::new(),
-            root: NodePtr::Leaf(0),
-        }
-    }
-
     /// Clear all entries, reusing existing arena allocations.
     /// This is much more efficient than creating a new SparseCountVec
     /// when the structure will be immediately repopulated.

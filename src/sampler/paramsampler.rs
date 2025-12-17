@@ -1,5 +1,5 @@
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
-use super::multinomial::Multinomial;
+use super::multinomial::{Multinomial, rand_binomial};
 use super::polyagamma::PolyaGamma;
 use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
 use itertools::izip;
@@ -7,7 +7,7 @@ use libm::lgammaf;
 use log::{info, trace};
 use ndarray::{Array2, Axis, Zip, s};
 use rand::{Rng, rng};
-use rand_distr::{Binomial, Distribution, Gamma, Normal};
+use rand_distr::{Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -181,9 +181,7 @@ impl ParamSampler {
                         λ_cg / (λ_cg + λ_bg)
                     };
 
-                    let count_fg = Binomial::new(count as u64, fg_prob as f64)
-                        .unwrap()
-                        .sample(rng) as u32;
+                    let count_fg = rand_binomial(rng, fg_prob as f64, count);
                     let count_bg = count - count_fg;
 
                     foreground_row.add(gene, count_fg);
@@ -367,7 +365,7 @@ impl ParamSampler {
             .for_each_init(rng, |rng, ((cell_latent_counts_c, x_c), φ_c)| {
                 let mut multinomial = params
                     .multinomials
-                    .get_or(|| RefCell::new(Multinomial::with_k(nhidden - params.nunfactored)))
+                    .get_or(|| RefCell::new(Multinomial::new(nhidden - params.nunfactored)))
                     .borrow_mut();
 
                 let mut gene_latent_counts_tl = params
@@ -395,15 +393,14 @@ impl ParamSampler {
                         continue;
                     }
 
-                    for (k, outcome, &φ_ck, &θ_gk) in izip!(
-                        params.nunfactored..nhidden,
-                        multinomial.outcomes.iter_mut(),
-                        &φ_c.slice(s![params.nunfactored..]),
-                        &θ_g.slice(s![params.nunfactored..])
-                    ) {
-                        outcome.prob = φ_ck * θ_gk;
-                        outcome.index = k as u32;
-                    }
+                    let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
+                    let θ_g_factored = θ_g.slice(s![params.nunfactored..]);
+
+                    let prob_iter = φ_c_factored
+                        .iter()
+                        .zip(θ_g_factored.iter())
+                        .map(|(φ_ck, θ_gk)| *φ_ck * *θ_gk);
+                    multinomial.set_probs_from_iter(prob_iter);
 
                     let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
                     multinomial.sample(rng, x_cg, |k, x| {

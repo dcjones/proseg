@@ -243,7 +243,7 @@ pub struct ModelParams {
     pub latent_counts: Array1<u32>,
 
     // [nhidden] thread local storage for sampling latent counts
-    pub multinomials: ThreadLocal<RefCell<Multinomial>>,
+    pub multinomials: ThreadLocal<RefCell<Multinomial<f32>>>,
 
     // [ncells, ncomponents] space for sampling component assignments
     pub z_probs: ThreadLocal<RefCell<Vec<f64>>>,
