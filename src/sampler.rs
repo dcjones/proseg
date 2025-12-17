@@ -274,6 +274,9 @@ pub struct ModelParams {
     // [nhidden]: precompute φ_k.dot(cell_volume)
     φ_v_dot: Array1<f32>,
 
+    // [ncells]: precompute φ_c.dot(θksum)
+    pub φ_θksum_dot: Array1<f32>,
+
     // [ncells, nhidden] aux CRT variables for sampling rφ
     pub lφ: Array2<u32>,
 
@@ -443,6 +446,8 @@ impl ModelParams {
                 *φ_v_dot_k = φ_k.dot(&effective_cell_volume);
             });
 
+        let mut φ_θksum_dot = Array1::<f32>::zeros(ncells);
+
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
@@ -465,7 +470,12 @@ impl ModelParams {
                 *θksum = θ_k.sum();
             });
 
-        let λ = DashMap::new();
+        Zip::from(&mut φ_θksum_dot)
+            .and(φ.rows())
+            .for_each(|dot, φ_c| {
+                *dot = φ_c.dot(&θksum);
+            });
+
         let λ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
         let logλ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
 
@@ -532,6 +542,14 @@ impl ModelParams {
         }
     }
 
+    pub fn update_phi_theta_dot(&mut self) {
+        Zip::from(&mut self.φ_θksum_dot)
+            .and(self.φ.rows())
+            .for_each(|dot, φ_c| {
+                *dot = φ_c.dot(&self.θksum);
+            });
+    }
+
     // Compute the Poisson rate for cell and gene pair.
     pub fn λ(&self, cell: usize, gene: usize) -> f32 {
         if cell as u32 == BACKGROUND_CELL {
@@ -570,7 +588,7 @@ impl ModelParams {
                         accum_c += (x_cg as f32) * λ_cg.ln();
                     }
                 }
-                accum_c - v_c * self.φ.row(c).dot(&self.θksum)
+                accum_c - v_c * self.φ_θksum_dot[c]
             })
             .sum();
 
