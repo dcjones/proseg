@@ -44,6 +44,10 @@ pub fn rand_binomial<R: Rng>(rng: &mut R, p: f64, n: u32) -> u32 {
         return n;
     }
 
+    if n == 1 {
+        return rng.random_bool(p) as u32;
+    }
+
     if n <= BINOMIAL_DIRECT_CUTOFF {
         return (0..n).filter(|_| rng.random_bool(p)).count() as u32;
     }
@@ -99,6 +103,19 @@ where
     // this lets us prune many branches, speeding up the sampling.
     pub fn sample<R: Rng, F: FnMut(usize, u32)>(&self, rng: &mut R, n: u32, mut report: F) {
         if n == 0 {
+            return;
+        }
+
+        if n == 1 {
+            let total_prob = self.cumprobs.last().unwrap().as_();
+            if total_prob > 0.0 {
+                let u = rng.random::<f64>() * total_prob;
+                let idx = self
+                    .cumprobs
+                    .partition_point(|&x| x.as_() <= u)
+                    .saturating_sub(1);
+                report(idx, 1);
+            }
             return;
         }
 
