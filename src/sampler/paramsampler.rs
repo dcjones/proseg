@@ -283,6 +283,7 @@ impl ParamSampler {
             .and(&params.effective_cell_volume)
             .and(&params.log_cell_volume)
             .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (i, z_c, φ_c, ev_c, log_v_c)| {
                 let x_c_lock = params.cell_latent_counts.row(i);
                 let x_c = x_c_lock.read();
@@ -489,6 +490,7 @@ impl ParamSampler {
             .and(&params.z)
             .and(&params.effective_cell_volume)
             .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (c, φ_c, z_c, v_c)| {
                 let x_c = params.cell_latent_counts.row(c);
                 let z_c = *z_c as usize;
@@ -521,6 +523,7 @@ impl ParamSampler {
             .and(&params.z)
             .and(params.ωφ.outer_iter())
             .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (c, a_c, eff_v_c, &log_v_c, &z_c, ω_c)| {
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
@@ -567,6 +570,7 @@ impl ParamSampler {
         Zip::indexed(params.lφ.outer_iter_mut()) // for every cell
             .and(&params.z)
             .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (c, l_c, &z_c)| {
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
@@ -616,6 +620,7 @@ impl ParamSampler {
             .and(&params.z)
             .and(&params.effective_cell_volume)
             .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, (c, ω_c, &z_c, &v_c)| {
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
@@ -643,7 +648,9 @@ impl ParamSampler {
         }
         Zip::from(&params.z)
             .and(params.ωφ.outer_iter())
-            .par_for_each(|&z_c, ω_c| {
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(&z_c, ω_c)| {
                 let mut τ_sφ_tl = params
                     .sφ_work_tl
                     .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
@@ -666,7 +673,9 @@ impl ParamSampler {
         Zip::indexed(&params.z)
             .and(&params.effective_cell_volume)
             .and(params.ωφ.outer_iter())
-            .par_for_each(|c, &z_c, &v_c, ω_c| {
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(c, &z_c, &v_c, ω_c)| {
                 let mut μ_sφ_tl = params
                     .sφ_work_tl
                     .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))

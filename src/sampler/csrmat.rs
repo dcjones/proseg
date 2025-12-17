@@ -1,4 +1,5 @@
 use super::sparsevec::SparseCountVec;
+use super::RAYON_CELL_MIN_LEN;
 use num::traits::AsPrimitive;
 use num::traits::Zero;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -97,15 +98,21 @@ where
     J: Send + Sync + Copy + Ord,
 {
     pub fn clear(&mut self) {
-        self.rows.par_iter().for_each(|row| {
-            row.write().clear();
-        });
+        self.rows
+            .par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|row| {
+                row.write().clear();
+            });
     }
 
     pub fn zero(&mut self) {
-        self.rows.par_iter().for_each(|row| {
-            row.write().zero_all();
-        });
+        self.rows
+            .par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|row| {
+                row.write().zero_all();
+            });
     }
 }
 
@@ -117,6 +124,7 @@ where
     pub fn sum(&self) -> u64 {
         self.rows
             .par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
             .map(|row| row.read().sum_values().as_())
             .sum()
     }
