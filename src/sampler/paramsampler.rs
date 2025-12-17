@@ -235,6 +235,7 @@ impl ParamSampler {
 
         let t0 = Instant::now();
         self.sample_φ(params);
+        params.update_phi_theta_dot();
         trace!("sample_φ: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -264,8 +265,6 @@ impl ParamSampler {
                     *ev = (v as f32) * params.voxel_volume;
                 });
         }
-
-        params.λ.clear();
     }
 
     fn sample_z(&self, params: &mut ModelParams) {

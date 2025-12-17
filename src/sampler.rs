@@ -18,7 +18,7 @@ pub mod voxelsampler;
 use clustering::kmeans;
 use csrmat::CSRMat;
 use csrmat::Increment;
-use dashmap::DashMap;
+
 use itertools::izip;
 use math::randn;
 use multinomial::Multinomial;
@@ -307,9 +307,6 @@ pub struct ModelParams {
     // [nhidden]: Sums across the first axis of θ
     pub θksum: Array1<f32>,
 
-    // memoization of the ModelParams::λ method
-    λ: DashMap<(u32, u32), f32>,
-
     // [ngenes, nlayers, density_nbins] background rate: rate at which halucinate transcripts
     // across the entire layer
     pub λ_bg: Array3<f32>,
@@ -521,6 +518,7 @@ impl ModelParams {
             σ_volume,
             φ,
             φ_v_dot,
+            φ_θksum_dot,
             lφ,
             ωφ,
             rφ,
@@ -531,7 +529,6 @@ impl ModelParams {
             sφ_work_tl,
             θ,
             θksum,
-            λ,
             λ_bg,
             logλ_bg,
             nunfactored,
@@ -560,16 +557,9 @@ impl ModelParams {
             return self.φ[[cell, gene]];
         }
 
-        if let Some(λ_cg) = self.λ.get(&(cell as u32, gene as u32)) {
-            return *λ_cg;
-        }
-
         let φ_c = self.φ.row(cell);
         let θ_g = self.θ.row(gene);
-        let λ_cg = φ_c.dot(&θ_g);
-        self.λ.insert((cell as u32, gene as u32), λ_cg);
-
-        λ_cg
+        φ_c.dot(&θ_g)
     }
 
     pub fn log_likelihood(&self, _priors: &ModelPriors) -> f32 {
