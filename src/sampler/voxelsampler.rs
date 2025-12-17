@@ -16,6 +16,8 @@ use std::time::Instant;
 // to but exaggerates surface area.
 const ISOPERIMETRIC_ADJUSTMENT: f32 = 9.43;
 
+pub const VOXEL_SAMPLING_BATCH_SIZE: usize = 64;
+
 fn inv_isoperimetric_quotient(surface_area: f32, volume: u32) -> f32 {
     if volume == 0 {
         0.0
@@ -106,26 +108,29 @@ impl VoxelSampler {
                 }
             })
             .for_each(|quad| {
-                let proposal = self.generate_proposal(quad, priors, &params.frozen_cells);
-                if proposal.is_none() {
-                    // TODO: We may be here because we randomly generated an oob proposal.
-                    // In that case we should just regenerate, but we have to be careful we
-                    // don't get stuck in an infinite loop.
-                    return;
-                }
-                let proposal = proposal.unwrap();
+                // To reduce parallel launch overhead, we process multiple proposals per quad.
+                for _ in 0..VOXEL_SAMPLING_BATCH_SIZE {
+                    let proposal = self.generate_proposal(quad, priors, &params.frozen_cells);
+                    if proposal.is_none() {
+                        // TODO: We may be here because we randomly generated an oob proposal.
+                        // In that case we should just regenerate, but we have to be careful we
+                        // don't get stuck in an infinite loop.
+                        continue;
+                    }
+                    let proposal = proposal.unwrap();
 
-                let mut logu =
-                    self.evaluate_proposal(voxels, quad, priors, params, voxelsize_z, proposal);
-                if temperature < 1.0 {
-                    logu /= temperature;
-                } else {
-                    logu += proposal.log_proposal_imbalance
-                }
-                let s = rng().random::<f32>().ln();
+                    let mut logu =
+                        self.evaluate_proposal(voxels, quad, priors, params, voxelsize_z, proposal);
+                    if temperature < 1.0 {
+                        logu /= temperature;
+                    } else {
+                        logu += proposal.log_proposal_imbalance
+                    }
+                    let s = rng().random::<f32>().ln();
 
-                if s < logu {
-                    self.accept_proposal(voxels, quad, params, proposal, record_samples);
+                    if s < logu {
+                        self.accept_proposal(voxels, quad, params, proposal, record_samples);
+                    }
                 }
             });
 

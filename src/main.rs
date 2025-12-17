@@ -18,7 +18,7 @@ use sampler::paramsampler::ParamSampler;
 use sampler::transcriptrepo::TranscriptRepo;
 use sampler::transcripts::{read_transcripts_csv, read_visium_data};
 use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
-use sampler::voxelsampler::VoxelSampler;
+use sampler::voxelsampler::{VOXEL_SAMPLING_BATCH_SIZE, VoxelSampler};
 use sampler::{ModelParams, ModelPriors};
 use std::collections::HashMap;
 use std::env;
@@ -1244,7 +1244,7 @@ fn run_sampler(
     prog: &ProgressBar,
 ) {
     let t0 = Instant::now();
-    for _ in 0..morphology_steps_per_iter {
+    for _ in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
         voxel_sampler.sample(voxels, priors, params, temperature, record_samples);
     }
     info!("morphology sampling: {:?}", t0.elapsed());
