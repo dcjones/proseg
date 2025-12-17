@@ -5,7 +5,8 @@ use std::collections::HashSet;
 use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
-use super::math::{MultinomialSampler, uniformly_imprecise_normal_prob};
+use super::math::uniformly_imprecise_normal_prob;
+use super::multinomial::SmallMultinomial;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
@@ -17,8 +18,8 @@ pub struct TranscriptRepo {
     prior_near: VoxelDiffusionPrior,
     prior_far: VoxelDiffusionPrior,
     prior_z: VoxelDiffusionPrior,
-    proposal_xy_probs: Vec<f64>,
-    proposal_z_probs: Vec<f64>,
+    proposal_xy_probs: Vec<f32>,
+    proposal_z_probs: Vec<f32>,
 }
 
 impl TranscriptRepo {
@@ -26,11 +27,7 @@ impl TranscriptRepo {
         const EPS: f32 = 1e-5;
 
         let mut proposal_xy_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, EPS)
-                .pmf
-                .iter()
-                .map(|v| *v as f64)
-                .collect::<Vec<_>>();
+            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, EPS).pmf;
         proposal_xy_probs.reverse();
         let n = proposal_xy_probs.len();
         proposal_xy_probs.resize(2 * n - 1, 0.0);
@@ -39,11 +36,7 @@ impl TranscriptRepo {
         }
 
         let mut proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, EPS)
-                .pmf
-                .iter()
-                .map(|v| *v as f64)
-                .collect::<Vec<_>>();
+            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, EPS).pmf;
         proposal_z_probs.reverse();
         let n = proposal_z_probs.len();
         proposal_z_probs.resize(2 * n - 1, 0.0);
@@ -64,11 +57,7 @@ impl TranscriptRepo {
         let eps = self.prior_near.eps;
 
         self.proposal_xy_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, eps)
-                .pmf
-                .iter()
-                .map(|v| *v as f64)
-                .collect::<Vec<_>>();
+            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, eps).pmf;
         self.proposal_xy_probs.reverse();
         let n = self.proposal_xy_probs.len();
         self.proposal_xy_probs.resize(2 * n - 1, 0.0);
@@ -77,11 +66,7 @@ impl TranscriptRepo {
         }
 
         self.proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, eps)
-                .pmf
-                .iter()
-                .map(|v| *v as f64)
-                .collect::<Vec<_>>();
+            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, eps).pmf;
         self.proposal_z_probs.reverse();
         let n = self.proposal_z_probs.len();
         self.proposal_z_probs.resize(2 * n - 1, 0.0);
@@ -206,8 +191,7 @@ impl TranscriptRepo {
 
             let mut total_moved = 0;
             for (dk, c_k) in
-                MultinomialSampler::new(&mut rng.clone(), &self.proposal_z_probs, *count)
-                    .enumerate()
+                SmallMultinomial::new(&mut rng.clone(), &self.proposal_z_probs, *count).enumerate()
             {
                 if c_k == 0 {
                     continue;
@@ -220,7 +204,7 @@ impl TranscriptRepo {
                 }
 
                 for (dj, c_jk) in
-                    MultinomialSampler::new(&mut rng.clone(), &self.proposal_xy_probs, c_k)
+                    SmallMultinomial::new(&mut rng.clone(), &self.proposal_xy_probs, c_k)
                         .enumerate()
                 {
                     if c_jk == 0 {
@@ -230,7 +214,7 @@ impl TranscriptRepo {
                     let dj = (dj as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
 
                     for (di, c_ijk) in
-                        MultinomialSampler::new(&mut rng.clone(), &self.proposal_xy_probs, c_jk)
+                        SmallMultinomial::new(&mut rng.clone(), &self.proposal_xy_probs, c_jk)
                             .enumerate()
                     {
                         if c_ijk == 0 {
