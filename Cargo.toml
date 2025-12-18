@@ -38,10 +38,7 @@ indicatif = "0.17.5"
 itertools = "0.12.1"
 json = "0.12.4"
 libm = "0.2.7"
-ndarray = { version = "0.16.1", features = [
-    "rayon",
-    "matrixmultiply-threading",
-] }
+ndarray = { version = "0.17.1", features = ["rayon", "matrixmultiply-threading"] }
 numeric_literals = "0.2.0"
 parquet = "54.2.1"
 rand = "0.9.0"
@@ -55,7 +52,7 @@ num = "0.4.3"
 log = "0.4.27"
 env_logger = "0.11.8"
 ordered-float = "5.0.0"
-ndarray-npy = "0.9.1"
+ndarray-npy = "0.10.0"
 half = "2.6.0"
 lazy_static = "1.5.0"
 zarrs = "0.22.4"
