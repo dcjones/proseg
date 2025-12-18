@@ -32,26 +32,32 @@ where
     V: Copy + Zero,
 {
     pub fn new() -> Self {
-        let root = LeafNode::new();
         SparseCountVec {
-            leaf_arena: vec![root],
+            leaf_arena: Vec::new(),
             internal_arena: Vec::new(),
-            root: NodePtr::Leaf(0),
+            root: NodePtr::Leaf(NULL_IDX),
         }
     }
 
-    /// Clear all entries, reusing existing arena allocations.
-    /// This is much more efficient than creating a new SparseCountVec
-    /// when the structure will be immediately repopulated.
+    /// Clear all entries, fully deallocating arenas to reclaim memory.
     pub fn clear(&mut self) {
-        self.leaf_arena.clear();
-        self.leaf_arena.push(LeafNode::new());
-        self.internal_arena.clear();
-        self.root = NodePtr::Leaf(0);
+        self.leaf_arena = Vec::new();
+        self.internal_arena = Vec::new();
+        self.leaf_arena = Vec::new();
+        self.root = NodePtr::Leaf(NULL_IDX);
     }
 
     // Create an iterator over non-zero key-value pairs
     pub fn iter(&self) -> SparseCountVecIter<K, V> {
+        if self.leaf_arena.is_empty() {
+            return SparseCountVecIter {
+                vec: self,
+                current_leaf: NULL_IDX,
+                position_in_leaf: 0,
+                to: None,
+            };
+        }
+
         // Find the leftmost leaf
         let mut current = self.root;
         let first_leaf = loop {
@@ -73,6 +79,15 @@ where
     }
 
     pub fn iter_from(&self, from: K) -> SparseCountVecIter<K, V> {
+        if self.leaf_arena.is_empty() {
+            return SparseCountVecIter {
+                vec: self,
+                current_leaf: NULL_IDX,
+                position_in_leaf: 0,
+                to: None,
+            };
+        }
+
         let leaf_idx = self.find_leaf(from);
         let leaf = self.leaf(leaf_idx);
         let position_in_leaf = match leaf.binary_search(from) {
@@ -89,6 +104,15 @@ where
     }
 
     pub fn iter_to(&self, to: K) -> SparseCountVecIter<K, V> {
+        if self.leaf_arena.is_empty() {
+            return SparseCountVecIter {
+                vec: self,
+                current_leaf: NULL_IDX,
+                position_in_leaf: 0,
+                to: Some(to),
+            };
+        }
+
         // Find the leftmost leaf
         let mut current = self.root;
         let first_leaf = loop {
@@ -115,6 +139,16 @@ where
     where
         K: Zero + Increment,
     {
+        if self.leaf_arena.is_empty() {
+            return DenseIter {
+                vec: self,
+                current_key: K::zero(),
+                bound,
+                current_leaf: NULL_IDX,
+                position_in_leaf: 0,
+            };
+        }
+
         // Find the leftmost leaf
         let mut current = self.root;
         let first_leaf = loop {
@@ -141,6 +175,10 @@ where
     where
         V: PartialEq,
     {
+        if self.leaf_arena.is_empty() {
+            return;
+        }
+
         // Find the leftmost leaf
         let mut current = self.root;
         let first_leaf = loop {
@@ -181,6 +219,16 @@ where
         F: FnOnce() -> V,
         G: FnOnce(&mut V),
     {
+        if self.leaf_arena.is_empty() {
+            let mut val = insert_fn();
+            update_fn(&mut val);
+            let mut root = LeafNode::new();
+            root.keyvals.push((key, val));
+            self.leaf_arena.push(root);
+            self.root = NodePtr::Leaf(0);
+            return;
+        }
+
         let leaf_idx = self.find_leaf(key);
         let leaf = self.leaf_mut(leaf_idx);
 
@@ -206,6 +254,10 @@ where
     where
         F: FnOnce(&mut V),
     {
+        if self.leaf_arena.is_empty() {
+            return;
+        }
+
         let leaf_idx = self.find_leaf(key);
         let leaf = self.leaf_mut(leaf_idx);
 
@@ -268,6 +320,16 @@ where
     where
         F: FnOnce(&mut V),
     {
+        if self.leaf_arena.is_empty() {
+            let mut val = V::zero();
+            update_fn(&mut val);
+            let mut root = LeafNode::new();
+            root.keyvals.push((key, val));
+            self.leaf_arena.push(root);
+            self.root = NodePtr::Leaf(0);
+            return;
+        }
+
         let leaf_idx = self.find_leaf(key);
         let leaf = self.leaf_mut(leaf_idx);
 

@@ -2245,10 +2245,12 @@ impl VoxelCheckerboard {
         bandwidth: f32,
         nbins: usize,
     ) {
-        let mut rtree = RTree::new();
-        for run in dataset.transcripts.iter_runs() {
-            rtree.insert(GeomWithData::new([run.value.x, run.value.y], run.len));
-        }
+        let rtree_elements: Vec<_> = dataset
+            .transcripts
+            .iter_runs()
+            .map(|run| GeomWithData::new([run.value.x, run.value.y], run.len))
+            .collect();
+        let rtree = RTree::bulk_load(rtree_elements);
 
         let bandwidth_sq = bandwidth * bandwidth;
         let kernel_norm = 1.0 / (bandwidth * (2.0 * f32::consts::PI).sqrt());
@@ -2723,6 +2725,8 @@ impl VoxelCheckerboard {
                 }
             }
         }
+
+        metadata.shrink_to_fit();
 
         let remaining_counts = counts.values().map(|v| *v as usize).sum::<usize>();
         let remaining_foreground_counts = foreground_counts

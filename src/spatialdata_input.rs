@@ -362,7 +362,7 @@ fn read_transcript_parquet_files(
         original_cell_ids[i as usize] = cell_id;
     }
 
-    TranscriptDataset {
+    let mut dataset = TranscriptDataset {
         transcripts,
         transcript_ids: None,
         priorseg,
@@ -372,7 +372,9 @@ fn read_transcript_parquet_files(
         fov_names: Vec::new(),
         original_cell_ids,
         ncells,
-    }
+    };
+    dataset.shrink_to_fit();
+    dataset
 }
 
 #[allow(clippy::too_many_arguments)]

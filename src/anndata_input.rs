@@ -149,7 +149,7 @@ fn read_anndata_zarr_transcripts_from_store(
         original_cell_ids_vec[i as usize] = original_cell_id;
     }
 
-    TranscriptDataset {
+    let mut dataset = TranscriptDataset {
         transcripts,
         transcript_ids: None,
         priorseg,
@@ -159,7 +159,9 @@ fn read_anndata_zarr_transcripts_from_store(
         fov_names: Vec::new(),
         original_cell_ids: original_cell_ids_vec,
         ncells,
-    }
+    };
+    dataset.shrink_to_fit();
+    dataset
 }
 
 fn read_counts_matrix(store: Arc<FilesystemStore>) -> (Vec<u32>, Vec<u32>, Vec<u32>) {

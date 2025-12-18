@@ -52,6 +52,18 @@ pub struct TranscriptDataset {
 }
 
 impl TranscriptDataset {
+    pub fn shrink_to_fit(&mut self) {
+        self.transcripts.shrink_to_fit();
+        if let Some(ref mut ids) = self.transcript_ids {
+            ids.shrink_to_fit();
+        }
+        self.priorseg.shrink_to_fit();
+        self.fovs.shrink_to_fit();
+        self.gene_names.shrink_to_fit();
+        self.fov_names.shrink_to_fit();
+        self.original_cell_ids.shrink_to_fit();
+    }
+
     pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
         // Current heuristic is just to select the highest expression genes.
         let mut gene_counts = Array1::<u32>::zeros(self.gene_names.len());
@@ -103,14 +115,20 @@ impl TranscriptDataset {
         let max_distance_squared = max_distance * max_distance;
 
         let centroids = self.estimate_cell_centroids();
-        let mut rtree = RTree::new();
         let t0 = Instant::now();
-        for (i, xy) in centroids.rows().into_iter().enumerate() {
-            if !xy[0].is_finite() || !xy[1].is_finite() {
-                continue;
-            }
-            rtree.insert(GeomWithData::new([xy[0], xy[1]], i as u32));
-        }
+        let rtree_elements: Vec<_> = centroids
+            .rows()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, xy)| {
+                if xy[0].is_finite() && xy[1].is_finite() {
+                    Some(GeomWithData::new([xy[0], xy[1]], i as u32))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let rtree = RTree::bulk_load(rtree_elements);
         info!("R-tree constructed: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -136,7 +154,9 @@ impl TranscriptDataset {
         self.transcripts.retain_masked(&mask);
         self.priorseg.retain_masked(&mask);
         self.fovs.retain_masked(&mask);
-        info!("Transcripts filtered: {:?}", t0.elapsed());
+        self.shrink_to_fit();
+
+        info!("transcripts filtered: {:?}", t0.elapsed());
     }
 
     pub fn normalize_z_coordinates(&mut self) -> (f32, f32) {
@@ -423,7 +443,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 
     let gene_names = filter_unexpressed_genes(&mut transcripts, gene_names);
 
-    TranscriptDataset {
+    let mut dataset = TranscriptDataset {
         transcripts,
         transcript_ids: None,
         priorseg: RunVec::new(),
@@ -433,7 +453,9 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
         fov_names: Vec::new(),
         original_cell_ids: Vec::new(),
         ncells: 0,
-    }
+    };
+    dataset.shrink_to_fit();
+    dataset
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -776,7 +798,7 @@ where
         Some(transcript_ids)
     };
 
-    TranscriptDataset {
+    let mut dataset = TranscriptDataset {
         transcripts,
         transcript_ids,
         priorseg,
@@ -786,7 +808,9 @@ where
         fov_names,
         original_cell_ids,
         ncells,
-    }
+    };
+    dataset.shrink_to_fit();
+    dataset
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1070,9 +1094,15 @@ where
         original_cell_ids[i as usize] = cell_id;
     }
 
-    TranscriptDataset {
+    let transcript_ids = if transcript_ids.is_empty() {
+        None
+    } else {
+        Some(transcript_ids)
+    };
+
+    let mut dataset = TranscriptDataset {
         transcripts,
-        transcript_ids: Some(transcript_ids),
+        transcript_ids,
         priorseg,
         fovs,
         barcode_positions: None,
@@ -1080,7 +1110,9 @@ where
         fov_names,
         original_cell_ids,
         ncells,
-    }
+    };
+    dataset.shrink_to_fit();
+    dataset
 }
 
 // pub fn normalize_z_coord(transcripts: &mut Vec<Transcript>, fovs: Vec<u32>) {

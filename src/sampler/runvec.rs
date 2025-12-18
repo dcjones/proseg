@@ -119,7 +119,7 @@ where
     }
 
     pub fn retain_masked(&mut self, mask: &Vec<bool>) {
-        let mut newruns: RunVec<I, T> = RunVec::new();
+        let mut newruns: RunVec<I, T> = RunVec::with_run_capacity(self.runs.len());
 
         for (value, m) in self.iter().zip(mask) {
             if *m {
@@ -129,5 +129,9 @@ where
 
         self.len = newruns.len;
         self.runs = newruns.runs;
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.runs.shrink_to_fit();
     }
 }
