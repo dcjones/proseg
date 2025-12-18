@@ -29,7 +29,7 @@ dhat-heap = []
 
 [dependencies]
 ahash = "0.8.11"
-arrow = "54.2.1"
+arrow = "57.1.0"
 clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"
 flate2 = "1.0.26"
@@ -40,7 +40,7 @@ json = "0.12.4"
 libm = "0.2.7"
 ndarray = { version = "0.17.1", features = ["rayon", "matrixmultiply-threading"] }
 numeric_literals = "0.2.0"
-parquet = "54.2.1"
+parquet = "57.1.0"
 rand = "0.9.0"
 rand_distr = "0.5.1"
 rayon = "1.7.0"
