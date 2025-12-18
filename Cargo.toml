@@ -28,6 +28,7 @@ debug = true
 dhat-heap = []
 
 [dependencies]
+ahash = "0.8.11"
 arrow = "54.2.1"
 clap = { version = "4.3.3", features = ["derive"] }
 csv = "1.2.2"

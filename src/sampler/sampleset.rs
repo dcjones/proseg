@@ -1,3 +1,4 @@
+use ahash::AHashMap as HashMap;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 use std::collections::HashMap;

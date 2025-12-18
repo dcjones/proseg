@@ -1,3 +1,4 @@
+use ahash::AHashSet as HashSet;
 use log::trace;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::HashSet;

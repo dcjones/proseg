@@ -1,4 +1,5 @@
 use super::voxelcheckerboard::{Voxel, von_neumann_neighborhood_xy_offsets};
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet};
 

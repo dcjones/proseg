@@ -28,6 +28,7 @@ use log::trace;
 use ndarray::{Array1, Array2, Zip};
 use ndarray_npy::{ReadNpyExt, read_npy};
 
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
@@ -38,7 +39,7 @@ use rstar::primitives::GeomWithData;
 use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
