@@ -381,17 +381,14 @@ impl ParamSampler {
                     }
                 }
 
-                // distribute counts from fatored genes
-                for ((g, x_cg), θ_g) in x_c
-                    .iter_nonzeros_from(params.nunfactored as u32)
-                    .zip(params.θ.slice(s![params.nunfactored.., ..]).outer_iter())
-                {
+                // distribute counts from factored genes
+                let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
+                for (g, x_cg) in x_c.iter_nonzeros_from(params.nunfactored as u32) {
                     if x_cg == 0 {
                         continue;
                     }
 
-                    let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
-                    let θ_g_factored = θ_g.slice(s![params.nunfactored..]);
+                    let θ_g_factored = params.θ.slice(s![g as usize, params.nunfactored..]);
 
                     let prob_iter = φ_c_factored
                         .iter()
