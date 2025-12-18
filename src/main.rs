@@ -23,7 +23,7 @@ use sampler::{ModelParams, ModelPriors};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anndata_input::read_anndata_zarr_transcripts;
 use output::*;
@@ -1243,18 +1243,20 @@ fn run_sampler(
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
-    let t0 = Instant::now();
+    let t_morph = Instant::now();
     for _ in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
         voxel_sampler.sample(voxels, priors, params, temperature, record_samples);
     }
-    info!("morphology sampling: {:?}", t0.elapsed());
+    let d_morph = t_morph.elapsed();
 
+    let mut d_repo = Duration::from_secs(0);
     if !burnin && priors.use_diffusion_model {
-        let t0 = Instant::now();
+        let t_repo = Instant::now();
         transcript_repo.sample(voxels, priors, params, temperature, record_samples);
-        info!("repo transcripts: {:?}", t0.elapsed());
+        d_repo = t_repo.elapsed();
     }
 
+    let t_param = Instant::now();
     param_sampler.sample(
         priors,
         params,
@@ -1263,6 +1265,12 @@ fn run_sampler(
         record_samples,
         true,
         true,
+    );
+    let d_param = t_param.elapsed();
+
+    info!(
+        "sampling times: morphology: {:?}, repo: {:?}, params: {:?}",
+        d_morph, d_repo, d_param
     );
 
     prog.inc(1);

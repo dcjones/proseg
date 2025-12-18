@@ -348,14 +348,11 @@ impl ParamSampler {
 
         // zero out thread local gene latent counts
         for x in params.gene_latent_counts_tl.iter_mut() {
-            x.borrow_mut().fill(0);
+            x.get_mut().fill(0);
         }
 
         let ngenes = params.ngenes();
         let nhidden = params.nhidden();
-        info!("sample_latent_counts: init: {:?}", t0.elapsed());
-
-        let t0 = Instant::now();
         params
             .cell_latent_counts
             .par_rows()
@@ -410,19 +407,29 @@ impl ParamSampler {
                     });
                 }
             });
-        info!("sample_latent_counts: sample: {:?}", t0.elapsed());
 
         // accumulate from thread locate matrices
-        let t0 = Instant::now();
-        params.gene_latent_counts.fill(0);
-        for x in params.gene_latent_counts_tl.iter_mut() {
-            params.gene_latent_counts.scaled_add(1, &x.borrow());
-        }
+        let tl_matrices: Vec<&Array2<u32>> = params
+            .gene_latent_counts_tl
+            .iter_mut()
+            .map(|x| &*x.get_mut())
+            .collect();
 
+        params
+            .gene_latent_counts
+            .axis_iter_mut(Axis(0))
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(g, mut row)| {
+                row.fill(0);
+                for tl in &tl_matrices {
+                    row += &tl.row(g);
+                }
+            });
         // marginal count along the hidden axis
         Zip::from(&mut params.latent_counts)
             .and(params.gene_latent_counts.columns())
-            .for_each(|lc, glc| {
+            .par_for_each(|lc, glc| {
                 *lc = glc.sum();
             });
 
