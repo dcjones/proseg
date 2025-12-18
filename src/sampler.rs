@@ -32,7 +32,6 @@ use shardedvec::ShardedVec;
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
-use transcripts::BACKGROUND_CELL;
 use voxelcheckerboard::VoxelCheckerboard;
 
 // Shard size used for sharded vectors and matrices

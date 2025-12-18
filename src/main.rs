@@ -1268,10 +1268,7 @@ fn run_sampler(
     );
     let d_param = t_param.elapsed();
 
-    info!(
-        "sampling times: morphology: {:?}, repo: {:?}, params: {:?}",
-        d_morph, d_repo, d_param
-    );
+    info!("sampling times: morphology: {d_morph:?}, repo: {d_repo:?}, params: {d_param:?}");
 
     prog.inc(1);
 
