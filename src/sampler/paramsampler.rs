@@ -403,9 +403,10 @@ impl ParamSampler {
                     multinomial.set_probs_from_iter(prob_iter);
 
                     let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
+                    let nunfactored = params.nunfactored;
                     multinomial.sample(rng, x_cg, |k, x| {
-                        cell_latent_counts_c.add(k as u32, x);
-                        gene_latent_counts_g[k] += x;
+                        cell_latent_counts_c.add((k + nunfactored) as u32, x);
+                        gene_latent_counts_g[k + nunfactored] += x;
                     });
                 }
             });
