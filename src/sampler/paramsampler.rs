@@ -167,8 +167,8 @@ impl ParamSampler {
                         continue;
                     }
 
-                    if gene_layer_density.gene != gene {
-                        gene = gene_layer_density.gene;
+                    if gene_layer_density.gene() != gene {
+                        gene = gene_layer_density.gene();
                         let g = gene as usize;
                         λ_cg = if g < params.nunfactored {
                             φ_c[g]
@@ -178,8 +178,8 @@ impl ParamSampler {
                     }
                     let λ_bg = params.λ_bg[[
                         gene as usize,
-                        gene_layer_density.layer as usize,
-                        gene_layer_density.density as usize,
+                        gene_layer_density.layer() as usize,
+                        gene_layer_density.density() as usize,
                     ]];
 
                     let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
@@ -192,8 +192,8 @@ impl ParamSampler {
                     let count_bg = count - count_fg;
 
                     foreground_row.add(gene, count_fg);
-                    params.background_counts[gene_layer_density.density as usize]
-                        [gene_layer_density.layer as usize]
+                    params.background_counts[gene_layer_density.density() as usize]
+                        [gene_layer_density.layer() as usize]
                         .add(gene as usize, count_bg);
                 }
             });

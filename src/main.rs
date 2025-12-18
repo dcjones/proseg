@@ -596,6 +596,13 @@ fn main() {
 
     let mut args = Args::parse();
 
+    if args.voxel_layers > 256 {
+        panic!(
+            "Number of voxel layers ({}) exceeds maximum of 256. Please use --voxel-layers with a value <= 256.",
+            args.voxel_layers
+        );
+    }
+
     if let Some(nthreads) = args.nthreads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(nthreads)

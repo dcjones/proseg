@@ -104,20 +104,55 @@ pub struct ModelPriors {
     pub τv: f32,
 }
 
+// Bit-packed structure storing gene (20 bits), density (4 bits), and layer (8 bits) in a single u32
+// Layout (MSB to LSB): gene[31:12] | density[11:8] | layer[7:0]
+// This reduces memory from 8 bytes to 4 bytes per instance (50% reduction)
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct CountMatRowKey {
-    gene: u32,
-    layer: u32,
-    density: u8,
+    // Packed as: [gene: 20 bits][density: 4 bits][layer: 8 bits]
+    packed: u32,
 }
 
 impl CountMatRowKey {
+    const LAYER_BITS: u32 = 8;
+    const DENSITY_BITS: u32 = 4;
+    const GENE_BITS: u32 = 20;
+
+    const LAYER_MASK: u32 = (1 << Self::LAYER_BITS) - 1;
+    const DENSITY_MASK: u32 = (1 << Self::DENSITY_BITS) - 1;
+    const GENE_MASK: u32 = (1 << Self::GENE_BITS) - 1;
+
+    const LAYER_SHIFT: u32 = 0;
+    const DENSITY_SHIFT: u32 = Self::LAYER_BITS;
+    const GENE_SHIFT: u32 = Self::LAYER_BITS + Self::DENSITY_BITS;
+
     pub fn new(gene: u32, layer: u32, density: u8) -> Self {
-        CountMatRowKey {
-            gene,
-            layer,
-            density,
-        }
+        debug_assert!(gene <= Self::GENE_MASK,
+            "Gene index {} exceeds maximum of {} (20 bits)", gene, Self::GENE_MASK);
+        debug_assert!(layer <= Self::LAYER_MASK,
+            "Layer index {} exceeds maximum of {} (8 bits)", layer, Self::LAYER_MASK);
+        debug_assert!(density <= Self::DENSITY_MASK as u8,
+            "Density bin {} exceeds maximum of {} (4 bits)", density, Self::DENSITY_MASK);
+
+        let packed = ((gene & Self::GENE_MASK) << Self::GENE_SHIFT)
+                   | ((density as u32 & Self::DENSITY_MASK) << Self::DENSITY_SHIFT)
+                   | ((layer & Self::LAYER_MASK) << Self::LAYER_SHIFT);
+        CountMatRowKey { packed }
+    }
+
+    #[inline]
+    pub fn gene(&self) -> u32 {
+        (self.packed >> Self::GENE_SHIFT) & Self::GENE_MASK
+    }
+
+    #[inline]
+    pub fn layer(&self) -> u32 {
+        (self.packed >> Self::LAYER_SHIFT) & Self::LAYER_MASK
+    }
+
+    #[inline]
+    pub fn density(&self) -> u8 {
+        ((self.packed >> Self::DENSITY_SHIFT) & Self::DENSITY_MASK) as u8
     }
 }
 
@@ -125,59 +160,57 @@ impl Add for CountMatRowKey {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        CountMatRowKey {
-            gene: self.gene + other.gene,
-            layer: self.layer + other.layer,
-            density: self.density + other.density,
-        }
+        CountMatRowKey::new(
+            self.gene() + other.gene(),
+            self.layer() + other.layer(),
+            self.density().saturating_add(other.density()),
+        )
     }
 }
 
 impl AddAssign for CountMatRowKey {
     fn add_assign(&mut self, other: Self) {
-        self.gene += other.gene;
-        self.layer += other.layer;
-        self.density += other.density;
+        *self = CountMatRowKey::new(
+            self.gene() + other.gene(),
+            self.layer() + other.layer(),
+            self.density().saturating_add(other.density()),
+        );
     }
 }
 
 impl Zero for CountMatRowKey {
     fn zero() -> Self {
-        CountMatRowKey {
-            gene: 0,
-            layer: 0,
-            density: 0,
-        }
+        CountMatRowKey { packed: 0 }
     }
 
     fn is_zero(&self) -> bool {
-        self.gene == 0 && self.layer == 0 && self.density == 0
+        self.packed == 0
     }
 }
 
 impl Increment for CountMatRowKey {
     fn inc(&self, bound: CountMatRowKey) -> CountMatRowKey {
         // treating this as three digits, incrementing density then layer then gene
-        if self.density + 1 > bound.density {
-            if self.layer + 1 > bound.layer {
-                CountMatRowKey {
-                    gene: self.gene + 1,
-                    layer: 0,
-                    density: 0,
-                }
+        if self.density() + 1 > bound.density() {
+            if self.layer() + 1 > bound.layer() {
+                CountMatRowKey::new(
+                    self.gene() + 1,
+                    0,
+                    0,
+                )
             } else {
-                CountMatRowKey {
-                    gene: self.gene,
-                    layer: self.layer + 1,
-                    density: 0,
-                }
+                CountMatRowKey::new(
+                    self.gene(),
+                    self.layer() + 1,
+                    0,
+                )
             }
         } else {
-            CountMatRowKey {
-                gene: self.gene,
-                layer: self.layer,
-                density: self.density + 1,
-            }
+            CountMatRowKey::new(
+                self.gene(),
+                self.layer(),
+                self.density() + 1,
+            )
         }
     }
 }
@@ -341,6 +374,24 @@ impl ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
+        if nlayers > 256 {
+            panic!(
+                "Number of voxel layers ({}) exceeds maximum of 256. Please reduce --voxel-layers.",
+                nlayers
+            );
+        }
+        if ngenes > CountMatRowKey::GENE_MASK as usize + 1 {
+            panic!(
+                "Number of genes ({}) exceeds maximum of {} (20-bit limit). Consider filtering genes.",
+                ngenes, CountMatRowKey::GENE_MASK + 1
+            );
+        }
+        if density_nbins > CountMatRowKey::DENSITY_MASK as usize + 1 {
+            panic!(
+                "Number of density bins ({}) exceeds maximum of {} (4-bit limit). Please reduce --density-bins.",
+                density_nbins, CountMatRowKey::DENSITY_MASK + 1
+            );
+        }
         let (nhidden, nunfactored) = if priors.use_factorization {
             (nhidden + nunfactored, nunfactored)
         } else {
@@ -374,7 +425,7 @@ impl ModelParams {
             ncells,
             CountMatRowKey::new(
                 ngenes as u32 - 1,
-                nlayers as u32 - 1,
+                (nlayers - 1) as u32,
                 density_nbins as u8 - 1,
             ),
         );
@@ -397,7 +448,7 @@ impl ModelParams {
             .for_each_init(rng, |_rng, (row, foreground_row)| {
                 let mut foreground_row = foreground_row.write();
                 for (gene_layer, count) in row.read().iter_nonzeros() {
-                    foreground_row.add(gene_layer.gene, count);
+                    foreground_row.add(gene_layer.gene(), count);
                 }
             });
 
@@ -649,7 +700,7 @@ impl ModelParams {
             ncells,
             CountMatRowKey::new(
                 ngenes as u32 - 1,
-                nlayers as u32 - 1,
+                (nlayers - 1) as u32,
                 density_nbins as u8 - 1,
             ),
         );
@@ -682,7 +733,7 @@ fn initial_component_assignments(
     ncomponents: usize,
 ) -> Array1<u32> {
     let (ncells, j_bound) = counts.shape();
-    let ngenes = j_bound.gene as usize + 1;
+    let ngenes = j_bound.gene() as usize + 1;
 
     const EMBEDDING_DIM: usize = 25;
     let mut rng = rng();
@@ -709,16 +760,9 @@ fn initial_component_assignments(
 
         // marginalize counts
         let counts_c = counts.row(c);
-        for (
-            CountMatRowKey {
-                gene,
-                layer: _layer,
-                density: _density,
-            },
-            count,
-        ) in counts_c.read().iter_nonzeros()
+        for (key, count) in counts_c.read().iter_nonzeros()
         {
-            expr_row[gene as usize] += count as f32;
+            expr_row[key.gene() as usize] += count as f32;
         }
 
         // normalize
