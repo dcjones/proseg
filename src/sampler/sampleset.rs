@@ -1,7 +1,6 @@
 use ahash::AHashMap as HashMap;
 use rand::Rng;
 use rand::rngs::ThreadRng;
-use std::collections::HashMap;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::hash::Hash;
 

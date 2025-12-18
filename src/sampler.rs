@@ -548,19 +548,6 @@ impl ModelParams {
     }
 
     // Compute the Poisson rate for cell and gene pair.
-    pub fn λ(&self, cell: usize, gene: usize) -> f32 {
-        if cell as u32 == BACKGROUND_CELL {
-            return 0.0;
-        }
-
-        if gene < self.nunfactored {
-            return self.φ[[cell, gene]];
-        }
-
-        let φ_c = self.φ.row(cell);
-        let θ_g = self.θ.row(gene);
-        φ_c.dot(&θ_g)
-    }
 
     pub fn log_likelihood(&self, _priors: &ModelPriors) -> f32 {
         let mut ll = self
@@ -571,12 +558,17 @@ impl ModelParams {
                 let v_c = self.effective_cell_volume[c];
                 let x_c = x_c.read();
                 let mut accum_c = 0.0;
+                let φ_c = self.φ.row(c);
+                let φ_c_factored = φ_c.slice(s![self.nunfactored..]);
 
                 for (g, x_cg) in x_c.iter_nonzeros() {
-                    if x_cg > 0 {
-                        let λ_cg = self.λ(c, g as usize);
-                        accum_c += (x_cg as f32) * λ_cg.ln();
-                    }
+                    let g = g as usize;
+                    let λ_cg = if g < self.nunfactored {
+                        φ_c[g]
+                    } else {
+                        φ_c_factored.dot(&self.θ.slice(s![g, self.nunfactored..]))
+                    };
+                    accum_c += (x_cg as f32) * λ_cg.ln();
                 }
                 accum_c - v_c * self.φ_θksum_dot[c]
             })

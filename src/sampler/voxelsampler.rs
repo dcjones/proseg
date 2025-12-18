@@ -311,6 +311,26 @@ impl VoxelSampler {
                 (BACKGROUND_CELL, BACKGROUND_CELL, f32::NAN, f32::NAN)
             };
 
+        let φ_c_factored = if current_cell != BACKGROUND_CELL {
+            Some(
+                params
+                    .φ
+                    .slice(s![current_cell as usize, params.nunfactored..]),
+            )
+        } else {
+            None
+        };
+
+        let φ_p_factored = if proposed_cell != BACKGROUND_CELL {
+            Some(
+                params
+                    .φ
+                    .slice(s![proposed_cell as usize, params.nunfactored..]),
+            )
+        } else {
+            None
+        };
+
         // voxel prior penalties
         // prior_prob = 0, in cases where our prior in neutral on what the voxel
         // should be assigned to
@@ -328,6 +348,11 @@ impl VoxelSampler {
             }
         }
 
+        let mut last_k_density = None;
+        let mut λ_bg_k = None;
+        let mut last_gene = u32::MAX;
+        let mut θ_g_factored = None;
+
         for (
             &VoxelCountKey {
                 voxel,
@@ -337,20 +362,52 @@ impl VoxelSampler {
             &count,
         ) in quad_counts.voxel_counts(proposal.voxel)
         {
-            let origin = voxel.offset(-offset);
-            let density = voxels.get_voxel_density_hint(quad, origin);
-            let k = voxel.k() - offset.dk();
-            assert!(origin.k() == k);
-            let λ_bg_k = params.λ_bg.slice(s![.., k as usize, density]);
-
             if count == 0 {
                 continue;
             }
 
-            let λ_current_g = params.λ(current_cell as usize, gene as usize);
-            let λ_proposed_g = params.λ(proposed_cell as usize, gene as usize);
+            let origin = voxel.offset(-offset);
+            let density = voxels.get_voxel_density_hint(quad, origin);
+            let k = voxel.k() - offset.dk();
+            assert!(origin.k() == k);
 
-            let λ_bg = λ_bg_k[gene as usize];
+            if last_k_density != Some((k, density)) {
+                λ_bg_k = Some(params.λ_bg.slice(s![.., k as usize, density]));
+                last_k_density = Some((k, density));
+            }
+            let λ_bg_k_slice = λ_bg_k.as_ref().unwrap();
+
+            if last_gene != gene {
+                θ_g_factored = if (gene as usize) < params.nunfactored {
+                    None
+                } else {
+                    Some(params.θ.slice(s![gene as usize, params.nunfactored..]))
+                };
+                last_gene = gene;
+            }
+
+            let g = gene as usize;
+            let λ_current_g = if current_cell != BACKGROUND_CELL {
+                if let Some(ref θ_gf) = θ_g_factored {
+                    φ_c_factored.unwrap().dot(θ_gf)
+                } else {
+                    params.φ[[current_cell as usize, g]]
+                }
+            } else {
+                0.0
+            };
+
+            let λ_proposed_g = if proposed_cell != BACKGROUND_CELL {
+                if let Some(ref θ_gf) = θ_g_factored {
+                    φ_p_factored.unwrap().dot(θ_gf)
+                } else {
+                    params.φ[[proposed_cell as usize, g]]
+                }
+            } else {
+                0.0
+            };
+
+            let λ_bg = λ_bg_k_slice[g];
             δ -= (count as f32) * (λ_current_g + λ_bg).ln();
             δ += (count as f32) * (λ_proposed_g + λ_bg).ln();
         }

@@ -130,15 +130,15 @@ impl ParamSampler {
         purge: bool,
     ) {
         // overwrite params.background_counts with params.unassigned_counts
-        for (b_d, u_d) in params
+        params
             .background_counts
-            .iter_mut()
+            .par_iter_mut()
             .zip(&params.unassigned_counts)
-        {
-            for (b_dl, u_dl) in b_d.iter_mut().zip(u_d) {
-                b_dl.copy_from(u_dl);
-            }
-        }
+            .for_each(|(b_d, u_d)| {
+                for (b_dl, u_dl) in b_d.iter_mut().zip(u_d) {
+                    b_dl.copy_from(u_dl);
+                }
+            });
 
         if purge {
             params.foreground_counts.clear();
@@ -159,6 +159,8 @@ impl ParamSampler {
 
                 let mut λ_cg = 0.0;
                 let mut gene = u32::MAX;
+                let φ_c = params.φ.row(cell);
+                let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
 
                 for (gene_layer_density, count) in row.read().iter_nonzeros() {
                     if count == 0 {
@@ -167,7 +169,12 @@ impl ParamSampler {
 
                     if gene_layer_density.gene != gene {
                         gene = gene_layer_density.gene;
-                        λ_cg = params.λ(cell, gene as usize);
+                        let g = gene as usize;
+                        λ_cg = if g < params.nunfactored {
+                            φ_c[g]
+                        } else {
+                            φ_c_factored.dot(&params.θ.slice(s![g, params.nunfactored..]))
+                        };
                     }
                     let λ_bg = params.λ_bg[[
                         gene as usize,
@@ -286,6 +293,7 @@ impl ParamSampler {
             .for_each_init(rng, |rng, (i, z_c, φ_c, ev_c, log_v_c)| {
                 let x_c_lock = params.cell_latent_counts.row(i);
                 let x_c = x_c_lock.read();
+
                 let mut z_probs = params
                     .z_probs
                     .get_or(|| RefCell::new(vec![0_f64; ncomponents]))

@@ -1,7 +1,7 @@
 use ahash::AHashSet as HashSet;
 use log::trace;
+use ndarray::s;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::collections::HashSet;
 use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
@@ -190,10 +190,22 @@ impl TranscriptRepo {
             let density = voxels.get_voxel_density_hint(quad, origin);
 
             let λ_bg = params.λ_bg[[gene, k_origin as usize, density]];
+            let θ_g_factored = if gene < params.nunfactored {
+                None
+            } else {
+                Some(params.θ.slice(s![gene, params.nunfactored..]))
+            };
 
             let mut λ_current = λ_bg;
             if cell != BACKGROUND_CELL {
-                λ_current += params.λ(cell as usize, gene);
+                λ_current += if gene < params.nunfactored {
+                    params.φ[[cell as usize, gene]]
+                } else {
+                    params
+                        .φ
+                        .slice(s![cell as usize, params.nunfactored..])
+                        .dot(&θ_g_factored.unwrap())
+                };
             }
 
             let dist_prob_current = self.diffusion_distance_prior(priors, di0, dj0, dk0);
@@ -251,7 +263,14 @@ impl TranscriptRepo {
                             };
 
                             if neighbor_cell != BACKGROUND_CELL {
-                                λ_proposed += params.λ(neighbor_cell as usize, gene);
+                                λ_proposed += if gene < params.nunfactored {
+                                    params.φ[[neighbor_cell as usize, gene]]
+                                } else {
+                                    params
+                                        .φ
+                                        .slice(s![neighbor_cell as usize, params.nunfactored..])
+                                        .dot(&θ_g_factored.unwrap())
+                                };
                             }
 
                             let di = di + di0;
