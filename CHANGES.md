@@ -1,4 +1,13 @@
 
+# 3.1.0
+  - Fix a significant bug in the factorization scheme which degraded segmentation quality on data with large gene panels.
+  - Extensive optimization work leading to around 1.5x-4x faster run times and 5-10% less memory usage. Changes include:
+    - Redesign sparse count matrix data structure (now using csr with B+-tree rows, and row-level read/write locks)
+    - New optimized Binomial and Multinomial samplers.
+    - Parallelize some additional loops, and tune rayon min lengths for better cpu utilization.
+    - Use ahash in place of HashMap and BTreeMap in some places.
+    - Many other minor optimizations.
+
 # 3.0.12
   - Fix numerical error crash occurring in some Visium HD data.
   - Fix an incompatibility with spatialdata zarr output and newer versions of the python package.
