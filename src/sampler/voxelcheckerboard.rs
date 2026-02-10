@@ -10,7 +10,9 @@ use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
-use super::transcripts::{BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset};
+use super::transcripts::{
+    BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
+};
 use super::{CountMatRowKey, ModelParams};
 
 use arrow::array::RecordBatch;
@@ -39,7 +41,7 @@ use rstar::primitives::GeomWithData;
 use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
 use std::cmp::{Ordering, PartialOrd};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -956,7 +958,7 @@ impl Ord for Voxel {
         let xj = ((xor >> 16) & 0xFFFFFF) as u32;
         let xk = (xor & 0xFFFF) as u32;
 
-        // just doing a bunch of branches here an trusting the compiler
+        // just doing a bunch of branches here and trusting the compiler
         // to generate cmovs
         let islt = if less_msb(xi, xj) {
             if less_msb(xj, xk) {
@@ -1128,39 +1130,38 @@ impl QuadStates {
     }
 }
 
-pub struct QuadCounts {
-    // This is essentially one giant sparse matrix for the entire
-    // voxel set. We also have to keep track of repositioned transcripts here.
-    pub counts: BTreeMap<VoxelCountKey, u32>,
-
-    pub counts_deltas: Vec<(VoxelCountKey, u32)>,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VoxelTranscript {
+    voxel: Voxel,
+    transcript_idx: TranscriptIndex,
 }
 
-impl QuadCounts {
-    pub fn new() -> QuadCounts {
-        QuadCounts {
-            counts: BTreeMap::new(),
-            counts_deltas: Vec::new(),
+pub struct QuadTranscripts {
+    pub transcripts: BTreeSet<VoxelTranscript>,
+
+    // Transcripts that are in the process of being moved out of this quad.
+    // Kept here until locks are freed on the other quads.
+    pub moved_transcripts: Vec<VoxelTranscript>,
+}
+
+impl QuadTranscripts {
+    pub fn new() -> QuadTranscripts {
+        QuadTranscripts {
+            transcripts: BTreeSet::new(),
+            moved_transcripts: Vec::new(),
         }
     }
 }
 
-impl<'a> QuadCounts {
-    pub fn voxel_counts(
+impl<'a> QuadTranscripts {
+    // Iterator all the transcript in a particular voxel
+    pub fn voxel_transcripts(
         &'a self,
         voxel: Voxel,
-    ) -> std::collections::btree_map::Range<'a, VoxelCountKey, u32> {
-        let from = VoxelCountKey {
-            voxel,
-            gene: 0,
-            offset: VoxelOffset::zero(),
-        };
-        let to = VoxelCountKey {
-            voxel,
-            gene: GeneIndex::MAX,
-            offset: VoxelOffset::zero(),
-        };
-        self.counts.range((Included(from), Included(to)))
+    ) -> std::collections::btree_set::Range<'a, VoxelTranscript> {
+        let from = VoxelTranscript { voxel, transcript_idx: TranscriptIndex::MIN };
+        let to = VoxelTranscript { voxel, transcript_idx: TranscriptIndex::MAX };
+        self.transcripts.range((Included(from), Included(to)))
     }
 }
 
@@ -1168,9 +1169,7 @@ impl<'a> QuadCounts {
 pub struct VoxelQuad {
     pub states: RwLock<QuadStates>,
 
-    // This is essentially one giant sparse matrix for the entire
-    // voxel set. We also have to keep track of repositioned transcripts here.
-    pub counts: RwLock<QuadCounts>,
+    pub transcripts: RwLock<QuadTranscripts>,
 
     // Local transcript density, used for noise rate estimation
     pub densities: RwLock<BTreeMap<Voxel, f32>>,
@@ -1194,7 +1193,7 @@ impl VoxelQuad {
     fn new(kmax: i32, quadsize: usize, u: u32, v: u32) -> VoxelQuad {
         VoxelQuad {
             states: RwLock::new(QuadStates::new()),
-            counts: RwLock::new(QuadCounts::new()),
+            transcripts: RwLock::new(QuadTranscripts::new()),
             densities: RwLock::new(BTreeMap::new()),
             densities_grid: RwLock::new(None),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
@@ -1312,22 +1311,19 @@ impl VoxelCheckerboard {
         }
     }
 
-    fn initialize_counts(&mut self, dataset: &TranscriptDataset) {
+    fn initialize_transcripts(&mut self, dataset: &TranscriptDataset) {
         let t0 = Instant::now();
-        for run in dataset.transcripts.iter_runs() {
-            let transcript = &run.value;
-            let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-            let key = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
 
-            let mut quad_counts = self.write_quad_counts(voxel);
-            let count = quad_counts.counts.entry(key).or_insert(0_u32);
-            *count += run.len;
+        for (transcript_idx, transcript) in dataset.transcripts.iter().enumerate()) {
+            let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            let key = VoxelTranscript {
+                voxel,
+                transcript_idx: transcript_idx as TranscriptIndex,
+            };
+            let mut quad_transcripts = self.write_quad_transcripts(voxel);
+            quad_transcripts.push(key);
         }
-        trace!("assigned voxel counts: {:?}", t0.elapsed());
+        trace!("assigned voxel transcript sets: {:?}", t0.elapsed());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1967,7 +1963,7 @@ impl VoxelCheckerboard {
         density_bandwidth: f32,
         density_nbins: usize,
     ) {
-        self.initialize_counts(dataset);
+        self.initialize_transcripts(dataset);
         self.quads_coords.extend(self.quads.keys());
         self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
@@ -1998,17 +1994,20 @@ impl VoxelCheckerboard {
             .unwrap()
     }
 
-    fn write_quad_counts(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadCounts> {
-        self.write_quad_index_counts(self.quad_index(voxel))
+    fn write_quad_transcripts(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadTranscripts> {
+        self.write_quad_index_transcripts(self.quad_index(voxel))
     }
 
-    fn write_quad_index_counts(&mut self, index: (u32, u32)) -> RwLockWriteGuard<QuadCounts> {
+    fn write_quad_index_transcripts(
+        &mut self,
+        index: (u32, u32),
+    ) -> RwLockWriteGuard<QuadTranscripts> {
         let (u, v) = index;
 
         self.quads
             .entry(index)
             .or_insert_with(|| VoxelQuad::new(self.kmax, self.quadsize, u, v))
-            .counts
+            .transcripts
             .write()
             .unwrap()
     }
@@ -2258,14 +2257,15 @@ impl VoxelCheckerboard {
         let eps = 1e-3_f32;
         let max_distance = -2.0 * bandwidth_sq * eps.ln();
         self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
-            let counts = quad.counts.read().unwrap();
+            let transcripts = quad.transcripts.read().unwrap();
             let mut densities = quad.densities.write().unwrap();
-            counts.counts.iter().for_each(|(count_key, _count)| {
-                let [i, j, _k] = count_key.voxel.coords();
+
+            transcripts.transcripts.iter().for_each(|VoxelTranscript { voxel, transcript_idx }| {
+                let [i, j, _k] = voxel.coords();
                 let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
                 let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
 
-                let voxel = count_key.voxel.setk(0);
+                let voxel = voxel.setk(0);
                 for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
                     let neighbor = voxel.offset_coords(di, dj, dk);
                     densities.entry(neighbor).or_insert_with(|| {
@@ -2273,8 +2273,7 @@ impl VoxelCheckerboard {
 
                         for neighbor in rtree.locate_within_distance([x, y], max_distance) {
                             let d2 = neighbor.distance_2(&[x, y]);
-                            let count = neighbor.data;
-                            voxel_density += (count as f32) * (-d2 / (2.0 * bandwidth_sq)).exp();
+                            voxel_density += (-d2 / (2.0 * bandwidth_sq)).exp();
                         }
                         voxel_density / kernel_norm
                     });
@@ -2393,13 +2392,11 @@ impl VoxelCheckerboard {
             let quad_states = quad.states.read().unwrap();
             let quad_counts = quad.counts.read().unwrap();
             for (
-                &VoxelCountKey {
+                &VoxelTranscript {
                     voxel,
-                    gene,
-                    offset,
+                    transcript_idx,
                 },
-                &count,
-            ) in &quad_counts.counts
+            ) in &quad_counts.transcripts
             {
                 let origin = voxel.offset(-offset);
                 let k_origin = origin.k();
@@ -3034,7 +3031,7 @@ impl VoxelCheckerboard {
             new_checkerboard.expand_cells_vertically(true);
         }
 
-        new_checkerboard.initialize_counts(dataset);
+        new_checkerboard.initialize_transcripts(dataset);
 
         // initialize edge voxel sets
         new_checkerboard.mirror_quad_edges();

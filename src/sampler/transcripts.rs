@@ -21,6 +21,8 @@ use std::time::Instant;
 pub type CellIndex = u32;
 pub const BACKGROUND_CELL: CellIndex = u32::MAX;
 
+pub type TranscriptIndex = u32;
+
 use super::runvec::RunVec;
 use crate::output::infer_format_from_filename;
 use crate::schemas::OutputFormat;
