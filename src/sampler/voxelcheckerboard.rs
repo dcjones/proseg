@@ -10,6 +10,7 @@ use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
+use super::transcriptrunmap::TranscriptRunMap;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
@@ -24,7 +25,7 @@ use flate2::write::GzEncoder;
 use geo::algorithm::{BoundingRect, Contains};
 use geo::geometry::{MultiPolygon, Point, Polygon};
 use half::f16;
-use itertools::izip;
+use itertools::{Itertools, izip};
 use log::info;
 use log::trace;
 use ndarray::{Array1, Array2, Zip};
@@ -1130,7 +1131,7 @@ impl QuadStates {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VoxelTranscript {
     voxel: Voxel,
     transcript_idx: TranscriptIndex,
@@ -1141,14 +1142,16 @@ pub struct QuadTranscripts {
 
     // Transcripts that are in the process of being moved out of this quad.
     // Kept here until locks are freed on the other quads.
-    pub moved_transcripts: Vec<VoxelTranscript>,
+    pub outgoing_transcripts: Vec<VoxelTranscript>,
+    pub incoming_transcripts: Vec<VoxelTranscript>,
 }
 
 impl QuadTranscripts {
     pub fn new() -> QuadTranscripts {
         QuadTranscripts {
             transcripts: BTreeSet::new(),
-            moved_transcripts: Vec::new(),
+            outgoing_transcripts: Vec::new(),
+            incoming_transcripts: Vec::new(),
         }
     }
 }
@@ -1159,9 +1162,21 @@ impl<'a> QuadTranscripts {
         &'a self,
         voxel: Voxel,
     ) -> std::collections::btree_set::Range<'a, VoxelTranscript> {
-        let from = VoxelTranscript { voxel, transcript_idx: TranscriptIndex::MIN };
-        let to = VoxelTranscript { voxel, transcript_idx: TranscriptIndex::MAX };
+        let from = VoxelTranscript {
+            voxel,
+            transcript_idx: TranscriptIndex::MIN,
+        };
+        let to = VoxelTranscript {
+            voxel,
+            transcript_idx: TranscriptIndex::MAX,
+        };
         self.transcripts.range((Included(from), Included(to)))
+    }
+}
+
+impl QuadTranscripts {
+    pub fn voxel_population(&self, voxel: Voxel) -> usize {
+        self.voxel_transcripts(voxel).try_len().unwrap()
     }
 }
 
@@ -1223,6 +1238,12 @@ impl VoxelQuad {
 
 impl VoxelQuad {}
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TranscriptFixedState {
+    original_voxel: Voxel,
+    gene: GeneIndex,
+}
+
 pub struct VoxelCheckerboard {
     // number of voxels in each x/y direction
     pub quadsize: usize,
@@ -1254,6 +1275,10 @@ pub struct VoxelCheckerboard {
 
     // map cells indexes after initialization to their indexed prior to removing usused cells
     pub used_cells_map: Vec<u32>,
+
+    // Ok, not sure this a great idea. It's just going to get expanded to 8 bytes per. Depends what
+    // we save on doing rle.
+    pub transcript_fixed_state: TranscriptRunMap<TranscriptFixedState>,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
@@ -1303,6 +1328,7 @@ impl VoxelCheckerboard {
             voxelsize,
             voxelsize_z,
             used_cells_map: Vec::new(),
+            transcript_fixed_state: TranscriptRunMap::empty(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
             frozen_cells: Vec::new(),
@@ -1314,14 +1340,19 @@ impl VoxelCheckerboard {
     fn initialize_transcripts(&mut self, dataset: &TranscriptDataset) {
         let t0 = Instant::now();
 
-        for (transcript_idx, transcript) in dataset.transcripts.iter().enumerate()) {
+        for (transcript_idx, transcript) in dataset.transcripts.iter().enumerate() {
             let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
+            self.transcript_fixed_state.push(TranscriptFixedState {
+                original_voxel: voxel,
+                gene: transcript.gene,
+            });
+
             let key = VoxelTranscript {
                 voxel,
                 transcript_idx: transcript_idx as TranscriptIndex,
             };
             let mut quad_transcripts = self.write_quad_transcripts(voxel);
-            quad_transcripts.push(key);
+            quad_transcripts.transcripts.insert(key);
         }
         trace!("assigned voxel transcript sets: {:?}", t0.elapsed());
     }
@@ -2260,25 +2291,30 @@ impl VoxelCheckerboard {
             let transcripts = quad.transcripts.read().unwrap();
             let mut densities = quad.densities.write().unwrap();
 
-            transcripts.transcripts.iter().for_each(|VoxelTranscript { voxel, transcript_idx }| {
-                let [i, j, _k] = voxel.coords();
-                let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
-                let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+            transcripts.transcripts.iter().for_each(
+                |VoxelTranscript {
+                     voxel,
+                     transcript_idx,
+                 }| {
+                    let [i, j, _k] = voxel.coords();
+                    let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+                    let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
 
-                let voxel = voxel.setk(0);
-                for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
-                    let neighbor = voxel.offset_coords(di, dj, dk);
-                    densities.entry(neighbor).or_insert_with(|| {
-                        let mut voxel_density = 0.0;
+                    let voxel = voxel.setk(0);
+                    for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
+                        let neighbor = voxel.offset_coords(di, dj, dk);
+                        densities.entry(neighbor).or_insert_with(|| {
+                            let mut voxel_density = 0.0;
 
-                        for neighbor in rtree.locate_within_distance([x, y], max_distance) {
-                            let d2 = neighbor.distance_2(&[x, y]);
-                            voxel_density += (-d2 / (2.0 * bandwidth_sq)).exp();
-                        }
-                        voxel_density / kernel_norm
-                    });
-                }
-            });
+                            for neighbor in rtree.locate_within_distance([x, y], max_distance) {
+                                let d2 = neighbor.distance_2(&[x, y]);
+                                voxel_density += (-d2 / (2.0 * bandwidth_sq)).exp();
+                            }
+                            voxel_density / kernel_norm
+                        });
+                    }
+                },
+            );
         });
 
         let mut quant_est = (1..nbins + 1)
@@ -2390,26 +2426,28 @@ impl VoxelCheckerboard {
 
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
             let quad_states = quad.states.read().unwrap();
-            let quad_counts = quad.counts.read().unwrap();
-            for (
-                &VoxelTranscript {
-                    voxel,
-                    transcript_idx,
-                },
-            ) in &quad_counts.transcripts
-            {
-                let origin = voxel.offset(-offset);
-                let k_origin = origin.k();
-                let density = self.get_voxel_density_hint(quad, origin);
+            let transcripts = quad.transcripts.read().unwrap();
 
+            for &VoxelTranscript {
+                voxel,
+                transcript_idx,
+            } in transcripts.transcripts.iter()
+            {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = self.transcript_fixed_state.get(transcript_idx);
+                let k_origin = original_voxel.k();
+                let density = self.get_voxel_density_hint(quad, original_voxel);
                 let cell = quad_states.get_voxel_cell(voxel);
+
                 if cell != BACKGROUND_CELL {
-                    counts.row(cell as usize).write().add(
-                        CountMatRowKey::new(gene, k_origin as u32, density as u8),
-                        count,
-                    );
+                    counts
+                        .row(cell as usize)
+                        .write()
+                        .add(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
                 } else {
-                    unassigned_counts[density][k_origin as usize].add(gene as usize, count);
+                    unassigned_counts[density][k_origin as usize].add(gene as usize, 1);
                 }
             }
         });
@@ -2528,7 +2566,7 @@ impl VoxelCheckerboard {
         let mut top_voxel: HashMap<CellIndex, (Voxel, u32)> = HashMap::new();
         self.quads.values().for_each(|quad| {
             let quad_states = quad.states.read().unwrap();
-            let quad_counts = quad.counts.read().unwrap();
+            let quad_transcripts = quad.transcripts.read().unwrap();
 
             quad_states.states.iter().for_each(|(&voxel, &state)| {
                 let cell = state.cell;
@@ -2537,9 +2575,7 @@ impl VoxelCheckerboard {
                 }
                 let [i, j, _k] = voxel.coords();
 
-                let transcript_count = quad_counts
-                    .voxel_counts(voxel)
-                    .fold(0, |accum, (_key, &count)| accum + count);
+                let transcript_count = quad_transcripts.voxel_population(voxel) as u32;
 
                 voxel_votes
                     .entry((i, j))
@@ -2833,67 +2869,68 @@ impl VoxelCheckerboard {
         });
     }
 
-    pub fn merge_counts_deltas(&mut self, params: &mut ModelParams) {
-        // Move any counts delta that is in the wrong quad to the correct one
+    pub fn merged_moved_transcripts(&mut self, params: &mut ModelParams) {
         let t0 = Instant::now();
         for key in self.quads.keys() {
             let quad = &self.quads[key];
-            let mut quad_counts = quad.counts.write().unwrap();
-            let quad_lock_ref = quad_counts.deref_mut();
+            let mut quad_transcripts = quad.transcripts.write().unwrap();
+            let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
             let (min_i, max_i, min_j, max_j) = quad.bounds();
 
-            for (key, count_delta) in quad_lock_ref.counts_deltas.iter_mut() {
-                let neighbor_key = self.quad_index(key.voxel);
+            // for voxel_transcript in quad_transcripts.outgoing_transcripts {
+            for voxel_transcript in quad_transcripts_lock_ref.outgoing_transcripts.drain(..) {
+                let neighbor_key = self.quad_index(voxel_transcript.voxel);
                 let neighbor_quad = &self.quads[&neighbor_key];
-                let [i, j, _k] = key.voxel.coords();
+                let [i, j, _k] = voxel_transcript.voxel.coords();
 
                 if i < min_i || i > max_i || j < min_j || j > max_j {
                     neighbor_quad
-                        .counts
+                        .transcripts
                         .write()
                         .unwrap()
-                        .counts_deltas
-                        .push((*key, *count_delta));
-                    *count_delta = 0;
+                        .incoming_transcripts
+                        .push(voxel_transcript);
+                } else {
+                    panic!("In bounds outgoing transcript.");
                 }
             }
         }
         info!("merge counts cleanup: {:?}", t0.elapsed());
 
-        // now we can update quads in parallel
+        // now update quads in parallel
         let t0 = Instant::now();
         self.quads.par_iter().for_each(|(_key, quad)| {
-            let mut quad_counts = quad.counts.write().unwrap();
+            let mut quad_transcripts = quad.transcripts.write().unwrap();
+            let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
             let quad_states = quad.states.read().unwrap();
-            let quad_lock_ref = quad_counts.deref_mut();
-            for (key, count_delta) in quad_lock_ref.counts_deltas.drain(..) {
-                if count_delta != 0 {
-                    quad_lock_ref
-                        .counts
-                        .entry(key)
-                        .and_modify(|count| *count += count_delta)
-                        .or_insert(count_delta);
+            for voxel_transcript in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
+                quad_transcripts_lock_ref
+                    .transcripts
+                    .insert(voxel_transcript);
 
-                    let cell = quad_states
-                        .states
-                        .get(&key.voxel)
-                        .map(|state| state.cell)
-                        .unwrap_or(BACKGROUND_CELL);
+                let cell = quad_states
+                    .states
+                    .get(&voxel_transcript.voxel)
+                    .map(|state| state.cell)
+                    .unwrap_or(BACKGROUND_CELL);
 
-                    let origin = key.voxel.offset(-key.offset);
-                    let k_origin = origin.k() as usize;
-                    let density = self.get_voxel_density_hint(quad, origin);
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = self
+                    .transcript_fixed_state
+                    .get(voxel_transcript.transcript_idx);
 
-                    if cell == BACKGROUND_CELL {
-                        params.unassigned_counts[density][k_origin]
-                            .add(key.gene as usize, count_delta);
-                    } else {
-                        let counts_c = params.counts.row(cell as usize);
-                        counts_c.write().add(
-                            CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
-                            count_delta,
-                        );
-                    }
+                let k_origin = original_voxel.k() as usize;
+                let density = self.get_voxel_density_hint(quad, original_voxel);
+
+                if cell == BACKGROUND_CELL {
+                    params.unassigned_counts[density][k_origin].add(gene as usize, 1);
+                } else {
+                    let counts_c = params.counts.row(cell as usize);
+                    counts_c
+                        .write()
+                        .add(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
                 }
             }
         });
@@ -2965,6 +3002,7 @@ impl VoxelCheckerboard {
             voxelsize,
             voxelsize_z,
             used_cells_map: self.used_cells_map,
+            transcript_fixed_state: TranscriptRunMap::empty(),
             quads,
             quads_coords,
             frozen_cells: self.frozen_cells,
@@ -3087,7 +3125,10 @@ impl VoxelCheckerboard {
         let mut dz_col = Vec::new();
 
         for quad in self.quads.values() {
-            let quad_counts = quad.counts.read().unwrap();
+            let quad_transcripts = quad.transcripts.read().unwrap();
+
+            // TODO: Basically want to iterate over counts.
+
             for (key, &count) in quad_counts.counts.iter() {
                 if count == 0 {
                     continue;
