@@ -13,6 +13,7 @@ mod shardedvec;
 pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcripts;
+pub mod transcriptrunmap;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
