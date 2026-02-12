@@ -1090,7 +1090,7 @@ fn main() {
     prog.finish();
 
     if let Some(output_voxel_counts) = args.output_voxel_counts {
-        voxels.dump_counts(&dataset, &output_voxel_counts);
+        unimplemented!("'--output-voxel-counts' is no longer supported");
     }
 
     let t0 = Instant::now();

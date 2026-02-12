@@ -2,7 +2,10 @@ use crate::sampler::transcripts::{BACKGROUND_CELL, CellIndex};
 use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::halfnormal_logpdf;
-use super::voxelcheckerboard::{Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState};
+use super::voxelcheckerboard::{
+    TranscriptFixedState, Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState,
+    VoxelTranscript,
+};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 use log::trace;
 use ndarray::s;
@@ -295,7 +298,8 @@ impl VoxelSampler {
         proposal: Proposal,
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
-        let quad_counts = quad.counts.read().unwrap();
+
+        let quad_transcripts = quad.transcripts.read().unwrap();
         // let quad_densities = quad.densities.read().unwrap();
 
         let proposed_cell = proposal.proposed_cell;
@@ -348,50 +352,30 @@ impl VoxelSampler {
             }
         }
 
-        let mut last_k_density = None;
-        let mut λ_bg_k = None;
-        let mut last_gene = u32::MAX;
-        let mut θ_g_factored = None;
-
-        for (
-            &VoxelCountKey {
-                voxel,
+        // TODO: Previous version of this tried to avoid redundant lookups. This rewrite is more direct,
+        // so it may be an optimization oppourtunity.
+        for transcript_idx in quad_transcripts.iter_voxel_transcripts(proposal.voxel) {
+            let &TranscriptFixedState {
+                original_voxel,
                 gene,
-                offset,
-            },
-            &count,
-        ) in quad_counts.voxel_counts(proposal.voxel)
-        {
-            if count == 0 {
-                continue;
-            }
+            } = voxels.transcript_fixed_state.get(transcript_idx);
+            let gene = gene as usize;
 
-            let origin = voxel.offset(-offset);
-            let density = voxels.get_voxel_density_hint(quad, origin);
-            let k = voxel.k() - offset.dk();
-            assert!(origin.k() == k);
+            let origin_density = voxels.get_voxel_density_hint(quad, original_voxel);
 
-            if last_k_density != Some((k, density)) {
-                λ_bg_k = Some(params.λ_bg.slice(s![.., k as usize, density]));
-                last_k_density = Some((k, density));
-            }
-            let λ_bg_k_slice = λ_bg_k.as_ref().unwrap();
+            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, origin_density]];
 
-            if last_gene != gene {
-                θ_g_factored = if (gene as usize) < params.nunfactored {
-                    None
-                } else {
-                    Some(params.θ.slice(s![gene as usize, params.nunfactored..]))
-                };
-                last_gene = gene;
-            }
+            let θ_g_factored = if gene < params.nunfactored {
+                None
+            } else {
+                Some(params.θ.slice(s![gene, params.nunfactored..]))
+            };
 
-            let g = gene as usize;
             let λ_current_g = if current_cell != BACKGROUND_CELL {
                 if let Some(ref θ_gf) = θ_g_factored {
                     φ_c_factored.unwrap().dot(θ_gf)
                 } else {
-                    params.φ[[current_cell as usize, g]]
+                    params.φ[[current_cell as usize, gene]]
                 }
             } else {
                 0.0
@@ -401,15 +385,14 @@ impl VoxelSampler {
                 if let Some(ref θ_gf) = θ_g_factored {
                     φ_p_factored.unwrap().dot(θ_gf)
                 } else {
-                    params.φ[[proposed_cell as usize, g]]
+                    params.φ[[proposed_cell as usize, gene]]
                 }
             } else {
                 0.0
             };
 
-            let λ_bg = λ_bg_k_slice[g];
-            δ -= (count as f32) * (λ_current_g + λ_bg).ln();
-            δ += (count as f32) * (λ_proposed_g + λ_bg).ln();
+            δ -= (λ_current_g + λ_bg).ln();
+            δ += (λ_proposed_g + λ_bg).ln();
         }
 
         let k = proposal.voxel.k() as usize;
@@ -519,7 +502,7 @@ impl VoxelSampler {
         record_samples: bool,
     ) {
         let mut quad_states = quad.states.write().unwrap();
-        let quad_counts = quad.counts.read().unwrap();
+        let quad_transcripts = quad.transcripts.read().unwrap();
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
         let current_cell = proposal
@@ -587,18 +570,20 @@ impl VoxelSampler {
             let mut counts_row_write = counts_row.write();
             let mut total_count = 0;
 
-            for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let origin = key.voxel.offset(-key.offset);
-                let k_origin = origin.k();
-                let density = voxels.get_voxel_density_hint(quad, origin);
-                total_count += count;
+            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_id);
+                let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 counts_row_write.sub(
-                    CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
-                    count,
+                    CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
+                    1,
                 );
             }
 
+            // TODO: Can remove this when we have the new uncertainty tracking system implemented.
             // update the count transition matrix
             if record_samples && proposed_cell != BACKGROUND_CELL {
                 let transitions_row = params.transition_counts.row(current_cell as usize);
@@ -606,13 +591,16 @@ impl VoxelSampler {
                 transitions_row_write.add(proposed_cell, total_count);
             }
         } else {
-            for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let origin = key.voxel.offset(-key.offset);
-                let k_origin = origin.k();
-                let density = voxels.get_voxel_density_hint(quad, origin);
+            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_id);
+                let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
-                let background_counts_k = &params.unassigned_counts[density][k_origin as usize];
-                background_counts_k.sub(key.gene as usize, count);
+                let background_counts_k =
+                    &params.unassigned_counts[density][original_voxel.k() as usize];
+                background_counts_k.sub(gene as usize, 1);
             }
         }
 
@@ -636,24 +624,30 @@ impl VoxelSampler {
 
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
-            for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let origin = key.voxel.offset(-key.offset);
-                let k_origin = origin.k();
-                let density = voxels.get_voxel_density_hint(quad, origin);
+
+            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_id);
+                let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 counts_row_write.add(
-                    CountMatRowKey::new(key.gene, k_origin as u32, density as u8),
-                    count,
+                    CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
+                    1,
                 );
             }
         } else {
-            for (key, &count) in quad_counts.voxel_counts(voxel) {
-                let origin = key.voxel.offset(-key.offset);
-                let k_origin = origin.k();
-                let density = voxels.get_voxel_density_hint(quad, origin);
+            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_id);
+                let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
-                let background_counts_k = &params.unassigned_counts[density][k_origin as usize];
-                background_counts_k.add(key.gene as usize, count);
+                let background_counts_k =
+                    &params.unassigned_counts[density][original_voxel.k() as usize];
+                background_counts_k.add(gene as usize, 1);
             }
         }
     }

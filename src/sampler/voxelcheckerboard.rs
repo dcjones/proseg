@@ -135,6 +135,17 @@ impl VoxelOffset {
         }
     }
 
+    pub fn between(src: Voxel, dst: Voxel) -> VoxelOffset {
+        let [src_i, src_j, src_k] = src.coords();
+        let [dst_i, dst_j, dst_k] = dst.coords();
+
+        let di = dst_i - src_i;
+        let dj = dst_j - src_j;
+        let dk = dst_k - src_k;
+
+        VoxelOffset::new(di, dj, dk)
+    }
+
     fn zero() -> VoxelOffset {
         VoxelOffset { offset: 0 }
     }
@@ -1133,8 +1144,8 @@ impl QuadStates {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VoxelTranscript {
-    voxel: Voxel,
-    transcript_idx: TranscriptIndex,
+    pub voxel: Voxel,
+    pub transcript_idx: TranscriptIndex,
 }
 
 pub struct QuadTranscripts {
@@ -1142,7 +1153,7 @@ pub struct QuadTranscripts {
 
     // Transcripts that are in the process of being moved out of this quad.
     // Kept here until locks are freed on the other quads.
-    pub outgoing_transcripts: Vec<VoxelTranscript>,
+    pub outgoing_transcripts: Vec<(Voxel, VoxelTranscript)>,
     pub incoming_transcripts: Vec<VoxelTranscript>,
 }
 
@@ -1153,6 +1164,29 @@ impl QuadTranscripts {
             outgoing_transcripts: Vec::new(),
             incoming_transcripts: Vec::new(),
         }
+    }
+
+    pub fn iter_voxel_transcripts(&self, voxel: Voxel) -> impl Iterator<Item = TranscriptIndex> {
+        self.transcripts
+            .range((
+                Included(VoxelTranscript {
+                    voxel,
+                    transcript_idx: TranscriptIndex::MIN,
+                }),
+                Included(VoxelTranscript {
+                    voxel,
+                    transcript_idx: TranscriptIndex::MAX,
+                }),
+            ))
+            .map(|vt| vt.transcript_idx)
+    }
+
+    pub fn iter_voxel_counts(&self) -> impl Iterator<Item = (Voxel, usize)> + '_ {
+        self.transcripts
+            .iter()
+            .map(|vt| vt.voxel)
+            .dedup_with_count()
+            .map(|(count, voxel)| (voxel, count))
     }
 }
 
@@ -1239,9 +1273,9 @@ impl VoxelQuad {
 impl VoxelQuad {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TranscriptFixedState {
-    original_voxel: Voxel,
-    gene: GeneIndex,
+pub struct TranscriptFixedState {
+    pub original_voxel: Voxel,
+    pub gene: GeneIndex,
 }
 
 pub struct VoxelCheckerboard {
@@ -2662,8 +2696,49 @@ impl VoxelCheckerboard {
         cell_polygons
     }
 
-    // Construct transcript metadata by matching observed transcripts up to voxelized counts.
     pub fn transcript_metadata(
+        &self,
+        params: &ModelParams,
+        transcripts: &RunVec<u32, Transcript>,
+    ) -> RunVec<u32, TranscriptMetadata> {
+        // TODO: Now I'm thinking I should just hold off on this, because we are eventually
+        // going to implement data structures that store the point estimate state, which
+        // is what is going to be reported here.
+
+        todo!();
+
+        // // Cloning the foreground count structure so we can decrement as we go
+        // // and guess which transcripts are background and which are foreground.
+        // // TODO: I'll probably eventually be tracking foreground vs background
+        // // on a per-transcript basis making this unnecessary.
+        // let mut foreground_counts: HashMap<(u32, u32), u32> = HashMap::new();
+        // for row in params.foreground_counts.rows() {
+        //     let row_lock = row.read();
+        //     let cell = row.i;
+        //     for (gene, count) in row_lock.iter_nonzeros() {
+        //         if count > 0 {
+        //             foreground_counts.insert((cell as CellIndex, gene), count);
+        //         }
+        //     }
+        // }
+
+        // let mut metadata = RunVec::new();
+
+        // // TODO: ...
+
+        // metadata.shrink_to_fit();
+
+        // let remaining_foreground_counts = foreground_counts
+        //     .values()
+        //     .map(|v| *v as usize)
+        //     .sum::<usize>();
+        // assert!(remaining_foreground_counts == 0);
+
+        // metadata
+    }
+
+    // Construct transcript metadata by matching observed transcripts up to voxelized counts.
+    pub fn transcript_metadata_old(
         &self,
         params: &ModelParams,
         transcripts: &RunVec<u32, Transcript>,
@@ -2875,24 +2950,18 @@ impl VoxelCheckerboard {
             let quad = &self.quads[key];
             let mut quad_transcripts = quad.transcripts.write().unwrap();
             let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
-            let (min_i, max_i, min_j, max_j) = quad.bounds();
 
-            // for voxel_transcript in quad_transcripts.outgoing_transcripts {
-            for voxel_transcript in quad_transcripts_lock_ref.outgoing_transcripts.drain(..) {
+            for (_src_voxel, voxel_transcript) in
+                quad_transcripts_lock_ref.outgoing_transcripts.iter()
+            {
                 let neighbor_key = self.quad_index(voxel_transcript.voxel);
                 let neighbor_quad = &self.quads[&neighbor_key];
-                let [i, j, _k] = voxel_transcript.voxel.coords();
-
-                if i < min_i || i > max_i || j < min_j || j > max_j {
-                    neighbor_quad
-                        .transcripts
-                        .write()
-                        .unwrap()
-                        .incoming_transcripts
-                        .push(voxel_transcript);
-                } else {
-                    panic!("In bounds outgoing transcript.");
-                }
+                neighbor_quad
+                    .transcripts
+                    .write()
+                    .unwrap()
+                    .incoming_transcripts
+                    .push(*voxel_transcript);
             }
         }
         info!("merge counts cleanup: {:?}", t0.elapsed());
@@ -2903,6 +2972,48 @@ impl VoxelCheckerboard {
             let mut quad_transcripts = quad.transcripts.write().unwrap();
             let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
             let quad_states = quad.states.read().unwrap();
+
+            // remove everything in outgoing
+            for (src_voxel, voxel_transcript) in
+                quad_transcripts_lock_ref.outgoing_transcripts.drain(..)
+            {
+                quad_transcripts_lock_ref
+                    .transcripts
+                    .remove(&VoxelTranscript {
+                        voxel: src_voxel,
+                        transcript_idx: voxel_transcript.transcript_idx,
+                    });
+
+                let cell = quad_states
+                    .states
+                    .get(&src_voxel)
+                    .map(|state| state.cell)
+                    .unwrap_or(BACKGROUND_CELL);
+
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = self
+                    .transcript_fixed_state
+                    .get(voxel_transcript.transcript_idx);
+
+                let k_origin = original_voxel.k() as usize;
+                let density = self.get_voxel_density_hint(quad, original_voxel);
+
+                if cell == BACKGROUND_CELL {
+                    params.unassigned_counts[density][k_origin].sub(gene as usize, 1);
+                } else {
+                    let counts_c = params.counts.row(cell as usize);
+                    counts_c
+                        .write()
+                        .sub(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
+                }
+            }
+
+            // TODO: A big inefficiency here is that transcripts that are moved
+            // within the same cell update the counts table twice.
+
+            // insert everything in incoming
             for voxel_transcript in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
                 quad_transcripts_lock_ref
                     .transcripts
@@ -3096,80 +3207,79 @@ impl VoxelCheckerboard {
         new_checkerboard
     }
 
-    pub fn dump_counts(&self, transcripts: &TranscriptDataset, filename: &str) {
-        let file = File::create(filename).unwrap();
-        let encoder = GzEncoder::new(file, Compression::default());
+    // TODO: Harder to implement this in the current scheme, not sure it's actually useful for debugging.
+    // pub fn dump_counts(&self, transcripts: &TranscriptDataset, filename: &str) {
+    //     let file = File::create(filename).unwrap();
+    //     let encoder = GzEncoder::new(file, Compression::default());
 
-        // TODO: This isn't very useful unless we convert to slide coordinates.
-        // What info do I need for that.
+    //     // TODO: This isn't very useful unless we convert to slide coordinates.
+    //     // What info do I need for that.
 
-        let schema_fields = vec![
-            Field::new("gene", DataType::Utf8, false),
-            Field::new("count", DataType::UInt32, false),
-            Field::new("x", DataType::Float32, false),
-            Field::new("y", DataType::Float32, false),
-            Field::new("z", DataType::Float32, false),
-            Field::new("dx", DataType::Float32, false),
-            Field::new("dy", DataType::Float32, false),
-            Field::new("dz", DataType::Float32, false),
-        ];
-        let schema = Schema::new(schema_fields);
+    //     let schema_fields = vec![
+    //         Field::new("gene", DataType::Utf8, false),
+    //         Field::new("count", DataType::UInt32, false),
+    //         Field::new("x", DataType::Float32, false),
+    //         Field::new("y", DataType::Float32, false),
+    //         Field::new("z", DataType::Float32, false),
+    //         Field::new("dx", DataType::Float32, false),
+    //         Field::new("dy", DataType::Float32, false),
+    //         Field::new("dz", DataType::Float32, false),
+    //     ];
+    //     let schema = Schema::new(schema_fields);
 
-        let mut gene_col = Vec::new();
-        let mut count_col = Vec::new();
-        let mut x_col = Vec::new();
-        let mut y_col = Vec::new();
-        let mut z_col = Vec::new();
-        let mut dx_col = Vec::new();
-        let mut dy_col = Vec::new();
-        let mut dz_col = Vec::new();
+    //     let mut gene_col = Vec::new();
+    //     let mut count_col = Vec::new();
+    //     let mut x_col = Vec::new();
+    //     let mut y_col = Vec::new();
+    //     let mut z_col = Vec::new();
+    //     let mut dx_col = Vec::new();
+    //     let mut dy_col = Vec::new();
+    //     let mut dz_col = Vec::new();
 
-        for quad in self.quads.values() {
-            let quad_transcripts = quad.transcripts.read().unwrap();
+    //     for quad in self.quads.values() {
+    //         let quad_transcripts = quad.transcripts.read().unwrap();
 
-            // TODO: Basically want to iterate over counts.
+    //         for (key, &count) in quad_counts.counts.iter() {
+    //             if count == 0 {
+    //                 continue;
+    //             }
 
-            for (key, &count) in quad_counts.counts.iter() {
-                if count == 0 {
-                    continue;
-                }
+    //             let [i, j, k] = key.voxel.coords();
+    //             let [di, dj, dk] = key.offset.coords();
 
-                let [i, j, k] = key.voxel.coords();
-                let [di, dj, dk] = key.offset.coords();
+    //             let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+    //             let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+    //             let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
 
-                let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
-                let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
-                let z = ((k as f32) + 0.5) * self.voxelsize_z + self.zmin;
+    //             let dx = (di as f32) * self.voxelsize;
+    //             let dy = (dj as f32) * self.voxelsize;
+    //             let dz = (dk as f32) * self.voxelsize_z;
 
-                let dx = (di as f32) * self.voxelsize;
-                let dy = (dj as f32) * self.voxelsize;
-                let dz = (dk as f32) * self.voxelsize_z;
+    //             gene_col.push(Some(transcripts.gene_names[key.gene as usize].clone()));
+    //             count_col.push(Some(count));
+    //             x_col.push(Some(x));
+    //             y_col.push(Some(y));
+    //             z_col.push(Some(z));
+    //             dx_col.push(Some(dx));
+    //             dy_col.push(Some(dy));
+    //             dz_col.push(Some(dz));
+    //         }
+    //     }
 
-                gene_col.push(Some(transcripts.gene_names[key.gene as usize].clone()));
-                count_col.push(Some(count));
-                x_col.push(Some(x));
-                y_col.push(Some(y));
-                z_col.push(Some(z));
-                dx_col.push(Some(dx));
-                dy_col.push(Some(dy));
-                dz_col.push(Some(dz));
-            }
-        }
+    //     let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
+    //         Arc::new(arrow::array::StringArray::from(gene_col)),
+    //         Arc::new(arrow::array::UInt32Array::from(count_col)),
+    //         Arc::new(arrow::array::Float32Array::from(x_col)),
+    //         Arc::new(arrow::array::Float32Array::from(y_col)),
+    //         Arc::new(arrow::array::Float32Array::from(z_col)),
+    //         Arc::new(arrow::array::Float32Array::from(dx_col)),
+    //         Arc::new(arrow::array::Float32Array::from(dy_col)),
+    //         Arc::new(arrow::array::Float32Array::from(dz_col)),
+    //     ];
 
-        let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
-            Arc::new(arrow::array::StringArray::from(gene_col)),
-            Arc::new(arrow::array::UInt32Array::from(count_col)),
-            Arc::new(arrow::array::Float32Array::from(x_col)),
-            Arc::new(arrow::array::Float32Array::from(y_col)),
-            Arc::new(arrow::array::Float32Array::from(z_col)),
-            Arc::new(arrow::array::Float32Array::from(dx_col)),
-            Arc::new(arrow::array::Float32Array::from(dy_col)),
-            Arc::new(arrow::array::Float32Array::from(dz_col)),
-        ];
+    //     let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
-        let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
-
-        let mut writer = csv::WriterBuilder::new().with_header(true).build(encoder);
-        writer.write(&batch).unwrap();
-    }
+    //     let mut writer = csv::WriterBuilder::new().with_header(true).build(encoder);
+    //     writer.write(&batch).unwrap();
+    // }
 }

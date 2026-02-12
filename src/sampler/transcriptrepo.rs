@@ -5,14 +5,16 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::ops::{DerefMut, Neg};
 use std::time::Instant;
 
+use crate::sampler::voxelcheckerboard::{TranscriptFixedState, VoxelTranscript};
+
 use super::math::uniformly_imprecise_normal_prob;
 use super::multinomial::{Multinomial, rand_binomial};
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{VoxelCheckerboard, VoxelCountKey, VoxelOffset, VoxelQuad};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
-use rand::rng;
 use rand::rngs::ThreadRng;
+use rand::{Rng, rng};
 
 pub struct TranscriptRepo {
     prior_near: VoxelDiffusionPrior,
@@ -120,7 +122,7 @@ impl TranscriptRepo {
         trace!("transcript repo: compute deltas: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        voxels.merge_counts_deltas(params);
+        voxels.merged_moved_transcripts(params);
         trace!("transcript repo: merge deltas: {:?}", t0.elapsed());
     }
 
@@ -139,19 +141,145 @@ impl TranscriptRepo {
         record_samples: bool,
     ) {
         let quad_states = quad.states.read().unwrap();
-        let mut quad_counts = quad.counts.write().unwrap();
-        let quad_counts_ref = quad_counts.deref_mut();
+        let mut quad_transcripts = quad.transcripts.write().unwrap();
+        let quad_transcripts_ref = quad_transcripts.deref_mut();
 
-        quad_counts_ref.counts_deltas.clear();
+        assert!(quad_transcripts_ref.outgoing_transcripts.is_empty());
 
-        // let mut proposed_total = [0; 26];
-        // let mut accept_total = [0; 26];
-        // let mut proposed_total = 0;
-        // let mut accept_total = 0;
+        for &VoxelTranscript {
+            voxel,
+            transcript_idx,
+        } in quad_transcripts_ref.transcripts.iter()
+        {
+            let &TranscriptFixedState {
+                original_voxel,
+                gene,
+            } = voxels.transcript_fixed_state.get(transcript_idx);
+            let gene = gene as usize;
+            let offset = VoxelOffset::between(original_voxel, voxel);
+            let k0 = voxel.k();
+            let [di0, dj0, dk0] = offset.coords();
 
-        // let mut inc_proposal_total = 0;
-        // let mut dec_proposal_total = 0;
-        // let mut eq_proposal_total = 0;
+            let cell = quad_states
+                .states
+                .get(&voxel)
+                .map(|state| state.cell)
+                .unwrap_or(BACKGROUND_CELL);
+
+            let transition_counts_row = if cell != BACKGROUND_CELL {
+                Some(params.transition_counts.row(cell as usize))
+            } else {
+                None
+            };
+
+            let mut transition_counts_row_write =
+                transition_counts_row.as_ref().map(|row| row.write());
+
+            let density = voxels.get_voxel_density_hint(quad, original_voxel);
+
+            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, density]];
+            let θ_g_factored = if gene < params.nunfactored {
+                None
+            } else {
+                Some(params.θ.slice(s![gene, params.nunfactored..]))
+            };
+
+            let mut λ_current = λ_bg;
+            if cell != BACKGROUND_CELL {
+                λ_current += if gene < params.nunfactored {
+                    params.φ[[cell as usize, gene]]
+                } else {
+                    params
+                        .φ
+                        .slice(s![cell as usize, params.nunfactored..])
+                        .dot(&θ_g_factored.unwrap())
+                };
+            }
+
+            let dist_prob_current = self.diffusion_distance_prior(priors, di0, dj0, dk0);
+            let current_prob = dist_prob_current * λ_current;
+
+            let mut total_moved = 0;
+
+            let dk = self.proposal_z.sample1(&mut rng);
+            let dk = (dk as i32) - ((self.proposal_z_probs.len() - 1) / 2) as i32;
+
+            if k0 + dk < 0 || k0 + dk > quad.kmax {
+                continue;
+            }
+
+            let dj = self.proposal_xy.sample1(&mut rng);
+            let dj = (dj as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
+
+            let di = self.proposal_xy.sample1(&mut rng);
+            let di = (di as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
+
+            let neighbor = voxel.offset_coords(di, dj, dk);
+            if neighbor.is_oob() {
+                return;
+            }
+
+            // don't repo into a quad that doesn't exist
+            let u = neighbor.i() as u32 / quadsize;
+            let v = neighbor.j() as u32 / quadsize;
+            if !quads_coords.contains(&(u, v)) {
+                return;
+            }
+
+            // TODO: accept/reject
+            let mut λ_proposed = λ_bg;
+            let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
+                quad_states
+                    .states
+                    .get(&neighbor)
+                    .map(|state| state.cell)
+                    .unwrap_or(BACKGROUND_CELL)
+            } else {
+                voxels.get_voxel_cell(neighbor)
+            };
+
+            if neighbor_cell != BACKGROUND_CELL {
+                λ_proposed += if gene < params.nunfactored {
+                    params.φ[[neighbor_cell as usize, gene]]
+                } else {
+                    params
+                        .φ
+                        .slice(s![neighbor_cell as usize, params.nunfactored..])
+                        .dot(&θ_g_factored.unwrap())
+                };
+            }
+
+            let di = di + di0;
+            let dj = dj + dj0;
+            let dk = dk + dk0;
+
+            let dist_prob_proposed = self.diffusion_distance_prior(priors, di, dj, dk);
+
+            let proposal_prob = dist_prob_proposed * λ_proposed;
+            let accept_prob = (proposal_prob.ln() - current_prob.ln()).exp();
+
+            if rng.random::<f32>() > accept_prob {
+                continue;
+            }
+            if record_samples
+                && neighbor_cell != BACKGROUND_CELL
+                && let Some(transition_counts_row_write) = transition_counts_row_write.as_mut()
+            {
+                transition_counts_row_write.add(neighbor_cell, 1);
+            }
+
+            quad_transcripts_ref.outgoing_transcripts.push((
+                voxel,
+                VoxelTranscript {
+                    voxel: neighbor,
+                    transcript_idx,
+                },
+            ));
+
+            total_moved += 1;
+        }
+
+        ////////////////////
 
         for (
             VoxelCountKey {
