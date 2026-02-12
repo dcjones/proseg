@@ -1089,7 +1089,7 @@ fn main() {
     }
     prog.finish();
 
-    if let Some(output_voxel_counts) = args.output_voxel_counts {
+    if let Some(_output_voxel_counts) = args.output_voxel_counts {
         unimplemented!("'--output-voxel-counts' is no longer supported");
     }
 

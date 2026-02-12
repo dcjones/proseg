@@ -3,8 +3,7 @@ use crate::sampler::voxelcheckerboard::UndirectedVoxelPair;
 
 use super::math::halfnormal_logpdf;
 use super::voxelcheckerboard::{
-    TranscriptFixedState, Voxel, VoxelCheckerboard, VoxelCountKey, VoxelQuad, VoxelState,
-    VoxelTranscript,
+    TranscriptFixedState, Voxel, VoxelCheckerboard, VoxelQuad, VoxelState,
 };
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 use log::trace;
@@ -581,6 +580,8 @@ impl VoxelSampler {
                     CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
                     1,
                 );
+
+                total_count += 1;
             }
 
             // TODO: Can remove this when we have the new uncertainty tracking system implemented.
