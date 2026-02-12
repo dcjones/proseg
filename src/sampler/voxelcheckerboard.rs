@@ -16,12 +16,12 @@ use super::transcripts::{
 };
 use super::{CountMatRowKey, ModelParams};
 
-use arrow::array::RecordBatch;
-use arrow::csv;
-use arrow::datatypes::{DataType, Field, Schema};
-use flate2::Compression;
+// use arrow::array::RecordBatch;
+// use arrow::csv;
+// use arrow::datatypes::{DataType, Field, Schema};
+// use flate2::Compression;
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
+// use flate2::write::GzEncoder;
 use geo::algorithm::{BoundingRect, Contains};
 use geo::geometry::{MultiPolygon, Point, Polygon};
 use half::f16;
@@ -47,9 +47,9 @@ use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem::drop;
-use std::ops::Bound::{Excluded, Included};
+use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut, Neg};
-use std::sync::Arc;
+// use std::sync::Arc;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -146,9 +146,9 @@ impl VoxelOffset {
         VoxelOffset::new(di, dj, dk)
     }
 
-    fn zero() -> VoxelOffset {
-        VoxelOffset { offset: 0 }
-    }
+    // fn zero() -> VoxelOffset {
+    //     VoxelOffset { offset: 0 }
+    // }
 
     fn di(&self) -> i32 {
         i12_to_i32((self.offset >> 20) & 0xFFF)
@@ -1180,14 +1180,6 @@ impl QuadTranscripts {
             ))
             .map(|vt| vt.transcript_idx)
     }
-
-    pub fn iter_voxel_counts(&self) -> impl Iterator<Item = (Voxel, usize)> + '_ {
-        self.transcripts
-            .iter()
-            .map(|vt| vt.voxel)
-            .dedup_with_count()
-            .map(|(count, voxel)| (voxel, count))
-    }
 }
 
 impl<'a> QuadTranscripts {
@@ -1210,7 +1202,7 @@ impl<'a> QuadTranscripts {
 
 impl QuadTranscripts {
     pub fn voxel_population(&self, voxel: Voxel) -> usize {
-        self.voxel_transcripts(voxel).try_len().unwrap()
+        self.voxel_transcripts(voxel).count()
     }
 }
 
@@ -2328,7 +2320,7 @@ impl VoxelCheckerboard {
             transcripts.transcripts.iter().for_each(
                 |VoxelTranscript {
                      voxel,
-                     transcript_idx,
+                     transcript_idx: _,
                  }| {
                     let [i, j, _k] = voxel.coords();
                     let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
@@ -2698,14 +2690,14 @@ impl VoxelCheckerboard {
 
     pub fn transcript_metadata(
         &self,
-        params: &ModelParams,
-        transcripts: &RunVec<u32, Transcript>,
+        _params: &ModelParams,
+        _transcripts: &RunVec<u32, Transcript>,
     ) -> RunVec<u32, TranscriptMetadata> {
         // TODO: Now I'm thinking I should just hold off on this, because we are eventually
         // going to implement data structures that store the point estimate state, which
         // is what is going to be reported here.
 
-        todo!();
+        // todo!();
 
         // // Cloning the foreground count structure so we can decrement as we go
         // // and guess which transcripts are background and which are foreground.
@@ -2722,7 +2714,7 @@ impl VoxelCheckerboard {
         //     }
         // }
 
-        // let mut metadata = RunVec::new();
+        let mut metadata = RunVec::new();
 
         // // TODO: ...
 
@@ -2733,118 +2725,6 @@ impl VoxelCheckerboard {
         //     .map(|v| *v as usize)
         //     .sum::<usize>();
         // assert!(remaining_foreground_counts == 0);
-
-        // metadata
-    }
-
-    // Construct transcript metadata by matching observed transcripts up to voxelized counts.
-    pub fn transcript_metadata_old(
-        &self,
-        params: &ModelParams,
-        transcripts: &RunVec<u32, Transcript>,
-    ) -> RunVec<u32, TranscriptMetadata> {
-        // Clone the count structures so we can decrement transcripts as they are encountered
-        // We also have to re-index by the observed voxel in order to look up transcripts by their
-        // observed position.
-        let mut counts = BTreeMap::new();
-        self.quads.iter().for_each(|(_quad_index, quad)| {
-            quad.counts
-                .read()
-                .unwrap()
-                .counts
-                .iter()
-                .for_each(|(key, count)| {
-                    // Rebuild the hash map indexing on observed voxel
-                    let mut newkey = *key;
-                    newkey.voxel = key.voxel.offset(-key.offset);
-                    counts.insert(newkey, *count);
-                });
-        });
-
-        // Similarly, we need to clone foreground counts so we can keep track
-        let mut foreground_counts: HashMap<(u32, u32), u32> = HashMap::new();
-        for row in params.foreground_counts.rows() {
-            let row_lock = row.read();
-            let cell = row.i;
-            for (gene, count) in row_lock.iter_nonzeros() {
-                if count > 0 {
-                    foreground_counts.insert((cell as CellIndex, gene), count);
-                }
-            }
-        }
-
-        let mut metadata = RunVec::new();
-        for transcript in transcripts.iter() {
-            let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
-
-            let from = VoxelCountKey {
-                voxel,
-                gene: transcript.gene,
-                offset: VoxelOffset::zero(),
-            };
-
-            let to = VoxelCountKey {
-                voxel,
-                gene: transcript.gene + 1,
-                offset: VoxelOffset::zero(),
-            };
-
-            // look for foreground count
-            let mut key_match = None;
-            let mut cell = BACKGROUND_CELL;
-            for (key, count) in counts.range_mut((Included(from), Excluded(to))) {
-                if *count == 0 {
-                    continue;
-                }
-                let voxel_cell = self.get_voxel_cell(voxel.offset(key.offset));
-                if let Some(c) = foreground_counts.get_mut(&(voxel_cell, transcript.gene)) {
-                    if *c > 0 {
-                        *c -= 1;
-                        key_match = Some(*key);
-                        cell = voxel_cell;
-                        break;
-                    }
-                }
-            }
-
-            if let Some(key) = key_match {
-                counts.entry(key).and_modify(|c| *c -= 1);
-                metadata.push(TranscriptMetadata {
-                    offset: key.offset,
-                    cell,
-                    foreground: true,
-                });
-            } else {
-                // non for a matching non-background -count
-                let mut found = false;
-                for (key, count) in counts.range_mut((Included(from), Excluded(to))) {
-                    if *count > 0 {
-                        *count -= 1;
-                        found = true;
-                        metadata.push(TranscriptMetadata {
-                            offset: key.offset,
-                            cell: BACKGROUND_CELL,
-                            foreground: false,
-                        });
-                        break;
-                    }
-                }
-                if !found {
-                    panic!("Unable to find a matching transcript. Inconsistent count structure.");
-                }
-            }
-        }
-
-        metadata.shrink_to_fit();
-
-        let remaining_counts = counts.values().map(|v| *v as usize).sum::<usize>();
-        let remaining_foreground_counts = foreground_counts
-            .values()
-            .map(|v| *v as usize)
-            .sum::<usize>();
-
-        assert!(remaining_counts == 0);
-        assert!(remaining_foreground_counts == 0);
 
         metadata
     }
@@ -2955,13 +2835,19 @@ impl VoxelCheckerboard {
                 quad_transcripts_lock_ref.outgoing_transcripts.iter()
             {
                 let neighbor_key = self.quad_index(voxel_transcript.voxel);
-                let neighbor_quad = &self.quads[&neighbor_key];
-                neighbor_quad
-                    .transcripts
-                    .write()
-                    .unwrap()
-                    .incoming_transcripts
-                    .push(*voxel_transcript);
+                if *key == neighbor_key {
+                    quad_transcripts_lock_ref
+                        .incoming_transcripts
+                        .push(*voxel_transcript);
+                } else {
+                    let neighbor_quad = &self.quads[&neighbor_key];
+                    neighbor_quad
+                        .transcripts
+                        .write()
+                        .unwrap()
+                        .incoming_transcripts
+                        .push(*voxel_transcript);
+                }
             }
         }
         info!("merge counts cleanup: {:?}", t0.elapsed());

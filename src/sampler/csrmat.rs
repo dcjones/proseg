@@ -1,5 +1,5 @@
-use super::sparsevec::SparseCountVec;
 use super::RAYON_CELL_MIN_LEN;
+use super::sparsevec::SparseCountVec;
 use num::traits::AsPrimitive;
 use num::traits::Zero;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -251,7 +251,7 @@ where
 // Row handle (like SparseRow)
 pub struct CSRRow<'a, J, T> {
     row_lock: &'a RwLock<SparseCountVec<J, T>>,
-    pub i: usize,
+    // pub i: usize,
     pub j_bound: J,
 }
 
@@ -266,7 +266,7 @@ where
     fn new(mat: &'a CSRMat<J, T>, i: usize) -> Self {
         Self {
             row_lock: &mat.rows[i],
-            i,
+            // i,
             j_bound: mat.j_bound,
         }
     }
