@@ -99,6 +99,17 @@ where
         *self.cumprobs.last_mut().unwrap() = cumprob;
     }
 
+    pub fn sample1<R: Rng>(&self, rng: &mut R) -> usize {
+        let total_prob = self.cumprobs.last().unwrap().as_();
+        assert!(total_prob > 0.0);
+        let u = rng.random::<f64>() * total_prob;
+        let idx = self
+            .cumprobs
+            .partition_point(|&x| x.as_() <= u)
+            .saturating_sub(1);
+        idx
+    }
+
     // Recursive divide-and conqueror sampling. When n is small or outcome probabilities are skewed
     // this lets us prune many branches, speeding up the sampling.
     pub fn sample<R: Rng, F: FnMut(usize, u32)>(&self, rng: &mut R, n: u32, mut report: F) {
