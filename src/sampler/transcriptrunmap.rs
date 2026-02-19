@@ -17,6 +17,7 @@ impl<T: PartialEq + Clone> TranscriptRunMap<T> {
     /// Create a new map from a sequence of run ends and their corresponding values.
     ///
     /// `ends` must be strictly increasing and `ends.len() == values.len()`.
+    #[allow(dead_code)]
     pub fn new(ends: Vec<u32>, values: Vec<T>) -> Self {
         assert_eq!(ends.len(), values.len());
         TranscriptRunMap { ends, values }
@@ -46,6 +47,7 @@ impl<T: PartialEq + Clone> TranscriptRunMap<T> {
     }
 
     /// Create a map from an iterator of (value, count) runs.
+    #[allow(dead_code)]
     pub fn from_runs<I>(runs: I) -> Self
     where
         I: IntoIterator<Item = (T, u32)>,
@@ -82,19 +84,23 @@ impl<T: PartialEq + Clone> TranscriptRunMap<T> {
     }
 
     /// Returns the total number of transcripts in the map.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.ends.last().copied().unwrap_or(0) as usize
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.ends.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn shrink_to_fit(&mut self) {
         self.ends.shrink_to_fit();
         self.values.shrink_to_fit();
     }
 
+    #[allow(dead_code)]
     pub fn iter(&self) -> TranscriptRunMapIter<T> {
         TranscriptRunMapIter {
             ends: &self.ends,

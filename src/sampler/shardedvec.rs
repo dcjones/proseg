@@ -124,6 +124,7 @@ where
         shard[j] = value;
     }
 
+    #[allow(dead_code)]
     pub fn copy_from(&mut self, other: &ShardedVec<T>) {
         if self.shardsize != other.shardsize || self.shards.len() != other.shards.len() {
             panic!("ShardedVecs have different shard sizes");

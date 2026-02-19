@@ -251,7 +251,7 @@ where
 // Row handle (like SparseRow)
 pub struct CSRRow<'a, J, T> {
     row_lock: &'a RwLock<SparseCountVec<J, T>>,
-    pub i: usize,
+    pub _i: usize,
     pub j_bound: J,
 }
 
@@ -266,7 +266,7 @@ where
     fn new(mat: &'a CSRMat<J, T>, i: usize) -> Self {
         Self {
             row_lock: &mat.rows[i],
-            i,
+            _i: i,
             j_bound: mat.j_bound,
         }
     }
@@ -447,7 +447,7 @@ mod tests {
         // Write values in parallel (add row index to column 10)
         mat.par_rows().for_each(|row| {
             let mut row_write = row.write();
-            row_write.add(10, row.i as i32);
+            row_write.add(10, row._i as i32);
         });
 
         // Read and verify in parallel - sum up all the values we wrote

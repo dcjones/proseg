@@ -1,5 +1,3 @@
-use crate::sampler::transcripts::BACKGROUND_CELL;
-
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
@@ -198,7 +196,7 @@ impl ParamSampler {
             .par_iter()
             .enumerate()
             .with_min_len(RAYON_TRANSCRIPT_MIN_LEN)
-            .for_each_init(rng, |rng, (transcript_idx, state)| {
+            .for_each_init(rng, |_rng, (transcript_idx, state)| {
                 let &TranscriptFixedState {
                     original_voxel,
                     gene,
