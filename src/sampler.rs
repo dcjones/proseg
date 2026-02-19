@@ -417,8 +417,7 @@ impl ModelParams {
         let nlayers = (voxels.kmax + 1) as usize;
         if nlayers > 256 {
             panic!(
-                "Number of voxel layers ({}) exceeds maximum of 256. Please reduce --voxel-layers.",
-                nlayers
+                "Number of voxel layers ({nlayers}) exceeds maximum of 256. Please reduce --voxel-layers."
             );
         }
         if ngenes > CountMatRowKey::GENE_MASK as usize + 1 {
