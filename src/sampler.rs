@@ -231,7 +231,7 @@ impl TranscriptState {
     const CELL_INDEX_MASK: u32 = !(1 << 31);
 
     pub fn new(cell: CellIndex, background: bool) -> Self {
-        assert!(cell <= Self::CELL_INDEX_MASK);
+        assert!(cell == BACKGROUND_CELL || cell <= Self::CELL_INDEX_MASK);
         if background {
             TranscriptState(cell | Self::BACKGROUND_FLAG_MASK)
         } else {
@@ -240,7 +240,11 @@ impl TranscriptState {
     }
 
     pub fn cellindex(&self) -> CellIndex {
-        self.0 & Self::CELL_INDEX_MASK
+        if self.0 == BACKGROUND_CELL {
+            BACKGROUND_CELL
+        } else {
+            self.0 & Self::CELL_INDEX_MASK
+        }
     }
 
     pub fn background(&self) -> bool {
