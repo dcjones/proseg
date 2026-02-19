@@ -41,7 +41,7 @@ use rayon::iter::{
 use rstar::primitives::GeomWithData;
 use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
-use std::cmp::{Ordering, PartialOrd};
+use std::cmp::PartialOrd;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f32;
 use std::fs::File;
@@ -50,6 +50,7 @@ use std::mem::drop;
 use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -952,7 +953,7 @@ pub fn von_neumann_neighborhood_xy_offsets() -> [VoxelOffset; 4] {
 // Z-order curve comparison function. Following from:
 // https://en.wikipedia.org/wiki/Z-order_curve#Efficiently_building_quadtrees_and_octrees
 impl Ord for Voxel {
-    fn cmp(&self, other: &Voxel) -> Ordering {
+    fn cmp(&self, other: &Voxel) -> std::cmp::Ordering {
         // Z-order curve comparison for spatial locality.
         // Benchmarking shows this is ~4% faster than simple index comparison
         // due to better cache behavior during BTree iteration.
@@ -961,7 +962,7 @@ impl Ord for Voxel {
         }
 
         if self.index == other.index {
-            return Ordering::Equal;
+            return std::cmp::Ordering::Equal;
         }
 
         // xor then extract coords rather than vice versa to save a few ops
@@ -985,15 +986,15 @@ impl Ord for Voxel {
         };
 
         if islt {
-            Ordering::Less
+            std::cmp::Ordering::Less
         } else {
-            Ordering::Greater
+            std::cmp::Ordering::Greater
         }
     }
 }
 
 impl PartialOrd for Voxel {
-    fn partial_cmp(&self, other: &Voxel) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Voxel) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -2041,17 +2042,6 @@ impl VoxelCheckerboard {
         self.transcript_fixed_state.get(transcript_idx).gene
     }
 
-    pub fn copy_transcript_cell_assignments(&self, transcript_states: &mut [TranscriptState]) {
-        for quad in self.quads.values() {
-            let transcripts = quad.transcripts.read().unwrap();
-            let voxel_states = quad.states.read().unwrap();
-            for transcript in transcripts.transcripts.iter() {
-                transcript_states[transcript.transcript_idx as usize] =
-                    TranscriptState::new(voxel_states.get_voxel_cell(transcript.voxel), false);
-            }
-        }
-    }
-
     fn write_quad_states(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadStates> {
         self.write_quad_index_states(self.quad_index(voxel))
     }
@@ -2723,7 +2713,8 @@ impl VoxelCheckerboard {
         });
 
         let mut metadata = RunVec::new();
-        for (&state, &offset) in params.transcript_state.iter().zip(offsets.iter()) {
+        for (state, &offset) in params.transcript_state.iter().zip(offsets.iter()) {
+            let state = TranscriptState(state.load(Ordering::Relaxed));
             metadata.push(TranscriptMetadata {
                 offset,
                 cell: state.cellindex(),
