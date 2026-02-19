@@ -2036,6 +2036,7 @@ impl VoxelCheckerboard {
         (u, v)
     }
 
+    #[allow(dead_code)]
     pub fn transcript_gene(&self, transcript_idx: TranscriptIndex) -> GeneIndex {
         self.transcript_fixed_state.get(transcript_idx).gene
     }
