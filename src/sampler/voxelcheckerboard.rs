@@ -14,7 +14,7 @@ use super::transcriptrunmap::TranscriptRunMap;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
-use super::{CountMatRowKey, ModelParams};
+use super::{CountMatRowKey, ModelParams, TranscriptState};
 
 // use arrow::array::RecordBatch;
 // use arrow::csv;
@@ -25,7 +25,7 @@ use flate2::read::GzDecoder;
 use geo::algorithm::{BoundingRect, Contains};
 use geo::geometry::{MultiPolygon, Point, Polygon};
 use half::f16;
-use itertools::{Itertools, izip};
+use itertools::izip;
 use log::info;
 use log::trace;
 use ndarray::{Array1, Array2, Zip};
@@ -146,9 +146,9 @@ impl VoxelOffset {
         VoxelOffset::new(di, dj, dk)
     }
 
-    // fn zero() -> VoxelOffset {
-    //     VoxelOffset { offset: 0 }
-    // }
+    fn zero() -> VoxelOffset {
+        VoxelOffset { offset: 0 }
+    }
 
     fn di(&self) -> i32 {
         i12_to_i32((self.offset >> 20) & 0xFFF)
@@ -2036,6 +2036,21 @@ impl VoxelCheckerboard {
         (u, v)
     }
 
+    pub fn transcript_gene(&self, transcript_idx: TranscriptIndex) -> GeneIndex {
+        self.transcript_fixed_state.get(transcript_idx).gene
+    }
+
+    pub fn copy_transcript_cell_assignments(&self, transcript_states: &mut [TranscriptState]) {
+        for quad in self.quads.values() {
+            let transcripts = quad.transcripts.read().unwrap();
+            let voxel_states = quad.states.read().unwrap();
+            for transcript in transcripts.transcripts.iter() {
+                transcript_states[transcript.transcript_idx as usize] =
+                    TranscriptState::new(voxel_states.get_voxel_cell(transcript.voxel), false);
+            }
+        }
+    }
+
     fn write_quad_states(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadStates> {
         self.write_quad_index_states(self.quad_index(voxel))
     }
@@ -2690,41 +2705,30 @@ impl VoxelCheckerboard {
 
     pub fn transcript_metadata(
         &self,
-        _params: &ModelParams,
-        _transcripts: &RunVec<u32, Transcript>,
+        params: &ModelParams,
+        transcripts: &RunVec<u32, Transcript>,
     ) -> RunVec<u32, TranscriptMetadata> {
-        // TODO: Now I'm thinking I should just hold off on this, because we are eventually
-        // going to implement data structures that store the point estimate state, which
-        // is what is going to be reported here.
-
-        // todo!();
-
-        // // Cloning the foreground count structure so we can decrement as we go
-        // // and guess which transcripts are background and which are foreground.
-        // // TODO: I'll probably eventually be tracking foreground vs background
-        // // on a per-transcript basis making this unnecessary.
-        // let mut foreground_counts: HashMap<(u32, u32), u32> = HashMap::new();
-        // for row in params.foreground_counts.rows() {
-        //     let row_lock = row.read();
-        //     let cell = row.i;
-        //     for (gene, count) in row_lock.iter_nonzeros() {
-        //         if count > 0 {
-        //             foreground_counts.insert((cell as CellIndex, gene), count);
-        //         }
-        //     }
-        // }
+        let mut offsets = vec![VoxelOffset::zero(); transcripts.len()];
+        self.quads.iter().for_each(|((_u, _v), quad)| {
+            let transcripts = quad.transcripts.read().unwrap();
+            transcripts.transcripts.iter().for_each(|transcript| {
+                let original_voxel = self
+                    .transcript_fixed_state
+                    .get(transcript.transcript_idx)
+                    .original_voxel;
+                offsets[transcript.transcript_idx as usize] =
+                    VoxelOffset::between(original_voxel, transcript.voxel);
+            })
+        });
 
         let mut metadata = RunVec::new();
-
-        // // TODO: ...
-
-        // metadata.shrink_to_fit();
-
-        // let remaining_foreground_counts = foreground_counts
-        //     .values()
-        //     .map(|v| *v as usize)
-        //     .sum::<usize>();
-        // assert!(remaining_foreground_counts == 0);
+        for (&state, &offset) in params.transcript_state.iter().zip(offsets.iter()) {
+            metadata.push(TranscriptMetadata {
+                offset,
+                cell: state.cellindex(),
+                foreground: !state.background(),
+            });
+        }
 
         metadata
     }

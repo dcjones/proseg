@@ -12,14 +12,15 @@ mod sampleset;
 mod shardedvec;
 pub mod sparsevec;
 pub mod transcriptrepo;
-pub mod transcripts;
 pub mod transcriptrunmap;
+pub mod transcripts;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
 use clustering::kmeans;
 use csrmat::CSRMat;
 use csrmat::Increment;
+use transcripts::CellIndex;
 
 use itertools::izip;
 use math::randn;
@@ -34,6 +35,7 @@ use shardedvec::ShardedVec;
 use std::cell::RefCell;
 use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
+use transcripts::BACKGROUND_CELL;
 use voxelcheckerboard::VoxelCheckerboard;
 
 // Shard size used for sharded vectors and matrices
@@ -41,6 +43,7 @@ const CELL_SHARDSIZE: usize = 256;
 const GENE_SHARDSIZE: usize = 16;
 
 const RAYON_CELL_MIN_LEN: usize = 32;
+const RAYON_TRANSCRIPT_MIN_LEN: usize = 64;
 
 // Model prior parameters.
 #[derive(Clone, Copy)]
@@ -218,6 +221,33 @@ impl Increment for CountMatRowKey {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TranscriptState(u32);
+
+// Encode a transcripts cell overlap using the highest bit to encode
+// it's foreground vs background.
+impl TranscriptState {
+    const BACKGROUND_FLAG_MASK: u32 = 1 << 31;
+    const CELL_INDEX_MASK: u32 = !(1 << 31);
+
+    pub fn new(cell: CellIndex, background: bool) -> Self {
+        assert!(cell <= Self::CELL_INDEX_MASK);
+        if background {
+            TranscriptState(cell | Self::BACKGROUND_FLAG_MASK)
+        } else {
+            TranscriptState(cell)
+        }
+    }
+
+    pub fn cellindex(&self) -> CellIndex {
+        self.0 & Self::CELL_INDEX_MASK
+    }
+
+    pub fn background(&self) -> bool {
+        (self.0 & Self::BACKGROUND_FLAG_MASK) != 0
+    }
+}
+
 // In general, subscripts indicate dimension:
 //   t: component
 //   k: latent dim
@@ -246,6 +276,9 @@ pub struct ModelParams {
     // [ncells, (ngenes x nlayers)] transcripts counts, split into total
     // transcript count in each cell and gene and layer.
     counts: CSRMat<CountMatRowKey, u32>,
+
+    // [ntranscripts]
+    pub transcript_state: Vec<TranscriptState>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
@@ -369,6 +402,7 @@ impl ModelParams {
     pub fn new(
         voxels: &VoxelCheckerboard,
         priors: &ModelPriors,
+        ntranscripts: usize,
         nhidden: usize,
         nunfactored: usize,
         ncomponents: usize,
@@ -456,6 +490,8 @@ impl ModelParams {
                     foreground_row.add(gene_layer.gene(), count);
                 }
             });
+
+        let transcript_state = vec![TranscriptState::default(); ntranscripts];
 
         // let foreground_counts_lower =
         //     CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
@@ -564,6 +600,7 @@ impl ModelParams {
             effective_cell_volume,
             cell_scale,
             counts,
+            transcript_state,
             foreground_counts,
             // foreground_counts_lower,
             // foreground_counts_upper,
