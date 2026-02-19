@@ -330,6 +330,56 @@ where
     }
 }
 
+// Write lock for a row
+pub struct CSRRowWriteLock<'a, J, T> {
+    pub guard: RwLockWriteGuard<'a, SparseCountVec<J, T>>,
+    j_bound: J,
+}
+
+impl<'a, J, T> CSRRowWriteLock<'a, J, T>
+where
+    T: Copy + Zero + AddAssign + SubAssign + Eq + PartialOrd,
+    J: Copy + Ord + Increment + Debug + Zero,
+{
+    pub fn sub(&mut self, j: J, delta: T) {
+        assert!(j <= self.j_bound, "Column index out of bounds");
+        self.guard.update_count(j, |v| {
+            assert!(*v >= delta, "Subtracting from a value smaller than delta");
+            *v -= delta;
+        });
+    }
+
+    pub fn add(&mut self, j: J, delta: T) {
+        assert!(j <= self.j_bound, "Column index out of bounds");
+        self.guard.update_count(j, |v| *v += delta);
+    }
+}
+
+impl<'a, J, T> CSRRowWriteLock<'a, J, T>
+where
+    J: Copy + Ord + Increment + Debug + Zero,
+{
+    pub fn update<F, G>(&mut self, j: J, insert_fn: F, update_fn: G)
+    where
+        F: FnOnce() -> T,
+        G: FnOnce(&mut T),
+        T: Copy + Zero,
+    {
+        assert!(j <= self.j_bound, "Column index out of bounds");
+        self.guard.update_with_init(j, insert_fn, update_fn);
+    }
+
+    #[allow(dead_code)]
+    pub fn update_if_present<G>(&mut self, j: J, update_fn: G)
+    where
+        G: FnOnce(&mut T),
+        T: Copy + Zero + PartialEq,
+    {
+        assert!(j <= self.j_bound, "Column index out of bounds");
+        self.guard.update_if_present(j, update_fn);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,55 +683,5 @@ mod tests {
         }
 
         assert_ne!(mat5, mat6);
-    }
-}
-
-// Write lock for a row
-pub struct CSRRowWriteLock<'a, J, T> {
-    pub guard: RwLockWriteGuard<'a, SparseCountVec<J, T>>,
-    j_bound: J,
-}
-
-impl<'a, J, T> CSRRowWriteLock<'a, J, T>
-where
-    T: Copy + Zero + AddAssign + SubAssign + Eq + PartialOrd,
-    J: Copy + Ord + Increment + Debug + Zero,
-{
-    pub fn sub(&mut self, j: J, delta: T) {
-        assert!(j <= self.j_bound, "Column index out of bounds");
-        self.guard.update_count(j, |v| {
-            assert!(*v >= delta, "Subtracting from a value smaller than delta");
-            *v -= delta;
-        });
-    }
-
-    pub fn add(&mut self, j: J, delta: T) {
-        assert!(j <= self.j_bound, "Column index out of bounds");
-        self.guard.update_count(j, |v| *v += delta);
-    }
-}
-
-impl<'a, J, T> CSRRowWriteLock<'a, J, T>
-where
-    J: Copy + Ord + Increment + Debug + Zero,
-{
-    pub fn update<F, G>(&mut self, j: J, insert_fn: F, update_fn: G)
-    where
-        F: FnOnce() -> T,
-        G: FnOnce(&mut T),
-        T: Copy + Zero,
-    {
-        assert!(j <= self.j_bound, "Column index out of bounds");
-        self.guard.update_with_init(j, insert_fn, update_fn);
-    }
-
-    #[allow(dead_code)]
-    pub fn update_if_present<G>(&mut self, j: J, update_fn: G)
-    where
-        G: FnOnce(&mut T),
-        T: Copy + Zero + PartialEq,
-    {
-        assert!(j <= self.j_bound, "Column index out of bounds");
-        self.guard.update_if_present(j, update_fn);
     }
 }

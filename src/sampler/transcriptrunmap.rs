@@ -152,12 +152,12 @@ mod tests {
 
     #[test]
     fn test_transcript_run_map() {
-        let voxels = vec![
+        let voxels = [
             Voxel::new(1, 1, 1),
             Voxel::new(2, 2, 2),
             Voxel::new(3, 3, 3),
         ];
-        let map = TranscriptRunMap::from_runs(vec![
+        let map = TranscriptRunMap::from_runs([
             (voxels[0], 10),
             (voxels[1], 5),
             (voxels[2], 20),

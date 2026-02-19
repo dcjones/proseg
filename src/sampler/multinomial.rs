@@ -103,11 +103,10 @@ where
         let total_prob = self.cumprobs.last().unwrap().as_();
         assert!(total_prob > 0.0);
         let u = rng.random::<f64>() * total_prob;
-        let idx = self
+        self
             .cumprobs
             .partition_point(|&x| x.as_() <= u)
-            .saturating_sub(1);
-        idx
+            .saturating_sub(1)
     }
 
     // Recursive divide-and conqueror sampling. When n is small or outcome probabilities are skewed

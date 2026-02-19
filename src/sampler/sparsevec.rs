@@ -838,7 +838,7 @@ mod tests {
 
         // Verify all values
         for i in 0..20 {
-            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {}", i);
+            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {i}");
         }
 
         // Verify sorted order
@@ -856,7 +856,7 @@ mod tests {
 
         // Verify all values
         for i in 0..20 {
-            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {}", i);
+            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {i}");
         }
 
         // Verify sorted order
@@ -877,7 +877,7 @@ mod tests {
 
         // Verify all values
         for i in 0..20 {
-            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {}", i);
+            assert_eq!(vec.get(i), Some(i as i32), "Failed at key {i}");
         }
 
         // Verify sorted order
@@ -921,7 +921,7 @@ mod tests {
 
         // Verify all values
         for i in 0..n {
-            assert_eq!(vec.get(i as u32), Some(i as i32), "Failed at key {}", i);
+            assert_eq!(vec.get(i as u32), Some(i as i32), "Failed at key {i}");
         }
 
         // Verify sorted order
@@ -939,7 +939,7 @@ mod tests {
         }
 
         // Should have created at least one internal node
-        assert!(vec.internal_arena.len() > 0);
+        assert!(!vec.internal_arena.is_empty());
 
         // Verify all values
         for i in 0..n {
