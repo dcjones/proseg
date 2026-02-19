@@ -43,7 +43,6 @@ const CELL_SHARDSIZE: usize = 256;
 const GENE_SHARDSIZE: usize = 16;
 
 const RAYON_CELL_MIN_LEN: usize = 32;
-const RAYON_TRANSCRIPT_MIN_LEN: usize = 64;
 
 // Model prior parameters.
 #[derive(Clone, Copy)]
@@ -221,8 +220,66 @@ impl Increment for CountMatRowKey {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct TransitionMatRowKey {
+    pub gene: u32,
+    pub dest_cell: CellIndex,
+}
+
+impl Add for TransitionMatRowKey {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        TransitionMatRowKey {
+            gene: self.gene + other.gene,
+            dest_cell: self.dest_cell + other.dest_cell,
+        }
+    }
+}
+
+impl AddAssign for TransitionMatRowKey {
+    fn add_assign(&mut self, other: Self) {
+        *self = TransitionMatRowKey {
+            gene: self.gene + other.gene,
+            dest_cell: self.dest_cell + other.dest_cell,
+        };
+    }
+}
+
+impl Zero for TransitionMatRowKey {
+    fn zero() -> Self {
+        TransitionMatRowKey {
+            gene: 0,
+            dest_cell: CellIndex::zero(),
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.gene == 0 && self.dest_cell.is_zero()
+    }
+}
+
+impl Increment for TransitionMatRowKey {
+    fn inc(&self, bound: TransitionMatRowKey) -> TransitionMatRowKey {
+        if self.dest_cell + 1 > bound.dest_cell {
+            TransitionMatRowKey {
+                gene: self.gene + 1,
+                dest_cell: 0,
+            }
+        } else {
+            TransitionMatRowKey {
+                gene: self.gene,
+                dest_cell: self.dest_cell + 1,
+            }
+        }
+    }
+}
+
+use std::sync::atomic::AtomicU32;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TranscriptState(u32);
+#[repr(transparent)]
+pub struct TranscriptState(pub u32);
 
 // Encode a transcripts cell overlap using the highest bit to encode
 // it's foreground vs background.
@@ -282,7 +339,13 @@ pub struct ModelParams {
     counts: CSRMat<CountMatRowKey, u32>,
 
     // [ntranscripts]
-    pub transcript_state: Vec<TranscriptState>,
+    pub transcript_state: Vec<AtomicU32>,
+
+    // Counts the number of transitions between cells for each gene.
+    // We index as counts as (state, (gene, state)).
+    // An encoding quirk used here is that we let 0 be the background state and
+    // +1 is added to cell indexes to make the indexing here dense.
+    pub state_transitions: CSRMat<TransitionMatRowKey, u32>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
@@ -494,7 +557,16 @@ impl ModelParams {
                 }
             });
 
-        let transcript_state = vec![TranscriptState::default(); ntranscripts];
+        let transcript_state = std::iter::repeat_with(|| AtomicU32::new(TranscriptState::default().0))
+            .take(ntranscripts)
+            .collect();
+        let state_transitions = CSRMat::zeros(
+            ncells + 1,
+            TransitionMatRowKey {
+                gene: ngenes as u32 - 1,
+                dest_cell: ncells as u32,
+            },
+        );
 
         // let foreground_counts_lower =
         //     CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
@@ -604,6 +676,7 @@ impl ModelParams {
             cell_scale,
             counts,
             transcript_state,
+            state_transitions,
             foreground_counts,
             // foreground_counts_lower,
             // foreground_counts_upper,

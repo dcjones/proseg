@@ -251,9 +251,8 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     samples: usize,
 
-    // Number of optimization iterations to run after sampling
     #[arg(long, default_value_t = 50)]
-    hillclimb: usize,
+    uncertainty_samples: usize,
 
     /// Number of samples at the end of the schedule used to compute
     /// expectations and uncertainty
@@ -1019,7 +1018,8 @@ fn main() {
 
     const INIT_ITERATIONS: usize = 20;
 
-    let total_iterations = INIT_ITERATIONS + args.samples + args.burnin_samples + args.hillclimb;
+    let total_iterations =
+        INIT_ITERATIONS + args.samples + args.burnin_samples + args.uncertainty_samples;
     let prog = ProgressBar::new(total_iterations as u64);
     prog.set_style(
         ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
@@ -1073,14 +1073,7 @@ fn main() {
 
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize, voxels.voxelsize_z);
 
-    let cooling_factor = (0.01_f32.ln() / args.burnin_samples as f32).exp();
-    let mut temperature = 1.0;
-
-    for it in 0..(args.samples + args.hillclimb) {
-        if it > args.samples {
-            temperature *= cooling_factor;
-        }
-
+    for _it in 0..args.samples {
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -1090,13 +1083,40 @@ fn main() {
             &mut params,
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
+            true,
+            1.0,
             false,
-            temperature,
-            (args.samples - args.recorded_samples) <= it && it < args.samples,
             args.check_consistency,
             &prog,
         );
     }
+
+    // TODO: We need to record the transcript assignment state
+    // to output as a point estimate.
+    // - copy counts matrix
+    // - generate polygons
+    // - copy transcript state
+
+    for _it in 0..args.uncertainty_samples {
+        run_sampler(
+            &param_sampler,
+            &mut voxel_sampler,
+            &transcript_repo,
+            &mut voxels,
+            &priors,
+            &mut params,
+            dataset.transcripts.len(),
+            args.morphology_steps_per_iter,
+            true,
+            1.0,
+            true,
+            args.check_consistency,
+            &prog,
+        );
+    }
+
+    // TODO: Implement uncertainty matrix output. (For starts let's make this work just in spatialdata)
+
     prog.finish();
 
     if let Some(_output_voxel_counts) = args.output_voxel_counts {
