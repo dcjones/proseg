@@ -323,25 +323,23 @@ fn write_transcripts_zarr<T: ReadableWritableStorageTraits>(
     )?
     .store_metadata()?;
 
-    // TODO: disabling this until we've re-implemnted transcript
-    // metadata generation
-    // let parquet_path = path
-    //     .join("points")
-    //     .join(SD_TRANSCRIPTS_NAME)
-    //     .join("points.parquet");
+    let parquet_path = path
+        .join("points")
+        .join(SD_TRANSCRIPTS_NAME)
+        .join("points.parquet");
 
-    // create_dir(&parquet_path).unwrap();
+    create_dir(&parquet_path).unwrap();
 
-    // write_transcript_metadata(
-    //     &Some(parquet_path.into_os_string().into_string().unwrap()),
-    //     &Some(String::from("part.0.parquet")),
-    //     OutputFormat::Parquet,
-    //     voxels,
-    //     transcripts,
-    //     transcript_ids,
-    //     transcript_metadata,
-    //     gene_names,
-    // );
+    write_transcript_metadata(
+        &Some(parquet_path.into_os_string().into_string().unwrap()),
+        &Some(String::from("part.0.parquet")),
+        OutputFormat::Parquet,
+        voxels,
+        transcripts,
+        transcript_ids,
+        transcript_metadata,
+        gene_names,
+    );
 
     Ok(())
 }

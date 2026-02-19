@@ -1004,6 +1004,7 @@ fn main() {
     let mut params = ModelParams::new(
         &voxels,
         &priors,
+        dataset.transcripts.len(),
         args.nhidden,
         args.nunfactored,
         args.ncomponents,
@@ -1027,7 +1028,16 @@ fn main() {
     );
 
     for _ in 0..INIT_ITERATIONS {
-        param_sampler.sample(&priors, &mut params, true, 1.0, false, false, false);
+        param_sampler.sample(
+            &priors,
+            &mut params,
+            &voxels,
+            true,
+            1.0,
+            false,
+            false,
+            false,
+        );
         prog.inc(1);
     }
 
@@ -1279,6 +1289,7 @@ fn run_sampler(
     param_sampler.sample(
         priors,
         params,
+        voxels,
         burnin,
         temperature,
         record_samples,

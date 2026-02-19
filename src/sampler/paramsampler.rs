@@ -1,7 +1,12 @@
+use crate::sampler::transcripts::BACKGROUND_CELL;
+
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
-use super::multinomial::{Multinomial, rand_binomial};
+use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
-use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN};
+use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
+use super::{
+    ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, RAYON_TRANSCRIPT_MIN_LEN, TranscriptState,
+};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -27,6 +32,7 @@ impl ParamSampler {
         &self,
         priors: &ModelPriors,
         params: &mut ModelParams,
+        voxels: &VoxelCheckerboard,
         burnin: bool,
         _temperature: f32,
         record_samples: bool,
@@ -38,7 +44,7 @@ impl ParamSampler {
         trace!("sample_volume_params: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_foreground_background(priors, params, purge_sparse_mats);
+        self.sample_foreground_background(priors, params, voxels, purge_sparse_mats);
         trace!("sample_foreground_background: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -127,93 +133,91 @@ impl ParamSampler {
         &self,
         priors: &ModelPriors,
         params: &mut ModelParams,
+        voxels: &VoxelCheckerboard,
         purge: bool,
     ) {
-        // overwrite params.background_counts with params.unassigned_counts
+        // Copy transcript states from voxel checkerboard quads
+        voxels.copy_transcript_cell_assignments(&mut params.transcript_state);
+
+        // Sample foreground/background state
         params
-            .background_counts
+            .transcript_state
             .par_iter_mut()
-            .zip(&params.unassigned_counts)
-            .for_each(|(b_d, u_d)| {
-                for (b_dl, u_dl) in b_d.iter_mut().zip(u_d) {
-                    b_dl.copy_from(u_dl);
+            .enumerate()
+            .with_min_len(RAYON_TRANSCRIPT_MIN_LEN)
+            .for_each_init(rng, |rng, (transcript_idx, state)| {
+                if state.background() {
+                    return;
+                }
+
+                let cell = state.cellindex();
+
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_idx as u32);
+                let is_frozen = params.frozen_cells[cell as usize];
+
+                let λ_cg = if (gene as usize) < params.nunfactored {
+                    params.φ[[cell as usize, gene as usize]]
+                } else {
+                    params
+                        .φ
+                        .slice(s![cell as usize, params.nunfactored..])
+                        .dot(&params.θ.slice(s![gene as usize, params.nunfactored..]))
+                };
+
+                let density = voxels.get_voxel_density(original_voxel);
+                let λ_bg = params.λ_bg[[gene as usize, original_voxel.k() as usize, density]];
+
+                let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
+                    1.0
+                } else {
+                    λ_cg / (λ_cg + λ_bg)
+                };
+
+                if rng.random::<f32>() > fg_prob {
+                    *state = TranscriptState::new(cell, true);
                 }
             });
 
+        // Count transcripts
         if purge {
             params.foreground_counts.clear();
         } else {
             params.foreground_counts.zero();
         }
+        params.background_counts.iter_mut().for_each(|b_d| {
+            b_d.iter_mut().for_each(|b_dl| {
+                b_dl.zero();
+            })
+        });
 
-        // Generate binomial samples to split cell counts into foreground and background
         params
-            .counts
-            .par_rows()
-            .zip(params.foreground_counts.par_rows())
-            .zip(&params.frozen_cells)
+            .transcript_state
+            .par_iter()
             .enumerate()
-            .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (cell, ((row, foreground_row), &is_frozen))| {
-                let mut foreground_row = foreground_row.write();
+            .with_min_len(RAYON_TRANSCRIPT_MIN_LEN)
+            .for_each_init(rng, |rng, (transcript_idx, state)| {
+                let &TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state.get(transcript_idx as u32);
 
-                let mut λ_cg = 0.0;
-                let mut gene = u32::MAX;
-                let φ_c = params.φ.row(cell);
-                let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
+                if state.background() {
+                    let density = voxels.get_voxel_density(original_voxel);
 
-                for (gene_layer_density, count) in row.read().iter_nonzeros() {
-                    if count == 0 {
-                        continue;
-                    }
-
-                    if gene_layer_density.gene() != gene {
-                        gene = gene_layer_density.gene();
-                        let g = gene as usize;
-                        λ_cg = if g < params.nunfactored {
-                            φ_c[g]
-                        } else {
-                            φ_c_factored.dot(&params.θ.slice(s![g, params.nunfactored..]))
-                        };
-                    }
-                    let λ_bg = params.λ_bg[[
-                        gene as usize,
-                        gene_layer_density.layer() as usize,
-                        gene_layer_density.density() as usize,
-                    ]];
-
-                    let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
-                        1.0
-                    } else {
-                        λ_cg / (λ_cg + λ_bg)
-                    };
-
-                    let count_fg = rand_binomial(rng, fg_prob as f64, count);
-                    let count_bg = count - count_fg;
-
-                    foreground_row.add(gene, count_fg);
-                    params.background_counts[gene_layer_density.density() as usize]
-                        [gene_layer_density.layer() as usize]
-                        .add(gene as usize, count_bg);
+                    params.background_counts[density][original_voxel.k() as usize]
+                        .add(gene as usize, 1);
+                } else {
+                    let cell = state.cellindex();
+                    params
+                        .foreground_counts
+                        .row(cell as usize)
+                        .write()
+                        .add(gene, 1);
                 }
             });
-
-        // let mut nunassigned = 0;
-        // for x_l in &params.unassigned_counts {
-        //     for count in x_l.iter() {
-        //         nunassigned += count;
-        //     }
-        // }
-
-        // let mut nbackground = 0;
-        // for x_l in &params.background_counts {
-        //     for count in x_l.iter() {
-        //         nbackground += count;
-        //     }
-        // }
-        // info!("sum(unassigned_counts): {}", nunassigned);
-        // info!("sum(background_counts): {}", nbackground);
-        // info!("sum(foreground_counts): {}", params.foreground_counts.sum());
     }
 
     fn sample_factor_model(
