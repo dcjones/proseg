@@ -204,13 +204,13 @@ impl ParamSampler {
 
                 // Update transition counts
                 if record_samples {
-                    // Row 0 is background, Row cell+1 is foreground cell
+                    let ncells = voxels.ncells as u32;
                     let src_state = if old_state.background() {
-                        0
+                        ncells
                     } else {
-                        old_state.cellindex() + 1
+                        old_state.cellindex()
                     };
-                    let dest_state = if is_background { 0 } else { cell + 1 };
+                    let dest_state = if is_background { ncells } else { cell };
 
                     let mut trans_row = params.state_transitions.row(src_state as usize).write();
                     trans_row.add(
