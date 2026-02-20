@@ -1283,31 +1283,15 @@ fn write_state_transitions_parts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    new_zarr_group(
-        store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/uns/state_transitions"),
-        Some(
-            json!({
-                "encoding-type": "dict",
-                "encoding-version": "0.1.0",
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )?
-    .store_metadata()?;
-
     let ncells = params.ncells();
-    let nstates = ncells + 1;
 
     for (g, gene_name) in gene_names.iter().enumerate() {
         let mut data = Vec::new();
         let mut indices = Vec::new();
-        let mut indptr = Vec::with_capacity(nstates + 1);
+        let mut indptr = Vec::with_capacity(ncells + 1);
         let mut offset = 0;
 
-        for i in 0..nstates {
+        for i in 0..ncells {
             indptr.push(offset as i32);
             let row = params.state_transitions.row(i);
             let row_read = row.read();
@@ -1317,17 +1301,19 @@ fn write_state_transitions_parts(
                 dest_cell: 0,
             };
             let mut sum = 0.0;
-            let mut gene_entries = Vec::new();
+            let mut cell_entries = Vec::new();
             for (key, count) in row_read.iter_nonzeros_from(start_key) {
                 if key.gene != g as u32 {
                     break;
                 }
                 sum += count as f32;
-                gene_entries.push((key.dest_cell, count));
+                if (key.dest_cell as usize) < ncells {
+                    cell_entries.push((key.dest_cell, count));
+                }
             }
 
             if sum > 0.0 {
-                for (dest_cell, count) in gene_entries {
+                for (dest_cell, count) in cell_entries {
                     data.push(count as f32 / sum);
                     indices.push(dest_cell as i32);
                     offset += 1;
@@ -1339,9 +1325,9 @@ fn write_state_transitions_parts(
         if !data.is_empty() {
             write_anndata_csr_matrix_raw(
                 store.clone(),
-                &format!("/tables/{SD_TABLE_NAME}/uns/state_transitions/{gene_name}"),
-                nstates,
-                nstates,
+                &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{gene_name}"),
+                ncells,
+                ncells,
                 &data,
                 &indices,
                 &indptr,
