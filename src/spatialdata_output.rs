@@ -1260,6 +1260,7 @@ pub fn write_state_transitions_zarr(
     filename: &str,
     params: &ModelParams,
     gene_names: &[String],
+    output_gene_transitions: bool,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -1267,7 +1268,9 @@ pub fn write_state_transitions_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_state_transitions_parts(&path, params, gene_names) {
+    if let Err(e) =
+        write_state_transitions_parts(&path, params, gene_names, output_gene_transitions)
+    {
         panic!(
             "Failed to write state transitions to {}: {}",
             path.display(),
@@ -1280,6 +1283,7 @@ fn write_state_transitions_parts(
     path: &Path,
     params: &ModelParams,
     gene_names: &[String],
+    output_gene_transitions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
@@ -1331,54 +1335,56 @@ fn write_state_transitions_parts(
     )?;
 
     // 2. Write gene-wise transition matrices
-    for (g, gene_name) in gene_names.iter().enumerate() {
-        let mut data = Vec::new();
-        let mut indices = Vec::new();
-        let mut indptr = Vec::with_capacity(ncells + 1);
-        let mut offset = 0;
+    if output_gene_transitions {
+        for (g, gene_name) in gene_names.iter().enumerate() {
+            let mut data = Vec::new();
+            let mut indices = Vec::new();
+            let mut indptr = Vec::with_capacity(ncells + 1);
+            let mut offset = 0;
 
-        for i in 0..ncells {
+            for i in 0..ncells {
+                indptr.push(offset as i32);
+                let row = params.state_transitions.row(i);
+                let row_read = row.read();
+
+                let start_key = crate::sampler::TransitionMatRowKey {
+                    gene: g as u32,
+                    dest_cell: 0,
+                };
+                let mut sum = 0.0;
+                let mut cell_entries = Vec::new();
+                for (key, count) in row_read.iter_nonzeros_from(start_key) {
+                    if key.gene != g as u32 {
+                        break;
+                    }
+                    sum += count as f32;
+                    if (key.dest_cell as usize) < ncells {
+                        cell_entries.push((key.dest_cell, count));
+                    }
+                }
+
+                if sum > 0.0 {
+                    for (dest_cell, count) in cell_entries {
+                        data.push(count as f32 / sum);
+                        indices.push(dest_cell as i32);
+                        offset += 1;
+                    }
+                }
+            }
             indptr.push(offset as i32);
-            let row = params.state_transitions.row(i);
-            let row_read = row.read();
 
-            let start_key = crate::sampler::TransitionMatRowKey {
-                gene: g as u32,
-                dest_cell: 0,
-            };
-            let mut sum = 0.0;
-            let mut cell_entries = Vec::new();
-            for (key, count) in row_read.iter_nonzeros_from(start_key) {
-                if key.gene != g as u32 {
-                    break;
-                }
-                sum += count as f32;
-                if (key.dest_cell as usize) < ncells {
-                    cell_entries.push((key.dest_cell, count));
-                }
+            if !data.is_empty() {
+                write_anndata_csr_matrix_raw(
+                    store.clone(),
+                    &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{gene_name}"),
+                    ncells,
+                    ncells,
+                    &data,
+                    &indices,
+                    &indptr,
+                    "<f4",
+                )?;
             }
-
-            if sum > 0.0 {
-                for (dest_cell, count) in cell_entries {
-                    data.push(count as f32 / sum);
-                    indices.push(dest_cell as i32);
-                    offset += 1;
-                }
-            }
-        }
-        indptr.push(offset as i32);
-
-        if !data.is_empty() {
-            write_anndata_csr_matrix_raw(
-                store.clone(),
-                &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{gene_name}"),
-                ncells,
-                ncells,
-                &data,
-                &indices,
-                &indptr,
-                "<f4",
-            )?;
         }
     }
 

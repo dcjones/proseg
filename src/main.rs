@@ -251,7 +251,7 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     samples: usize,
 
-    #[arg(long, default_value_t = 50)]
+    #[arg(long, default_value_t = 100)]
     uncertainty_samples: usize,
 
     /// Number of CPU threads (by default, all cores are used)
@@ -437,6 +437,10 @@ struct Args {
     /// How frequently to output cell polygons during monitoring
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
+
+    /// Suppress output of per-gene transcript assignment uncertainty matrices
+    #[arg(long, default_value_t = false)]
+    no_gene_transitions: bool,
 
     /// Use connectivity checks to prevent cells from having any disconnected voxels
     #[arg(long, default_value_t = false)]
@@ -1262,6 +1266,7 @@ fn main() {
             output_spatialdata,
             &params,
             &dataset.gene_names,
+            !args.no_gene_transitions,
         );
         info!("write state transitions: {:?}", t0.elapsed());
     }
