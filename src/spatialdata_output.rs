@@ -1285,6 +1285,52 @@ fn write_state_transitions_parts(
 
     let ncells = params.ncells();
 
+    // 1. Write aggregated transition matrix
+    let mut agg_data = Vec::new();
+    let mut agg_indices = Vec::new();
+    let mut agg_indptr = Vec::with_capacity(ncells + 1);
+    let mut agg_offset = 0;
+
+    for i in 0..ncells {
+        agg_indptr.push(agg_offset as i32);
+        let row = params.state_transitions.row(i);
+        let row_read = row.read();
+
+        let mut cell_sums = HashMap::new();
+        let mut total_sum = 0.0;
+
+        for (key, count) in row_read.iter_nonzeros() {
+            total_sum += count as f32;
+            if (key.dest_cell as usize) < ncells {
+                *cell_sums.entry(key.dest_cell).or_insert(0) += count;
+            }
+        }
+
+        if total_sum > 0.0 {
+            let mut sorted_cells: Vec<_> = cell_sums.into_iter().collect();
+            sorted_cells.sort_by_key(|k| k.0);
+
+            for (dest_cell, count) in sorted_cells {
+                agg_data.push(count as f32 / total_sum);
+                agg_indices.push(dest_cell as i32);
+                agg_offset += 1;
+            }
+        }
+    }
+    agg_indptr.push(agg_offset as i32);
+
+    write_anndata_csr_matrix_raw(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions"),
+        ncells,
+        ncells,
+        &agg_data,
+        &agg_indices,
+        &agg_indptr,
+        "<f4",
+    )?;
+
+    // 2. Write gene-wise transition matrices
     for (g, gene_name) in gene_names.iter().enumerate() {
         let mut data = Vec::new();
         let mut indices = Vec::new();
