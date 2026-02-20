@@ -29,7 +29,7 @@ use anndata_input::read_anndata_zarr_transcripts;
 use output::*;
 use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
-use spatialdata_output::write_spatialdata_zarr;
+use spatialdata_output::{write_spatialdata_zarr, write_state_transitions_zarr};
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -1214,7 +1214,7 @@ fn main() {
         format!("{:?}", start_time.elapsed()),
     );
 
-    if let Some(output_spatialdata) = args.output_spatialdata {
+    if let Some(ref output_spatialdata) = args.output_spatialdata {
         let t0 = Instant::now();
         write_spatialdata_zarr(
             &args.output_path,
@@ -1254,9 +1254,17 @@ fn main() {
         );
     }
 
-    // TODO: Write uncertainty matrix. I think we just support this for
-    // spatialdata. Not quite sure how to write this. I guess an array of csr
-    // matrices.
+    // Write uncertainty matrix.
+    if let Some(ref output_spatialdata) = args.output_spatialdata {
+        let t0 = Instant::now();
+        write_state_transitions_zarr(
+            &args.output_path,
+            output_spatialdata,
+            &params,
+            &dataset.gene_names,
+        );
+        info!("write state transitions: {:?}", t0.elapsed());
+    }
 
     prog.finish();
 

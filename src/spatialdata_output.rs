@@ -1133,25 +1133,6 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
     path: &str,
     counts: &CSRMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    new_zarr_group(
-        store.clone(),
-        path,
-        Some(
-            json!({
-                "encoding-type": "csr_matrix",
-                "encoding-version": "0.1.0",
-                "shape": [
-                    counts.m,
-                    counts.n,
-                ]
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )?
-    .store_metadata()?;
-
     let mut nnz: u64 = 0;
     for x_c in counts.rows() {
         for (_g, est) in x_c.read().iter_nonzeros() {
@@ -1162,35 +1143,82 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
     }
 
     // Just doing the simple thing and building the full arrays
-    let mut data = Array1::<u32>::zeros(nnz as usize);
-    let mut indices = Array1::<i32>::zeros(nnz as usize);
-    let mut indptr = Array1::<i32>::zeros(counts.m + 1);
+    let mut data = Vec::with_capacity(nnz as usize);
+    let mut indices = Vec::with_capacity(nnz as usize);
+    let mut indptr = Vec::with_capacity(counts.m + 1);
     let mut offset = 0;
-    for (i, row) in counts.rows().enumerate() {
-        indptr[i] = offset as i32;
+    for row in counts.rows() {
+        indptr.push(offset as i32);
         let row_lock = row.read();
         for (j, count) in row_lock.iter_nonzeros() {
             if count > 0 {
-                data[offset] = count;
-                indices[offset] = j as i32;
+                data.push(count);
+                indices.push(j as i32);
                 offset += 1;
             }
         }
     }
-    indptr[counts.m] = nnz as i32;
+    indptr.push(nnz as i32);
+
+    write_anndata_csr_matrix_raw(
+        store,
+        path,
+        counts.m,
+        counts.n as usize,
+        &data,
+        &indices,
+        &indptr,
+        "<u4",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_anndata_csr_matrix_raw<
+    T: ReadableWritableStorageTraits + 'static,
+    V: zarrs::array::Element,
+>(
+    store: Arc<T>,
+    path: &str,
+    m: usize,
+    n: usize,
+    data: &[V],
+    indices: &[i32],
+    indptr: &[i32],
+    dtype: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    new_zarr_group(
+        store.clone(),
+        path,
+        Some(
+            json!({
+                "encoding-type": "csr_matrix",
+                "encoding-version": "0.1.0",
+                "shape": [
+                    m,
+                    n,
+                ]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let nnz = data.len() as u64;
 
     let arr = new_zarr_array(
         store.clone(),
         &format!("{path}/data"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<u4")),
+        DataTypeMetadataV2::Simple(String::from(dtype)),
         FillValueMetadataV2::Number(serde_json::Number::from(0)),
         Some(default_blosc_compressor()?),
         None,
     )?;
 
-    arr.store_array_subset_elements(&arr.subset_all(), &data.to_vec())
+    arr.store_array_subset_elements(&arr.subset_all(), data)
         .unwrap();
     arr.store_metadata()?;
 
@@ -1205,7 +1233,7 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
         None,
     )?;
 
-    arr.store_array_subset_elements(&arr.subset_all(), &indices.to_vec())
+    arr.store_array_subset_elements(&arr.subset_all(), indices)
         .unwrap();
     arr.store_metadata()?;
 
@@ -1213,16 +1241,114 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("{path}/indptr"),
         vec![indptr.len() as u64],
-        vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
+        vec![guess_chunks_1d(indptr.len(), 4) as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<i4")),
         FillValueMetadataV2::Number(serde_json::Number::from(0)),
         Some(default_blosc_compressor()?),
         None,
     )?;
 
-    arr.store_array_subset_elements(&arr.subset_all(), &indptr.to_vec())
+    arr.store_array_subset_elements(&arr.subset_all(), indptr)
         .unwrap();
     arr.store_metadata()?;
+
+    Ok(())
+}
+
+pub fn write_state_transitions_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+    gene_names: &[String],
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_state_transitions_parts(&path, params, gene_names) {
+        panic!(
+            "Failed to write state transitions to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_state_transitions_parts(
+    path: &Path,
+    params: &ModelParams,
+    gene_names: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/state_transitions"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let ncells = params.ncells();
+    let nstates = ncells + 1;
+
+    for (g, gene_name) in gene_names.iter().enumerate() {
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = Vec::with_capacity(nstates + 1);
+        let mut offset = 0;
+
+        for i in 0..nstates {
+            indptr.push(offset as i32);
+            let row = params.state_transitions.row(i);
+            let row_read = row.read();
+
+            let start_key = crate::sampler::TransitionMatRowKey {
+                gene: g as u32,
+                dest_cell: 0,
+            };
+            let mut sum = 0.0;
+            let mut gene_entries = Vec::new();
+            for (key, count) in row_read.iter_nonzeros_from(start_key) {
+                if key.gene != g as u32 {
+                    break;
+                }
+                sum += count as f32;
+                gene_entries.push((key.dest_cell, count));
+            }
+
+            if sum > 0.0 {
+                for (dest_cell, count) in gene_entries {
+                    data.push(count as f32 / sum);
+                    indices.push(dest_cell as i32);
+                    offset += 1;
+                }
+            }
+        }
+        indptr.push(offset as i32);
+
+        if !data.is_empty() {
+            write_anndata_csr_matrix_raw(
+                store.clone(),
+                &format!("/tables/{SD_TABLE_NAME}/uns/state_transitions/{gene_name}"),
+                nstates,
+                nstates,
+                &data,
+                &indices,
+                &indptr,
+                "<f4",
+            )?;
+        }
+    }
 
     Ok(())
 }
