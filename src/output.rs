@@ -719,7 +719,6 @@ pub fn write_gene_metadata(
     params: &ModelParams,
     gene_names: &[String],
     transcripts: &RunVec<u32, Transcript>,
-    expected_counts: &CSRMat<u32, f32>,
 ) {
     let ngenes = gene_names.len();
     let mut total_gene_counts = vec![0; ngenes];
@@ -727,18 +726,10 @@ pub fn write_gene_metadata(
         total_gene_counts[transcript_run.value.gene as usize] += transcript_run.len as usize;
     }
 
-    let mut gene_expected_counts = vec![0_f32; ngenes];
-    for x_c in expected_counts.rows() {
-        for (g, x_cg) in x_c.read().iter_nonzeros() {
-            gene_expected_counts[g as usize] += x_cg;
-        }
-    }
-
     if let Some(output_gene_metadata) = output_gene_metadata {
         let mut schema_fields = vec![
             Field::new("gene", DataType::Utf8, false),
             Field::new("total_count", DataType::UInt64, false),
-            Field::new("expected_assigned_count", DataType::Float32, false),
         ];
 
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = vec![
@@ -753,12 +744,6 @@ pub fn write_gene_metadata(
                     .iter()
                     .map(|x| *x as u64)
                     .collect::<arrow::array::UInt64Array>(),
-            ),
-            Arc::new(
-                gene_expected_counts
-                    .iter()
-                    .cloned()
-                    .collect::<arrow::array::Float32Array>(),
             ),
         ];
 

@@ -3,7 +3,7 @@ use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
-use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TransitionMatRowKey, TranscriptState};
+use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptState, TransitionMatRowKey};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -42,7 +42,13 @@ impl ParamSampler {
         trace!("sample_volume_params: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_foreground_background(priors, params, voxels, purge_sparse_mats, record_samples);
+        self.sample_foreground_background(
+            priors,
+            params,
+            voxels,
+            purge_sparse_mats,
+            record_samples,
+        );
         trace!("sample_foreground_background: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
@@ -155,7 +161,8 @@ impl ParamSampler {
 
             for transcript in transcripts.transcripts.iter() {
                 let idx = transcript.transcript_idx as usize;
-                let old_state = TranscriptState(params.transcript_state[idx].load(Ordering::Relaxed));
+                let old_state =
+                    TranscriptState(params.transcript_state[idx].load(Ordering::Relaxed));
 
                 // Get destination cell from the current voxel's state in the checkerboard
                 let cell = voxel_states.get_voxel_cell(transcript.voxel);
@@ -195,7 +202,7 @@ impl ParamSampler {
                 let new_state = TranscriptState::new(cell, is_background);
                 params.transcript_state[idx].store(new_state.0, Ordering::Relaxed);
 
-                // --- Record Transition ---
+                // Update transition counts
                 if record_samples {
                     // Row 0 is background, Row cell+1 is foreground cell
                     let src_state = if old_state.background() {
@@ -215,11 +222,11 @@ impl ParamSampler {
                     );
                 }
 
-                // --- Update Count Matrices ---
+                // Update count matrices
                 if is_background {
-                    if cell != BACKGROUND_CELL {
-                        params.background_counts[density][k_origin].add(gene as usize, 1);
-                    }
+                    // if cell != BACKGROUND_CELL {
+                    params.background_counts[density][k_origin].add(gene as usize, 1);
+                    // }
                 } else {
                     params
                         .foreground_counts

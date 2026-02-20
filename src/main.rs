@@ -254,11 +254,6 @@ struct Args {
     #[arg(long, default_value_t = 50)]
     uncertainty_samples: usize,
 
-    /// Number of samples at the end of the schedule used to compute
-    /// expectations and uncertainty
-    #[arg(long, default_value_t = 100)]
-    recorded_samples: usize,
-
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
@@ -693,13 +688,13 @@ fn main() {
         panic!("Only one of --cellpose-masks or --spaceranger-barcode-mappings can be used.");
     }
 
-    if args.recorded_samples > args.samples {
-        panic!("recorded-samples must be <= samples");
-    }
-
     if args.use_cell_initialization {
         args.compartment_column = None;
         args.compartment_nuclear = None;
+    }
+
+    if let Some(_output_voxel_counts) = args.output_voxel_counts {
+        unimplemented!("'--output-voxel-counts' is no longer supported");
     }
 
     assert!(args.ncomponents > 0);
@@ -1073,6 +1068,7 @@ fn main() {
 
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize, voxels.voxelsize_z);
 
+    // Do enough samples to arrive at a relatively high probability point estimate to report
     for _it in 0..args.samples {
         run_sampler(
             &param_sampler,
@@ -1091,45 +1087,10 @@ fn main() {
         );
     }
 
-    // TODO: We need to record the transcript assignment state
-    // to output as a point estimate.
-    // - copy counts matrix
-    // - generate polygons
-    // - copy transcript state
+    // TODO: we may want to reimplement hillclimbing to get a better point
+    // estimate to report.
 
-    for _it in 0..args.uncertainty_samples {
-        run_sampler(
-            &param_sampler,
-            &mut voxel_sampler,
-            &transcript_repo,
-            &mut voxels,
-            &priors,
-            &mut params,
-            dataset.transcripts.len(),
-            args.morphology_steps_per_iter,
-            true,
-            1.0,
-            true,
-            args.check_consistency,
-            &prog,
-        );
-    }
-
-    // TODO: Implement uncertainty matrix output. (For starts let's make this work just in spatialdata)
-
-    prog.finish();
-
-    if let Some(_output_voxel_counts) = args.output_voxel_counts {
-        unimplemented!("'--output-voxel-counts' is no longer supported");
-    }
-
-    let t0 = Instant::now();
-    write_sparse_mtx(
-        &args.output_path,
-        &args.output_expected_counts,
-        &params.foreground_counts_mean.estimates,
-    );
-    trace!("write_sparse_mtx (expected counts): {:?}", t0.elapsed());
+    // Write point estimates
 
     let t0 = Instant::now();
     write_sparse_mtx(
@@ -1168,7 +1129,6 @@ fn main() {
         &params,
         &dataset.gene_names,
         &dataset.transcripts,
-        &params.foreground_counts_mean.estimates,
     );
     trace!("write_gene_metadata: {:?}", t0.elapsed());
 
@@ -1274,6 +1234,39 @@ fn main() {
         );
         info!("write SpatialData: {:?}", t0.elapsed());
     }
+
+    // Do additional sampling to estimate transcript assignment uncertainties.
+    for _it in 0..args.uncertainty_samples {
+        run_sampler(
+            &param_sampler,
+            &mut voxel_sampler,
+            &transcript_repo,
+            &mut voxels,
+            &priors,
+            &mut params,
+            dataset.transcripts.len(),
+            args.morphology_steps_per_iter,
+            true,
+            1.0,
+            true,
+            args.check_consistency,
+            &prog,
+        );
+    }
+
+    // TODO: Write uncertainty matrix. I think we just support this for
+    // spatialdata. Not quite sure how to write this. I guess an array of csr
+    // matrices.
+
+    prog.finish();
+
+    let t0 = Instant::now();
+    write_sparse_mtx(
+        &args.output_path,
+        &args.output_expected_counts,
+        &params.foreground_counts_mean.estimates,
+    );
+    trace!("write_sparse_mtx (expected counts): {:?}", t0.elapsed());
 }
 
 #[allow(clippy::too_many_arguments)]
