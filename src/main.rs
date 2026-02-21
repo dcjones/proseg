@@ -1239,6 +1239,8 @@ fn main() {
         info!("write SpatialData: {:?}", t0.elapsed());
     }
 
+    params.set_point_estimate();
+
     // Do additional sampling to estimate transcript assignment uncertainties.
     for _it in 0..args.uncertainty_samples {
         run_sampler(

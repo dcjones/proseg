@@ -14,7 +14,7 @@ use super::transcriptrunmap::TranscriptRunMap;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
-use super::{CountMatRowKey, ModelParams, TranscriptState};
+use super::{CountMatRowKey, ModelParams};
 
 // use arrow::array::RecordBatch;
 // use arrow::csv;
@@ -50,7 +50,6 @@ use std::mem::drop;
 use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -2714,11 +2713,11 @@ impl VoxelCheckerboard {
 
         let mut metadata = RunVec::new();
         for (state, &offset) in params.transcript_state.iter().zip(offsets.iter()) {
-            let state = TranscriptState(state.load(Ordering::Relaxed));
+            let assignment = state.load();
             metadata.push(TranscriptMetadata {
                 offset,
-                cell: state.cellindex(),
-                foreground: !state.background(),
+                cell: assignment.cell,
+                foreground: !assignment.background,
             });
         }
 

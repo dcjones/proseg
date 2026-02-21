@@ -275,37 +275,51 @@ impl Increment for TransitionMatRowKey {
     }
 }
 
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct TranscriptState(pub u32);
+pub struct TranscriptAssignment {
+    pub cell: CellIndex,
+    pub background: bool,
+}
 
-// Encode a transcripts cell overlap using the highest bit to encode
-// it's foreground vs background.
+pub struct TranscriptState(AtomicU32);
+
 impl TranscriptState {
     const BACKGROUND_FLAG_MASK: u32 = 1 << 31;
     const CELL_INDEX_MASK: u32 = !(1 << 31);
 
-    pub fn new(cell: CellIndex, background: bool) -> Self {
-        assert!(cell == BACKGROUND_CELL || cell <= Self::CELL_INDEX_MASK);
-        if background {
-            TranscriptState(cell | Self::BACKGROUND_FLAG_MASK)
+    pub fn new(assignment: TranscriptAssignment) -> Self {
+        TranscriptState(AtomicU32::new(Self::pack(assignment)))
+    }
+
+    #[inline]
+    fn pack(assignment: TranscriptAssignment) -> u32 {
+        if assignment.background {
+            assignment.cell | Self::BACKGROUND_FLAG_MASK
         } else {
-            TranscriptState(cell)
+            assignment.cell
         }
     }
 
-    pub fn cellindex(&self) -> CellIndex {
-        if self.0 == BACKGROUND_CELL {
-            BACKGROUND_CELL
-        } else {
-            self.0 & Self::CELL_INDEX_MASK
+    #[inline]
+    fn unpack(val: u32) -> TranscriptAssignment {
+        TranscriptAssignment {
+            cell: if val == BACKGROUND_CELL {
+                BACKGROUND_CELL
+            } else {
+                val & Self::CELL_INDEX_MASK
+            },
+            background: (val & Self::BACKGROUND_FLAG_MASK) != 0,
         }
     }
 
-    pub fn background(&self) -> bool {
-        (self.0 & Self::BACKGROUND_FLAG_MASK) != 0
+    pub fn load(&self) -> TranscriptAssignment {
+        Self::unpack(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn store(&self, assignment: TranscriptAssignment) {
+        self.0.store(Self::pack(assignment), Ordering::Relaxed);
     }
 }
 
@@ -338,8 +352,11 @@ pub struct ModelParams {
     // transcript count in each cell and gene and layer.
     counts: CSRMat<CountMatRowKey, u32>,
 
-    // [ntranscripts]
-    pub transcript_state: Vec<AtomicU32>,
+    // [ntranscripts] Current state for each transcript.
+    pub transcript_state: Vec<TranscriptState>,
+
+    // [ntranscripts] State vector used for the reported point estimate.
+    reported_transcript_state: Vec<TranscriptState>,
 
     // Counts the number of transitions between cells for each gene.
     // We index as counts as (state, (gene, state)).
@@ -557,9 +574,16 @@ impl ModelParams {
                 }
             });
 
-        let transcript_state = std::iter::repeat_with(|| AtomicU32::new(TranscriptState::default().0))
-            .take(ntranscripts)
-            .collect();
+        let transcript_state =
+            std::iter::repeat_with(|| TranscriptState::new(TranscriptAssignment::default()))
+                .take(ntranscripts)
+                .collect();
+
+        let reported_transcript_state =
+            std::iter::repeat_with(|| TranscriptState::new(TranscriptAssignment::default()))
+                .take(ntranscripts)
+                .collect();
+
         let state_transitions = CSRMat::zeros(
             ncells + 1,
             TransitionMatRowKey {
@@ -676,6 +700,7 @@ impl ModelParams {
             cell_scale,
             counts,
             transcript_state,
+            reported_transcript_state,
             state_transitions,
             foreground_counts,
             // foreground_counts_lower,
@@ -718,6 +743,16 @@ impl ModelParams {
             background_region_volume,
             frozen_cells,
             t,
+        }
+    }
+
+    pub fn set_point_estimate(&mut self) {
+        for (reported, state) in self
+            .reported_transcript_state
+            .iter()
+            .zip(self.transcript_state.iter())
+        {
+            reported.store(state.load());
         }
     }
 
