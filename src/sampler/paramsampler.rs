@@ -3,7 +3,9 @@ use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
-use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptState, TransitionMatRowKey};
+use super::{
+    ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment, TransitionMatRowKey,
+};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -12,7 +14,6 @@ use rand::{Rng, rng};
 use rand_distr::{Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 // Setting parallel iterator min length for simple operations
@@ -161,8 +162,6 @@ impl ParamSampler {
 
             for transcript in transcripts.transcripts.iter() {
                 let idx = transcript.transcript_idx as usize;
-                let old_state =
-                    TranscriptState(params.transcript_state[idx].load(Ordering::Relaxed));
 
                 // Get destination cell from the current voxel's state in the checkerboard
                 let cell = voxel_states.get_voxel_cell(transcript.voxel);
@@ -199,17 +198,22 @@ impl ParamSampler {
                     rng.random::<f32>() > fg_prob
                 };
 
-                let new_state = TranscriptState::new(cell, is_background);
-                params.transcript_state[idx].store(new_state.0, Ordering::Relaxed);
+                let new_assignment = TranscriptAssignment {
+                    cell,
+                    background: is_background,
+                };
+                params.transcript_state[idx].store(new_assignment);
 
                 // Update transition counts
                 if record_samples {
                     let ncells = voxels.ncells as u32;
-                    let src_state = if old_state.background() {
+                    let src_state = params.reported_transcript_state[idx].load();
+                    let src_state = if src_state.background {
                         ncells
                     } else {
-                        old_state.cellindex()
+                        src_state.cell
                     };
+
                     let dest_state = if is_background { ncells } else { cell };
 
                     let mut trans_row = params.state_transitions.row(src_state as usize).write();
