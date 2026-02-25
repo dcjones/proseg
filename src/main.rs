@@ -1083,7 +1083,7 @@ fn main() {
             &mut params,
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
-            true,
+            false,
             1.0,
             false,
             args.check_consistency,
@@ -1252,7 +1252,7 @@ fn main() {
             &mut params,
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
-            true,
+            false,
             1.0,
             true,
             args.check_consistency,
@@ -1301,7 +1301,7 @@ fn run_sampler(
     prog: &ProgressBar,
 ) {
     let t_morph = Instant::now();
-    for _ in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
+    for _morph_step in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
         voxel_sampler.sample(voxels, priors, params, temperature, record_samples);
     }
     let d_morph = t_morph.elapsed();
