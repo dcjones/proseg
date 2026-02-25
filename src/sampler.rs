@@ -222,7 +222,7 @@ impl Increment for CountMatRowKey {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct TransitionMatRowKey {
-    pub gene: u32,
+    pub metagene: u32,
     pub dest_cell: CellIndex,
 }
 
@@ -231,7 +231,7 @@ impl Add for TransitionMatRowKey {
 
     fn add(self, other: Self) -> Self {
         TransitionMatRowKey {
-            gene: self.gene + other.gene,
+            metagene: self.metagene + other.metagene,
             dest_cell: self.dest_cell + other.dest_cell,
         }
     }
@@ -240,7 +240,7 @@ impl Add for TransitionMatRowKey {
 impl AddAssign for TransitionMatRowKey {
     fn add_assign(&mut self, other: Self) {
         *self = TransitionMatRowKey {
-            gene: self.gene + other.gene,
+            metagene: self.metagene + other.metagene,
             dest_cell: self.dest_cell + other.dest_cell,
         };
     }
@@ -249,13 +249,13 @@ impl AddAssign for TransitionMatRowKey {
 impl Zero for TransitionMatRowKey {
     fn zero() -> Self {
         TransitionMatRowKey {
-            gene: 0,
+            metagene: 0,
             dest_cell: CellIndex::zero(),
         }
     }
 
     fn is_zero(&self) -> bool {
-        self.gene == 0 && self.dest_cell.is_zero()
+        self.metagene == 0 && self.dest_cell.is_zero()
     }
 }
 
@@ -263,12 +263,12 @@ impl Increment for TransitionMatRowKey {
     fn inc(&self, bound: TransitionMatRowKey) -> TransitionMatRowKey {
         if self.dest_cell + 1 > bound.dest_cell {
             TransitionMatRowKey {
-                gene: self.gene + 1,
+                metagene: self.metagene + 1,
                 dest_cell: 0,
             }
         } else {
             TransitionMatRowKey {
-                gene: self.gene,
+                metagene: self.metagene,
                 dest_cell: self.dest_cell + 1,
             }
         }
@@ -359,10 +359,10 @@ pub struct ModelParams {
     reported_transcript_state: Vec<TranscriptState>,
 
     // Counts the number of transitions between cells for each gene.
-    // We index as counts as (state, (gene, state)).
+    // We index as counts as (state, (metagene, state)).
     // An encoding quirk used here is that we let 0 be the background state and
     // +1 is added to cell indexes to make the indexing here dense.
-    pub state_transitions: CSRMat<TransitionMatRowKey, u32>,
+    pub state_transitions: CSRMat<TransitionMatRowKey, f32>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
@@ -587,7 +587,7 @@ impl ModelParams {
         let state_transitions = CSRMat::zeros(
             ncells + 1,
             TransitionMatRowKey {
-                gene: ngenes as u32 - 1,
+                metagene: nhidden as u32 - 1,
                 dest_cell: ncells as u32,
             },
         );
@@ -834,6 +834,10 @@ impl ModelParams {
 
     pub fn nhidden(&self) -> usize {
         self.θ.shape()[1]
+    }
+
+    pub fn nunfactored(&self) -> usize {
+        self.nunfactored
     }
 
     // pub fn nlayers(&self) -> usize {
