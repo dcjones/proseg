@@ -134,7 +134,7 @@ impl ParamSampler {
             });
     }
 
-    fn sample_foreground_background(
+    pub fn sample_foreground_background(
         &self,
         priors: &ModelPriors,
         params: &mut ModelParams,
