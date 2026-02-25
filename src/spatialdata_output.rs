@@ -1260,7 +1260,7 @@ pub fn write_state_transitions_zarr(
     filename: &str,
     params: &ModelParams,
     gene_names: &[String],
-    output_gene_transitions: bool,
+    output_metagene_transitions: bool,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -1269,7 +1269,7 @@ pub fn write_state_transitions_zarr(
     };
 
     if let Err(e) =
-        write_state_transitions_parts(&path, params, gene_names, output_gene_transitions)
+        write_state_transitions_parts(&path, params, gene_names, output_metagene_transitions)
     {
         panic!(
             "Failed to write state transitions to {}: {}",
@@ -1283,7 +1283,7 @@ fn write_state_transitions_parts(
     path: &Path,
     params: &ModelParams,
     gene_names: &[String],
-    output_gene_transitions: bool,
+    output_metagene_transitions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
@@ -1304,9 +1304,9 @@ fn write_state_transitions_parts(
         let mut total_sum = 0.0;
 
         for (key, count) in row_read.iter_nonzeros() {
-            total_sum += count as f32;
+            total_sum += count;
             if (key.dest_cell as usize) < ncells {
-                *cell_sums.entry(key.dest_cell).or_insert(0) += count;
+                *cell_sums.entry(key.dest_cell).or_insert(0.0) += count;
             }
         }
 
@@ -1315,7 +1315,7 @@ fn write_state_transitions_parts(
             sorted_cells.sort_by_key(|k| k.0);
 
             for (dest_cell, count) in sorted_cells {
-                agg_data.push(count as f32 / total_sum);
+                agg_data.push(count / total_sum);
                 agg_indices.push(dest_cell as i32);
                 agg_offset += 1;
             }
@@ -1334,9 +1334,16 @@ fn write_state_transitions_parts(
         "<f4",
     )?;
 
-    // 2. Write gene-wise transition matrices
-    if output_gene_transitions {
-        for (g, gene_name) in gene_names.iter().enumerate() {
+    // 2. Write metagene-wise transition matrices
+    if output_metagene_transitions {
+        let nhidden = params.nhidden();
+        for k in 0..nhidden {
+            let metagene_name = if k < params.nunfactored() {
+                gene_names[k].clone()
+            } else {
+                format!("metagene_{}", k - params.nunfactored())
+            };
+
             let mut data = Vec::new();
             let mut indices = Vec::new();
             let mut indptr = Vec::with_capacity(ncells + 1);
@@ -1348,16 +1355,16 @@ fn write_state_transitions_parts(
                 let row_read = row.read();
 
                 let start_key = crate::sampler::TransitionMatRowKey {
-                    gene: g as u32,
+                    metagene: k as u32,
                     dest_cell: 0,
                 };
                 let mut sum = 0.0;
                 let mut cell_entries = Vec::new();
                 for (key, count) in row_read.iter_nonzeros_from(start_key) {
-                    if key.gene != g as u32 {
+                    if key.metagene != k as u32 {
                         break;
                     }
-                    sum += count as f32;
+                    sum += count;
                     if (key.dest_cell as usize) < ncells {
                         cell_entries.push((key.dest_cell, count));
                     }
@@ -1365,7 +1372,7 @@ fn write_state_transitions_parts(
 
                 if sum > 0.0 {
                     for (dest_cell, count) in cell_entries {
-                        data.push(count as f32 / sum);
+                        data.push(count / sum);
                         indices.push(dest_cell as i32);
                         offset += 1;
                     }
@@ -1376,7 +1383,7 @@ fn write_state_transitions_parts(
             if !data.is_empty() {
                 write_anndata_csr_matrix_raw(
                     store.clone(),
-                    &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{gene_name}"),
+                    &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{metagene_name}"),
                     ncells,
                     ncells,
                     &data,
