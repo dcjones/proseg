@@ -220,6 +220,9 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
         "columns": {
             "geometry": {
                 "encoding": "WKB",
+                "crs": null,
+                "edges": "planar",
+                "geometry_types": ["MultiPolygon"],
             }
         },
         "version": "1.0.0"
