@@ -338,7 +338,7 @@ pub struct CSRRowWriteLock<'a, J, T> {
 
 impl<'a, J, T> CSRRowWriteLock<'a, J, T>
 where
-    T: Copy + Zero + AddAssign + SubAssign + PartialEq + PartialOrd,
+    T: Copy + Zero + AddAssign + SubAssign + Eq + PartialOrd,
     J: Copy + Ord + Increment + Debug + Zero,
 {
     pub fn sub(&mut self, j: J, delta: T) {
