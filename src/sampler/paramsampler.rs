@@ -208,62 +208,22 @@ impl ParamSampler {
                 if record_samples {
                     let ncells = voxels.ncells as u32;
                     let src_state = params.reported_transcript_state[idx].load();
-                    let src_state_idx = if src_state.background {
+                    let src_state = if src_state.background {
                         ncells
                     } else {
                         src_state.cell
                     };
 
-                    let dest_state_idx = if is_background { ncells } else { cell };
+                    let dest_state = if is_background { ncells } else { cell };
 
-                    // Calculate weights for each metagene
-                    let nhidden = params.nhidden();
-                    let mut weights = vec![0.0; nhidden];
-
-                    if (gene as usize) < params.nunfactored {
-                        weights[gene as usize] = 1.0;
-                    } else {
-                        // For background or frozen cells, we don't have a phi_c that represents
-                        // the transcript's specific cell. Use theta_g as a distribution over metagenes.
-                        let mut sum_w = 0.0;
-                        if is_background || (cell != BACKGROUND_CELL && params.frozen_cells[cell as usize]) {
-                            for k in params.nunfactored..nhidden {
-                                weights[k] = params.θ[[gene as usize, k]];
-                                sum_w += weights[k];
-                            }
-                        } else {
-                            for k in params.nunfactored..nhidden {
-                                weights[k] = params.φ[[cell as usize, k]] * params.θ[[gene as usize, k]];
-                                sum_w += weights[k];
-                            }
-                        }
-
-                        if sum_w > 0.0 {
-                            let inv_sum = sum_w.recip();
-                            for w in weights.iter_mut() {
-                                *w *= inv_sum;
-                            }
-                        } else {
-                            // Fallback if weights are all zero
-                            let nfactored = (nhidden - params.nunfactored) as f32;
-                            for k in params.nunfactored..nhidden {
-                                weights[k] = nfactored.recip();
-                            }
-                        }
-                    }
-
-                    let mut trans_row = params.state_transitions.row(src_state_idx as usize).write();
-                    for (k, &w) in weights.iter().enumerate() {
-                        if w > 0.0 {
-                            trans_row.add(
-                                TransitionMatRowKey {
-                                    metagene: k as u32,
-                                    dest_cell: dest_state_idx,
-                                },
-                                w,
-                            );
-                        }
-                    }
+                    let mut trans_row = params.state_transitions.row(src_state as usize).write();
+                    trans_row.add(
+                        TransitionMatRowKey {
+                            gene,
+                            dest_cell: dest_state,
+                        },
+                        1,
+                    );
                 }
 
                 // Update count matrices
