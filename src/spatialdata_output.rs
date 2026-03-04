@@ -1336,55 +1336,78 @@ fn write_state_transitions_parts(
 
     // 2. Write gene-wise transition matrices
     if output_gene_transitions {
-        for (g, gene_name) in gene_names.iter().enumerate() {
-            let mut data = Vec::new();
-            let mut indices = Vec::new();
-            let mut indptr = Vec::with_capacity(ncells + 1);
-            let mut offset = 0;
+        let ngenes = gene_names.len();
+        let mut gene_entries: Vec<Vec<(i32, f32)>> = vec![Vec::new(); ngenes];
 
-            for i in 0..ncells {
-                indptr.push(offset as i32);
-                let row = params.state_transitions.row(i);
-                let row_read = row.read();
+        for i in 0..ncells {
+            let row = params.state_transitions.row(i);
+            let row_read = row.read();
 
-                let start_key = crate::sampler::TransitionMatRowKey {
-                    gene: g as u32,
-                    dest_cell: 0,
-                };
-                let mut sum = 0.0;
-                let mut cell_entries = Vec::new();
-                for (key, count) in row_read.iter_nonzeros_from(start_key) {
-                    if key.gene != g as u32 {
-                        break;
+            let mut current_gene = None;
+            let mut current_sum = 0.0;
+            let mut current_entries = Vec::new();
+
+            for (key, count) in row_read.iter_nonzeros() {
+                if Some(key.gene) != current_gene {
+                    if let Some(g) = current_gene {
+                        if current_sum > 0.0 {
+                            for (dest_cell, c) in current_entries {
+                                gene_entries[g as usize].push((
+                                    (i * ncells + dest_cell as usize) as i32,
+                                    c as f32 / current_sum,
+                                ));
+                            }
+                        }
                     }
-                    sum += count as f32;
-                    if (key.dest_cell as usize) < ncells {
-                        cell_entries.push((key.dest_cell, count));
-                    }
+                    current_gene = Some(key.gene);
+                    current_sum = 0.0;
+                    current_entries = Vec::new();
                 }
 
-                if sum > 0.0 {
-                    for (dest_cell, count) in cell_entries {
-                        data.push(count as f32 / sum);
-                        indices.push(dest_cell as i32);
-                        offset += 1;
+                current_sum += count as f32;
+                if (key.dest_cell as usize) < ncells {
+                    current_entries.push((key.dest_cell, count));
+                }
+            }
+            // handle last gene in row
+            if let Some(g) = current_gene {
+                if current_sum > 0.0 {
+                    for (dest_cell, c) in current_entries {
+                        gene_entries[g as usize].push((
+                            (i * ncells + dest_cell as usize) as i32,
+                            c as f32 / current_sum,
+                        ));
                     }
                 }
             }
+        }
+
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = Vec::with_capacity(ngenes + 1);
+        let mut offset = 0;
+
+        for g in 0..ngenes {
             indptr.push(offset as i32);
-
-            if !data.is_empty() {
-                write_anndata_csr_matrix_raw(
-                    store.clone(),
-                    &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions_{gene_name}"),
-                    ncells,
-                    ncells,
-                    &data,
-                    &indices,
-                    &indptr,
-                    "<f4",
-                )?;
+            for (idx, val) in &gene_entries[g] {
+                data.push(*val);
+                indices.push(*idx);
+                offset += 1;
             }
+        }
+        indptr.push(offset as i32);
+
+        if !data.is_empty() {
+            write_anndata_csr_matrix_raw(
+                store.clone(),
+                &format!("/tables/{SD_TABLE_NAME}/varm/state_transitions"),
+                ngenes,
+                ncells * ncells,
+                &data,
+                &indices,
+                &indptr,
+                "<f4",
+            )?;
         }
     }
 
