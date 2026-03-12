@@ -1,4 +1,11 @@
 
+# 3.1.1
+  - Fix some inaccuracies in how posterior mean estimates are computed.
+  - Check that the output directory exists before running inference.
+  - Retain transcript quality values and output them with the transcript metadata.
+  - Fix a bug causing excessive memory usage when writing transcript metadata
+  - Set some additional metadata in the spatialdata geoparquet files
+
 # 3.1.0
   - Fix a significant bug in the factorization scheme which degraded segmentation quality on data with large gene panels.
   - Extensive optimization work leading to around 1.5x-4x faster run times and 5-10% less memory usage. Changes include:
