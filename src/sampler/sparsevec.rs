@@ -284,6 +284,7 @@ where
     }
 
     // Update only if key is present
+    #[allow(dead_code)]
     pub fn update_if_present<F>(&mut self, key: K, update_fn: F)
     where
         F: FnOnce(&mut V),

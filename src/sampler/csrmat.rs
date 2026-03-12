@@ -675,6 +675,7 @@ where
         self.guard.update_with_init(j, insert_fn, update_fn);
     }
 
+    #[allow(dead_code)]
     pub fn update_if_present<G>(&mut self, j: J, update_fn: G)
     where
         G: FnOnce(&mut T),
