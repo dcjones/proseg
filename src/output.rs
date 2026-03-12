@@ -668,6 +668,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
             .unwrap();
 
             write_batch(&batch);
+            count = 0;
         }
     }
 
