@@ -102,20 +102,24 @@ where
     // Recursive divide-and conqueror sampling. When n is small or outcome probabilities are skewed
     // this lets us prune many branches, speeding up the sampling.
     pub fn sample<R: Rng, F: FnMut(usize, u32)>(&self, rng: &mut R, n: u32, mut report: F) {
-        if n == 0 {
+        if n == 0 || self.cumprobs.len() <= 1 {
+            if n > 0 && self.cumprobs.len() == 2 {
+                report(0, n);
+            }
             return;
         }
 
         if n == 1 {
             let total_prob = self.cumprobs.last().unwrap().as_();
-            if total_prob > 0.0 {
+            let idx = if total_prob > 0.0 {
                 let u = rng.random::<f64>() * total_prob;
-                let idx = self
-                    .cumprobs
+                self.cumprobs
                     .partition_point(|&x| x.as_() <= u)
-                    .saturating_sub(1);
-                report(idx, 1);
-            }
+                    .saturating_sub(1)
+            } else {
+                rng.random_range(0..self.cumprobs.len() - 1)
+            };
+            report(idx, 1);
             return;
         }
 
@@ -135,7 +139,7 @@ where
             return;
         }
 
-        if to - from == 1 {
+        if to - from <= 1 {
             if n > 0 {
                 report(from, n);
             }
@@ -146,10 +150,31 @@ where
         let left_prob = self.cumprobs[mid] - self.cumprobs[from];
         let total_prob = self.cumprobs[to] - self.cumprobs[from];
 
-        let p = (left_prob / total_prob).min(T::one()).max(T::zero());
+        let p = if total_prob > T::zero() {
+            (left_prob / total_prob).min(T::one()).max(T::zero())
+        } else {
+            T::from(0.5).unwrap()
+        };
         let n_left = rand_binomial(rng, p.as_(), n);
 
         self.sample_recursion(rng, from, mid, n_left, report);
         self.sample_recursion(rng, mid, to, n - n_left, report);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rng;
+
+    #[test]
+    fn test_multinomial_zero_prob() {
+        let mut rng = rng();
+        let probs = vec![0.0, 0.0, 0.0];
+        let multinomial = Multinomial::from_probs(&probs);
+        
+        let mut count = 0;
+        multinomial.sample(&mut rng, 1, |_, x| count += x);
+        assert_eq!(count, 1, "Transcript lost for n=1 when total_prob=0");
     }
 }
