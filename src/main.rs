@@ -612,6 +612,13 @@ fn main() {
     let nthreads = current_num_threads();
     println!("Using {nthreads} threads");
 
+    if let Some(ref output_path) = args.output_path {
+        let path = Path::new(&output_path);
+        if !path.exists() {
+            panic!("Output path {} does not exist", path.display())
+        }
+    }
+
     if let Some(ref output_spatialdata) = args.output_spatialdata {
         let path = if let Some(ref output_path) = args.output_path {
             Path::new(output_path).join(output_spatialdata)
