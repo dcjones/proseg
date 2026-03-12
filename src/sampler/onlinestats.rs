@@ -217,28 +217,28 @@ impl CountMeanEstimator {
 
     pub fn update<T>(&mut self, counts: &CSRMat<u32, T>)
     where
-        T: AsPrimitive<f32> + Sync + Send + Zero,
+        T: AsPrimitive<f32> + Sync + Send + Zero + PartialEq,
     {
         self.t += 1;
         let t = self.t as f32;
+        let scale_factor = (t - 1.0) / t;
+
         self.estimates
             .par_rows()
             .zip(counts.par_rows())
             .for_each(|(estimates_c, counts_c)| {
                 let counts_c_lock = counts_c.read();
                 let mut estimates_c_lock = estimates_c.write();
-                for (gene, count_cg) in counts_c_lock.iter().enumerate() {
-                    if count_cg.is_zero() {
-                        estimates_c_lock.update_if_present(gene as u32, |est| {
-                            *est += (count_cg.as_() - *est) / t
-                        });
-                    } else {
-                        estimates_c_lock.update(
-                            gene as u32,
-                            || 0.0,
-                            |est| *est += (count_cg.as_() - *est) / t,
-                        );
-                    }
+
+                // E_t = E_{t-1} * (t-1)/t + X_t / t
+                estimates_c_lock.guard.scale_all(|est| *est *= scale_factor);
+
+                for (gene, count_cg) in counts_c_lock.iter_nonzeros() {
+                    estimates_c_lock.update(
+                        gene,
+                        || 0.0,
+                        |est| *est += count_cg.as_() / t,
+                    );
                 }
             });
     }

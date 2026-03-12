@@ -41,9 +41,8 @@ where
 
     /// Clear all entries, fully deallocating arenas to reclaim memory.
     pub fn clear(&mut self) {
-        self.leaf_arena = Vec::new();
-        self.internal_arena = Vec::new();
-        self.leaf_arena = Vec::new();
+        self.leaf_arena.clear();
+        self.internal_arena.clear();
         self.root = NodePtr::Leaf(NULL_IDX);
     }
 
@@ -197,6 +196,41 @@ where
             let leaf = self.leaf_mut(leaf_idx);
             for (_key, val) in &mut leaf.keyvals {
                 *val = V::zero();
+            }
+            if leaf.sibling == NULL_IDX {
+                break;
+            }
+            leaf_idx = leaf.sibling;
+        }
+    }
+
+    pub fn scale_all<F>(&mut self, mut scale_fn: F)
+    where
+        V: PartialEq,
+        F: FnMut(&mut V),
+    {
+        if self.leaf_arena.is_empty() {
+            return;
+        }
+
+        // Find the leftmost leaf
+        let mut current = self.root;
+        let first_leaf = loop {
+            match current {
+                NodePtr::Leaf(idx) => break idx,
+                NodePtr::Internal(idx) => {
+                    let internal = self.internal(idx);
+                    current = internal.children[0];
+                }
+            }
+        };
+
+        // Traverse all leaves and scale all values
+        let mut leaf_idx = first_leaf;
+        loop {
+            let leaf = self.leaf_mut(leaf_idx);
+            for (_key, val) in &mut leaf.keyvals {
+                scale_fn(val);
             }
             if leaf.sibling == NULL_IDX {
                 break;
@@ -652,6 +686,9 @@ mod tests {
         V: Copy + Zero + std::fmt::Debug,
     {
         fn get(&self, key: K) -> Option<V> {
+            if self.leaf_arena.is_empty() {
+                return None;
+            }
             let leaf_idx = self.find_leaf(key);
             let leaf = self.leaf(leaf_idx);
             match leaf.binary_search(key) {
@@ -663,6 +700,10 @@ mod tests {
         // Collect all key-value pairs in sorted order by traversing leaf siblings
         fn collect_all(&self) -> Vec<(K, V)> {
             let mut result = Vec::new();
+
+            if self.leaf_arena.is_empty() {
+                return result;
+            }
 
             // Find the leftmost leaf
             let mut current = self.root;
@@ -698,9 +739,9 @@ mod tests {
     #[test]
     fn test_new_sparse_vec() {
         let vec: SparseCountVec<u32, i32> = SparseCountVec::new();
-        assert_eq!(vec.leaf_arena.len(), 1);
+        assert_eq!(vec.leaf_arena.len(), 0);
         assert_eq!(vec.internal_arena.len(), 0);
-        matches!(vec.root, NodePtr::Leaf(0));
+        assert!(matches!(vec.root, NodePtr::Leaf(NULL_IDX)));
     }
 
     #[test]
@@ -722,9 +763,9 @@ mod tests {
 
         // Clear and verify structure is reset
         vec.clear();
-        assert_eq!(vec.leaf_arena.len(), 1);
+        assert_eq!(vec.leaf_arena.len(), 0);
         assert_eq!(vec.internal_arena.len(), 0);
-        matches!(vec.root, NodePtr::Leaf(0));
+        assert!(matches!(vec.root, NodePtr::Leaf(NULL_IDX)));
 
         // Verify capacity is retained (no reallocation)
         assert_eq!(vec.leaf_arena.capacity(), leaf_capacity);
