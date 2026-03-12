@@ -589,6 +589,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
 ) {
     // This is one table I probably should try to write in batches.
     let mut transcript_id_data: Vec<Option<u64>> = Vec::new();
+    let mut qv = Vec::new();
     let mut x = Vec::new();
     let mut y = Vec::new();
     let mut z = Vec::new();
@@ -619,6 +620,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                 .map(|transcript_ids| transcript_ids[i]),
         );
 
+        qv.push(transcript.qv);
         x.push(transcript.x + (dx as f32) * voxels.voxelsize);
         y.push(transcript.y + (dy as f32) * voxels.voxelsize);
         z.push(transcript.z + (dz as f32) * voxels.voxelsize_z);
@@ -644,6 +646,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                             .drain(..)
                             .collect::<arrow::array::UInt64Array>(),
                     ),
+                    Arc::new(qv.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
                     Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),
@@ -681,6 +684,7 @@ fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
                         .drain(..)
                         .collect::<arrow::array::UInt64Array>(),
                 ),
+                Arc::new(qv.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(x.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(y.drain(..).collect::<arrow::array::Float32Array>()),
                 Arc::new(z.drain(..).collect::<arrow::array::Float32Array>()),

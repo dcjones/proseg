@@ -413,10 +413,12 @@ fn read_transcript_parquet(
         .map(|cell_id_column| schema.index_of(cell_id_column).unwrap());
 
     let feature_col_idx = schema.index_of(feature_column).unwrap();
+    let qv_col_idx = schema.index_of("qv").ok();
 
     let mut x_batch = Vec::new();
     let mut y_batch = Vec::new();
     let mut z_batch = Vec::new();
+    let mut qv_batch = Vec::new();
     let mut gene_batch = Vec::new();
     let mut cell_id_batch = Vec::new();
 
@@ -430,6 +432,13 @@ fn read_transcript_parquet(
         } else {
             z_batch.resize(x_batch.len(), 0.0);
             z_batch.fill(0.0);
+        }
+
+        if let Some(qv_col_idx) = qv_col_idx {
+            read_parquet_float_array(rec_batch.column(qv_col_idx), &mut qv_batch);
+        } else {
+            qv_batch.resize(x_batch.len(), f32::INFINITY);
+            qv_batch.fill(f32::INFINITY);
         }
 
         if let Some(cell_id_col_idx) = cell_id_col_idx {
@@ -453,8 +462,8 @@ fn read_transcript_parquet(
             excluded_genes,
         );
 
-        for (&x, &y, &z, &gene, &cell_id) in
-            izip!(&x_batch, &y_batch, &z_batch, &gene_batch, &cell_id_batch)
+        for (&x, &y, &z, &qv, &gene, &cell_id) in
+            izip!(&x_batch, &y_batch, &z_batch, &qv_batch, &gene_batch, &cell_id_batch)
         {
             if gene_exclusion_mask[gene] {
                 continue;
@@ -464,6 +473,7 @@ fn read_transcript_parquet(
                 x: x * coordinate_scale,
                 y: y * coordinate_scale,
                 z,
+                qv,
                 gene: gene as u32,
             });
 

@@ -113,6 +113,7 @@ fn read_anndata_zarr_transcripts_from_store(
                         x: x * coordinate_scale,
                         y: y * coordinate_scale,
                         z: 0.0,
+                        qv: f32::INFINITY,
                         gene: gene as u32,
                     },
                     count,

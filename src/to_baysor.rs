@@ -119,9 +119,7 @@ fn read_proseg_transcript_metadata_from_zarr(
     let x_col = find_column_index(&schema, "x");
     let y_col = find_column_index(&schema, "y");
     let z_col = find_column_index(&schema, "z");
-
-    // TODO: We are no longer recording qv values. Is that necessary?
-    // let qv_col = find_column_index(&schema, "qv");
+    let qv_col = find_column_index(&schema, "qv");
 
     for rec_batch in rdr {
         let rec_batch = rec_batch.expect("Unable to read record batch.");
@@ -195,17 +193,15 @@ fn read_proseg_transcript_metadata_from_zarr(
             metadata.z.push(z.unwrap());
         }
 
-        // for qv in rec_batch
-        //     .column(qv_col)
-        //     .as_any()
-        //     .downcast_ref::<arrow::array::Float32Array>()
-        //     .unwrap()
-        //     .iter()
-        // {
-        //     metadata.qv.push(qv.unwrap());
-        // }
-
-        metadata.qv.push(0.0);
+        for qv in rec_batch
+            .column(qv_col)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .iter()
+        {
+            metadata.qv.push(qv.unwrap());
+        }
     }
 
     metadata
@@ -225,6 +221,7 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
         Field::new("x", DataType::Float32, false),
         Field::new("y", DataType::Float32, false),
         Field::new("z", DataType::Float32, false),
+        Field::new("qv", DataType::Float32, false),
     ]);
 
     let columns: Vec<Arc<dyn arrow::array::Array>> = vec![
@@ -273,6 +270,13 @@ fn write_baysor_transcript_metadata(filename: String, metadata: TranscriptMetada
         Arc::new(
             metadata
                 .z
+                .iter()
+                .cloned()
+                .collect::<arrow::array::Float32Array>(),
+        ),
+        Arc::new(
+            metadata
+                .qv
                 .iter()
                 .cloned()
                 .collect::<arrow::array::Float32Array>(),

@@ -29,6 +29,7 @@ pub struct Transcript {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub qv: f32,
     pub gene: u32,
 }
 
@@ -426,7 +427,16 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 
         let (x, y) = barcode_positions[&barcodes[square]];
 
-        transcripts.push_run(Transcript { x, y, z: 0.0, gene }, count);
+        transcripts.push_run(
+            Transcript {
+                x,
+                y,
+                z: 0.0,
+                qv: f32::INFINITY,
+                gene,
+            },
+            count,
+        );
     }
 
     let gene_names: Vec<String> = gene_names
@@ -717,6 +727,7 @@ where
             x,
             y,
             z,
+            qv,
             gene: gene as u32,
         });
 
@@ -1052,6 +1063,7 @@ where
                 x,
                 y,
                 z: if ignore_z_column { 0.0 } else { z },
+                qv,
                 gene: gene as u32,
             });
             transcript_ids.push(transcript_id);
