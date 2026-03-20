@@ -1169,6 +1169,7 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
         &indices,
         &indptr,
         "<u4",
+        "<i4",
     )
 }
 
@@ -1176,15 +1177,17 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
 fn write_anndata_csr_matrix_raw<
     T: ReadableWritableStorageTraits + 'static,
     V: zarrs::array::Element,
+    Idx: zarrs::array::Element,
 >(
     store: Arc<T>,
     path: &str,
     m: usize,
     n: usize,
     data: &[V],
-    indices: &[i32],
-    indptr: &[i32],
+    indices: &[Idx],
+    indptr: &[Idx],
     dtype: &str,
+    index_dtype: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
@@ -1227,7 +1230,7 @@ fn write_anndata_csr_matrix_raw<
         &format!("{path}/indices"),
         vec![nnz],
         vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<i4")),
+        DataTypeMetadataV2::Simple(String::from(index_dtype)),
         FillValueMetadataV2::Number(serde_json::Number::from(0)),
         Some(default_blosc_compressor()?),
         None,
@@ -1242,7 +1245,7 @@ fn write_anndata_csr_matrix_raw<
         &format!("{path}/indptr"),
         vec![indptr.len() as u64],
         vec![guess_chunks_1d(indptr.len(), 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<i4")),
+        DataTypeMetadataV2::Simple(String::from(index_dtype)),
         FillValueMetadataV2::Number(serde_json::Number::from(0)),
         Some(default_blosc_compressor()?),
         None,
@@ -1332,12 +1335,13 @@ fn write_state_transitions_parts(
         &agg_indices,
         &agg_indptr,
         "<f4",
+        "<i4",
     )?;
 
     // 2. Write gene-wise transition matrices
     if output_gene_transitions {
         let ngenes = gene_names.len();
-        let mut gene_entries: Vec<Vec<(i32, f32)>> = vec![Vec::new(); ngenes];
+        let mut gene_entries: Vec<Vec<(i64, f32)>> = vec![Vec::new(); ngenes];
 
         for i in 0..ncells {
             let row = params.state_transitions.row(i);
@@ -1353,7 +1357,7 @@ fn write_state_transitions_parts(
                         if current_sum > 0.0 {
                             for (dest_cell, c) in current_entries {
                                 gene_entries[g as usize].push((
-                                    (i * ncells + dest_cell as usize) as i32,
+                                    (i * ncells + dest_cell as usize) as i64,
                                     c as f32 / current_sum,
                                 ));
                             }
@@ -1374,7 +1378,7 @@ fn write_state_transitions_parts(
                 if current_sum > 0.0 {
                     for (dest_cell, c) in current_entries {
                         gene_entries[g as usize].push((
-                            (i * ncells + dest_cell as usize) as i32,
+                            (i * ncells + dest_cell as usize) as i64,
                             c as f32 / current_sum,
                         ));
                     }
@@ -1383,19 +1387,19 @@ fn write_state_transitions_parts(
         }
 
         let mut data = Vec::new();
-        let mut indices = Vec::new();
-        let mut indptr = Vec::with_capacity(ngenes + 1);
-        let mut offset = 0;
+        let mut indices: Vec<i64> = Vec::new();
+        let mut indptr: Vec<i64> = Vec::with_capacity(ngenes + 1);
+        let mut offset: i64 = 0;
 
         for g in 0..ngenes {
-            indptr.push(offset as i32);
+            indptr.push(offset);
             for (idx, val) in &gene_entries[g] {
                 data.push(*val);
                 indices.push(*idx);
                 offset += 1;
             }
         }
-        indptr.push(offset as i32);
+        indptr.push(offset);
 
         if !data.is_empty() {
             write_anndata_csr_matrix_raw(
@@ -1407,6 +1411,7 @@ fn write_state_transitions_parts(
                 &indices,
                 &indptr,
                 "<f4",
+                "<i8",
             )?;
         }
     }
