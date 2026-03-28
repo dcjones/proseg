@@ -13,6 +13,7 @@ import argparse
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from os.path import isfile
 
 
 if __name__ == "__main__":
@@ -52,10 +53,17 @@ if __name__ == "__main__":
         names=["gene_id", "gene_name", "type"],
     )
 
-    coords = pd.read_csv(
-        matrix_root_path / "coords.tsv.gz", header=None, sep=":", names=["y", "x"]
-    )
-    coords = coords[["x", "y"]]
+
+    if (matrix_root_path / "coords.tsv.gz").exists():
+        coords = pd.read_csv(
+            matrix_root_path / "coords.tsv.gz", header=None, sep=":", names=["y", "x"]
+        )
+        coords = coords[["x", "y"]]
+    else:
+        coords = pd.read_csv(
+            matrix_root_path / "barcodes.tsv.gz",
+            header=None, sep=":", names=["sbc", "y", "x"])
+        coords = coords[["x", "y"]]
 
     # nanometers to micrometers (nuclei polygons are already in microns)
     coords["x"] /= 1000
@@ -119,6 +127,17 @@ if __name__ == "__main__":
         / "nuclei_segmentation"
         / f"{args.sample_name}_nuclei_contour_coords.csv"
     )
+
+    if not nuclei_poly_path.exists():
+        nuclei_poly_path = (
+            root_path
+            / "intermediate_results"
+            / "07_cell_segmentation"
+            / args.sample_name
+            / "cell_segmentation"
+            / "nuclei_segmentation"
+            / f"{args.sample_name}_registered_nuclei_contour_coords.csv"
+        )
 
     nuclei_poly_coords = pd.read_csv(nuclei_poly_path)
     nuclei_polys = nuclei_poly_coords.groupby("cell_id").apply(
