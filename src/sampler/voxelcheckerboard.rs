@@ -1213,7 +1213,7 @@ pub struct VoxelQuad {
     pub transcripts: RwLock<QuadTranscripts>,
 
     // Local transcript density, used for noise rate estimation
-    pub densities: RwLock<BTreeMap<Voxel, f32>>,
+    pub densities: RwLock<HashMap<Voxel, f32>>,
 
     // Fast lookup for densities within the quad
     pub densities_grid: RwLock<Option<Vec<u8>>>,
@@ -1235,7 +1235,7 @@ impl VoxelQuad {
         VoxelQuad {
             states: RwLock::new(QuadStates::new()),
             transcripts: RwLock::new(QuadTranscripts::new()),
-            densities: RwLock::new(BTreeMap::new()),
+            densities: RwLock::new(HashMap::new()),
             densities_grid: RwLock::new(None),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
             kmax,
