@@ -218,23 +218,25 @@ impl ParamSampler {
                         disag_row.add(gene, 1);
                     }
 
-                    // TODO: We should have a separate flag for recording these state transitions, right?
-                    let src_state = if src_state.background {
-                        ncells
-                    } else {
-                        src_state.cell
-                    };
+                    if priors.record_state_transitions {
+                        let src_state = if src_state.background {
+                            ncells
+                        } else {
+                            src_state.cell
+                        };
 
-                    let dest_state = if is_background { ncells } else { cell };
+                        let dest_state = if is_background { ncells } else { cell };
 
-                    let mut trans_row = params.state_transitions.row(src_state as usize).write();
-                    trans_row.add(
-                        TransitionMatRowKey {
-                            gene,
-                            dest_cell: dest_state,
-                        },
-                        1,
-                    );
+                        let mut trans_row =
+                            params.state_transitions.row(src_state as usize).write();
+                        trans_row.add(
+                            TransitionMatRowKey {
+                                gene,
+                                dest_cell: dest_state,
+                            },
+                            1,
+                        );
+                    }
                 }
 
                 // Update count matrices
