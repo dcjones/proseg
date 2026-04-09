@@ -50,7 +50,7 @@ use std::mem::drop;
 use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
-use std::sync::{Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -1216,7 +1216,7 @@ pub struct VoxelQuad {
     pub densities: RwLock<HashMap<Voxel, f32>>,
 
     // Fast lookup for densities within the quad
-    pub densities_grid: RwLock<Option<Vec<u8>>>,
+    pub densities_grid: OnceLock<Vec<u8>>,
 
     // Allocates some matrices to be re-used for connectivity checks
     pub connectivity: RwLock<MooreConnectivityChecker>,
@@ -1236,7 +1236,7 @@ impl VoxelQuad {
             states: RwLock::new(QuadStates::new()),
             transcripts: RwLock::new(QuadTranscripts::new()),
             densities: RwLock::new(HashMap::new()),
-            densities_grid: RwLock::new(None),
+            densities_grid: OnceLock::new(),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
             kmax,
             quadsize,
@@ -2084,7 +2084,7 @@ impl VoxelCheckerboard {
     pub fn get_voxel_density(&self, voxel: Voxel) -> usize {
         let voxel = voxel.setk(0);
         let quad = self.quads.get(&self.quad_index(voxel)).unwrap();
-        if let Some(grid) = quad.densities_grid.read().unwrap().as_ref() {
+        if let Some(grid) = quad.densities_grid.get() {
             let [i, j, _k] = voxel.coords();
             let i_rel = i as usize - (quad.u as usize * self.quadsize);
             let j_rel = j as usize - (quad.v as usize * self.quadsize);
@@ -2097,7 +2097,7 @@ impl VoxelCheckerboard {
     pub fn get_voxel_density_hint(&self, quad: &VoxelQuad, voxel: Voxel) -> usize {
         let voxel = voxel.setk(0);
         if quad.voxel_in_bounds(voxel) {
-            if let Some(grid) = quad.densities_grid.read().unwrap().as_ref() {
+            if let Some(grid) = quad.densities_grid.get() {
                 let [i, j, _k] = voxel.coords();
                 let i_rel = i as usize - (quad.u as usize * self.quadsize);
                 let j_rel = j as usize - (quad.v as usize * self.quadsize);
@@ -2396,7 +2396,7 @@ impl VoxelCheckerboard {
                     grid[(i - min_i) * quadsize + (j - min_j)] = quantile_index as u8;
                 }
             }
-            *quad.densities_grid.write().unwrap() = Some(grid);
+            quad.densities_grid.set(grid).expect("densities_grid set more than once");
         });
     }
 
