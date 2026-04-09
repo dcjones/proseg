@@ -95,6 +95,8 @@ pub struct ModelPriors {
     // pub prior_seg_reassignment_1mlog_prob: f32,
 
     // mixture between diffusion prior components
+    pub record_state_transitions: bool,
+
     pub use_diffusion_model: bool,
     pub p_diffusion: f32,
 

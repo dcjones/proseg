@@ -438,6 +438,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
+    /// Enable output of state transition matrices (obsp/state_transitions and varm/state_transitions)
+    #[arg(long, default_value_t = false)]
+    record_state_transitions: bool,
+
     /// Suppress output of per-gene transcript assignment uncertainty matrices
     #[arg(long, default_value_t = false)]
     no_gene_transitions: bool,
@@ -981,6 +985,8 @@ fn main() {
 
         // prior_seg_reassignment_log_prob: args.prior_seg_reassignment_prob.ln(),
         // prior_seg_reassignment_1mlog_prob: (1.0 - args.prior_seg_reassignment_prob).ln(),
+        record_state_transitions: args.record_state_transitions,
+
         use_diffusion_model: !args.no_diffusion,
         p_diffusion: args.diffusion_probability,
         σ_xy_diffusion_near: args
@@ -1262,15 +1268,17 @@ fn main() {
 
     // Write uncertainty matrix.
     if let Some(ref output_spatialdata) = args.output_spatialdata {
-        let t0 = Instant::now();
-        write_state_transitions_zarr(
-            &args.output_path,
-            output_spatialdata,
-            &params,
-            &dataset.gene_names,
-            !args.no_gene_transitions,
-        );
-        info!("write state transitions: {:?}", t0.elapsed());
+        if args.record_state_transitions {
+            let t0 = Instant::now();
+            write_state_transitions_zarr(
+                &args.output_path,
+                output_spatialdata,
+                &params,
+                &dataset.gene_names,
+                !args.no_gene_transitions,
+            );
+            info!("write state transitions: {:?}", t0.elapsed());
+        }
 
         let t0 = Instant::now();
         write_expected_contamination_zarr(
