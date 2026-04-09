@@ -208,6 +208,17 @@ impl ParamSampler {
                 if record_samples {
                     let ncells = voxels.ncells as u32;
                     let src_state = params.reported_transcript_state[idx].load();
+
+                    if !src_state.background && src_state != new_assignment {
+                        let mut disag_row = params
+                            .state_disagreement_counts
+                            .row(src_state.cell as usize)
+                            .write();
+
+                        disag_row.add(gene, 1);
+                    }
+
+                    // TODO: We should have a separate flag for recording these state transitions, right?
                     let src_state = if src_state.background {
                         ncells
                     } else {

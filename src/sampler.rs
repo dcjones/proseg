@@ -364,6 +364,11 @@ pub struct ModelParams {
     // +1 is added to cell indexes to make the indexing here dense.
     pub state_transitions: CSRMat<TransitionMatRowKey, u32>,
 
+    // Counts the number of sampler iterations in which each of a cell's
+    // reported transcripts are in a different state. This is so we can estimate
+    // expected contamination for use with downstream tools.
+    pub state_disagreement_counts: CSRMat<u32, u32>,
+
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
 
@@ -592,10 +597,8 @@ impl ModelParams {
             },
         );
 
-        // let foreground_counts_lower =
-        //     CountQuantileEstimator::new(ncells, ngenes, 0.05, CELL_SHARDSIZE);
-        // let foreground_counts_upper =
-        //     CountQuantileEstimator::new(ncells, ngenes, 0.95, CELL_SHARDSIZE);
+        let state_disagreement_counts = CSRMat::zeros(ncells, ngenes as u32 - 1);
+
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
         let background_counts = (0..density_nbins)
             .map(|_density| {
@@ -702,9 +705,8 @@ impl ModelParams {
             transcript_state,
             reported_transcript_state,
             state_transitions,
+            state_disagreement_counts,
             foreground_counts,
-            // foreground_counts_lower,
-            // foreground_counts_upper,
             transition_counts,
             foreground_counts_mean,
             unassigned_counts,

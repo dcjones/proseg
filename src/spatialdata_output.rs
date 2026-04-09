@@ -1436,3 +1436,82 @@ fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'stat
         transition_counts,
     )
 }
+
+pub fn write_expected_contamination_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+    nsamples: usize,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_expected_contamination_parts(&path, params, nsamples) {
+        panic!(
+            "Failed to write expected contamination to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_expected_contamination_parts(
+    path: &Path,
+    params: &ModelParams,
+    nsamples: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    let ncells = params.ncells();
+    let ngenes = params.state_disagreement_counts.n as usize;
+
+    let mut data: Vec<f32> = Vec::new();
+    let mut indices: Vec<i32> = Vec::new();
+    let mut indptr: Vec<i32> = Vec::with_capacity(ncells + 1);
+    let mut offset = 0i32;
+
+    for i in 0..ncells {
+        indptr.push(offset);
+
+        let disag_read = params.state_disagreement_counts.row(i).read();
+        let fg_read = params.foreground_counts.row(i).read();
+
+        for (gene, disag_count) in disag_read.iter_nonzeros() {
+            if disag_count == 0 {
+                continue;
+            }
+
+            let fg_count = fg_read
+                .iter_nonzeros_from(gene)
+                .next()
+                .and_then(|(g, v)| if g == gene { Some(v) } else { None })
+                .unwrap_or(0);
+
+            if fg_count > 0 {
+                let contamination =
+                    disag_count as f32 / (fg_count as f32 * nsamples as f32);
+                data.push(contamination);
+                indices.push(gene as i32);
+                offset += 1;
+            }
+        }
+    }
+    indptr.push(offset);
+
+    write_anndata_csr_matrix_raw(
+        store,
+        &format!("/tables/{SD_TABLE_NAME}/layers/expected_contamination"),
+        ncells,
+        ngenes,
+        &data,
+        &indices,
+        &indptr,
+        "<f4",
+        "<i4",
+    )?;
+
+    Ok(())
+}
