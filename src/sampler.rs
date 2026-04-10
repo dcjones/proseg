@@ -14,6 +14,7 @@ pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcriptrunmap;
 pub mod transcripts;
+pub mod transitionmat;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
@@ -21,6 +22,7 @@ use clustering::kmeans;
 use csrmat::CSRMat;
 use csrmat::Increment;
 use transcripts::CellIndex;
+use transitionmat::TransitionMat;
 
 use itertools::izip;
 use math::randn;
@@ -364,7 +366,7 @@ pub struct ModelParams {
     // We index as counts as (state, (gene, state)).
     // An encoding quirk used here is that we let 0 be the background state and
     // +1 is added to cell indexes to make the indexing here dense.
-    pub state_transitions: CSRMat<TransitionMatRowKey, u32>,
+    pub state_transitions: TransitionMat,
 
     // Counts the number of sampler iterations in which each of a cell's
     // reported transcripts are in a different state. This is so we can estimate
@@ -591,13 +593,7 @@ impl ModelParams {
                 .take(ntranscripts)
                 .collect();
 
-        let state_transitions = CSRMat::zeros(
-            ncells + 1,
-            TransitionMatRowKey {
-                gene: ngenes as u32 - 1,
-                dest_cell: ncells as u32,
-            },
-        );
+        let state_transitions = TransitionMat::new(ncells + 1);
 
         let state_disagreement_counts = CSRMat::zeros(ncells, ngenes as u32 - 1);
 
