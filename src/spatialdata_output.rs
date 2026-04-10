@@ -1300,13 +1300,12 @@ fn write_state_transitions_parts(
 
     for i in 0..ncells {
         agg_indptr.push(agg_offset as i32);
-        let row = params.state_transitions.row(i);
-        let row_read = row.read();
+        let row_entries = params.state_transitions.iter_row_sorted(i);
 
         let mut cell_sums = HashMap::new();
         let mut total_sum = 0.0;
 
-        for (key, count) in row_read.iter_nonzeros() {
+        for &(key, count) in &row_entries {
             total_sum += count as f32;
             if (key.dest_cell as usize) < ncells {
                 *cell_sums.entry(key.dest_cell).or_insert(0) += count;
@@ -1344,14 +1343,13 @@ fn write_state_transitions_parts(
         let mut gene_entries: Vec<Vec<(i64, f32)>> = vec![Vec::new(); ngenes];
 
         for i in 0..ncells {
-            let row = params.state_transitions.row(i);
-            let row_read = row.read();
+            let row_entries = params.state_transitions.iter_row_sorted(i);
 
             let mut current_gene = None;
             let mut current_sum = 0.0;
             let mut current_entries = Vec::new();
 
-            for (key, count) in row_read.iter_nonzeros() {
+            for &(key, count) in &row_entries {
                 if Some(key.gene) != current_gene {
                     if let Some(g) = current_gene {
                         if current_sum > 0.0 {

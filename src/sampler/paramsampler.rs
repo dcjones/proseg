@@ -4,7 +4,7 @@ use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
 use super::{
-    ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment, TransitionMatRowKey,
+    ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment,
 };
 use itertools::izip;
 use libm::lgammaf;
@@ -227,14 +227,10 @@ impl ParamSampler {
 
                         let dest_state = if is_background { ncells } else { cell };
 
-                        let mut trans_row =
-                            params.state_transitions.row(src_state as usize).write();
-                        trans_row.add(
-                            TransitionMatRowKey {
-                                gene,
-                                dest_cell: dest_state,
-                            },
-                            1,
+                        params.state_transitions.add_local(
+                            src_state as usize,
+                            gene,
+                            dest_state,
                         );
                     }
                 }
@@ -253,6 +249,10 @@ impl ParamSampler {
                 }
             }
         });
+
+        if priors.record_state_transitions && record_samples {
+            params.state_transitions.flush_locals();
+        }
     }
 
     fn sample_factor_model(
