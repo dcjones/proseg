@@ -304,8 +304,8 @@ impl VoxelSampler {
                 (
                     current_state.cell,
                     current_state.prior_cell,
-                    current_state.log_prior.to_f32(),
-                    current_state.log_1m_prior.to_f32(),
+                    current_state.log_prior.to_f32() * priors.prior_weight,
+                    current_state.log_1m_prior.to_f32() * priors.prior_weight,
                 )
             } else {
                 (BACKGROUND_CELL, BACKGROUND_CELL, f32::NAN, f32::NAN)

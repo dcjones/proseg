@@ -274,6 +274,11 @@ struct Args {
     #[arg(long, default_value_t = 5e-1_f32)]
     prior_seg_reassignment_prob: f32,
 
+    /// A multiplier for the image-based prior. Setting this higher makes the prior
+    /// stronger relative to the transcript likelihoods, which can be useful for very high plexity data.
+    #[arg(long, default_value_t = 1.0)]
+    prior_weight: f32,
+
     /// Scale transcript coordinates by this factor to arrive at microns
     #[arg(long, default_value=None)]
     coordinate_scale: Option<f32>,
@@ -911,11 +916,17 @@ fn main() {
     };
     info!("initialized voxels: {:?}", t0.elapsed());
 
+    let mean_transcripts_per_cell = dataset.transcripts.len() as f32 / voxels.ncells.max(1) as f32;
+    let auto_prior_weight = args.prior_weight * (mean_transcripts_per_cell / 200.0).max(1.0);
+
     println!("Read dataset:");
     println!("{:>9} transcripts", dataset.transcripts.len());
     println!("{:>9} cells", voxels.ncells);
     println!("{:>9} genes", dataset.ngenes());
     println!("{:>9} fovs", dataset.fov_names.len());
+    if auto_prior_weight > 1.0 {
+        println!("{:>9.2} prior weight", auto_prior_weight);
+    }
 
     // Warn if any nucleus has extremely high population, which is likely
     // an error interpreting the file. (e.g. Misinterpreting the unassigned indicator as a cell)
@@ -936,6 +947,7 @@ fn main() {
 
         use_cell_scales: args.use_scaled_cells,
         unmodeled_fixed_cells: args.unmodeled_fixed_cells,
+        prior_weight: auto_prior_weight,
 
         // min_cell_volume: 1e-6 * μ_vol0,
         μ_μ_volume: (μ_vol0).ln(),
