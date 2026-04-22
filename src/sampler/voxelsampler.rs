@@ -420,6 +420,10 @@ impl VoxelSampler {
             let current_layer_volume = params.cell_layer_voxel_count[k].get(current_cell as usize);
 
             let proposed_volume = current_volume - 1;
+            if proposed_volume == 0 {
+                return f32::NEG_INFINITY;
+            }
+
             let proposed_layer_volume = current_layer_volume - 1;
             let current_volume_μm = current_volume as f32 * params.voxel_volume;
             let proposed_volume_μm = proposed_volume as f32 * params.voxel_volume;
