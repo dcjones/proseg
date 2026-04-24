@@ -443,7 +443,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     write_anndata_x_zarr(store.clone(), counts)?;
     write_anndata_obs_zarr(store.clone(), params, cell_centroids, original_cell_ids)?;
     write_anndata_var_zarr(store.clone(), params, gene_names, transcripts)?;
-    write_anndata_obsm_zarr(store.clone(), cell_centroids)?;
+    write_anndata_obsm_zarr(store.clone(), cell_centroids, &params.φ)?;
 
     // Empty fields
     new_zarr_group(
@@ -577,20 +577,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     )?
     .store_metadata()?;
 
-    new_zarr_group(
-        store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/varm"),
-        Some(
-            json!({
-                "encoding-type": "dict",
-                "encoding-version": "0.1.0",
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )?
-    .store_metadata()?;
+    write_anndata_varm_zarr(store.clone(), &params.θ)?;
 
     Ok(())
 }
@@ -1016,6 +1003,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
 fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
     cell_centroids: &Array2<f32>,
+    φ: &Array2<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
@@ -1034,7 +1022,7 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let ncells = cell_centroids.shape()[0];
 
-    let arr = new_zarr_array(
+    let mut arr = new_zarr_array(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obsm/spatial"),
         vec![ncells as u64, 2],
@@ -1044,6 +1032,10 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
         Some(default_blosc_compressor()?),
         None,
     )?;
+
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
 
     // Convert Array2 to Vec in row-major (C) order for zarrs
     let cell_centroids_vec: Vec<f32> = if cell_centroids.is_standard_layout() {
@@ -1057,6 +1049,80 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
             .collect()
     };
     arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids_vec)?;
+    arr.store_metadata()?;
+
+    // metagene_rates
+    let nhidden = φ.shape()[1];
+
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obsm/metagene_rates"),
+        vec![ncells as u64, nhidden as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64, nhidden as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+
+    let φ_vec: Vec<f32> = if φ.is_standard_layout() {
+        φ.iter().copied().collect()
+    } else {
+        φ.as_standard_layout().iter().copied().collect()
+    };
+    arr.store_array_subset_elements(&arr.subset_all(), &φ_vec)?;
+    arr.store_metadata()?;
+
+    Ok(())
+}
+
+fn write_anndata_varm_zarr<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    θ: &Array2<f32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/varm"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let ngenes = θ.shape()[0];
+    let nhidden = θ.shape()[1];
+
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/varm/metagene_loadings"),
+        vec![ngenes as u64, nhidden as u64],
+        vec![guess_chunks_1d(ngenes, 4) as u64, nhidden as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+
+    let θ_vec: Vec<f32> = if θ.is_standard_layout() {
+        θ.iter().copied().collect()
+    } else {
+        θ.as_standard_layout().iter().copied().collect()
+    };
+    arr.store_array_subset_elements(&arr.subset_all(), &θ_vec)?;
     arr.store_metadata()?;
 
     Ok(())
