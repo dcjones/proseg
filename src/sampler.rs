@@ -1,5 +1,6 @@
 pub mod connectivity;
 pub mod csrmat;
+mod featureselection;
 mod math;
 mod multinomial;
 pub mod onlinestats;

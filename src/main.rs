@@ -228,7 +228,7 @@ struct Args {
     ncomponents: usize,
 
     /// Dimenionality of the latent space
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 200)]
     nhidden: usize,
 
     /// Number of layers of voxels in the z-axis used for segmentation
@@ -444,7 +444,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     enforce_connectivity: bool,
 
-    #[arg(long, default_value_t = 300)]
+    #[arg(long, default_value_t = 200)]
     nunfactored: usize,
 
     /// Disable factorization model and use genes directly

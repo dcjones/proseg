@@ -65,27 +65,6 @@ impl TranscriptDataset {
         self.original_cell_ids.shrink_to_fit();
     }
 
-    pub fn select_unfactored_genes(&mut self, _nunfactored: usize) {
-        // Current heuristic is just to select the highest expression genes.
-        let mut gene_counts = Array1::<u32>::zeros(self.gene_names.len());
-        for transcript_run in self.transcripts.iter_runs() {
-            gene_counts[transcript_run.value.gene as usize] += transcript_run.len;
-        }
-
-        let mut ord = (0..self.gene_names.len()).collect::<Vec<_>>();
-        ord.sort_unstable_by(|&i, &j| gene_counts[i].cmp(&gene_counts[j]).reverse());
-
-        let mut rev_ord = vec![0; ord.len()];
-        for (i, j) in ord.iter().enumerate() {
-            rev_ord[*j] = i;
-        }
-
-        self.gene_names = ord.iter().map(|&i| self.gene_names[i].clone()).collect();
-        for transcript_run in self.transcripts.iter_runs_mut() {
-            transcript_run.value.gene = rev_ord[transcript_run.value.gene as usize] as u32;
-        }
-    }
-
     // Estimate cell centroids by averaging the coordinates of all transcripts assigned to each cell.
     pub fn estimate_cell_centroids(&self) -> Array2<f32> {
         let mut centroids = Array2::zeros((self.ncells, 2));
