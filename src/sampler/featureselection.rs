@@ -21,7 +21,7 @@ fn random_region_counts(
 
     for i in 0..nregions {
         let centroid_transcript =
-            &dataset.transcripts.runs[rng.random_range(0..dataset.transcripts.len())].value;
+            &dataset.transcripts.runs[rng.random_range(0..dataset.transcripts.runs.len())].value;
 
         let cx = centroid_transcript.x;
         let cy = centroid_transcript.y;
