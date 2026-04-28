@@ -1,6 +1,7 @@
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
 use rand::Rng;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 use super::transcripts::TranscriptDataset;
@@ -8,6 +9,8 @@ use super::transcripts::TranscriptDataset;
 const NFEATURES: usize = 10_000;
 const BIN_SIZE: f32 = 20.0;
 const NGENES_CANDIDATES: usize = 5000;
+// Subsample rows for the correlation step only; deviance ranking uses all NFEATURES rows.
+const NCORR_ROWS: usize = 2000;
 
 // Select `nregions` random 2D square regions, and generate a count matrix over
 // these regions. This gives us some basis for doing feature selection without relying
@@ -51,16 +54,22 @@ fn deviance_ranking(counts: &Array2<f32>) -> Vec<usize> {
 
     // Total counts per region (row sums)
     let region_totals: Vec<f64> = (0..nregions)
+        .into_par_iter()
         .map(|i| counts.row(i).iter().map(|&x| x as f64).sum())
         .collect();
 
     // Total counts per gene (column sums)
     let gene_totals: Vec<f64> = (0..ngenes)
+        .into_par_iter()
         .map(|j| counts.column(j).iter().map(|&x| x as f64).sum())
         .collect();
 
     // Grand total
     let grand_total: f64 = gene_totals.iter().sum();
+
+    // Transpose so each gene's counts are contiguous in memory (row-major access
+    // in the inner loop avoids cache-miss penalties from column-strided access).
+    let counts_t = counts.t().to_owned();
 
     // Compute binomial deviance for each gene.
     //
@@ -78,6 +87,7 @@ fn deviance_ranking(counts: &Array2<f32>) -> Vec<usize> {
     // Terms where the observed count is 0 contribute 0 to the sum (limit of
     // x*log(x) as x->0 is 0).
     let mut deviances: Vec<(usize, f64)> = (0..ngenes)
+        .into_par_iter()
         .map(|j| {
             let p_j = if grand_total > 0.0 {
                 gene_totals[j] / grand_total
@@ -87,7 +97,7 @@ fn deviance_ranking(counts: &Array2<f32>) -> Vec<usize> {
 
             let deviance: f64 = (0..nregions)
                 .map(|i| {
-                    let y = counts[[i, j]] as f64;
+                    let y = counts_t[[j, i]] as f64;
                     let n = region_totals[i];
                     if n == 0.0 {
                         return 0.0;
@@ -177,14 +187,25 @@ fn select_k_clusters<T: PartialOrd + Copy>(
         roots.len()
     };
 
-    // Binary search: we want the smallest threshold giving <= nclusters clusters,
-    // but we actually want exactly nclusters. Walk through sorted thresholds to
-    // find the first one where cluster count drops to nclusters or below.
-    let chosen_threshold = thresholds
-        .iter()
-        .copied()
-        .find(|&t| count_clusters(t) <= nclusters)
-        .unwrap_or(thresholds[thresholds.len() - 1]);
+    // Binary search for the smallest threshold index where count_clusters <= nclusters.
+    // At threshold index 0 (smallest dissimilarity), few merges occur → many clusters.
+    // At the last threshold, all observations merge → 1 cluster. The cluster count is
+    // monotonically non-increasing in threshold, so binary search is valid.
+    let mut lo = 0usize;
+    let mut hi = thresholds.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if count_clusters(thresholds[mid]) <= nclusters {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    let chosen_threshold = if lo < thresholds.len() {
+        thresholds[lo]
+    } else {
+        thresholds[thresholds.len() - 1]
+    };
 
     // Assign cluster labels using the chosen threshold.
     let total = 2 * n - 1;
@@ -223,10 +244,7 @@ fn select_k_clusters<T: PartialOrd + Copy>(
 }
 
 fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> {
-    // region x gene count matrix
     let counts = random_region_counts(dataset, NFEATURES, BIN_SIZE);
-
-    // Deviance-rank all genes (highest deviance first).
     let gene_ranking = deviance_ranking(&counts);
 
     // To avoid an overly large pairwise distance matrix, subset to the top
@@ -237,29 +255,63 @@ fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> 
     let ncandidates = gene_ranking.len().min(NGENES_CANDIDATES);
     let col_indices: Vec<usize> = gene_ranking.into_iter().take(ncandidates).collect();
     let nrows = counts.nrows();
-    let mut counts =
+    let counts =
         Array2::from_shape_fn((nrows, ncandidates), |(i, j)| counts[[i, col_indices[j]]]);
 
-    // log1p transform counts and compute pairwise gene correlation matrix
-    let ngenes = counts.ncols();
+    // Filter out zero-variance columns: genes absent from all random regions
+    // produce a constant (all-zero) column, which causes pearson_correlation to
+    // return NaN, which kodama rejects.
+    let n = nrows as f32;
+    let valid_cols: Vec<usize> = (0..ncandidates)
+        .filter(|&j| {
+            let col = counts.column(j);
+            let mean = col.sum() / n;
+            col.iter().any(|&v| (v - mean).abs() > 1e-9)
+        })
+        .collect();
+
+    let gene_totals: Vec<f32> = valid_cols.iter().map(|&j| counts.column(j).sum()).collect();
+
+    let col_indices: Vec<usize> = valid_cols.iter().map(|&j| col_indices[j]).collect();
+    let mut counts =
+        Array2::from_shape_fn((nrows, valid_cols.len()), |(i, j)| counts[[i, valid_cols[j]]]);
+
+    // log1p transform counts
     counts.map_inplace(|v| *v = v.ln_1p());
-    let corr = counts.t().pearson_correlation().unwrap();
+    let ngenes = col_indices.len();
+
+    // Subsample rows for the correlation step. Deviance ranking benefits from all
+    // NFEATURES regions, but the gene-gene correlation estimate converges quickly;
+    // NCORR_ROWS samples gives a good approximation at a fraction of the cost.
+    let corr_counts = if nrows > NCORR_ROWS {
+        let mut rng = rand::rng();
+        let row_indices: Vec<usize> = rand::seq::index::sample(&mut rng, nrows, NCORR_ROWS).into_vec();
+        Array2::from_shape_fn((NCORR_ROWS, ngenes), |(i, j)| counts[[row_indices[i], j]])
+    } else {
+        counts
+    };
+
+    let corr = corr_counts.t().pearson_correlation().unwrap();
 
     let mut condensed_dissim = Vec::with_capacity(ngenes * (ngenes - 1) / 2);
     for i in 0..ngenes {
         for j in i + 1..ngenes {
-            condensed_dissim.push(1.0 - corr[[i, j]]);
+            let c = corr[[i, j]];
+            condensed_dissim.push(if c.is_finite() {
+                (1.0 - c).clamp(0.0, 2.0)
+            } else {
+                1.0
+            });
         }
     }
 
-    // Hierarchical clustering of genes, cut to nfeatures clusters.
     let hclust = kodama::linkage(&mut condensed_dissim, ngenes, kodama::Method::Average);
+
     let gene_cluster_assignments = select_k_clusters(&hclust, nfeatures);
 
-    // For each cluster, select the representative gene with the highest deviance.
-    // Because col_indices is ordered by decreasing deviance, the first local
-    // index encountered for each cluster (iterating j = 0, 1, 2, …) is the
-    // highest-deviance member of that cluster.
+    // For each cluster, select the representative gene with the highest total
+    // transcript count so that highly-expressed genes are kept out of the
+    // factored portion.
     let nclusters = gene_cluster_assignments
         .iter()
         .copied()
@@ -267,7 +319,8 @@ fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> 
         .map_or(0, |m| m + 1);
     let mut best_local: Vec<Option<usize>> = vec![None; nclusters];
     for (local_idx, &cluster_id) in gene_cluster_assignments.iter().enumerate() {
-        if best_local[cluster_id].is_none() {
+        let current = best_local[cluster_id];
+        if current.is_none() || gene_totals[local_idx] > gene_totals[current.unwrap()] {
             best_local[cluster_id] = Some(local_idx);
         }
     }
