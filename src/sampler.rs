@@ -790,11 +790,133 @@ fn initial_component_assignments(
 
     const KMEANS_ITERATIONS: usize = 500;
     let kmeans_results = kmeans(ncomponents, &embedding, KMEANS_ITERATIONS);
-    let z: Array1<u32> = kmeans_results
-        .membership
-        .iter()
-        .map(|z_c| *z_c as u32)
-        .collect();
+    let mut membership = kmeans_results.membership.clone();
+
+    let min_pop = (ncells / ncomponents / 5).max(10);
+    rebalance_components(&mut membership, &embedding, ncomponents, min_pop);
+
+    let z: Array1<u32> = membership.iter().map(|z_c| *z_c as u32).collect();
 
     z
+}
+
+fn rebalance_components(
+    membership: &mut [usize],
+    embedding: &[Vec<f32>],
+    ncomponents: usize,
+    min_pop: usize,
+) {
+    let dim = embedding[0].len();
+
+    let mut pop = vec![0usize; ncomponents];
+    for &z_c in membership.iter() {
+        pop[z_c] += 1;
+    }
+
+    let mut centroids = vec![vec![0.0f64; dim]; ncomponents];
+    for (i, &z_i) in membership.iter().enumerate() {
+        for (d, &val) in embedding[i].iter().enumerate() {
+            centroids[z_i][d] += val as f64;
+        }
+    }
+    for (t, centroid_t) in centroids.iter_mut().enumerate() {
+        if pop[t] > 0 {
+            for d in centroid_t.iter_mut() {
+                *d /= pop[t] as f64;
+            }
+        }
+    }
+
+    // For empty clusters, seed the centroid with a cell from the most
+    // populous cluster so that the rebalancing step has a meaningful
+    // reference point to attract cells toward.
+    let empty_clusters: Vec<usize> = (0..ncomponents).filter(|&t| pop[t] == 0).collect();
+    for t in empty_clusters {
+        let largest = pop
+            .iter()
+            .enumerate()
+            .max_by_key(|&(_, &p)| p)
+            .map(|(i, _)| i)
+            .unwrap();
+        let cells_in_largest: Vec<usize> = membership
+            .iter()
+            .enumerate()
+            .filter(|&(_, &z_i)| z_i == largest)
+            .map(|(i, _)| i)
+            .collect();
+        if cells_in_largest.is_empty() {
+            continue;
+        }
+        let lc = centroids[largest].clone();
+        let seed = cells_in_largest
+            .iter()
+            .max_by(|&&i, &&j| {
+                let di: f64 = embedding[i]
+                    .iter()
+                    .zip(lc.iter())
+                    .map(|(a, b)| (*a as f64 - b).powi(2))
+                    .sum();
+                let dj: f64 = embedding[j]
+                    .iter()
+                    .zip(lc.iter())
+                    .map(|(a, b)| (*a as f64 - b).powi(2))
+                    .sum();
+                di.partial_cmp(&dj).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied()
+            .unwrap_or(cells_in_largest[0]);
+        for (d, &val) in embedding[seed].iter().enumerate() {
+            centroids[t][d] = val as f64;
+        }
+    }
+
+    // Iteratively move cells from over-populated components to
+    // under-populated ones, choosing cells closest to the target
+    // centroid.
+    loop {
+        let (min_comp, &min_pop_val) = pop
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &p)| p)
+            .unwrap();
+
+        if min_pop_val >= min_pop {
+            break;
+        }
+
+        let deficit = min_pop - min_pop_val;
+        let centroid = &centroids[min_comp];
+
+        let mut candidates: Vec<(usize, f64)> = Vec::new();
+        for (i, &z_i) in membership.iter().enumerate() {
+            if z_i != min_comp && pop[z_i] > min_pop {
+                let dist: f64 = embedding[i]
+                    .iter()
+                    .zip(centroid.iter())
+                    .map(|(a, b)| (*a as f64 - b).powi(2))
+                    .sum();
+                candidates.push((i, dist));
+            }
+        }
+
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut moved = 0;
+        for (cell_idx, _) in candidates {
+            if moved >= deficit {
+                break;
+            }
+            let old_comp = membership[cell_idx];
+            if pop[old_comp] > min_pop {
+                membership[cell_idx] = min_comp;
+                pop[old_comp] -= 1;
+                pop[min_comp] += 1;
+                moved += 1;
+            }
+        }
+
+        if moved == 0 {
+            break;
+        }
+    }
 }

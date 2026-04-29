@@ -462,7 +462,7 @@ impl ParamSampler {
         }
         info!("sample_latent_counts: accumulation: {:?}", t0.elapsed());
 
-        info!("component_population: {:?}", &params.component_population);
+        dbg!("component_population: {:?}", &params.component_population);
     }
 
     fn sample_θ(&self, priors: &ModelPriors, params: &mut ModelParams) {
