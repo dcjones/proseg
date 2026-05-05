@@ -917,8 +917,7 @@ fn main() {
     info!("initialized voxels: {:?}", t0.elapsed());
 
     let mean_transcripts_per_cell = dataset.transcripts.len() as f32 / voxels.ncells.max(1) as f32;
-    let auto_prior_weight = args.prior_weight * (mean_transcripts_per_cell / 200.0).max(1.0);
-
+    let auto_prior_weight = args.prior_weight * (mean_transcripts_per_cell / 100.0).max(1.0);
     println!("Read dataset:");
     println!("{:>9} transcripts", dataset.transcripts.len());
     println!("{:>9} cells", voxels.ncells);

@@ -475,7 +475,7 @@ impl ModelParams {
         let latent_counts = Array1::<u32>::zeros(nhidden);
         let multinomials = ThreadLocal::new();
         let z_probs = ThreadLocal::new();
-        let z = initial_component_assignments(&counts, ncomponents);
+        let (z, θ_centroids) = initial_component_assignments(&counts, ncomponents);
 
         let π = Array1::<f32>::zeros(ncomponents);
         let log_π = Array1::<f32>::zeros(ncomponents);
@@ -512,8 +512,22 @@ impl ModelParams {
         θ.slice_mut(s![0..nunfactored, 0..nunfactored])
             .diag_mut()
             .fill(1.0);
-        θ.slice_mut(s![nunfactored.., nunfactored..])
-            .mapv_inplace(|_v| randn(&mut rng).exp());
+        // Seed factored columns from k-means cluster centroids so the sampler
+        // starts with meaningful gene programs rather than pure noise.
+        let nfactors = nhidden - nunfactored;
+        for k in 0..nfactors {
+            let src = k % ncomponents;
+            for g in nunfactored..ngenes {
+                θ[[g, nunfactored + k]] = θ_centroids[[g, src]];
+            }
+            // Perturb duplicated columns (when nfactors > ncomponents) so they
+            // can diverge during sampling.
+            if k >= ncomponents {
+                for g in nunfactored..ngenes {
+                    θ[[g, nunfactored + k]] *= randn(&mut rng).exp();
+                }
+            }
+        }
         let mut θksum = Array1::<f32>::zeros(nhidden); // TODO: make have to initialize this
         Zip::from(&mut θksum)
             .and(θ.axis_iter(Axis(1)))
@@ -735,7 +749,7 @@ impl ModelParams {
 fn initial_component_assignments(
     counts: &CSRMat<CountMatRowKey, u32>,
     ncomponents: usize,
-) -> Array1<u32> {
+) -> (Array1<u32>, Array2<f32>) {
     let (ncells, j_bound) = counts.shape();
     let ngenes = j_bound.gene() as usize + 1;
 
@@ -753,7 +767,7 @@ fn initial_component_assignments(
 
     // normalize counts and project to low dimensionality
     let mut embedding = Array2::<f32>::zeros((ncells, EMBEDDING_DIM));
-    const NORM_CONSTANT: f32 = 1e2;
+    const NORM_CONSTANT: f32 = 1e3;
     let expr_row = ThreadLocal::new();
     // for each cell
     Zip::indexed(embedding.rows_mut()).par_for_each(|c, mut embedding_c| {
@@ -792,12 +806,60 @@ fn initial_component_assignments(
     let kmeans_results = kmeans(ncomponents, &embedding, KMEANS_ITERATIONS);
     let mut membership = kmeans_results.membership.clone();
 
+    // Debug: write membership vector to file
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create("membership_debug.txt")
+            .expect("Unable to create membership_debug.txt");
+        for (i, &z_i) in kmeans_results.membership.iter().enumerate() {
+            writeln!(f, "{} {}", i, z_i).expect("Unable to write to membership_debug.txt");
+        }
+    }
+
     let min_pop = (ncells / ncomponents / 5).max(10);
     rebalance_components(&mut membership, &embedding, ncomponents, min_pop);
 
+    // Debug: write rebalanced membership vector to file
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create("rebalanced_membership_debug.txt")
+            .expect("Unable to create membership_debug.txt");
+        for (i, &z_i) in membership.iter().enumerate() {
+            writeln!(f, "{} {}", i, z_i)
+                .expect("Unable to write to rebalanced_membership_debug.txt");
+        }
+    }
+
     let z: Array1<u32> = membership.iter().map(|z_c| *z_c as u32).collect();
 
-    z
+    // Compute per-cluster mean gene expression (marginalizing over layers and
+    // density bins) as a starting point for θ column initialization.
+    let mut centroids = Array2::<f32>::zeros((ngenes, ncomponents));
+    let mut cluster_pop = vec![0usize; ncomponents];
+    for (c, &z_c) in membership.iter().enumerate() {
+        cluster_pop[z_c] += 1;
+        for (key, count) in counts.row(c).read().iter_nonzeros() {
+            centroids[[key.gene() as usize, z_c]] += count as f32;
+        }
+    }
+    for t in 0..ncomponents {
+        let pop = cluster_pop[t].max(1) as f32;
+        for g in 0..ngenes {
+            centroids[[g, t]] = (NORM_CONSTANT * centroids[[g, t]] / pop).ln_1p();
+        }
+        // Normalize each column to mean 1 so scale is comparable to the
+        // random log-normal init that this replaces.
+        let mean = centroids.column(t).sum() / ngenes as f32;
+        if mean > 0.0 {
+            for g in 0..ngenes {
+                centroids[[g, t]] /= mean;
+            }
+        } else {
+            centroids.column_mut(t).fill(1.0);
+        }
+    }
+
+    (z, centroids)
 }
 
 fn rebalance_components(
@@ -874,11 +936,7 @@ fn rebalance_components(
     // under-populated ones, choosing cells closest to the target
     // centroid.
     loop {
-        let (min_comp, &min_pop_val) = pop
-            .iter()
-            .enumerate()
-            .min_by_key(|&(_, &p)| p)
-            .unwrap();
+        let (min_comp, &min_pop_val) = pop.iter().enumerate().min_by_key(|&(_, &p)| p).unwrap();
 
         if min_pop_val >= min_pop {
             break;
