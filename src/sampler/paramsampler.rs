@@ -575,6 +575,10 @@ impl ParamSampler {
 
         // normalize to get dirichlet posterior
         params.π.iter_mut().for_each(|π_t| *π_t /= π_sum);
+
+        Zip::from(&mut params.log_π)
+            .and(&params.π)
+            .for_each(|log_π_t, π_t| *log_π_t = π_t.ln());
     }
 
     fn sample_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
