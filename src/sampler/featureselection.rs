@@ -11,6 +11,9 @@ const BIN_SIZE: f32 = 20.0;
 const NGENES_CANDIDATES: usize = 5000;
 // Subsample rows for the correlation step only; deviance ranking uses all NFEATURES rows.
 const NCORR_ROWS: usize = 2000;
+// Minimum mean transcripts per region; genes below this are excluded before clustering
+// to avoid selecting essentially-unexpressed genes whose correlation structure is pure noise.
+const MIN_MEAN_TRANSCRIPTS_PER_REGION: f32 = 5e-2;
 
 // Select `nregions` random 2D square regions, and generate a count matrix over
 // these regions. This gives us some basis for doing feature selection without relying
@@ -273,8 +276,19 @@ fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> 
     let gene_totals: Vec<f32> = valid_cols.iter().map(|&j| counts.column(j).sum()).collect();
 
     let col_indices: Vec<usize> = valid_cols.iter().map(|&j| col_indices[j]).collect();
-    let mut counts =
+    let counts =
         Array2::from_shape_fn((nrows, valid_cols.len()), |(i, j)| counts[[i, valid_cols[j]]]);
+
+    // Filter out low-expression genes before clustering to avoid selecting genes
+    // whose correlation structure is dominated by noise.
+    let nrows_f = nrows as f32;
+    let expr_indices: Vec<usize> = (0..col_indices.len())
+        .filter(|&j| gene_totals[j] / nrows_f >= MIN_MEAN_TRANSCRIPTS_PER_REGION)
+        .collect();
+    let col_indices: Vec<usize> = expr_indices.iter().map(|&j| col_indices[j]).collect();
+    let gene_totals: Vec<f32> = expr_indices.iter().map(|&j| gene_totals[j]).collect();
+    let mut counts =
+        Array2::from_shape_fn((nrows, expr_indices.len()), |(i, j)| counts[[i, expr_indices[j]]]);
 
     // log1p transform counts
     counts.map_inplace(|v| *v = v.ln_1p());
