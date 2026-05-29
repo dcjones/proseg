@@ -1435,7 +1435,7 @@ fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'stat
     )
 }
 
-pub fn write_expected_contamination_zarr(
+pub fn write_expected_inflow_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
@@ -1447,24 +1447,53 @@ pub fn write_expected_contamination_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_expected_contamination_parts(&path, params, nsamples) {
+    if let Err(e) =
+        write_expected_flow_parts(&path, &params.expected_inflow, nsamples, "expected_inflow")
+    {
         panic!(
-            "Failed to write expected contamination to {}: {}",
+            "Failed to write expected inflow to {}: {}",
             path.display(),
             e
         )
     }
 }
 
-fn write_expected_contamination_parts(
-    path: &Path,
+pub fn write_expected_outflow_zarr(
+    output_path: &Option<String>,
+    filename: &str,
     params: &ModelParams,
     nsamples: usize,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_expected_flow_parts(
+        &path,
+        &params.expected_outflow,
+        nsamples,
+        "expected_outflow",
+    ) {
+        panic!(
+            "Failed to write expected outflow to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_expected_flow_parts(
+    path: &Path,
+    flow_matrix: &CSRMat<u32, u32>,
+    nsamples: usize,
+    layer_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    let ncells = params.ncells();
-    let ngenes = params.state_disagreement_counts.n as usize;
+    let ncells = flow_matrix.m as usize;
+    let ngenes = flow_matrix.n as usize;
 
     let mut data: Vec<f32> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
@@ -1474,34 +1503,23 @@ fn write_expected_contamination_parts(
     for i in 0..ncells {
         indptr.push(offset);
 
-        let disag_read = params.state_disagreement_counts.row(i).read();
-        let fg_read = params.foreground_counts.row(i).read();
-
-        for (gene, disag_count) in disag_read.iter_nonzeros() {
-            if disag_count == 0 {
+        let flow_read = flow_matrix.row(i).read();
+        for (gene, flow_count) in flow_read.iter_nonzeros() {
+            if flow_count == 0 {
                 continue;
             }
 
-            let fg_count = fg_read
-                .iter_nonzeros_from(gene)
-                .next()
-                .and_then(|(g, v)| if g == gene { Some(v) } else { None })
-                .unwrap_or(0);
-
-            if fg_count > 0 {
-                let contamination =
-                    disag_count as f32 / (fg_count as f32 * nsamples as f32);
-                data.push(contamination);
-                indices.push(gene as i32);
-                offset += 1;
-            }
+            let expected_flow = flow_count as f32 / (nsamples as f32);
+            data.push(expected_flow);
+            indices.push(gene as i32);
+            offset += 1;
         }
     }
     indptr.push(offset);
 
     write_anndata_csr_matrix_raw(
         store,
-        &format!("/tables/{SD_TABLE_NAME}/layers/expected_contamination"),
+        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}"),
         ncells,
         ngenes,
         &data,

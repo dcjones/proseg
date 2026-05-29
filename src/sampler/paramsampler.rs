@@ -3,9 +3,7 @@ use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
-use super::{
-    ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment,
-};
+use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -210,12 +208,18 @@ impl ParamSampler {
                     let src_state = params.reported_transcript_state[idx].load();
 
                     if !src_state.background && src_state != new_assignment {
-                        let mut disag_row = params
-                            .state_disagreement_counts
-                            .row(src_state.cell as usize)
-                            .write();
+                        let mut inflow_row =
+                            params.expected_inflow.row(src_state.cell as usize).write();
 
-                        disag_row.add(gene, 1);
+                        inflow_row.add(gene, 1);
+                    }
+
+                    if !new_assignment.background && src_state != new_assignment {
+                        let mut outflow_row = params
+                            .expected_outflow
+                            .row(new_assignment.cell as usize)
+                            .write();
+                        outflow_row.add(gene, 1);
                     }
 
                     if priors.record_state_transitions {
@@ -227,11 +231,9 @@ impl ParamSampler {
 
                         let dest_state = if is_background { ncells } else { cell };
 
-                        params.state_transitions.add_local(
-                            src_state as usize,
-                            gene,
-                            dest_state,
-                        );
+                        params
+                            .state_transitions
+                            .add_local(src_state as usize, gene, dest_state);
                     }
                 }
 

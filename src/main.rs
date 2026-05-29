@@ -29,7 +29,10 @@ use anndata_input::read_anndata_zarr_transcripts;
 use output::*;
 use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
-use spatialdata_output::{write_expected_contamination_zarr, write_spatialdata_zarr, write_state_transitions_zarr};
+use spatialdata_output::{
+    write_expected_inflow_zarr, write_expected_outflow_zarr, write_spatialdata_zarr,
+    write_state_transitions_zarr,
+};
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -1281,13 +1284,22 @@ fn main() {
         }
 
         let t0 = Instant::now();
-        write_expected_contamination_zarr(
+        write_expected_inflow_zarr(
             &args.output_path,
             output_spatialdata,
             &params,
             args.uncertainty_samples,
         );
-        info!("write expected contamination: {:?}", t0.elapsed());
+        info!("write expected inflow: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        write_expected_outflow_zarr(
+            &args.output_path,
+            output_spatialdata,
+            &params,
+            args.uncertainty_samples,
+        );
+        info!("write expected outflow: {:?}", t0.elapsed());
     }
 
     prog.finish();
