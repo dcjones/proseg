@@ -3,7 +3,7 @@ use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
-use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
+use super::{FlowStats, ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -211,7 +211,10 @@ impl ParamSampler {
                         let mut inflow_row =
                             params.expected_inflow.row(src_state.cell as usize).write();
 
-                        inflow_row.add(gene, 1);
+                        inflow_row.update(gene, FlowStats::default, |v| {
+                            v.sample_count += 1;
+                            v.count += 1;
+                        });
                     }
 
                     if !new_assignment.background && src_state != new_assignment {
@@ -219,7 +222,10 @@ impl ParamSampler {
                             .expected_outflow
                             .row(new_assignment.cell as usize)
                             .write();
-                        outflow_row.add(gene, 1);
+                        outflow_row.update(gene, FlowStats::default, |v| {
+                            v.sample_count += 1;
+                            v.count += 1;
+                        });
                     }
 
                     if priors.record_state_transitions {

@@ -20,11 +20,11 @@ use zarrs::metadata::v2::{DataTypeMetadataV2, FillValueMetadataV2, MetadataV2};
 use zarrs::storage::ReadableWritableStorageTraits;
 
 use super::output::write_transcript_metadata;
-use super::sampler::ModelParams;
 use super::sampler::csrmat::CSRMat;
 use super::sampler::runvec::RunVec;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::TranscriptMetadata;
+use super::sampler::{FlowStats, ModelParams};
 use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
 use crate::schemas::*;
 
@@ -1486,7 +1486,7 @@ pub fn write_expected_outflow_zarr(
 
 fn write_expected_flow_parts(
     path: &Path,
-    flow_matrix: &CSRMat<u32, u32>,
+    flow_matrix: &CSRMat<u32, FlowStats>,
     nsamples: usize,
     layer_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1495,7 +1495,8 @@ fn write_expected_flow_parts(
     let ncells = flow_matrix.m as usize;
     let ngenes = flow_matrix.n as usize;
 
-    let mut data: Vec<f32> = Vec::new();
+    let mut mean_data: Vec<f32> = Vec::new();
+    let mut var_data: Vec<f32> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
     let mut indptr: Vec<i32> = Vec::with_capacity(ncells + 1);
     let mut offset = 0i32;
@@ -1504,25 +1505,35 @@ fn write_expected_flow_parts(
         indptr.push(offset);
 
         let flow_read = flow_matrix.row(i).read();
-        for (gene, flow_count) in flow_read.iter_nonzeros() {
-            if flow_count == 0 {
-                continue;
-            }
-
-            let expected_flow = flow_count as f32 / (nsamples as f32);
-            data.push(expected_flow);
+        for (gene, stats) in flow_read.iter_nonzeros() {
+            mean_data.push(stats.count as f32 / nsamples as f32);
+            var_data.push(stats.variance(nsamples));
             indices.push(gene as i32);
             offset += 1;
         }
     }
     indptr.push(offset);
 
+    // Mean layer (expected flow per sample)
     write_anndata_csr_matrix_raw(
-        store,
+        store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}"),
         ncells,
         ngenes,
-        &data,
+        &mean_data,
+        &indices,
+        &indptr,
+        "<f4",
+        "<i4",
+    )?;
+
+    // Variance layer (sample variance of per-sample flow count)
+    write_anndata_csr_matrix_raw(
+        store,
+        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}_var"),
+        ncells,
+        ngenes,
+        &var_data,
         &indices,
         &indptr,
         "<f4",

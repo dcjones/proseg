@@ -327,6 +327,55 @@ impl TranscriptState {
     }
 }
 
+/// Per-entry statistics for tracking expected flow and its sample variance across MCMC samples.
+/// The variance is computed using the algebraically equivalent form of Welford's online algorithm:
+/// sum-of-squares accumulation avoids needing to process zero-valued sample observations explicitly.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FlowStats {
+    /// Flow events accumulated during the current sample; reset to 0 after each flush.
+    pub sample_count: u32,
+    /// Total accumulated count across all recorded samples: sum(x_i).
+    pub count: u32,
+    /// Sum of squared per-sample counts: sum(x_i^2); used for variance computation.
+    pub count_sq: u64,
+}
+
+impl FlowStats {
+    /// Sample variance of the per-sample flow count across `nsamples` samples.
+    pub fn variance(&self, nsamples: usize) -> f32 {
+        if nsamples <= 1 {
+            return 0.0;
+        }
+        let n = nsamples as f64;
+        let count = self.count as f64;
+        let count_sq = self.count_sq as f64;
+        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
+        ((count_sq - count * count / n) / (n - 1.0)) as f32
+    }
+}
+
+impl std::ops::Add for FlowStats {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            sample_count: self.sample_count + rhs.sample_count,
+            count: self.count + rhs.count,
+            count_sq: self.count_sq + rhs.count_sq,
+        }
+    }
+}
+
+impl num::traits::Zero for FlowStats {
+    fn zero() -> Self {
+        Self::default()
+    }
+    fn is_zero(&self) -> bool {
+        // An entry is considered zero (and will be skipped by iter_nonzeros)
+        // only when no events have ever been recorded for it.
+        self.count == 0 && self.sample_count == 0
+    }
+}
+
 // In general, subscripts indicate dimension:
 //   t: component
 //   k: latent dim
@@ -371,12 +420,12 @@ pub struct ModelParams {
     // [ncells, ngenes]
     // For cell c and gene g, count the number of times a transcript that was reported
     // in cell c is in a cell/state other than c.
-    pub expected_inflow: CSRMat<u32, u32>,
+    pub expected_inflow: CSRMat<u32, FlowStats>,
 
     // [ncells, ngenes]
     // For cell c and gene g, count the number of times a transcript is in cell c that was
     // reported in another cell/state.
-    pub expected_outflow: CSRMat<u32, u32>,
+    pub expected_outflow: CSRMat<u32, FlowStats>,
 
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
@@ -761,6 +810,24 @@ impl ModelParams {
         {
             reported.store(state.load());
         }
+    }
+
+    /// Finalizes per-sample flow statistics for variance tracking.
+    /// Must be called once at the end of each recorded sample: squares the current
+    /// `sample_count` into `count_sq` (Welford-equivalent M2 accumulation), then
+    /// resets `sample_count` to zero for the next sample.
+    pub fn flush_flow_stats(&self) {
+        let flush_row = |row: csrmat::CSRRow<'_, u32, FlowStats>| {
+            let mut guard = row.write();
+            guard.guard.scale_all(|stats| {
+                if stats.sample_count > 0 {
+                    stats.count_sq += stats.sample_count as u64 * stats.sample_count as u64;
+                    stats.sample_count = 0;
+                }
+            });
+        };
+        self.expected_inflow.par_rows().for_each(flush_row);
+        self.expected_outflow.par_rows().for_each(flush_row);
     }
 
     pub fn update_phi_theta_dot(&mut self) {

@@ -1355,6 +1355,10 @@ fn run_sampler(
     );
     let d_param = t_param.elapsed();
 
+    if record_samples {
+        params.flush_flow_stats();
+    }
+
     info!("sampling times: morphology: {d_morph:?}, repo: {d_repo:?}, params: {d_param:?}");
 
     prog.inc(1);
