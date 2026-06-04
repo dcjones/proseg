@@ -16,7 +16,7 @@ use rayon::current_num_threads;
 use regex::Regex;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcriptrepo::TranscriptRepo;
-use sampler::transcripts::{read_transcripts_csv, read_visium_data};
+use sampler::transcripts::{ParquetFmt, read_transcripts_csv, read_visium_data};
 use sampler::voxelcheckerboard::{PixelTransform, VoxelCheckerboard};
 use sampler::voxelsampler::{VOXEL_SAMPLING_BATCH_SIZE, VoxelSampler};
 use sampler::{ModelParams, ModelPriors};
@@ -70,7 +70,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     merscope: bool,
 
-    /// (Deprecated) Preset for Vizgen MERFISH/MERSCOPE.
+    /// Alias for preset for Vizgen MERFISH/MERSCOPE.
     #[arg(long, default_value_t = false)]
     merfish: bool,
 
@@ -196,6 +196,10 @@ struct Args {
     /// Name of column containing the quality value
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
+
+    /// Platform-specific format to use when reading parquet files
+    #[arg(value_enum, default_value = "none")]
+    parquet_fmt: ParquetFmt,
 
     /// Spatialdata cell boundary geometry to use as prior segmentation
     #[arg(long, default_value = None)]
@@ -510,6 +514,7 @@ fn set_xenium_presets(args: &mut Args) {
 
     // newer xenium data does have a fov column
     args.fov_column.get_or_insert(String::from("fov_name"));
+    args.parquet_fmt = ParquetFmt::Xenium;
 }
 
 fn set_cosmx_presets(args: &mut Args) {
@@ -559,22 +564,15 @@ fn set_cosmx_micron_presets(args: &mut Args) {
 
 fn set_merfish_presets(args: &mut Args) {
     args.gene_column.get_or_insert(String::from("gene"));
-    args.x_column.get_or_insert(String::from("x"));
-    args.y_column.get_or_insert(String::from("y"));
-    args.z_column.get_or_insert(String::from("z"));
-    args.cell_id_column.get_or_insert(String::from("cell"));
-    args.cell_id_unassigned.get_or_insert(String::from("NA"));
-    // args.cell_id_unassigned.get_or_insert(String::from("0"));
-}
-
-fn set_merscope_presets(args: &mut Args) {
-    args.gene_column.get_or_insert(String::from("gene"));
     args.x_column.get_or_insert(String::from("global_x"));
     args.y_column.get_or_insert(String::from("global_y"));
     args.z_column.get_or_insert(String::from("global_z"));
     args.fov_column.get_or_insert(String::from("fov"));
     args.cell_id_column.get_or_insert(String::from("cell_id"));
     args.cell_id_unassigned.get_or_insert(String::from("-1"));
+    args.qv_column
+        .get_or_insert(String::from("transcript_score"));
+    args.parquet_fmt = ParquetFmt::Merfish2;
 }
 
 fn set_visiumhd_presets(args: &mut Args) {
@@ -674,13 +672,8 @@ fn main() {
         set_cosmx_micron_presets(&mut args);
     }
 
-    if args.merfish {
-        println!("WARNING: --merfish is deprecated, use --merscope instead");
+    if args.merfish || args.merscope {
         set_merfish_presets(&mut args);
-    }
-
-    if args.merscope {
-        set_merscope_presets(&mut args);
     }
 
     if args.visiumhd {
@@ -765,6 +758,7 @@ fn main() {
     } else {
         read_transcripts_csv(
             &args.transcript_csv,
+            args.parquet_fmt,
             excluded_genes,
             &expect_arg(args.gene_column, "gene-column"),
             args.transcript_id_column,

@@ -1,4 +1,5 @@
 use arrow;
+use clap::ValueEnum;
 use csv;
 use flate2::read::{GzDecoder, MultiGzDecoder};
 use itertools::izip;
@@ -23,6 +24,13 @@ pub const BACKGROUND_CELL: CellIndex = u32::MAX;
 use super::runvec::RunVec;
 use crate::output::infer_format_from_filename;
 use crate::schemas::OutputFormat;
+
+#[derive(Copy, Clone, ValueEnum, Debug)]
+pub enum ParquetFmt {
+    None,
+    Xenium,
+    Merfish2,
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Transcript {
@@ -450,6 +458,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 #[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_csv(
     path: &str,
+    parquet_fmt: ParquetFmt,
     excluded_genes: Option<Regex>,
     transcript_column: &str,
     id_column: Option<String>,
@@ -520,25 +529,45 @@ pub fn read_transcripts_csv(
                 non_unique_cell_ids,
             )
         }
-        OutputFormat::Parquet => read_xenium_transcripts_parquet(
-            path,
-            excluded_genes,
-            transcript_column,
-            &id_column.unwrap(),
-            &compartment_column.unwrap(),
-            compartment_nuclear.unwrap().parse::<u8>().unwrap(),
-            &fov_column.unwrap(),
-            cell_id_column,
-            cell_id_unassigned,
-            &qv_column.unwrap(),
-            x_column,
-            y_column,
-            z_column,
-            min_qv,
-            ignore_z_column,
-            coordinate_scale,
-            non_unique_cell_ids,
-        ),
+
+        OutputFormat::Parquet => match parquet_fmt {
+            ParquetFmt::Xenium => read_xenium_transcripts_parquet(
+                path,
+                excluded_genes,
+                transcript_column,
+                &id_column.unwrap(),
+                &compartment_column.unwrap(),
+                compartment_nuclear.unwrap().parse::<u8>().unwrap(),
+                &fov_column.unwrap(),
+                cell_id_column,
+                cell_id_unassigned,
+                &qv_column.unwrap(),
+                x_column,
+                y_column,
+                z_column,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+                non_unique_cell_ids,
+            ),
+            ParquetFmt::Merfish2 => read_merfish_transcripts_parquet(
+                path,
+                excluded_genes,
+                transcript_column,
+                &fov_column.unwrap(),
+                cell_id_column,
+                cell_id_unassigned.parse::<i64>().unwrap(),
+                &qv_column.unwrap(),
+                x_column,
+                y_column,
+                z_column,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+                non_unique_cell_ids,
+            ),
+            ParquetFmt::None => panic!("No parquet file format specified."),
+        },
         OutputFormat::Infer => panic!("Could not infer format of file '{path}'"),
     }
 }
@@ -777,6 +806,286 @@ where
     }
 
     let ncells = compact_priorseg(&mut priorseg);
+    let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
+    for ((_fov, cell_id), i) in cell_id_map {
+        original_cell_ids[i as usize] = cell_id;
+    }
+
+    let transcript_ids = if transcript_ids.is_empty() {
+        None
+    } else {
+        Some(transcript_ids)
+    };
+
+    let mut dataset = TranscriptDataset {
+        transcripts,
+        transcript_ids,
+        priorseg,
+        fovs,
+        barcode_positions: None,
+        gene_names,
+        fov_names,
+        original_cell_ids,
+        ncells,
+    };
+    dataset.shrink_to_fit();
+    dataset
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_merfish_transcripts_parquet(
+    filename: &str,
+    excluded_genes: Option<Regex>,
+    gene_col_name: &str,
+    fov_col_name: &str,
+    cell_id_col_name: &str,
+    cell_id_unassigned: i64,
+    qv_col_name: &str,
+    x_col_name: &str,
+    y_col_name: &str,
+    z_col_name: &str,
+    min_qv: f32,
+    ignore_z_column: bool,
+    coordinate_scale: f32,
+    non_unique_cell_ids: bool,
+) -> TranscriptDataset {
+    let input_file =
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
+    let schema = builder.schema().as_ref().clone();
+    let rdr = builder
+        .build()
+        .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {filename}"));
+
+    let gene_field = schema.field_with_name(gene_col_name).unwrap();
+    let string_type = gene_field.data_type();
+
+    match string_type {
+        arrow::datatypes::DataType::Utf8 => {
+            read_merfish_transcripts_parquet_str_type::<arrow::array::StringArray>(
+                rdr,
+                schema,
+                excluded_genes,
+                gene_col_name,
+                fov_col_name,
+                cell_id_col_name,
+                cell_id_unassigned,
+                qv_col_name,
+                x_col_name,
+                y_col_name,
+                z_col_name,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+                non_unique_cell_ids,
+            )
+        }
+        arrow::datatypes::DataType::LargeUtf8 => {
+            read_merfish_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
+                rdr,
+                schema,
+                excluded_genes,
+                gene_col_name,
+                fov_col_name,
+                cell_id_col_name,
+                cell_id_unassigned,
+                qv_col_name,
+                x_col_name,
+                y_col_name,
+                z_col_name,
+                min_qv,
+                ignore_z_column,
+                coordinate_scale,
+                non_unique_cell_ids,
+            )
+        }
+        _ => panic!("Unexpected string array type in Xenium parquet file"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_merfish_transcripts_parquet_str_type<T>(
+    rdr: ParquetRecordBatchReader,
+    schema: arrow::datatypes::Schema,
+    excluded_genes: Option<Regex>,
+    gene_col_name: &str,
+    fov_col_name: &str,
+    cell_id_col_name: &str,
+    cell_id_unassigned: i64,
+    qv_col_name: &str,
+    x_col_name: &str,
+    y_col_name: &str,
+    z_col_name: &str,
+    min_qv: f32,
+    ignore_z_column: bool,
+    coordinate_scale: f32,
+    non_unique_cell_ids: bool,
+) -> TranscriptDataset
+where
+    T: 'static,
+    for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
+{
+    let id_col_idx = 0; // These seem to be always in a
+    let gene_col_idx = schema.index_of(gene_col_name).unwrap();
+    let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
+    let fov_col_idx = schema.index_of(fov_col_name).unwrap();
+    let x_col_idx = schema.index_of(x_col_name).unwrap();
+    let y_col_idx = schema.index_of(y_col_name).unwrap();
+    let z_col_idx = schema.index_of(z_col_name).unwrap();
+    let qv_col_idx = schema.index_of(qv_col_name).unwrap();
+
+    let mut transcripts = RunVec::new();
+    let mut transcript_ids = Vec::new();
+    let mut gene_name_map: HashMap<String, usize> = HashMap::new();
+    let mut gene_names = Vec::new();
+    let mut priorseg = RunVec::new();
+    let mut fovs = RunVec::new();
+
+    let mut fov_map: HashMap<u16, u32> = HashMap::new();
+    let mut cell_id_map: HashMap<(u32, String), CellIndex> = HashMap::new();
+
+    for rec_batch in rdr {
+        let rec_batch = rec_batch.expect("Unable to read record batch.");
+
+        let gene_col = rec_batch
+            .column(gene_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+
+        let id_col = rec_batch
+            .column(id_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+
+        let cell_id_col = rec_batch
+            .column(cell_id_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+
+        let fov_col = rec_batch
+            .column(fov_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt16Array>()
+            .unwrap();
+
+        let x_col = rec_batch
+            .column(x_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+
+        let y_col = rec_batch
+            .column(y_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+
+        let z_col = rec_batch
+            .column(z_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt16Array>()
+            .unwrap();
+
+        let qv_col = rec_batch
+            .column(qv_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap();
+
+        for (gene, id, cell_id, fov, x, y, z, qv) in izip!(
+            gene_col,
+            id_col,
+            cell_id_col,
+            fov_col,
+            x_col,
+            y_col,
+            z_col,
+            qv_col
+        ) {
+            let gene = gene.unwrap();
+            let transcript_id = id.unwrap() as u64;
+            let cell_id = cell_id.unwrap();
+            let fov = fov.unwrap();
+            let x = x.unwrap() as f32;
+            let y = y.unwrap() as f32;
+            let z = z.unwrap() as f32;
+            let qv = qv.unwrap();
+
+            if qv < min_qv {
+                continue;
+            }
+
+            if let Some(excluded_genes) = &excluded_genes {
+                if excluded_genes.is_match(gene) {
+                    continue;
+                }
+            }
+
+            let fov = match fov_map.get(&fov) {
+                Some(fov) => *fov,
+                None => {
+                    let next_fov = fov_map.len();
+                    fov_map.insert(fov, next_fov as u32);
+                    next_fov as u32
+                }
+            };
+
+            let gene = if let Some(gene) = gene_name_map.get(gene) {
+                *gene
+            } else {
+                gene_names.push(gene.to_string());
+                gene_name_map.insert(gene.to_string(), gene_names.len() - 1);
+                gene_names.len() - 1
+            };
+
+            let x = coordinate_scale * x;
+            let y = coordinate_scale * y;
+
+            transcripts.push(Transcript {
+                x,
+                y,
+                z: if ignore_z_column { 0.0 } else { z },
+                qv,
+                gene: gene as u32,
+            });
+            transcript_ids.push(transcript_id);
+            fovs.push(fov);
+
+            let cell_id_fov = if non_unique_cell_ids { fov } else { 0 };
+            if cell_id == cell_id_unassigned {
+                priorseg.push(PriorTranscriptSeg {
+                    nucleus: BACKGROUND_CELL,
+                    cell: BACKGROUND_CELL,
+                });
+            } else {
+                let next_cell_id = cell_id_map.len() as CellIndex;
+                let cell_id = *cell_id_map
+                    .entry((cell_id_fov, cell_id.to_string()))
+                    .or_insert_with(|| next_cell_id);
+
+                // merfish currently has no compartment information
+                priorseg.push(PriorTranscriptSeg {
+                    nucleus: cell_id,
+                    cell: cell_id,
+                });
+            }
+        }
+    }
+
+    let mut fov_names = vec![String::new(); fov_map.len().max(1)];
+    if fov_map.is_empty() {
+        fov_names[0] = String::from("0");
+    } else {
+        for (fov_name, fov) in fov_map {
+            fov_names[fov as usize] = fov_name.to_string();
+        }
+    }
+
+    let ncells = compact_priorseg(&mut priorseg);
+
     let mut original_cell_ids = vec![String::new(); cell_id_map.len()];
     for ((_fov, cell_id), i) in cell_id_map {
         original_cell_ids[i as usize] = cell_id;
