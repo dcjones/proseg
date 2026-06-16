@@ -1029,30 +1029,8 @@ fn initial_component_assignments(
     let kmeans_results = kmeans(ncomponents, &embedding, KMEANS_ITERATIONS);
     let mut membership = kmeans_results.membership.clone();
 
-    // Debug: write membership vector to file
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create("membership_debug.txt")
-            .expect("Unable to create membership_debug.txt");
-        for (i, &z_i) in kmeans_results.membership.iter().enumerate() {
-            writeln!(f, "{} {}", i, z_i).expect("Unable to write to membership_debug.txt");
-        }
-    }
-
     let min_pop = (ncells / ncomponents / 5).max(10);
     rebalance_components(&mut membership, &embedding, ncomponents, min_pop);
-
-    // Debug: write rebalanced membership vector to file
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create("rebalanced_membership_debug.txt")
-            .expect("Unable to create membership_debug.txt");
-        for (i, &z_i) in membership.iter().enumerate() {
-            writeln!(f, "{} {}", i, z_i)
-                .expect("Unable to write to rebalanced_membership_debug.txt");
-        }
-    }
-
     let z: Array1<u32> = membership.iter().map(|z_c| *z_c as u32).collect();
 
     // Compute per-cluster mean gene expression (marginalizing over layers and
