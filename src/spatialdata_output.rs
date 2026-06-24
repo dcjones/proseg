@@ -1542,3 +1542,111 @@ fn write_expected_flow_parts(
 
     Ok(())
 }
+
+pub fn write_dispersion_params_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_dispersion_params_parts(&path, params) {
+        panic!(
+            "Failed to write dispersion params to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_dispersion_params_parts(
+    path: &Path,
+    params: &ModelParams,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    let ncomponents = params.rφ.shape()[0];
+    let nhidden = params.rφ.shape()[1];
+
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    // rφ: [ncomponents, nhidden] — Gamma shape (NB dispersion) parameter per component
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/rphi"),
+        vec![ncomponents as u64, nhidden as u64],
+        vec![guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+    let rφ_vec: Vec<f32> = if params.rφ.is_standard_layout() {
+        params.rφ.iter().copied().collect()
+    } else {
+        params.rφ.as_standard_layout().iter().copied().collect()
+    };
+    arr.store_array_subset_elements(&arr.subset_all(), &rφ_vec)?;
+    arr.store_metadata()?;
+
+    // sφ: [ncomponents, nhidden] — Gamma scale parameter per component
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/sphi"),
+        vec![ncomponents as u64, nhidden as u64],
+        vec![guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+    let sφ_vec: Vec<f32> = if params.sφ.is_standard_layout() {
+        params.sφ.iter().copied().collect()
+    } else {
+        params.sφ.as_standard_layout().iter().copied().collect()
+    };
+    arr.store_array_subset_elements(&arr.subset_all(), &sφ_vec)?;
+    arr.store_metadata()?;
+
+    // π: [ncomponents] — mixture weights
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/pi"),
+        vec![ncomponents as u64],
+        vec![guess_chunks_1d(ncomponents, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+    arr.store_array_subset_elements(&arr.subset_all(), &params.π.to_vec())?;
+    arr.store_metadata()?;
+
+    Ok(())
+}

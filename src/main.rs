@@ -30,8 +30,8 @@ use output::*;
 use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::{
-    write_expected_inflow_zarr, write_expected_outflow_zarr, write_spatialdata_zarr,
-    write_state_transitions_zarr,
+    write_dispersion_params_zarr, write_expected_inflow_zarr, write_expected_outflow_zarr,
+    write_spatialdata_zarr, write_state_transitions_zarr,
 };
 
 #[cfg(feature = "dhat-heap")]
@@ -448,6 +448,11 @@ struct Args {
     /// Suppress output of per-gene transcript assignment uncertainty matrices
     #[arg(long, default_value_t = false)]
     no_gene_transitions: bool,
+
+    /// Output mixture component dispersion parameters (rφ, sφ, π) to the
+    /// spatialdata object under uns/dispersion_params
+    #[arg(long, default_value_t = false)]
+    output_dispersion_params: bool,
 
     /// Use connectivity checks to prevent cells from having any disconnected voxels
     #[arg(long, default_value_t = false)]
@@ -1300,6 +1305,12 @@ fn main() {
             args.uncertainty_samples,
         );
         info!("write expected outflow: {:?}", t0.elapsed());
+
+        if args.output_dispersion_params {
+            let t0 = Instant::now();
+            write_dispersion_params_zarr(&args.output_path, output_spatialdata, &params);
+            info!("write dispersion params: {:?}", t0.elapsed());
+        }
     }
 
     prog.finish();
