@@ -672,7 +672,7 @@ impl ParamSampler {
                                 .sum::<f32>();
                         let scale = scale_inv.recip();
                         *r_tk = Gamma::new(shape, scale).unwrap().sample(rng);
-                        *r_tk = r_tk.max(2e-4);
+                        *r_tk = r_tk.max(priors.min_rφ);
                     });
             });
     }
