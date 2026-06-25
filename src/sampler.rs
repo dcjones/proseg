@@ -498,10 +498,11 @@ pub struct ModelParams {
     // [ncells, nhidden] aux PolyaGamma variables for sampling sφ
     pub ωφ: Array2<f32>,
 
-    // [ncomponents, nhidden] φ gamma shape parameters
+    // [ncells, nhidden] φ gamma shape parameters (per-cell, rather than
+    // per-component, so the prior can't be overwhelmed as cell count grows)
     pub rφ: Array2<f32>,
 
-    // [ncomponents, nhidden]
+    // [ncells, nhidden]
     // for precomputing lgamma(rφ)
     lgamma_rφ: Array2<f32>,
 
@@ -693,8 +694,8 @@ impl ModelParams {
 
         let lφ = Array2::<u32>::zeros((ncells, nhidden));
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
-        let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
-        let lgamma_rφ = Array2::<f32>::zeros((ncomponents, nhidden));
+        let rφ = Array2::<f32>::from_elem((ncells, nhidden), 1.0);
+        let lgamma_rφ = Array2::<f32>::zeros((ncells, nhidden));
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
         let μ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
         let τ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
