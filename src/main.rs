@@ -449,8 +449,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_gene_transitions: bool,
 
-    /// Output dispersion parameters (per-cell rφ, per-component sφ, π) to
-    /// the spatialdata object under uns/dispersion_params
+    /// Output mixture component dispersion parameters (rφ, sφ, π) to the
+    /// spatialdata object under uns/dispersion_params
     #[arg(long, default_value_t = false)]
     output_dispersion_params: bool,
 

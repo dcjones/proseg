@@ -1569,9 +1569,8 @@ fn write_dispersion_params_parts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    let ncells = params.rφ.shape()[0];
+    let ncomponents = params.rφ.shape()[0];
     let nhidden = params.rφ.shape()[1];
-    let ncomponents = params.sφ.shape()[0];
 
     new_zarr_group(
         store.clone(),
@@ -1588,12 +1587,12 @@ fn write_dispersion_params_parts(
     )?
     .store_metadata()?;
 
-    // rφ: [ncells, nhidden] — Gamma shape (NB dispersion) parameter per cell
+    // rφ: [ncomponents, nhidden] — Gamma shape (NB dispersion) parameter per component
     let mut arr = new_zarr_array(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/rphi"),
-        vec![ncells as u64, nhidden as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64, nhidden as u64].try_into()?,
+        vec![ncomponents as u64, nhidden as u64],
+        vec![guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64].try_into()?,
         DataTypeMetadataV2::Simple(String::from("<f4")),
         FillValueMetadataV2::NaN,
         Some(default_blosc_compressor()?),

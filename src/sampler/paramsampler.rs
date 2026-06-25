@@ -326,8 +326,8 @@ impl ParamSampler {
             .and(&params.rφ)
             .into_par_iter()
             .with_min_len(SIMPLE_PAR_ITER_MIN_LEN)
-            .for_each(|(lgamma_r_ck, r_ck)| {
-                *lgamma_r_ck = lgammaf(*r_ck);
+            .for_each(|(lgamma_r_tk, r_tk)| {
+                *lgamma_r_tk = lgammaf(*r_tk);
             });
 
         let ncomponents = params.ncomponents();
@@ -335,13 +335,11 @@ impl ParamSampler {
             .and(params.φ.rows())
             .and(&params.effective_cell_volume)
             .and(&params.log_cell_volume)
-            .and(params.rφ.rows())
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (i, z_c, φ_c, ev_c, log_v_c, r_c)| {
+            .for_each_init(rng, |rng, (i, z_c, φ_c, ev_c, log_v_c)| {
                 let x_c_lock = params.cell_latent_counts.row(i);
                 let x_c = x_c_lock.read();
-                let lgamma_r_c = params.lgamma_rφ.row(i);
 
                 let mut z_probs = params
                     .z_probs
@@ -349,25 +347,25 @@ impl ParamSampler {
                     .borrow_mut();
 
                 // compute probability of φ_c under every component
-                // (rφ is per-cell, so it stays fixed across candidate
-                // components; only the component-level scale sφ varies)
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, log_π_t, s_t, μ_vol_c, σ_vol_c) in izip!(
+                for (z_probs_t, log_π_t, r_t, lgamma_r_t, s_t, μ_vol_c, σ_vol_c) in izip!(
                     z_probs.iter_mut(),
                     params.log_π.iter(),
+                    params.rφ.rows(),
+                    params.lgamma_rφ.rows(),
                     params.sφ.rows(),
                     &params.μ_volume,
                     &params.σ_volume
                 ) {
                     *z_probs_t = *log_π_t as f64;
 
-                    for (r_ck, lgamma_r_ck, s_tk, θ_k_sum, x_ck) in
-                        izip!(&r_c, &lgamma_r_c, s_t, &params.θksum, x_c.iter())
+                    for (r_tk, lgamma_r_tk, s_tk, θ_k_sum, x_ck) in
+                        izip!(r_t, lgamma_r_t, s_t, &params.θksum, x_c.iter())
                     {
                         let p = odds_to_prob(*s_tk * *ev_c * *θ_k_sum);
-                        let lp = negbin_logpmf(*r_ck, *lgamma_r_ck, p, x_ck) as f64;
+                        let lp = negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck) as f64;
                         *z_probs_t += lp;
                     }
 
@@ -560,7 +558,7 @@ impl ParamSampler {
                     φ_c,
                     &params.θksum,
                     x_c.read().iter(),
-                    &params.rφ.row(c),
+                    &params.rφ.row(z_c),
                     &params.sφ.row(z_c)
                 ) {
                     let shape = r_k + x_ck as f32;
@@ -593,14 +591,14 @@ impl ParamSampler {
                 let σ2 = τ.recip();
 
                 let mut μ = 0.0;
-                for (&θ_k_sum, x_ck, &r_ck, &s_tk, &ω_ck) in izip!(
+                for (&θ_k_sum, x_ck, &r_tk, &s_tk, &ω_ck) in izip!(
                     &params.θksum,
                     x_c.read().iter(),
-                    params.rφ.row(c),
+                    params.rφ.row(z_c),
                     params.sφ.row(z_c),
                     ω_c
                 ) {
-                    μ += (x_ck as f32 - r_ck) / 2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c);
+                    μ += (x_ck as f32 - r_tk) / 2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c);
                 }
                 μ *= σ2;
 
@@ -631,44 +629,50 @@ impl ParamSampler {
     }
 
     fn sample_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        // CRT auxiliary variables, using each cell's own rφ (rather than a
-        // shared per-component value)
+        // for each cell
         Zip::indexed(params.lφ.outer_iter_mut()) // for every cell
-            .and(params.rφ.outer_iter())
+            .and(&params.z)
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (c, l_c, r_c)| {
+            .for_each_init(rng, |rng, (c, l_c, &z_c)| {
+                let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
 
-                for (l_ck, x_ck, &r_ck) in izip!(l_c, x_c.read().iter(), &r_c) {
-                    *l_ck = rand_crt(rng, x_ck, r_ck);
+                for (l_ck, x_ck, &r_k) in izip!(l_c, x_c.read().iter(), &params.rφ.row(z_c)) {
+                    *l_ck = rand_crt(rng, x_ck, r_k);
                 }
             });
 
-        // rφ is now per-cell rather than pooled across an entire component,
-        // so each cell's posterior only ever sees that cell's one CRT draw.
-        // This keeps the prior (eφ, fφ) from being overwhelmed as the number
-        // of cells in a component grows.
-        Zip::indexed(params.rφ.outer_iter_mut()) // for every cell
-            .and(&params.z)
-            .and(params.lφ.outer_iter())
-            .and(&params.effective_cell_volume)
+        Zip::indexed(params.rφ.outer_iter_mut()) // for each component
+            .and(params.sφ.outer_iter())
             .into_par_iter()
-            .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (_c, r_c, &z_c, l_c, &v_c)| {
-                let z_c = z_c as usize;
-                let s_t = params.sφ.row(z_c);
-
-                Zip::from(r_c) // each hidden dim
-                    .and(l_c)
+            .for_each_init(rng, |rng, (t, r_t, s_t)| {
+                Zip::from(r_t) // each hidden dim
                     .and(s_t)
+                    .and(params.lφ.axis_iter(Axis(1)))
                     .and(&params.θksum)
-                    .for_each(|r_ck, &l_ck, &s_tk, &θ_k_sum| {
-                        let shape = priors.eφ + l_ck as f32;
-                        let scale_inv = (1.0 / priors.fφ) + (s_tk * v_c * θ_k_sum).ln_1p();
+                    .for_each(|r_tk, s_tk, l_k, θ_k_sum| {
+                        // summing elements of lφ in component t
+                        let lsum = l_k
+                            .iter()
+                            .zip(&params.z)
+                            .filter(|(_l_ck, z_c)| **z_c as usize == t)
+                            .map(|(l_ck, _z_c)| *l_ck)
+                            .sum::<u32>();
+
+                        let shape = priors.eφ + lsum as f32;
+
+                        let scale_inv = (1.0 / priors.fφ)
+                            + params
+                                .z
+                                .iter()
+                                .zip(&params.effective_cell_volume)
+                                .filter(|(z_c, _v_c)| **z_c as usize == t)
+                                .map(|(_z_c, v_c)| (*s_tk * v_c * *θ_k_sum).ln_1p())
+                                .sum::<f32>();
                         let scale = scale_inv.recip();
-                        *r_ck = Gamma::new(shape, scale).unwrap().sample(rng);
-                        *r_ck = r_ck.max(2e-4);
+                        *r_tk = Gamma::new(shape, scale).unwrap().sample(rng);
+                        *r_tk = r_tk.max(2e-4);
                     });
             });
     }
@@ -687,7 +691,7 @@ impl ParamSampler {
                 for (ω_ck, x_ck, &r_k, &s_k, &θ_k_sum) in izip!(
                     ω_c,
                     x_c.read().iter(),
-                    params.rφ.row(c),
+                    params.rφ.row(z_c),
                     params.sφ.row(z_c),
                     &params.θksum
                 ) {
@@ -742,13 +746,13 @@ impl ParamSampler {
 
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
-                let r_c = params.rφ.row(c);
+                let r_t = params.rφ.row(z_c);
                 let μ_sφ_t = μ_sφ_tl.row_mut(z_c);
 
-                for (μ_sφ_tk, x_ck, &ω_ck, &r_ck, &θ_k_sum) in
-                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_c, &params.θksum)
+                for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum) in
+                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum)
                 {
-                    *μ_sφ_tk += (x_ck as f32 - r_ck) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
+                    *μ_sφ_tk += (x_ck as f32 - r_tk) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
                 }
             });
 
