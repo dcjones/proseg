@@ -76,6 +76,9 @@ pub struct ModelPriors {
     pub eφ: f32,
     pub fφ: f32,
 
+    // lower bound on rφ (per-component metagene dispersion)
+    pub min_rφ: f32,
+
     // log-normal prior on sφ
     pub μφ: f32,
     pub τφ: f32,

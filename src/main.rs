@@ -474,11 +474,17 @@ struct Args {
     use_scaled_cells: bool,
 
     // Hyperparameters
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 6.0)]
     hyperparam_e_phi: f32,
 
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.25)]
     hyperparam_f_phi: f32,
+
+    // Lower bound on the per-component metagene dispersion rφ. Raising this
+    // toward ~1.0 keeps rφ in the unimodal-archetype regime (shape > 1) rather
+    // than letting sparse metagenes collapse into the overdispersed regime.
+    #[arg(long, default_value_t = 2e-4)]
+    min_phi_dispersion: f32,
 
     #[arg(long, default_value_t = 1.0)]
     hyperparam_neg_mu_phi: f32,
@@ -976,6 +982,7 @@ fn main() {
 
         eφ: args.hyperparam_e_phi,
         fφ: args.hyperparam_f_phi,
+        min_rφ: args.min_phi_dispersion,
 
         μφ: -args.hyperparam_neg_mu_phi,
         τφ: args.hyperparam_tau_phi,
