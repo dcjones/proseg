@@ -79,6 +79,12 @@ pub struct ModelPriors {
     // lower bound on rφ (per-component metagene dispersion)
     pub min_rφ: f32,
 
+    // zero-inflation: beta prior on the per-component metagene activation
+    // probability ξ, and a flag enabling the whole mechanism.
+    pub a_ξ: f32,
+    pub b_ξ: f32,
+    pub use_zero_inflation: bool,
+
     // log-normal prior on sφ
     pub μφ: f32,
     pub τφ: f32,
@@ -508,6 +514,15 @@ pub struct ModelParams {
     // for precomputing lgamma(rφ)
     lgamma_rφ: Array2<f32>,
 
+    // [ncells, nhidden] zero-inflation gates. true = metagene "on" in this cell.
+    // Always all-true unless zero-inflation is enabled and burn-in has finished.
+    pub gate: Array2<bool>,
+
+    // [ncomponents, nhidden] metagene activation probability ξ, with cached logs.
+    pub ξ: Array2<f32>,
+    pub log_ξ: Array2<f32>,
+    pub log_1m_ξ: Array2<f32>,
+
     // [ncomponents, nhidden] φ gamma scale parameters
     pub sφ: Array2<f32>,
 
@@ -698,6 +713,14 @@ impl ModelParams {
         let ωφ = Array2::<f32>::zeros((ncells, nhidden));
         let rφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
         let lgamma_rφ = Array2::<f32>::zeros((ncomponents, nhidden));
+
+        // Zero-inflation gates start all-on; ξ starts at the beta prior mean.
+        let gate = Array2::<bool>::from_elem((ncells, nhidden), true);
+        let ξ_init = priors.a_ξ / (priors.a_ξ + priors.b_ξ);
+        let ξ = Array2::<f32>::from_elem((ncomponents, nhidden), ξ_init);
+        let log_ξ = Array2::<f32>::from_elem((ncomponents, nhidden), ξ_init.ln());
+        let log_1m_ξ = Array2::<f32>::from_elem((ncomponents, nhidden), (1.0 - ξ_init).ln());
+
         let sφ = Array2::<f32>::from_elem((ncomponents, nhidden), 1.0);
         let μ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
         let τ_sφ = Array2::<f32>::zeros((ncomponents, nhidden));
@@ -789,6 +812,10 @@ impl ModelParams {
             ωφ,
             rφ,
             lgamma_rφ,
+            gate,
+            ξ,
+            log_ξ,
+            log_1m_ξ,
             sφ,
             μ_sφ,
             τ_sφ,

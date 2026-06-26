@@ -271,15 +271,26 @@ impl ParamSampler {
         burnin: bool,
         purge_sparse_mats: bool,
     ) {
+        // Zero-inflation is only active after burn-in, once the metagene
+        // archetypes have settled enough to trust a gate-off decision.
+        let zero_inflation = priors.use_zero_inflation && !burnin;
+
         let t0 = Instant::now();
         self.sample_latent_counts(params, purge_sparse_mats);
         trace!("sample_latent_counts: {:?}", t0.elapsed());
         if sample_z {
             let t0 = Instant::now();
-            self.sample_z(params);
+            self.sample_z(params, zero_inflation);
             trace!("sample_z: {:?}", t0.elapsed());
         }
         self.sample_π(params);
+
+        if zero_inflation {
+            let t0 = Instant::now();
+            self.sample_gate(params);
+            self.sample_ξ(priors, params);
+            trace!("sample_gate/sample_ξ: {:?}", t0.elapsed());
+        }
 
         if priors.use_factorization {
             let t0 = Instant::now();
@@ -321,7 +332,7 @@ impl ParamSampler {
         }
     }
 
-    fn sample_z(&self, params: &mut ModelParams) {
+    fn sample_z(&self, params: &mut ModelParams, zero_inflation: bool) {
         Zip::from(&mut params.lgamma_rφ)
             .and(&params.rφ)
             .into_par_iter()
@@ -350,22 +361,42 @@ impl ParamSampler {
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, log_π_t, r_t, lgamma_r_t, s_t, μ_vol_c, σ_vol_c) in izip!(
+                for (z_probs_t, log_π_t, r_t, lgamma_r_t, s_t, log_ξ_t, log_1m_ξ_t, μ_vol_c, σ_vol_c) in izip!(
                     z_probs.iter_mut(),
                     params.log_π.iter(),
                     params.rφ.rows(),
                     params.lgamma_rφ.rows(),
                     params.sφ.rows(),
+                    params.log_ξ.rows(),
+                    params.log_1m_ξ.rows(),
                     &params.μ_volume,
                     &params.σ_volume
                 ) {
                     *z_probs_t = *log_π_t as f64;
 
-                    for (r_tk, lgamma_r_tk, s_tk, θ_k_sum, x_ck) in
-                        izip!(r_t, lgamma_r_t, s_t, &params.θksum, x_c.iter())
-                    {
+                    for (r_tk, lgamma_r_tk, s_tk, &log_ξ_tk, &log_1m_ξ_tk, θ_k_sum, x_ck) in izip!(
+                        r_t,
+                        lgamma_r_t,
+                        s_t,
+                        log_ξ_t,
+                        log_1m_ξ_t,
+                        &params.θksum,
+                        x_c.iter()
+                    ) {
                         let p = odds_to_prob(*s_tk * *ev_c * *θ_k_sum);
-                        let lp = negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck) as f64;
+                        let lp = if zero_inflation {
+                            if x_ck == 0 {
+                                // log( ξ·NB(0) + (1-ξ) ), NB(0) = (1-p)^r
+                                let a = log_ξ_tk + *r_tk * (-p).ln_1p();
+                                let b = log_1m_ξ_tk;
+                                let m = a.max(b);
+                                (m + ((a - m).exp() + (b - m).exp()).ln()) as f64
+                            } else {
+                                (log_ξ_tk + negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck)) as f64
+                            }
+                        } else {
+                            negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck) as f64
+                        };
                         *z_probs_t += lp;
                     }
 
@@ -390,6 +421,82 @@ impl ParamSampler {
 
                 let u = rng.random::<f64>();
                 *z_c = z_probs.partition_point(|x| *x < u) as u32;
+            });
+    }
+
+    // Sample the zero-inflation gates b_ck. A cell with any counts assigned to
+    // metagene k must be "on"; cells with zero counts are drawn from the
+    // posterior P(on | x=0) ∝ ξ·NB(0), P(off | x=0) ∝ (1-ξ).
+    fn sample_gate(&self, params: &mut ModelParams) {
+        Zip::indexed(params.gate.outer_iter_mut()) // for each cell
+            .and(&params.z)
+            .and(&params.effective_cell_volume)
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each_init(rng, |rng, (c, gate_c, &z_c, &ev_c)| {
+                let z_c = z_c as usize;
+                let x_c_lock = params.cell_latent_counts.row(c);
+                let x_c = x_c_lock.read();
+                let r_t = params.rφ.row(z_c);
+                let s_t = params.sφ.row(z_c);
+                let log_ξ_t = params.log_ξ.row(z_c);
+                let log_1m_ξ_t = params.log_1m_ξ.row(z_c);
+
+                for (g_ck, x_ck, &r_tk, &s_tk, &log_ξ_tk, &log_1m_ξ_tk, &θ_k_sum) in izip!(
+                    gate_c,
+                    x_c.iter(),
+                    r_t,
+                    s_t,
+                    log_ξ_t,
+                    log_1m_ξ_t,
+                    &params.θksum
+                ) {
+                    if x_ck > 0 {
+                        *g_ck = true;
+                    } else {
+                        let p = odds_to_prob(s_tk * ev_c * θ_k_sum);
+                        let log_on = log_ξ_tk + r_tk * (-p).ln_1p(); // NB(0) = (1-p)^r
+                        let log_off = log_1m_ξ_tk;
+                        let p_on = 1.0 / (1.0 + (log_off - log_on).exp());
+                        *g_ck = rng.random::<f32>() < p_on;
+                    }
+                }
+            });
+    }
+
+    // Sample the per-component, per-metagene activation probability ξ from its
+    // Beta(a_ξ + #on, b_ξ + #off) posterior.
+    fn sample_ξ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        let ncomponents = params.ncomponents();
+        let nhidden = params.nhidden();
+
+        // Tally "on" cells per (component, metagene). One cheap pass; small
+        // relative to the Gibbs sweep, so kept sequential to avoid reduction.
+        let mut on = Array2::<u32>::zeros((ncomponents, nhidden));
+        for (z_c, gate_c) in params.z.iter().zip(params.gate.outer_iter()) {
+            let mut on_row = on.row_mut(*z_c as usize);
+            for (on_tk, &g_ck) in on_row.iter_mut().zip(gate_c) {
+                *on_tk += g_ck as u32;
+            }
+        }
+
+        let mut rng = rng();
+        let component_population = &params.component_population;
+        Zip::indexed(&mut params.ξ)
+            .and(&mut params.log_ξ)
+            .and(&mut params.log_1m_ξ)
+            .and(&on)
+            .for_each(|(t, _k), ξ_tk, log_ξ_tk, log_1m_ξ_tk, &on_tk| {
+                let pop = component_population[t] as f32;
+                let off = (pop - on_tk as f32).max(0.0);
+                let g1 = Gamma::new(priors.a_ξ + on_tk as f32, 1.0)
+                    .unwrap()
+                    .sample(&mut rng);
+                let g2 = Gamma::new(priors.b_ξ + off, 1.0).unwrap().sample(&mut rng);
+                let ξ = (g1 / (g1 + g2)).clamp(1e-6, 1.0 - 1e-6);
+                *ξ_tk = ξ;
+                *log_ξ_tk = ξ.ln();
+                *log_1m_ξ_tk = (1.0 - ξ).ln();
             });
     }
 
@@ -548,22 +655,29 @@ impl ParamSampler {
         Zip::indexed(params.φ.outer_iter_mut()) // for each cell
             .and(&params.z)
             .and(&params.effective_cell_volume)
+            .and(params.gate.outer_iter())
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (c, φ_c, z_c, v_c)| {
+            .for_each_init(rng, |rng, (c, φ_c, z_c, v_c, gate_c)| {
                 let x_c = params.cell_latent_counts.row(c);
                 let z_c = *z_c as usize;
 
-                for (φ_ck, &θ_k_sum, x_ck, &r_k, s_k) in izip!(
+                for (φ_ck, &θ_k_sum, x_ck, &r_k, s_k, &g_ck) in izip!(
                     φ_c,
                     &params.θksum,
                     x_c.read().iter(),
                     &params.rφ.row(z_c),
-                    &params.sφ.row(z_c)
+                    &params.sφ.row(z_c),
+                    gate_c
                 ) {
-                    let shape = r_k + x_ck as f32;
-                    let scale = s_k / (1.0 + s_k * v_c * θ_k_sum);
-                    *φ_ck = Gamma::new(shape, scale).unwrap().sample(rng);
+                    if !g_ck {
+                        // structural zero: metagene off in this cell
+                        *φ_ck = 0.0;
+                    } else {
+                        let shape = r_k + x_ck as f32;
+                        let scale = s_k / (1.0 + s_k * v_c * θ_k_sum);
+                        *φ_ck = Gamma::new(shape, scale).unwrap().sample(rng);
+                    }
                 }
             });
 
@@ -650,9 +764,12 @@ impl ParamSampler {
                 Zip::from(r_t) // each hidden dim
                     .and(s_t)
                     .and(params.lφ.axis_iter(Axis(1)))
+                    .and(params.gate.axis_iter(Axis(1)))
                     .and(&params.θksum)
-                    .for_each(|r_tk, s_tk, l_k, θ_k_sum| {
-                        // summing elements of lφ in component t
+                    .for_each(|r_tk, s_tk, l_k, gate_k, θ_k_sum| {
+                        // summing elements of lφ in component t. Off-cells
+                        // (gate false) have x_ck = 0, hence l_ck = 0, so they
+                        // drop out of this sum automatically.
                         let lsum = l_k
                             .iter()
                             .zip(&params.z)
@@ -662,13 +779,12 @@ impl ParamSampler {
 
                         let shape = priors.eφ + lsum as f32;
 
+                        // Only on-cells are NB observations; structural zeros
+                        // must not contribute to the dispersion rate term.
                         let scale_inv = (1.0 / priors.fφ)
-                            + params
-                                .z
-                                .iter()
-                                .zip(&params.effective_cell_volume)
-                                .filter(|(z_c, _v_c)| **z_c as usize == t)
-                                .map(|(_z_c, v_c)| (*s_tk * v_c * *θ_k_sum).ln_1p())
+                            + izip!(&params.z, &params.effective_cell_volume, gate_k.iter())
+                                .filter(|(z_c, _v_c, g_ck)| **z_c as usize == t && **g_ck)
+                                .map(|(_z_c, v_c, _g_ck)| (*s_tk * v_c * *θ_k_sum).ln_1p())
                                 .sum::<f32>();
                         let scale = scale_inv.recip();
                         *r_tk = Gamma::new(shape, scale).unwrap().sample(rng);
@@ -682,21 +798,29 @@ impl ParamSampler {
         Zip::indexed(params.ωφ.outer_iter_mut()) // for every cell
             .and(&params.z)
             .and(&params.effective_cell_volume)
+            .and(params.gate.outer_iter())
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each_init(rng, |rng, (c, ω_c, &z_c, &v_c)| {
+            .for_each_init(rng, |rng, (c, ω_c, &z_c, &v_c, gate_c)| {
                 let z_c = z_c as usize;
                 let x_c = params.cell_latent_counts.row(c);
 
-                for (ω_ck, x_ck, &r_k, &s_k, &θ_k_sum) in izip!(
+                for (ω_ck, x_ck, &r_k, &s_k, &θ_k_sum, &g_ck) in izip!(
                     ω_c,
                     x_c.read().iter(),
                     params.rφ.row(z_c),
                     params.sφ.row(z_c),
-                    &params.θksum
+                    &params.θksum,
+                    gate_c
                 ) {
-                    let ε = (s_k * v_c * θ_k_sum).ln();
-                    *ω_ck = PolyaGamma::new(x_ck as f32 + r_k, ε).sample(rng);
+                    // Off-cells contribute nothing to the sφ posterior; zeroing
+                    // ω keeps them out of the τ_sφ accumulation.
+                    if g_ck {
+                        let ε = (s_k * v_c * θ_k_sum).ln();
+                        *ω_ck = PolyaGamma::new(x_ck as f32 + r_k, ε).sample(rng);
+                    } else {
+                        *ω_ck = 0.0;
+                    }
                 }
             });
     }
@@ -736,9 +860,10 @@ impl ParamSampler {
         Zip::indexed(&params.z)
             .and(&params.effective_cell_volume)
             .and(params.ωφ.outer_iter())
+            .and(params.gate.outer_iter())
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each(|(c, &z_c, &v_c, ω_c)| {
+            .for_each(|(c, &z_c, &v_c, ω_c, gate_c)| {
                 let mut μ_sφ_tl = params
                     .sφ_work_tl
                     .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
@@ -749,10 +874,13 @@ impl ParamSampler {
                 let r_t = params.rφ.row(z_c);
                 let μ_sφ_t = μ_sφ_tl.row_mut(z_c);
 
-                for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum) in
-                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum)
+                for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum, &g_ck) in
+                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum, gate_c)
                 {
-                    *μ_sφ_tk += (x_ck as f32 - r_tk) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
+                    // Skip structural zeros so they don't bias sφ downward.
+                    if g_ck {
+                        *μ_sφ_tk += (x_ck as f32 - r_tk) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
+                    }
                 }
             });
 
