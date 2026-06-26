@@ -210,4 +210,68 @@ mod tests {
             check_moments(h, z, 50_000);
         }
     }
+
+    // Two-sample Kolmogorov-Smirnov test against reference quantiles produced by
+    // the Python `polyagamma` package (tests/pg_reference.py).  Covers the two
+    // exact sampling paths (alternate and saddlepoint); the normal-approximation
+    // path (h >= 50) is intentionally approximate and is covered by moment tests.
+    //
+    // For a one-sample KS test with n = 100_000 at α = 0.001, the critical value
+    // is K_{0.001} / sqrt(n) where K_{0.001} ≈ 1.95, giving D_crit ≈ 0.00617.
+    // Any real bias or scale error should produce a KS statistic many times larger.
+    // Run with: cargo test --release ks_test_against_reference -- --ignored
+    // First generate the reference file: python3 tests/pg_reference.py
+    #[test]
+    #[ignore]
+    fn ks_test_against_reference() {
+        let json_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pg_reference_quantiles.json");
+
+        let json_str = std::fs::read_to_string(&json_path).unwrap_or_else(|e| {
+            panic!("Could not read {}: {e}", json_path.display())
+        });
+
+        let cases: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+            .expect("Failed to parse pg_reference_quantiles.json");
+
+        let n: usize = 100_000;
+        // KS critical value: K_{0.001} / sqrt(n)
+        let ks_critical = 1.95_f64 / (n as f64).sqrt();
+
+        let mut rng = rand::rng();
+
+        for case in &cases {
+            let h = case["h"].as_f64().unwrap();
+            let z = case["z"].as_f64().unwrap();
+            let path = case["path"].as_str().unwrap();
+
+            let probs: Vec<f64> = case["probs"]
+                .as_array().unwrap()
+                .iter().map(|v| v.as_f64().unwrap())
+                .collect();
+            let ref_quantiles: Vec<f64> = case["quantiles"]
+                .as_array().unwrap()
+                .iter().map(|v| v.as_f64().unwrap())
+                .collect();
+
+            let pg = PolyaGamma::<f64>::new(h, z);
+            let mut samples: Vec<f64> = (0..n).map(|_| pg.sample(&mut rng)).collect();
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+            // For each reference quantile q at nominal probability p, compute
+            // the empirical CDF of our samples at q, then take the max deviation.
+            let ks = probs.iter().zip(ref_quantiles.iter())
+                .map(|(&p, &q)| {
+                    let empirical_p = samples.partition_point(|&x| x <= q) as f64 / n as f64;
+                    (empirical_p - p).abs()
+                })
+                .fold(0.0_f64, f64::max);
+
+            assert!(
+                ks < ks_critical,
+                "PG({h},{z}) [{path}]: KS statistic {ks:.4e} exceeds critical value \
+                 {ks_critical:.4e} (α=0.001, n={n})",
+            );
+        }
+    }
 }
