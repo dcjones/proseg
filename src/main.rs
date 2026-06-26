@@ -486,6 +486,20 @@ struct Args {
     #[arg(long, default_value_t = 2e-4)]
     min_phi_dispersion: f32,
 
+    // Model metagene activity as zero-inflated: each (cell, metagene) is gated
+    // on/off so structural zeros are explained by the gate rather than by
+    // collapsing the dispersion rφ. Off by default.
+    #[arg(long, default_value_t = false)]
+    zero_inflation: bool,
+
+    // Beta(a, b) prior on the per-component metagene activation probability ξ.
+    // Default weakly favors "on" so a metagene must earn being switched off.
+    #[arg(long, default_value_t = 2.0)]
+    hyperparam_a_xi: f32,
+
+    #[arg(long, default_value_t = 1.0)]
+    hyperparam_b_xi: f32,
+
     #[arg(long, default_value_t = 1.0)]
     hyperparam_neg_mu_phi: f32,
 
@@ -983,6 +997,9 @@ fn main() {
         eφ: args.hyperparam_e_phi,
         fφ: args.hyperparam_f_phi,
         min_rφ: args.min_phi_dispersion,
+        a_ξ: args.hyperparam_a_xi,
+        b_ξ: args.hyperparam_b_xi,
+        use_zero_inflation: args.zero_inflation,
 
         μφ: -args.hyperparam_neg_mu_phi,
         τφ: args.hyperparam_tau_phi,
