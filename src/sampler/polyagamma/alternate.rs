@@ -176,8 +176,7 @@ impl Parameters {
 
     fn bounding_kernel(&self) -> f32 {
         if self.x > self.t {
-            let a = 0.22579135264472733;
-            ((self.h * a + (self.h - 1.0) * self.logx - PGM_PI2_8 * self.x - self.lgammah) as f32)
+            ((self.h * PGM_LOGPI_2 + (self.h - 1.0) * self.logx - PGM_PI2_8 * self.x - self.lgammah) as f32)
                 .exp()
         } else if self.x > 0.0 {
             ((self.hlog2 - self.half_h2 / self.x - 1.5 * self.logx - PGM_LS2PI) as f32).exp()
