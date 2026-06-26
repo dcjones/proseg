@@ -114,3 +114,69 @@ pub fn uniformly_imprecise_normal_prob(a: f32, b: f32, a0: f32, b0: f32, σ: f32
         * (b - a).recip()
         * (erfint(b - b0, σ) + erfint(a - a0, σ) - erfint(b - a0, σ) - erfint(a - b0, σ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libm::lgammaf;
+
+    // Reference values from scipy.stats.nbinom.logpmf(k, r, 1-p).
+    // Convention: k successes before r failures, p = per-trial success probability.
+    #[test]
+    fn negbin_logpmf_values() {
+        let cases: &[(f32, f32, u32, f32)] = &[
+            (1.0,  0.3,       0,  -0.35667494),
+            (1.0,  0.3,       5,  -6.37653897),
+            (2.5,  0.4,       0,  -1.27706406),
+            (2.5,  0.4,       3,  -2.14456463),
+            (2.5,  0.4,      10,  -7.09471931),
+            (0.5,  0.1,       0,  -0.05268026),
+            (0.5,  0.1,       2,  -5.63867970),
+            (10.0, 0.8,       0, -16.09437912),
+            (10.0, 0.8,       7,  -8.31151272),
+            // p at the MINP clamp boundary — reference computed with f32 libm
+            // (0.999999_f32 != 1 - 1e-6 exactly, so f64 scipy values don't apply)
+            (2.0,  0.999999,  0, -27.60463715),
+            (2.0,  0.999999,  1, -26.91149139),
+        ];
+
+        for &(r, p, k, expected) in cases {
+            let result = negbin_logpmf(r, lgammaf(r), p, k);
+            assert!(
+                (result - expected).abs() < 1e-4,
+                "negbin_logpmf(r={r}, p={p}, k={k}): got {result:.8}, expected {expected:.8}",
+            );
+        }
+    }
+
+    // E[CRT(n, r)] = Σ_{t=0}^{n-1} r/(r+t)
+    // Var[CRT(n, r)] = Σ_{t=0}^{n-1} (r/(r+t)) · (t/(r+t))   [independent Bernoullis]
+    #[test]
+    fn rand_crt_mean() {
+        let n_samples = 50_000_usize;
+        let mut rng = rand::rng();
+
+        for (n, r) in [(1_u32, 1.0_f32), (5, 1.0), (3, 2.0), (10, 0.5), (8, 3.0)] {
+            let expected_mean: f32 = (0..n).map(|t| r / (r + t as f32)).sum();
+            let variance: f32 = (0..n)
+                .map(|t| { let p = r / (r + t as f32); p * (1.0 - p) })
+                .sum();
+
+            // n=1 is deterministic: the t=0 term is always Bernoulli(r/r) = 1
+            if variance == 0.0 {
+                assert_eq!(rand_crt(&mut rng, n, r), 1);
+                continue;
+            }
+
+            let total: u32 = (0..n_samples).map(|_| rand_crt(&mut rng, n, r)).sum();
+            let empirical_mean = total as f32 / n_samples as f32;
+            let tol = 5.0 * variance.sqrt() / (n_samples as f32).sqrt();
+
+            assert!(
+                (empirical_mean - expected_mean).abs() < tol,
+                "rand_crt(n={n}, r={r}): mean {empirical_mean:.4} vs expected \
+                 {expected_mean:.4} (tol {tol:.4})",
+            );
+        }
+    }
+}
