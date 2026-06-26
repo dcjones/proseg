@@ -113,13 +113,101 @@ where
     }
 }
 
-#[test]
-fn try_pg_sampler() {
-    let mut rng = rand::rng();
-    let pg = PolyaGamma::new(2.0, 2.0);
-    let mut rs = Vec::new();
-    for _ in 0..1000 {
-        rs.push(pg.sample(&mut rng));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Generate n samples from PG(h, z) and assert that the empirical mean and
+    // variance are consistent with the analytical formulas.
+    //
+    // Mean tolerance: 5 standard errors (CLT-based, ~1-in-3.5M false positive).
+    // Variance tolerance: 15× the normal-theory SE, which is generous enough to
+    // absorb the excess kurtosis of the PG distribution without masking real bugs.
+    fn check_moments(h: f64, z: f64, n: usize) {
+        let mut rng = rand::rng();
+        let pg = PolyaGamma::<f64>::new(h, z);
+
+        let expected_mean = pg.mean();
+        let expected_var = pg.var();
+
+        let mut sum = 0.0_f64;
+        let mut sum_sq = 0.0_f64;
+        for _ in 0..n {
+            let x: f64 = pg.sample(&mut rng);
+            sum += x;
+            sum_sq += x * x;
+        }
+
+        let nf = n as f64;
+        let empirical_mean = sum / nf;
+        let empirical_var = (sum_sq - sum * sum / nf) / (nf - 1.0);
+
+        let mean_tol = 5.0 * expected_var.sqrt() / nf.sqrt();
+        let var_tol = 15.0 * expected_var * (2.0 / (nf - 1.0)).sqrt();
+
+        assert!(
+            (empirical_mean - expected_mean).abs() < mean_tol,
+            "PG({h},{z}): empirical mean {:.6} vs analytical {:.6}, diff {:.2e} (tol {:.2e})",
+            empirical_mean,
+            expected_mean,
+            (empirical_mean - expected_mean).abs(),
+            mean_tol,
+        );
+
+        assert!(
+            (empirical_var - expected_var).abs() < var_tol,
+            "PG({h},{z}): empirical var {:.6} vs analytical {:.6}, diff {:.2e} (tol {:.2e})",
+            empirical_var,
+            expected_var,
+            (empirical_var - expected_var).abs(),
+            var_tol,
+        );
     }
-    dbg!(rs);
+
+    // alternate path: h < 8 AND (h <= 4 OR z > 4)
+    #[test]
+    fn moments_alternate() {
+        for (h, z) in [
+            (1.0_f64, 0.0_f64), // z=0 special case
+            (1.0, 1.0),
+            (1.0, 5.0),
+            (2.0, 0.0),
+            (2.0, 2.0),
+            (3.0, 5.0),
+            (4.0, 0.0),
+            (4.0, 8.0),
+            (7.0, 8.0), // h > 4 but z > 4, so still alternate
+        ] {
+            check_moments(h, z, 50_000);
+        }
+    }
+
+    // saddlepoint path: h < 50 AND (h >= 8 OR (h > 4 AND z <= 4))
+    #[test]
+    fn moments_saddlepoint() {
+        for (h, z) in [
+            (5.0_f64, 0.0_f64), // h > 4, z <= 4
+            (5.0, 3.0),
+            (7.0, 3.0),
+            (8.0, 0.0), // h >= 8
+            (8.0, 5.0),
+            (15.0, 10.0),
+            (30.0, 0.0),
+            (49.0, 20.0),
+        ] {
+            check_moments(h, z, 50_000);
+        }
+    }
+
+    // normal approximation path: h >= 50
+    #[test]
+    fn moments_normal_approx() {
+        for (h, z) in [
+            (50.0_f64, 0.0_f64),
+            (50.0, 5.0),
+            (100.0, 10.0),
+        ] {
+            check_moments(h, z, 50_000);
+        }
+    }
 }
