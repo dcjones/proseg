@@ -320,12 +320,14 @@ struct Args {
     #[arg(long, default_value_t = 0.1)]
     diffusion_sigma_z: f32,
 
-    /// Stddev parameter for sampler proposals during transcript repo
-    #[arg(long, default_value_t = 4.0)]
-    diffusion_proposal_sigma: f32,
+    /// Deprecated and ignored. Transcript repositioning now proposes directly
+    /// from the diffusion prior, so a separate proposal stddev has no effect.
+    #[arg(long)]
+    diffusion_proposal_sigma: Option<f32>,
 
-    #[arg(long, default_value_t = 0.2)]
-    diffusion_proposal_sigma_z: f32,
+    /// Deprecated and ignored. See --diffusion-proposal-sigma.
+    #[arg(long)]
+    diffusion_proposal_sigma_z: Option<f32>,
 
     /// Allow dispersion parameter to vary during burn-in
     #[arg(long, default_value_t = false)]
@@ -632,6 +634,17 @@ fn main() {
     let start_time = Instant::now();
 
     let mut args = Args::parse();
+
+    if args.diffusion_proposal_sigma.is_some() {
+        warn!(
+            "--diffusion-proposal-sigma is deprecated and ignored: transcript repositioning now proposes directly from the diffusion prior."
+        );
+    }
+    if args.diffusion_proposal_sigma_z.is_some() {
+        warn!(
+            "--diffusion-proposal-sigma-z is deprecated and ignored: transcript repositioning now proposes directly from the diffusion prior."
+        );
+    }
 
     if args.voxel_layers > 256 {
         panic!(
@@ -1032,8 +1045,6 @@ fn main() {
             .diffusion_sigma_far
             .unwrap_or(DEFAULT_DIFFUSION_SIGMA_FAR),
         σ_z_diffusion: args.diffusion_sigma_z,
-        σ_xy_diffusion_proposal: args.diffusion_proposal_sigma,
-        σ_z_diffusion_proposal: args.diffusion_proposal_sigma_z,
         τv: 10.0,
     };
 

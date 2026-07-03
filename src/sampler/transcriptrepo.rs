@@ -10,86 +10,75 @@ use crate::sampler::voxelcheckerboard::{TranscriptFixedState, VoxelTranscript};
 use super::math::uniformly_imprecise_normal_prob;
 use super::multinomial::Multinomial;
 use super::transcripts::BACKGROUND_CELL;
-use super::voxelcheckerboard::{VoxelCheckerboard, VoxelOffset, VoxelQuad};
+use super::voxelcheckerboard::{VoxelCheckerboard, VoxelQuad};
 use super::{ModelParams, ModelPriors};
 
 use rand::rngs::ThreadRng;
 use rand::{Rng, rng};
 
 pub struct TranscriptRepo {
-    prior_near: VoxelDiffusionPrior,
-    prior_far: VoxelDiffusionPrior,
-    prior_z: VoxelDiffusionPrior,
-    proposal_xy_probs: Vec<f32>,
+    proposal_near_xy_probs: Vec<f32>,
+    proposal_far_xy_probs: Vec<f32>,
     proposal_z_probs: Vec<f32>,
-    proposal_xy: Multinomial<f32>,
+    proposal_near_xy: Multinomial<f32>,
+    proposal_far_xy: Multinomial<f32>,
     proposal_z: Multinomial<f32>,
+}
+
+// Turn a one-sided distance pmf (index = |distance| in voxels) into a
+// symmetric two-sided pmf centered at zero, so a sampled index minus the
+// center yields a signed offset.
+fn two_sided_pmf(mut pmf: Vec<f32>) -> Vec<f32> {
+    pmf.reverse();
+    let n = pmf.len();
+    pmf.resize(2 * n - 1, 0.0);
+    for i in 1..n {
+        pmf[(n - 1) + i] = pmf[(n - 1) - i];
+    }
+    pmf
 }
 
 impl TranscriptRepo {
     pub fn new(priors: &ModelPriors, voxelsize: f32, voxelsize_z: f32) -> Self {
         const EPS: f32 = 1e-5;
 
-        let mut proposal_xy_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, EPS).pmf;
-        proposal_xy_probs.reverse();
-        let n = proposal_xy_probs.len();
-        proposal_xy_probs.resize(2 * n - 1, 0.0);
-        for i in 1..n {
-            proposal_xy_probs[(n - 1) + i] = proposal_xy_probs[(n - 1) - i];
-        }
+        // The proposal distribution *is* the diffusion prior. Proposing new
+        // positions relative to each transcript's original voxel (an
+        // independence sampler) means the prior terms cancel in the
+        // Metropolis-Hastings ratio, leaving only the likelihood ratio.
+        let proposal_near_xy_probs =
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS).pmf);
+        let proposal_far_xy_probs =
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS).pmf);
+        let proposal_z_probs =
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion, EPS).pmf);
 
-        let mut proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, EPS).pmf;
-        proposal_z_probs.reverse();
-        let n = proposal_z_probs.len();
-        proposal_z_probs.resize(2 * n - 1, 0.0);
-        for i in 1..n {
-            proposal_z_probs[(n - 1) + i] = proposal_z_probs[(n - 1) - i];
-        }
-
-        let proposal_xy = Multinomial::from_probs(&proposal_xy_probs);
+        let proposal_near_xy = Multinomial::from_probs(&proposal_near_xy_probs);
+        let proposal_far_xy = Multinomial::from_probs(&proposal_far_xy_probs);
         let proposal_z = Multinomial::from_probs(&proposal_z_probs);
 
         TranscriptRepo {
-            prior_near: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS),
-            prior_far: VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS),
-            prior_z: VoxelDiffusionPrior::new(voxelsize, priors.σ_z_diffusion, EPS),
-            proposal_xy_probs,
+            proposal_near_xy_probs,
+            proposal_far_xy_probs,
             proposal_z_probs,
-            proposal_xy,
+            proposal_near_xy,
+            proposal_far_xy,
             proposal_z,
         }
     }
 
     pub fn set_voxel_size(&mut self, priors: &ModelPriors, voxelsize: f32, voxelsize_z: f32) {
-        let eps = self.prior_near.eps;
+        const EPS: f32 = 1e-5;
 
-        self.proposal_xy_probs =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_proposal, eps).pmf;
-        self.proposal_xy_probs.reverse();
-        let n = self.proposal_xy_probs.len();
-        self.proposal_xy_probs.resize(2 * n - 1, 0.0);
-        for i in 1..n {
-            self.proposal_xy_probs[(n - 1) + i] = self.proposal_xy_probs[(n - 1) - i];
-        }
-
+        self.proposal_near_xy_probs =
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, EPS).pmf);
+        self.proposal_far_xy_probs =
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, EPS).pmf);
         self.proposal_z_probs =
-            VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion_proposal, eps).pmf;
-        self.proposal_z_probs.reverse();
-        let n = self.proposal_z_probs.len();
-        self.proposal_z_probs.resize(2 * n - 1, 0.0);
-        for i in 1..n {
-            self.proposal_z_probs[(n - 1) + i] = self.proposal_z_probs[(n - 1) - i];
-        }
+            two_sided_pmf(VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion, EPS).pmf);
 
-        self.prior_near =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_near, self.prior_near.eps);
-        self.prior_far =
-            VoxelDiffusionPrior::new(voxelsize, priors.σ_xy_diffusion_far, self.prior_far.eps);
-        self.prior_z = VoxelDiffusionPrior::new(voxelsize_z, priors.σ_z_diffusion, eps);
-
-        self.proposal_xy = Multinomial::from_probs(&self.proposal_xy_probs);
+        self.proposal_near_xy = Multinomial::from_probs(&self.proposal_near_xy_probs);
+        self.proposal_far_xy = Multinomial::from_probs(&self.proposal_far_xy_probs);
         self.proposal_z = Multinomial::from_probs(&self.proposal_z_probs);
     }
 
@@ -156,9 +145,6 @@ impl TranscriptRepo {
                 gene,
             } = voxels.transcript_fixed_state.get(transcript_idx);
             let gene = gene as usize;
-            let offset = VoxelOffset::between(original_voxel, voxel);
-            let k0 = voxel.k();
-            let [di0, dj0, dk0] = offset.coords();
 
             let cell = quad_states
                 .states
@@ -196,23 +182,28 @@ impl TranscriptRepo {
                 };
             }
 
-            let dist_prob_current = self.diffusion_distance_prior(priors, di0, dj0, dk0);
-            let current_prob = dist_prob_current * λ_current;
+            // Independence proposal: draw a displacement from the diffusion
+            // prior relative to the transcript's *original* voxel. The xy prior
+            // is a mixture of two isotropic components, so pick the component
+            // once and draw both axes from it (rather than sampling each axis
+            // from the marginal mixture, which would decouple the components).
+            let (proposal_xy, proposal_xy_probs) = if rng.random::<f32>() < priors.p_diffusion {
+                (&self.proposal_far_xy, &self.proposal_far_xy_probs)
+            } else {
+                (&self.proposal_near_xy, &self.proposal_near_xy_probs)
+            };
+            let xy_center = ((proposal_xy_probs.len() - 1) / 2) as i32;
+            let di = proposal_xy.sample1(rng) as i32 - xy_center;
+            let dj = proposal_xy.sample1(rng) as i32 - xy_center;
 
-            let dk = self.proposal_z.sample1(rng);
-            let dk = (dk as i32) - ((self.proposal_z_probs.len() - 1) / 2) as i32;
+            let z_center = ((self.proposal_z_probs.len() - 1) / 2) as i32;
+            let dk = self.proposal_z.sample1(rng) as i32 - z_center;
 
-            if k0 + dk < 0 || k0 + dk > quad.kmax {
+            if original_voxel.k() + dk < 0 || original_voxel.k() + dk > quad.kmax {
                 continue;
             }
 
-            let dj = self.proposal_xy.sample1(rng);
-            let dj = (dj as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
-
-            let di = self.proposal_xy.sample1(rng);
-            let di = (di as i32) - ((self.proposal_xy_probs.len() - 1) / 2) as i32;
-
-            let neighbor = voxel.offset_coords(di, dj, dk);
+            let neighbor = original_voxel.offset_coords(di, dj, dk);
             if neighbor.is_oob() {
                 continue;
             }
@@ -224,7 +215,6 @@ impl TranscriptRepo {
                 continue;
             }
 
-            // TODO: accept/reject
             let mut λ_proposed = λ_bg;
             let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
                 quad_states
@@ -247,14 +237,7 @@ impl TranscriptRepo {
                 };
             }
 
-            let di = di + di0;
-            let dj = dj + dj0;
-            let dk = dk + dk0;
-
-            let dist_prob_proposed = self.diffusion_distance_prior(priors, di, dj, dk);
-
-            let proposal_prob = dist_prob_proposed * λ_proposed;
-            let accept_prob = (proposal_prob.ln() - current_prob.ln()).exp();
+            let accept_prob = λ_proposed / λ_current;
 
             if rng.random::<f32>() > accept_prob {
                 continue;
@@ -275,18 +258,9 @@ impl TranscriptRepo {
             ));
         }
     }
-
-    fn diffusion_distance_prior(&self, priors: &ModelPriors, di: i32, dj: i32, dk: i32) -> f32 {
-        let z_prob = self.prior_z.prob(dk);
-        let xy_prob = priors.p_diffusion * self.prior_far.prob(di) * self.prior_far.prob(dj)
-            + (1.0 - priors.p_diffusion) * self.prior_near.prob(di) * self.prior_near.prob(dj);
-
-        z_prob * xy_prob
-    }
 }
 
 struct VoxelDiffusionPrior {
-    eps: f32,
     pub pmf: Vec<f32>,
 }
 
@@ -306,15 +280,6 @@ impl VoxelDiffusionPrior {
             d += voxelsize;
         }
 
-        VoxelDiffusionPrior { eps, pmf }
-    }
-
-    fn prob(&self, d: i32) -> f32 {
-        let dist = d.unsigned_abs() as usize;
-        if dist < self.pmf.len() {
-            self.pmf[dist]
-        } else {
-            self.eps
-        }
+        VoxelDiffusionPrior { pmf }
     }
 }
