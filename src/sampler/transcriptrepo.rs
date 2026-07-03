@@ -214,14 +214,14 @@ impl TranscriptRepo {
 
             let neighbor = voxel.offset_coords(di, dj, dk);
             if neighbor.is_oob() {
-                return;
+                continue;
             }
 
             // don't repo into a quad that doesn't exist
             let u = neighbor.i() as u32 / quadsize;
             let v = neighbor.j() as u32 / quadsize;
             if !quads_coords.contains(&(u, v)) {
-                return;
+                continue;
             }
 
             // TODO: accept/reject
