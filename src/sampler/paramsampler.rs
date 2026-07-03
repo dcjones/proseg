@@ -241,6 +241,12 @@ impl ParamSampler {
                             .state_transitions
                             .add_local(src_state as usize, gene, dest_state);
                     }
+
+                    if let Some(ref counts) = params.transcript_assignment_counts {
+                        let assigned_cell = if is_background { BACKGROUND_CELL } else { cell };
+                        let mut map = counts[idx].lock();
+                        *map.entry(assigned_cell).or_insert(0) += 1;
+                    }
                 }
 
                 // Update count matrices

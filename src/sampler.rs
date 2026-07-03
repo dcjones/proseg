@@ -31,10 +31,12 @@ use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, Array3, Axis, Zip, s};
 use num::traits::Zero;
 use onlinestats::CountMeanEstimator;
+use parking_lot::Mutex;
 use rand::rng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use shardedvec::ShardedVec;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::{Add, AddAssign};
 use thread_local::ThreadLocal;
 use transcripts::BACKGROUND_CELL;
@@ -436,6 +438,11 @@ pub struct ModelParams {
     // reported in another cell/state.
     pub expected_outflow: CSRMat<u32, FlowStats>,
 
+    // [ntranscripts] Per-transcript assignment counts: for each transcript, a map from
+    // cell index to the number of times it was assigned to that cell during uncertainty sampling.
+    // Only allocated when transcript posteriors output is requested.
+    pub transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>>,
+
     // [ncells, ngenes] sparse matrix of just foreground (non-noise) counts
     pub foreground_counts: CSRMat<u32, u32>,
 
@@ -670,6 +677,8 @@ impl ModelParams {
         let expected_inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let expected_outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
 
+        let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
+
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
         let background_counts = (0..density_nbins)
             .map(|_density| {
@@ -786,6 +795,7 @@ impl ModelParams {
             state_transitions,
             expected_inflow,
             expected_outflow,
+            transcript_assignment_counts,
             foreground_counts,
             transition_counts,
             foreground_counts_mean,
@@ -840,6 +850,14 @@ impl ModelParams {
         {
             reported.store(state.load());
         }
+    }
+
+    pub fn enable_transcript_assignment_tracking(&mut self, ntranscripts: usize) {
+        self.transcript_assignment_counts = Some(
+            std::iter::repeat_with(|| Mutex::new(HashMap::new()))
+                .take(ntranscripts)
+                .collect(),
+        );
     }
 
     /// Finalizes per-sample flow statistics for variance tracking.

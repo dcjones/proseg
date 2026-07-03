@@ -1650,3 +1650,116 @@ fn write_dispersion_params_parts(
 
     Ok(())
 }
+
+pub fn write_transcript_posteriors_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+    transcripts: &RunVec<u32, Transcript>,
+    nsamples: usize,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_transcript_posteriors_parts(&path, params, transcripts, nsamples) {
+        panic!(
+            "Failed to write transcript posteriors to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_transcript_posteriors_parts(
+    path: &Path,
+    params: &ModelParams,
+    transcripts: &RunVec<u32, Transcript>,
+    nsamples: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::sampler::transcripts::BACKGROUND_CELL;
+
+    let transcript_assignment_counts = match &params.transcript_assignment_counts {
+        Some(counts) => counts,
+        None => return Ok(()),
+    };
+
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    let ntranscripts = transcript_assignment_counts.len();
+    let ncells = params.ncells();
+
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/transcript_posteriors"),
+        Some(
+            json!({
+                "encoding-type": "dict",
+                "encoding-version": "0.1.0",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
+
+    let mut data: Vec<f32> = Vec::new();
+    let mut indices: Vec<i32> = Vec::new();
+    let mut indptr: Vec<i32> = Vec::with_capacity(ntranscripts + 1);
+    let mut offset = 0i32;
+
+    for counts in transcript_assignment_counts.iter() {
+        indptr.push(offset);
+        let map = counts.lock();
+        let mut entries: Vec<_> = map.iter().collect();
+        entries.sort_by_key(|(cell, _)| *cell);
+        for (cell, count) in entries {
+            if *cell == BACKGROUND_CELL {
+                continue;
+            }
+            let prob = *count as f32 / nsamples as f32;
+            data.push(prob);
+            indices.push(*cell as i32);
+            offset += 1;
+        }
+    }
+    indptr.push(offset);
+
+    write_anndata_csr_matrix_raw(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/transcript_posteriors/posteriors"),
+        ntranscripts,
+        ncells,
+        &data,
+        &indices,
+        &indptr,
+        "<f4",
+        "<i4",
+    )?;
+
+    let mut genes: Vec<i32> = Vec::with_capacity(ntranscripts);
+    for transcript in transcripts.iter() {
+        genes.push(transcript.gene as i32);
+    }
+
+    let mut arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/uns/transcript_posteriors/genes"),
+        vec![ntranscripts as u64],
+        vec![guess_chunks_1d(ntranscripts, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<i4")),
+        FillValueMetadataV2::Number(serde_json::Number::from(-1)),
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    let attr = arr.attributes_mut();
+    attr.insert("encoding-type".to_string(), "array".into());
+    attr.insert("encoding-version".to_string(), "0.2.0".into());
+    arr.store_array_subset_elements(&arr.subset_all(), &genes)?;
+    arr.store_metadata()?;
+
+    Ok(())
+}

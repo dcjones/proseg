@@ -31,7 +31,7 @@ use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::{
     write_dispersion_params_zarr, write_expected_inflow_zarr, write_expected_outflow_zarr,
-    write_spatialdata_zarr, write_state_transitions_zarr,
+    write_spatialdata_zarr, write_state_transitions_zarr, write_transcript_posteriors_zarr,
 };
 
 #[cfg(feature = "dhat-heap")]
@@ -448,6 +448,10 @@ struct Args {
     /// Suppress output of per-gene transcript assignment uncertainty matrices
     #[arg(long, default_value_t = false)]
     no_gene_transitions: bool,
+
+    /// Output per-transcript assignment posteriors to the spatialdata zarr object
+    #[arg(long, default_value_t = false)]
+    output_transcript_posteriors: bool,
 
     /// Output mixture component dispersion parameters (rφ, sφ, π) to the
     /// spatialdata object under uns/dispersion_params
@@ -1279,6 +1283,10 @@ fn main() {
 
     params.set_point_estimate();
 
+    if args.output_transcript_posteriors {
+        params.enable_transcript_assignment_tracking(dataset.transcripts.len());
+    }
+
     // Do additional sampling to estimate transcript assignment uncertainties.
     for _it in 0..args.uncertainty_samples {
         run_sampler(
@@ -1334,6 +1342,18 @@ fn main() {
             let t0 = Instant::now();
             write_dispersion_params_zarr(&args.output_path, output_spatialdata, &params);
             info!("write dispersion params: {:?}", t0.elapsed());
+        }
+
+        if args.output_transcript_posteriors {
+            let t0 = Instant::now();
+            write_transcript_posteriors_zarr(
+                &args.output_path,
+                output_spatialdata,
+                &params,
+                &dataset.transcripts,
+                args.uncertainty_samples,
+            );
+            info!("write transcript posteriors: {:?}", t0.elapsed());
         }
     }
 
