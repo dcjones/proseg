@@ -50,7 +50,8 @@ use std::io::{BufReader, Read};
 use std::mem::drop;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
-use std::sync::{Mutex, OnceLock, RwLock, RwLockWriteGuard};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -1102,6 +1103,38 @@ impl QuadStates {
     }
 }
 
+// A read-only, lock-free view of every quad's voxel→cell state for the duration
+// of a read-only sampling phase (transcript repositioning, foreground/background,
+// count computation). During those phases nothing mutates `states` (only the
+// morphology sampler does, and it runs separately), so we acquire each quad's
+// read guard *once* here rather than paying a `states.read()` lock acquisition on
+// every one of the ~5M per-transcript `get_voxel_cell` calls. The per-call atomic
+// on the reader count was the dominant cost of `get_voxel_cell` under 32-way
+// contention; holding the guards for the phase removes it entirely, leaving just
+// the two hash lookups.
+pub struct QuadStatesView<'a> {
+    quadsize: u32,
+    guards: HashMap<(u32, u32), RwLockReadGuard<'a, QuadStates>>,
+}
+
+impl<'a> QuadStatesView<'a> {
+    #[inline]
+    fn quad_index(&self, voxel: Voxel) -> (u32, u32) {
+        (
+            voxel.i() as u32 / self.quadsize,
+            voxel.j() as u32 / self.quadsize,
+        )
+    }
+
+    #[inline]
+    pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
+        self.guards
+            .get(&self.quad_index(voxel))
+            .map(|guard| guard.get_voxel_cell(voxel))
+            .unwrap_or(BACKGROUND_CELL)
+    }
+}
+
 // A derived voxel→transcript index, rebuilt from the flat `transcript_voxel`
 // array by parallel-sorting (voxel, transcript_idx) pairs. Replaces the per-quad
 // BTreeSet's ordered-range role: `voxel_transcripts` locates a voxel's transcripts
@@ -1442,7 +1475,7 @@ impl VoxelCheckerboard {
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
-            let mut quad_states = quad.states.write().unwrap();
+            let mut quad_states = quad.states.write();
             for state in quad_states.states.values_mut() {
                 let cell = *used_cells.get(&state.cell).unwrap();
                 state.cell = cell;
@@ -1836,7 +1869,7 @@ impl VoxelCheckerboard {
         // let mut minprior = f32::INFINITY;
         // let mut maxprior = f32::NEG_INFINITY;
         // checkerboard.quads.values().for_each(|quad| {
-        //     let mut quad_states = quad.states.write().unwrap();
+        //     let mut quad_states = quad.states.write();
 
         //     // TODO: I don't think we should have to do this.
         //     //
@@ -1941,7 +1974,7 @@ impl VoxelCheckerboard {
         // figure out which cells we are actually using
         let mut used_cells = HashMap::new();
         checkerboard.quads.values().for_each(|quad| {
-            for (_voxel, state) in quad.states.read().unwrap().states.iter() {
+            for (_voxel, state) in quad.states.read().states.iter() {
                 if state.cell != BACKGROUND_CELL {
                     let next_cell_id = used_cells.len() as u32;
                     used_cells.entry(state.cell).or_insert(next_cell_id);
@@ -1963,7 +1996,7 @@ impl VoxelCheckerboard {
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
-            let mut quad_states = quad.states.write().unwrap();
+            let mut quad_states = quad.states.write();
             for state in quad_states.states.values_mut() {
                 let cell = *used_cells.get(&state.cell).unwrap();
                 state.cell = cell;
@@ -2015,14 +2048,21 @@ impl VoxelCheckerboard {
             .or_insert_with(|| VoxelQuad::new(self.kmax, self.quadsize, u, v))
             .states
             .write()
-            .unwrap()
     }
 
-    pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
-        self.quads
-            .get(&self.quad_index(voxel))
-            .map(|quad| quad.states.read().unwrap().get_voxel_cell(voxel))
-            .unwrap_or(BACKGROUND_CELL)
+    // Acquire a lock-free read view of every quad's states for a read-only phase.
+    // The returned view holds a read guard on each quad, so no writer (i.e. the
+    // morphology sampler) may run until it is dropped. See `QuadStatesView`.
+    pub fn states_view(&self) -> QuadStatesView<'_> {
+        let guards = self
+            .quads
+            .iter()
+            .map(|(&idx, quad)| (idx, quad.states.read()))
+            .collect();
+        QuadStatesView {
+            quadsize: self.quadsize as u32,
+            guards,
+        }
     }
 
     pub fn get_voxel_density(&self, voxel: Voxel) -> usize {
@@ -2034,7 +2074,7 @@ impl VoxelCheckerboard {
             let j_rel = j as usize - (quad.v as usize * self.quadsize);
             return grid[i_rel * self.quadsize + j_rel] as usize;
         }
-        quad.densities.read().unwrap()[&voxel] as usize
+        quad.densities.read()[&voxel] as usize
     }
 
     // Same as get_voxel_density, but faster when the voxel is probably in the given quad
@@ -2047,7 +2087,7 @@ impl VoxelCheckerboard {
                 let j_rel = j as usize - (quad.v as usize * self.quadsize);
                 return grid[i_rel * self.quadsize + j_rel] as usize;
             }
-            quad.densities.read().unwrap()[&voxel] as usize
+            quad.densities.read()[&voxel] as usize
         } else {
             self.get_voxel_density(voxel)
         }
@@ -2115,7 +2155,7 @@ impl VoxelCheckerboard {
     // quad. This way we can always stay within the quad to check neighborhoods.
     fn mirror_quad_edges(&mut self) {
         for (&(u, v), quad) in &self.quads {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
             self.for_each_quad_neighbor_states(u, v, |neighbor_quad, neighbor_quad_states| {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
                 for (voxel, state) in &quad_states.states {
@@ -2137,7 +2177,7 @@ impl VoxelCheckerboard {
 
     pub fn check_mirrored_quad_edges(&self) {
         for (&(u, v), quad) in &self.quads {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
             self.for_each_quad_neighbor_states(u, v, |neighbor_quad, neighbor_quad_states| {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
                 for (voxel, state) in &quad_states.states {
@@ -2163,7 +2203,7 @@ impl VoxelCheckerboard {
         let mut mismatch_edges = Vec::new();
         let mut mismatch_edge_set = SampleSet::new();
         for quad in self.quads.values() {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
 
             mismatch_edges.clear();
             self.build_quad_edge_sets(&quad_states, &mut mismatch_edges);
@@ -2179,7 +2219,7 @@ impl VoxelCheckerboard {
         // have to do this to get around a double borrow issue
         let mut mismatch_edges = Vec::new();
         for quad in self.quads.values() {
-            let mut quad_states = quad.states.write().unwrap();
+            let mut quad_states = quad.states.write();
             self.build_quad_edge_sets(&quad_states, &mut mismatch_edges);
 
             quad_states.mismatch_edges.clear();
@@ -2246,7 +2286,7 @@ impl VoxelCheckerboard {
             if let Some(neighbor_quad) = self.quads.get(&(neighbor_u, neighbor_v)) {
                 f(
                     neighbor_quad,
-                    neighbor_quad.states.write().unwrap().deref_mut(),
+                    neighbor_quad.states.write().deref_mut(),
                 )
             }
         }
@@ -2288,7 +2328,7 @@ impl VoxelCheckerboard {
         }
 
         self.quads.par_iter_mut().for_each(|(&(u, v), quad)| {
-            let mut densities = quad.densities.write().unwrap();
+            let mut densities = quad.densities.write();
             let empty = Vec::new();
             let occupied = occupied_by_quad.get(&(u, v)).unwrap_or(&empty);
 
@@ -2318,7 +2358,7 @@ impl VoxelCheckerboard {
             .collect::<Vec<_>>();
 
         self.quads.iter().for_each(|((_u, _v), quad)| {
-            let densities = quad.densities.read().unwrap();
+            let densities = quad.densities.read();
             for (_voxel, &density) in densities.iter() {
                 for quant_est_q in quant_est.iter_mut() {
                     quant_est_q.update(density);
@@ -2336,7 +2376,7 @@ impl VoxelCheckerboard {
         // Replace densities with their quantiles
         let quadsize = self.quadsize;
         self.quads.par_iter_mut().for_each(|(&(u, v), quad)| {
-            let mut densities = quad.densities.write().unwrap();
+            let mut densities = quad.densities.write();
             let mut grid = vec![0u8; quadsize * quadsize];
 
             let min_i = (u as usize) * quadsize;
@@ -2376,7 +2416,7 @@ impl VoxelCheckerboard {
         layer_surface_area.iter_mut().for_each(|a_k| a_k.zero());
 
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
             for (&voxel, state) in &quad_states.states {
                 // We mirror state on the border. We need to skip these mirrored voxels to avoid double-counting.
                 if !quad.voxel_in_bounds(voxel) {
@@ -2420,6 +2460,7 @@ impl VoxelCheckerboard {
             })
         });
 
+        let states = self.states_view();
         self.transcript_voxel
             .par_iter()
             .enumerate()
@@ -2431,7 +2472,7 @@ impl VoxelCheckerboard {
                 } = self.transcript_fixed_state[idx];
                 let k_origin = original_voxel.k();
                 let density = self.get_voxel_density(original_voxel);
-                let cell = self.get_voxel_cell(voxel);
+                let cell = states.get_voxel_cell(voxel);
 
                 if cell != BACKGROUND_CELL {
                     counts
@@ -2451,7 +2492,7 @@ impl VoxelCheckerboard {
             Array1::<u32>::zeros(background_region_volume.len());
 
         for ((_u, _v), quad) in self.quads.iter() {
-            let densities = quad.densities.read().unwrap();
+            let densities = quad.densities.read();
             for (_voxel, &density) in densities.iter() {
                 background_region_voxel_count[density as usize] += 1;
             }
@@ -2468,7 +2509,7 @@ impl VoxelCheckerboard {
         let mut centroids = Array2::zeros((self.ncells, 3));
 
         self.quads.values().for_each(|quad| {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
             let (i_min, i_max, j_min, j_max) = quad.bounds();
             for (voxel, state) in quad_states.states.iter() {
                 if state.cell != BACKGROUND_CELL {
@@ -2507,7 +2548,6 @@ impl VoxelCheckerboard {
         self.quads.values().for_each(|quad| {
             quad.states
                 .read()
-                .unwrap()
                 .states
                 .iter()
                 .for_each(|(&voxel, &state)| {
@@ -2556,7 +2596,7 @@ impl VoxelCheckerboard {
         let mut voxel_votes = HashMap::new();
         let mut top_voxel: HashMap<CellIndex, (Voxel, u32)> = HashMap::new();
         self.quads.values().for_each(|quad| {
-            let quad_states = quad.states.read().unwrap();
+            let quad_states = quad.states.read();
 
             quad_states.states.iter().for_each(|(&voxel, &state)| {
                 let cell = state.cell;
@@ -2680,7 +2720,7 @@ impl VoxelCheckerboard {
     fn expand_cells_vertically(&mut self, only_frozen: bool) {
         for _ in 0..self.nzlayers - 1 {
             self.quads.par_iter().for_each(|(_quad_pos, quad)| {
-                let mut quad_states = quad.states.write().unwrap();
+                let mut quad_states = quad.states.write();
 
                 let mut state_changes = Vec::new();
                 quad_states.states.iter().for_each(|(voxel, state)| {
@@ -2715,7 +2755,7 @@ impl VoxelCheckerboard {
     // Copy occupied voxel states to unoccupied neighbors
     fn expand_cells(&mut self) {
         self.quads.par_iter().for_each(|(_quad_pos, quad)| {
-            let mut quad_states = quad.states.write().unwrap();
+            let mut quad_states = quad.states.write();
 
             let mut state_changes = Vec::new();
             quad_states.states.iter().for_each(|(voxel, state)| {
@@ -2751,7 +2791,7 @@ impl VoxelCheckerboard {
 
     fn pop_bubbles(&mut self) {
         self.quads.par_iter().for_each(|(_quad_pos, quad)| {
-            let mut quad_states = quad.states.write().unwrap();
+            let mut quad_states = quad.states.write();
             let mut bubbles = HashSet::new();
 
             for edge in quad_states.mismatch_edges.iter() {
@@ -2792,8 +2832,8 @@ impl VoxelCheckerboard {
         self.quads.par_drain().for_each(|((u, v), old_quad)| {
             let new_quad = VoxelQuad::new(self.kmax, quadsize, u, v);
             {
-                let old_quad_states = old_quad.states.read().unwrap();
-                let mut new_quad_states = new_quad.states.write().unwrap();
+                let old_quad_states = old_quad.states.read();
+                let mut new_quad_states = new_quad.states.write();
                 old_quad_states.states.iter().for_each(|(voxel, state)| {
                     if state.cell != BACKGROUND_CELL
                         && self.frozen_cells[state.cell as usize]

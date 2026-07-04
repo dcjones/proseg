@@ -147,8 +147,8 @@ impl VoxelSampler {
         priors: &ModelPriors,
         frozen_cells: &[bool],
     ) -> Option<Proposal> {
-        let quad_states = quad.states.read().unwrap();
-        let mut connectivity = quad.connectivity.write().unwrap();
+        let quad_states = quad.states.read();
+        let mut connectivity = quad.connectivity.write();
         let mut rng = rng();
         let edge = *quad_states.mismatch_edges.choose(&mut rng)?;
 
@@ -298,7 +298,7 @@ impl VoxelSampler {
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
 
-        // let quad_densities = quad.densities.read().unwrap();
+        // let quad_densities = quad.densities.read();
 
         let proposed_cell = proposal.proposed_cell;
         let (current_cell, prior_cell, log_prior_prob, log_1m_prior_prob) =
@@ -499,7 +499,7 @@ impl VoxelSampler {
         proposal: Proposal,
         record_samples: bool,
     ) {
-        let mut quad_states = quad.states.write().unwrap();
+        let mut quad_states = quad.states.write();
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
         let current_cell = proposal
