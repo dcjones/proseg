@@ -81,19 +81,6 @@ where
         self.len += 1;
     }
 
-    pub fn push_run(&mut self, value: T, len: I) {
-        if let Some(last) = self.runs.last_mut() {
-            if last.value == value {
-                last.len += len;
-                self.len += len.as_();
-                return;
-            }
-        }
-
-        self.runs.push(Run { len, value });
-        self.len += len.as_();
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }
@@ -101,14 +88,6 @@ where
     // pub fn nruns(&self) -> usize {
     //     self.runs.len()
     // }
-
-    pub fn iter_runs(&self) -> impl Iterator<Item = &Run<I, T>> {
-        self.runs.iter()
-    }
-
-    pub fn iter_runs_mut(&mut self) -> impl Iterator<Item = &mut Run<I, T>> {
-        self.runs.iter_mut()
-    }
 
     pub fn iter(&self) -> RunVecIter<I, T> {
         RunVecIter {
