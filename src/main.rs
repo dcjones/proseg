@@ -1451,8 +1451,6 @@ fn run_sampler(
     if check_consistency {
         voxels.check_mirrored_quad_edges();
         voxels.check_mismatch_edges();
-        voxels.check_transcript_voxel();
-        voxels.check_voxel_index();
         params.check_consistency(voxels);
     }
 }
