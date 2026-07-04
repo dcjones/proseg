@@ -544,7 +544,7 @@ mod tests {
 }
 
 // Index of a single voxel
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Voxel {
     // i, j, k coordinates packaed into a single integer
     // with 24, 24, and 16-bits, respectively.
@@ -958,55 +958,6 @@ pub fn von_neumann_neighborhood_xy_offsets() -> [VoxelOffset; 4] {
     [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)].map(|(di, dj, dk)| VoxelOffset::new(di, dj, dk))
 }
 
-// Z-order curve comparison function. Following from:
-// https://en.wikipedia.org/wiki/Z-order_curve#Efficiently_building_quadtrees_and_octrees
-impl Ord for Voxel {
-    fn cmp(&self, other: &Voxel) -> std::cmp::Ordering {
-        // Z-order curve comparison for spatial locality.
-        // Benchmarking shows this is ~4% faster than simple index comparison
-        // due to better cache behavior during BTree iteration.
-        fn less_msb(a: u32, b: u32) -> bool {
-            a < b && a < (a ^ b)
-        }
-
-        if self.index == other.index {
-            return std::cmp::Ordering::Equal;
-        }
-
-        // xor then extract coords rather than vice versa to save a few ops
-        let xor = self.index ^ other.index;
-        let xi = ((xor >> 40) & 0xFFFFFF) as u32;
-        let xj = ((xor >> 16) & 0xFFFFFF) as u32;
-        let xk = (xor & 0xFFFF) as u32;
-
-        // just doing a bunch of branches here and trusting the compiler
-        // to generate cmovs
-        let islt = if less_msb(xi, xj) {
-            if less_msb(xj, xk) {
-                self.k() < other.k()
-            } else {
-                self.j() < other.j()
-            }
-        } else if less_msb(xi, xk) {
-            self.k() < other.k()
-        } else {
-            self.i() < other.i()
-        };
-
-        if islt {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    }
-}
-
-impl PartialOrd for Voxel {
-    fn partial_cmp(&self, other: &Voxel) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 #[derive(Hash, PartialEq, Eq, Copy, Clone)]
 pub struct UndirectedVoxelPair {
     pub a: Voxel,
@@ -1381,6 +1332,15 @@ impl VoxelCheckerboard {
             // (initially == original voxel).
             self.transcript_voxel
                 .push(std::sync::atomic::AtomicU64::new(voxel.raw()));
+
+            // Ensure a quad exists for every transcript's voxel, even in
+            // background regions with no prior cell. Density estimation only
+            // visits existing quads, and get_voxel_density assumes the owning
+            // quad exists, so a transcript-only voxel needs its quad created.
+            let (u, v) = self.quad_index(voxel);
+            self.quads
+                .entry((u, v))
+                .or_insert_with(|| VoxelQuad::new(self.kmax, self.quadsize, u, v));
         }
         trace!("assigned transcript positions: {:?}", t0.elapsed());
     }
