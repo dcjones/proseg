@@ -10,7 +10,7 @@ use crate::sampler::voxelcheckerboard::{TranscriptFixedState, VoxelTranscript};
 use super::math::uniformly_imprecise_normal_prob;
 use super::multinomial::Multinomial;
 use super::transcripts::BACKGROUND_CELL;
-use super::voxelcheckerboard::{VoxelCheckerboard, VoxelQuad};
+use super::voxelcheckerboard::{MovedTranscript, VoxelCheckerboard, VoxelQuad};
 use super::{ModelParams, ModelPriors};
 
 use rand::rngs::ThreadRng;
@@ -152,36 +152,6 @@ impl TranscriptRepo {
                 .map(|state| state.cell)
                 .unwrap_or(BACKGROUND_CELL);
 
-            let transition_counts_row = if cell != BACKGROUND_CELL {
-                Some(params.transition_counts.row(cell as usize))
-            } else {
-                None
-            };
-
-            let mut transition_counts_row_write =
-                transition_counts_row.as_ref().map(|row| row.write());
-
-            let density = voxels.get_voxel_density_hint(quad, original_voxel);
-
-            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, density]];
-            let θ_g_factored = if gene < params.nunfactored {
-                None
-            } else {
-                Some(params.θ.slice(s![gene, params.nunfactored..]))
-            };
-
-            let mut λ_current = λ_bg;
-            if cell != BACKGROUND_CELL {
-                λ_current += if gene < params.nunfactored {
-                    params.φ[[cell as usize, gene]]
-                } else {
-                    params
-                        .φ
-                        .slice(s![cell as usize, params.nunfactored..])
-                        .dot(&θ_g_factored.unwrap())
-                };
-            }
-
             // Independence proposal: draw a displacement from the diffusion
             // prior relative to the transcript's *original* voxel. The xy prior
             // is a mixture of two isotropic components, so pick the component
@@ -215,7 +185,6 @@ impl TranscriptRepo {
                 continue;
             }
 
-            let mut λ_proposed = λ_bg;
             let neighbor_cell = if quad.voxel_in_bounds(neighbor) {
                 quad_states
                     .states
@@ -226,36 +195,74 @@ impl TranscriptRepo {
                 voxels.get_voxel_cell(neighbor)
             };
 
-            if neighbor_cell != BACKGROUND_CELL {
-                λ_proposed += if gene < params.nunfactored {
-                    params.φ[[neighbor_cell as usize, gene]]
+            // If the move stays within the same cell (including
+            // background→background), the Poisson rates are identical — same
+            // cell, gene, and original voxel — so the acceptance ratio is exactly
+            // 1 and we can accept without evaluating either λ dot product.
+            let accept_prob = if cell == neighbor_cell {
+                1.0
+            } else {
+                let density = voxels.get_voxel_density_hint(quad, original_voxel);
+                let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, density]];
+                let θ_g_factored = if gene < params.nunfactored {
+                    None
                 } else {
-                    params
-                        .φ
-                        .slice(s![neighbor_cell as usize, params.nunfactored..])
-                        .dot(&θ_g_factored.unwrap())
+                    Some(params.θ.slice(s![gene, params.nunfactored..]))
                 };
-            }
 
-            let accept_prob = λ_proposed / λ_current;
+                let mut λ_current = λ_bg;
+                if cell != BACKGROUND_CELL {
+                    λ_current += if gene < params.nunfactored {
+                        params.φ[[cell as usize, gene]]
+                    } else {
+                        params
+                            .φ
+                            .slice(s![cell as usize, params.nunfactored..])
+                            .dot(&θ_g_factored.unwrap())
+                    };
+                }
+
+                let mut λ_proposed = λ_bg;
+                if neighbor_cell != BACKGROUND_CELL {
+                    λ_proposed += if gene < params.nunfactored {
+                        params.φ[[neighbor_cell as usize, gene]]
+                    } else {
+                        params
+                            .φ
+                            .slice(s![neighbor_cell as usize, params.nunfactored..])
+                            .dot(&θ_g_factored.unwrap())
+                    };
+                }
+
+                λ_proposed / λ_current
+            };
 
             if rng.random::<f32>() > accept_prob {
                 continue;
             }
-            if record_samples
-                && neighbor_cell != BACKGROUND_CELL
-                && let Some(transition_counts_row_write) = transition_counts_row_write.as_mut()
-            {
-                transition_counts_row_write.add(neighbor_cell, 1);
+            // Record the transition only when sampling posteriors. Acquiring the
+            // row lock lazily here (rather than eagerly per transcript) avoids a
+            // lock acquisition for every non-background transcript, which is pure
+            // overhead during the point-estimate phase (record_samples == false).
+            if record_samples && cell != BACKGROUND_CELL && neighbor_cell != BACKGROUND_CELL {
+                params
+                    .transition_counts
+                    .row(cell as usize)
+                    .write()
+                    .add(neighbor_cell, 1);
             }
 
-            quad_transcripts_ref.outgoing_transcripts.push((
-                voxel,
-                VoxelTranscript {
-                    voxel: neighbor,
-                    transcript_idx,
-                },
-            ));
+            quad_transcripts_ref
+                .outgoing_transcripts
+                .push(MovedTranscript {
+                    src_voxel: voxel,
+                    dest: VoxelTranscript {
+                        voxel: neighbor,
+                        transcript_idx,
+                    },
+                    src_cell: cell,
+                    dest_cell: neighbor_cell,
+                });
         }
     }
 }

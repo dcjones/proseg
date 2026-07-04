@@ -1147,13 +1147,26 @@ pub struct VoxelTranscript {
     pub transcript_idx: TranscriptIndex,
 }
 
+// A transcript accepted for repositioning, carrying enough state to apply the
+// move during the merge phase without re-reading voxel cell assignments. The
+// source and destination cell are recorded at proposal time (voxel assignments
+// don't change during repositioning), so the merge can skip count updates
+// entirely when a transcript stays within the same cell.
+#[derive(Debug, Clone, Copy)]
+pub struct MovedTranscript {
+    pub src_voxel: Voxel,
+    pub dest: VoxelTranscript,
+    pub src_cell: CellIndex,
+    pub dest_cell: CellIndex,
+}
+
 pub struct QuadTranscripts {
     pub transcripts: BTreeSet<VoxelTranscript>,
 
     // Transcripts that are in the process of being moved out of this quad.
     // Kept here until locks are freed on the other quads.
-    pub outgoing_transcripts: Vec<(Voxel, VoxelTranscript)>,
-    pub incoming_transcripts: Vec<VoxelTranscript>,
+    pub outgoing_transcripts: Vec<MovedTranscript>,
+    pub incoming_transcripts: Vec<MovedTranscript>,
 }
 
 impl QuadTranscripts {
@@ -2826,14 +2839,10 @@ impl VoxelCheckerboard {
             let mut quad_transcripts = quad.transcripts.write().unwrap();
             let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
 
-            for (_src_voxel, voxel_transcript) in
-                quad_transcripts_lock_ref.outgoing_transcripts.iter()
-            {
-                let neighbor_key = self.quad_index(voxel_transcript.voxel);
+            for moved in quad_transcripts_lock_ref.outgoing_transcripts.iter() {
+                let neighbor_key = self.quad_index(moved.dest.voxel);
                 if *key == neighbor_key {
-                    quad_transcripts_lock_ref
-                        .incoming_transcripts
-                        .push(*voxel_transcript);
+                    quad_transcripts_lock_ref.incoming_transcripts.push(*moved);
                 } else {
                     let neighbor_quad = &self.quads[&neighbor_key];
                     neighbor_quad
@@ -2841,7 +2850,7 @@ impl VoxelCheckerboard {
                         .write()
                         .unwrap()
                         .incoming_transcripts
-                        .push(*voxel_transcript);
+                        .push(*moved);
                 }
             }
         }
@@ -2852,70 +2861,62 @@ impl VoxelCheckerboard {
         self.quads.par_iter().for_each(|(_key, quad)| {
             let mut quad_transcripts = quad.transcripts.write().unwrap();
             let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
-            let quad_states = quad.states.read().unwrap();
 
-            // remove everything in outgoing
-            for (src_voxel, voxel_transcript) in
-                quad_transcripts_lock_ref.outgoing_transcripts.drain(..)
-            {
+            // Remove everything in outgoing from the voxel set, and decrement its
+            // count from the source cell. Moves that stay within the same cell
+            // leave the count table unchanged (same cell, same original voxel →
+            // same density/layer key), so the count update is skipped entirely.
+            for moved in quad_transcripts_lock_ref.outgoing_transcripts.drain(..) {
                 quad_transcripts_lock_ref
                     .transcripts
                     .remove(&VoxelTranscript {
-                        voxel: src_voxel,
-                        transcript_idx: voxel_transcript.transcript_idx,
+                        voxel: moved.src_voxel,
+                        transcript_idx: moved.dest.transcript_idx,
                     });
 
-                let cell = quad_states
-                    .states
-                    .get(&src_voxel)
-                    .map(|state| state.cell)
-                    .unwrap_or(BACKGROUND_CELL);
+                if moved.src_cell == moved.dest_cell {
+                    continue;
+                }
 
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self.transcript_fixed_state[voxel_transcript.transcript_idx as usize];
+                } = self.transcript_fixed_state[moved.dest.transcript_idx as usize];
 
                 let k_origin = original_voxel.k() as usize;
                 let density = self.get_voxel_density_hint(quad, original_voxel);
 
-                if cell == BACKGROUND_CELL {
+                if moved.src_cell == BACKGROUND_CELL {
                     params.unassigned_counts[density][k_origin].sub(gene as usize, 1);
                 } else {
-                    let counts_c = params.counts.row(cell as usize);
+                    let counts_c = params.counts.row(moved.src_cell as usize);
                     counts_c
                         .write()
                         .sub(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
                 }
             }
 
-            // TODO: A big inefficiency here is that transcripts that are moved
-            // within the same cell update the counts table twice.
+            // Insert everything in incoming, and increment its count in the
+            // destination cell (again skipping same-cell moves).
+            for moved in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
+                quad_transcripts_lock_ref.transcripts.insert(moved.dest);
 
-            // insert everything in incoming
-            for voxel_transcript in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
-                quad_transcripts_lock_ref
-                    .transcripts
-                    .insert(voxel_transcript);
-
-                let cell = quad_states
-                    .states
-                    .get(&voxel_transcript.voxel)
-                    .map(|state| state.cell)
-                    .unwrap_or(BACKGROUND_CELL);
+                if moved.dest_cell == moved.src_cell {
+                    continue;
+                }
 
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self.transcript_fixed_state[voxel_transcript.transcript_idx as usize];
+                } = self.transcript_fixed_state[moved.dest.transcript_idx as usize];
 
                 let k_origin = original_voxel.k() as usize;
                 let density = self.get_voxel_density_hint(quad, original_voxel);
 
-                if cell == BACKGROUND_CELL {
+                if moved.dest_cell == BACKGROUND_CELL {
                     params.unassigned_counts[density][k_origin].add(gene as usize, 1);
                 } else {
-                    let counts_c = params.counts.row(cell as usize);
+                    let counts_c = params.counts.row(moved.dest_cell as usize);
                     counts_c
                         .write()
                         .add(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
