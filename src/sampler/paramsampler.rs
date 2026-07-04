@@ -153,6 +153,9 @@ impl ParamSampler {
         });
 
         // Iterate over all transcripts in parallel (over the flat position array).
+        // States are read-only here, so take a single lock-free view rather than
+        // locking on every per-transcript cell lookup.
+        let states = voxels.states_view();
         let ntranscripts = voxels.transcript_voxel.len();
         (0..ntranscripts).into_par_iter().for_each_init(rng, |rng, idx| {
             {
@@ -160,7 +163,7 @@ impl ParamSampler {
                 let voxel = Voxel::from_raw(
                     voxels.transcript_voxel[idx].load(std::sync::atomic::Ordering::Relaxed),
                 );
-                let cell = voxels.get_voxel_cell(voxel);
+                let cell = states.get_voxel_cell(voxel);
 
                 let TranscriptFixedState {
                     original_voxel,

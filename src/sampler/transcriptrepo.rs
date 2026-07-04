@@ -8,7 +8,7 @@ use crate::sampler::voxelcheckerboard::TranscriptFixedState;
 use super::math::uniformly_imprecise_normal_prob;
 use super::multinomial::Multinomial;
 use super::transcripts::BACKGROUND_CELL;
-use super::voxelcheckerboard::{Voxel, VoxelCheckerboard};
+use super::voxelcheckerboard::{QuadStatesView, Voxel, VoxelCheckerboard};
 use super::{CountMatRowKey, ModelParams, ModelPriors};
 
 use rand::rngs::ThreadRng;
@@ -94,11 +94,14 @@ impl TranscriptRepo {
         // need a shared borrow and can iterate every transcript in parallel
         // (no quad partition, no cross-quad routing, no delta merge).
         let voxels: &VoxelCheckerboard = voxels;
+        // States are fixed during repositioning, so take one lock-free view rather
+        // than locking on every per-transcript cell lookup (two per transcript).
+        let states = voxels.states_view();
         let ntranscripts = voxels.transcript_voxel.len();
         (0..ntranscripts)
             .into_par_iter()
             .for_each_init(rng, |rng, idx| {
-                self.repo_transcript(voxels, rng, priors, params, idx, record_samples);
+                self.repo_transcript(voxels, &states, rng, priors, params, idx, record_samples);
             });
         trace!("transcript repo: {:?}", t0.elapsed());
     }
@@ -111,6 +114,7 @@ impl TranscriptRepo {
     fn repo_transcript(
         &self,
         voxels: &VoxelCheckerboard,
+        states: &QuadStatesView,
         rng: &mut ThreadRng,
         priors: &ModelPriors,
         params: &ModelParams,
@@ -126,7 +130,7 @@ impl TranscriptRepo {
         let gene = gene as usize;
 
         let current_voxel = Voxel::from_raw(voxels.transcript_voxel[idx].load(Relaxed));
-        let cell = voxels.get_voxel_cell(current_voxel);
+        let cell = states.get_voxel_cell(current_voxel);
 
         // Independence proposal: draw a displacement from the diffusion prior
         // relative to the transcript's *original* voxel. The xy prior is a
@@ -161,7 +165,7 @@ impl TranscriptRepo {
             return;
         }
 
-        let neighbor_cell = voxels.get_voxel_cell(neighbor);
+        let neighbor_cell = states.get_voxel_cell(neighbor);
 
         // If the move stays within the same cell (including
         // background→background), the Poisson rates are identical — same cell,
