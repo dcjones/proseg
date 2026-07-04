@@ -2,7 +2,7 @@ use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
-use super::voxelcheckerboard::{TranscriptFixedState, VoxelCheckerboard};
+use super::voxelcheckerboard::{TranscriptFixedState, Voxel, VoxelCheckerboard};
 use super::{FlowStats, ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
@@ -152,17 +152,15 @@ impl ParamSampler {
             })
         });
 
-        // Iterate over quads in parallel to sync, sample, and record
-        voxels.quads.par_iter().for_each(|((_u, _v), quad)| {
-            let transcripts = quad.transcripts.read().unwrap();
-            let voxel_states = quad.states.read().unwrap();
-            let mut rng = rand::rng();
-
-            for transcript in transcripts.transcripts.iter() {
-                let idx = transcript.transcript_idx as usize;
-
-                // Get destination cell from the current voxel's state in the checkerboard
-                let cell = voxel_states.get_voxel_cell(transcript.voxel);
+        // Iterate over all transcripts in parallel (over the flat position array).
+        let ntranscripts = voxels.transcript_voxel.len();
+        (0..ntranscripts).into_par_iter().for_each_init(rng, |rng, idx| {
+            {
+                // Current voxel and its cell assignment.
+                let voxel = Voxel::from_raw(
+                    voxels.transcript_voxel[idx].load(std::sync::atomic::Ordering::Relaxed),
+                );
+                let cell = voxels.get_voxel_cell(voxel);
 
                 let TranscriptFixedState {
                     original_voxel,

@@ -298,7 +298,6 @@ impl VoxelSampler {
     ) -> f32 {
         let mut δ = 0.0; // Metropolis-Hastings ratio
 
-        let quad_transcripts = quad.transcripts.read().unwrap();
         // let quad_densities = quad.densities.read().unwrap();
 
         let proposed_cell = proposal.proposed_cell;
@@ -353,7 +352,7 @@ impl VoxelSampler {
 
         // TODO: Previous version of this tried to avoid redundant lookups. This rewrite is more direct,
         // so it may be an optimization oppourtunity.
-        for transcript_idx in quad_transcripts.iter_voxel_transcripts(proposal.voxel) {
+        for transcript_idx in voxels.voxel_index.voxel_transcripts(proposal.voxel) {
             let TranscriptFixedState {
                 original_voxel,
                 gene,
@@ -501,7 +500,6 @@ impl VoxelSampler {
         record_samples: bool,
     ) {
         let mut quad_states = quad.states.write().unwrap();
-        let quad_transcripts = quad.transcripts.read().unwrap();
         let voxel = proposal.voxel;
         let proposed_cell = proposal.proposed_cell;
         let current_cell = proposal
@@ -564,7 +562,7 @@ impl VoxelSampler {
             let mut counts_row_write = counts_row.write();
             let mut total_count = 0;
 
-            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+            for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
@@ -587,7 +585,7 @@ impl VoxelSampler {
                 transitions_row_write.add(proposed_cell, total_count);
             }
         } else {
-            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+            for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
@@ -616,7 +614,7 @@ impl VoxelSampler {
             let counts_row = params.counts.row(proposed_cell as usize);
             let mut counts_row_write = counts_row.write();
 
-            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+            for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
@@ -629,7 +627,7 @@ impl VoxelSampler {
                 );
             }
         } else {
-            for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
+            for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
