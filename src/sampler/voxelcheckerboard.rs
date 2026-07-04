@@ -43,12 +43,11 @@ use rstar::primitives::GeomWithData;
 use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
 use std::cmp::PartialOrd;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::f32;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem::drop;
-use std::ops::Bound::Included;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
 use std::sync::{Mutex, OnceLock, RwLock, RwLockWriteGuard};
@@ -1152,12 +1151,6 @@ impl QuadStates {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VoxelTranscript {
-    pub voxel: Voxel,
-    pub transcript_idx: TranscriptIndex,
-}
-
 // A derived voxel→transcript index, rebuilt from the flat `transcript_voxel`
 // array by parallel-sorting (voxel, transcript_idx) pairs. Replaces the per-quad
 // BTreeSet's ordered-range role: `voxel_transcripts` locates a voxel's transcripts
@@ -1205,85 +1198,9 @@ impl VoxelIndex {
     }
 }
 
-// A transcript accepted for repositioning, carrying enough state to apply the
-// move during the merge phase without re-reading voxel cell assignments. The
-// source and destination cell are recorded at proposal time (voxel assignments
-// don't change during repositioning), so the merge can skip count updates
-// entirely when a transcript stays within the same cell.
-#[derive(Debug, Clone, Copy)]
-pub struct MovedTranscript {
-    pub src_voxel: Voxel,
-    pub dest: VoxelTranscript,
-    pub src_cell: CellIndex,
-    pub dest_cell: CellIndex,
-}
-
-pub struct QuadTranscripts {
-    pub transcripts: BTreeSet<VoxelTranscript>,
-
-    // Transcripts that are in the process of being moved out of this quad.
-    // Kept here until locks are freed on the other quads.
-    pub outgoing_transcripts: Vec<MovedTranscript>,
-    pub incoming_transcripts: Vec<MovedTranscript>,
-}
-
-impl QuadTranscripts {
-    pub fn new() -> QuadTranscripts {
-        QuadTranscripts {
-            transcripts: BTreeSet::new(),
-            outgoing_transcripts: Vec::new(),
-            incoming_transcripts: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)] // BTreeSet range query, superseded by VoxelIndex; removed with the set
-    pub fn iter_voxel_transcripts(&self, voxel: Voxel) -> impl Iterator<Item = TranscriptIndex> {
-        self.transcripts
-            .range((
-                Included(VoxelTranscript {
-                    voxel,
-                    transcript_idx: TranscriptIndex::MIN,
-                }),
-                Included(VoxelTranscript {
-                    voxel,
-                    transcript_idx: TranscriptIndex::MAX,
-                }),
-            ))
-            .map(|vt| vt.transcript_idx)
-    }
-}
-
-impl<'a> QuadTranscripts {
-    // Iterator all the transcript in a particular voxel
-    #[allow(dead_code)] // superseded by VoxelIndex; removed with the BTreeSet
-    pub fn voxel_transcripts(
-        &'a self,
-        voxel: Voxel,
-    ) -> std::collections::btree_set::Range<'a, VoxelTranscript> {
-        let from = VoxelTranscript {
-            voxel,
-            transcript_idx: TranscriptIndex::MIN,
-        };
-        let to = VoxelTranscript {
-            voxel,
-            transcript_idx: TranscriptIndex::MAX,
-        };
-        self.transcripts.range((Included(from), Included(to)))
-    }
-}
-
-impl QuadTranscripts {
-    #[allow(dead_code)] // superseded by VoxelIndex; removed with the BTreeSet
-    pub fn voxel_population(&self, voxel: Voxel) -> usize {
-        self.voxel_transcripts(voxel).count()
-    }
-}
-
 // This will represent one square of the checkerboard
 pub struct VoxelQuad {
     pub states: RwLock<QuadStates>,
-
-    pub transcripts: RwLock<QuadTranscripts>,
 
     // Local transcript density, used for noise rate estimation
     pub densities: RwLock<HashMap<Voxel, f32>>,
@@ -1307,7 +1224,6 @@ impl VoxelQuad {
     fn new(kmax: i32, quadsize: usize, u: u32, v: u32) -> VoxelQuad {
         VoxelQuad {
             states: RwLock::new(QuadStates::new()),
-            transcripts: RwLock::new(QuadTranscripts::new()),
             densities: RwLock::new(HashMap::new()),
             densities_grid: OnceLock::new(),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
@@ -1455,25 +1371,18 @@ impl VoxelCheckerboard {
     fn initialize_transcripts(&mut self, dataset: &TranscriptDataset) {
         let t0 = Instant::now();
 
-        for (transcript_idx, transcript) in dataset.transcripts.iter().enumerate() {
+        for transcript in dataset.transcripts.iter() {
             let voxel = self.coords_to_voxel(transcript.x, transcript.y, transcript.z);
             self.transcript_fixed_state.push(TranscriptFixedState {
                 original_voxel: voxel,
                 gene: transcript.gene,
             });
-            // Authoritative current position (initially == original voxel),
-            // maintained in parallel with the per-quad BTreeSet.
+            // Authoritative current position, indexed by transcript index
+            // (initially == original voxel).
             self.transcript_voxel
                 .push(std::sync::atomic::AtomicU64::new(voxel.raw()));
-
-            let key = VoxelTranscript {
-                voxel,
-                transcript_idx: transcript_idx as TranscriptIndex,
-            };
-            let mut quad_transcripts = self.write_quad_transcripts(voxel);
-            quad_transcripts.transcripts.insert(key);
         }
-        trace!("assigned voxel transcript sets: {:?}", t0.elapsed());
+        trace!("assigned transcript positions: {:?}", t0.elapsed());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2149,24 +2058,6 @@ impl VoxelCheckerboard {
             .unwrap()
     }
 
-    fn write_quad_transcripts(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadTranscripts> {
-        self.write_quad_index_transcripts(self.quad_index(voxel))
-    }
-
-    fn write_quad_index_transcripts(
-        &mut self,
-        index: (u32, u32),
-    ) -> RwLockWriteGuard<QuadTranscripts> {
-        let (u, v) = index;
-
-        self.quads
-            .entry(index)
-            .or_insert_with(|| VoxelQuad::new(self.kmax, self.quadsize, u, v))
-            .transcripts
-            .write()
-            .unwrap()
-    }
-
     pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
         self.quads
             .get(&self.quad_index(voxel))
@@ -2277,65 +2168,11 @@ impl VoxelCheckerboard {
         }
     }
 
-    // Verify the authoritative flat `transcript_voxel` array agrees with the
-    // per-quad BTreeSets during the migration: every set entry's voxel must match
-    // the flat array, and the total entry count must equal the number of
-    // transcripts (i.e. each transcript is present in exactly one voxel).
-    pub fn check_transcript_voxel(&self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let mut n = 0usize;
-        for quad in self.quads.values() {
-            let qt = quad.transcripts.read().unwrap();
-            for vt in qt.transcripts.iter() {
-                let stored =
-                    Voxel::from_raw(self.transcript_voxel[vt.transcript_idx as usize].load(Relaxed));
-                assert_eq!(
-                    stored, vt.voxel,
-                    "transcript_voxel mismatch for transcript {}",
-                    vt.transcript_idx
-                );
-                n += 1;
-            }
-        }
-        assert_eq!(
-            n,
-            self.transcript_voxel.len(),
-            "transcript count mismatch: BTreeSets have {} entries, flat array has {}",
-            n,
-            self.transcript_voxel.len()
-        );
-    }
-
     // Rebuild the voxel→transcript index from the authoritative flat array.
     // Must be called before morphology reads it (positions change during
     // repositioning and initialization, but are static during morphology).
     pub fn rebuild_voxel_index(&mut self) {
         self.voxel_index = VoxelIndex::build(&self.transcript_voxel);
-    }
-
-    // Verify a freshly-built VoxelIndex is sorted and has exactly the same
-    // (voxel, transcript) contents as the per-quad BTreeSets.
-    pub fn check_voxel_index(&self) {
-        let index = VoxelIndex::build(&self.transcript_voxel);
-        assert_eq!(index.sorted.len(), self.transcript_voxel.len());
-        for w in index.sorted.windows(2) {
-            assert!(w[0].0 <= w[1].0, "voxel index is not sorted");
-        }
-
-        let mut from_sets: Vec<(u64, u32)> = Vec::with_capacity(self.transcript_voxel.len());
-        for quad in self.quads.values() {
-            let qt = quad.transcripts.read().unwrap();
-            for vt in qt.transcripts.iter() {
-                from_sets.push((vt.voxel.raw(), vt.transcript_idx));
-            }
-        }
-        from_sets.sort_unstable();
-        let mut from_index = index.sorted.clone();
-        from_index.sort_unstable();
-        assert!(
-            from_sets == from_index,
-            "voxel index contents disagree with BTreeSets"
-        );
     }
 
     pub fn check_mirrored_quad_edges(&self) {
@@ -2973,106 +2810,6 @@ impl VoxelCheckerboard {
                 quad_states.update_voxel_cell(quad, voxel, BACKGROUND_CELL, neighbor_cell);
             }
         });
-    }
-
-    pub fn merged_moved_transcripts(&mut self, params: &mut ModelParams) {
-        let t0 = Instant::now();
-        for key in self.quads.keys() {
-            let quad = &self.quads[key];
-            let mut quad_transcripts = quad.transcripts.write().unwrap();
-            let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
-
-            for moved in quad_transcripts_lock_ref.outgoing_transcripts.iter() {
-                let neighbor_key = self.quad_index(moved.dest.voxel);
-                if *key == neighbor_key {
-                    quad_transcripts_lock_ref.incoming_transcripts.push(*moved);
-                } else {
-                    let neighbor_quad = &self.quads[&neighbor_key];
-                    neighbor_quad
-                        .transcripts
-                        .write()
-                        .unwrap()
-                        .incoming_transcripts
-                        .push(*moved);
-                }
-            }
-        }
-        info!("merge counts cleanup: {:?}", t0.elapsed());
-
-        // now update quads in parallel
-        let t0 = Instant::now();
-        self.quads.par_iter().for_each(|(_key, quad)| {
-            let mut quad_transcripts = quad.transcripts.write().unwrap();
-            let quad_transcripts_lock_ref = quad_transcripts.deref_mut();
-
-            // Remove everything in outgoing from the voxel set, and decrement its
-            // count from the source cell. Moves that stay within the same cell
-            // leave the count table unchanged (same cell, same original voxel →
-            // same density/layer key), so the count update is skipped entirely.
-            for moved in quad_transcripts_lock_ref.outgoing_transcripts.drain(..) {
-                quad_transcripts_lock_ref
-                    .transcripts
-                    .remove(&VoxelTranscript {
-                        voxel: moved.src_voxel,
-                        transcript_idx: moved.dest.transcript_idx,
-                    });
-
-                if moved.src_cell == moved.dest_cell {
-                    continue;
-                }
-
-                let TranscriptFixedState {
-                    original_voxel,
-                    gene,
-                } = self.transcript_fixed_state[moved.dest.transcript_idx as usize];
-
-                let k_origin = original_voxel.k() as usize;
-                let density = self.get_voxel_density_hint(quad, original_voxel);
-
-                if moved.src_cell == BACKGROUND_CELL {
-                    params.unassigned_counts[density][k_origin].sub(gene as usize, 1);
-                } else {
-                    let counts_c = params.counts.row(moved.src_cell as usize);
-                    counts_c
-                        .write()
-                        .sub(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
-                }
-            }
-
-            // Insert everything in incoming, and increment its count in the
-            // destination cell (again skipping same-cell moves).
-            for moved in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
-                quad_transcripts_lock_ref.transcripts.insert(moved.dest);
-                // Mirror the move into the authoritative flat array. Each moved
-                // transcript is routed to exactly one quad's incoming list, so
-                // this stores each transcript's new voxel exactly once. Distinct
-                // transcript indices → no contention on the same atomic.
-                self.transcript_voxel[moved.dest.transcript_idx as usize]
-                    .store(moved.dest.voxel.raw(), std::sync::atomic::Ordering::Relaxed);
-
-                if moved.dest_cell == moved.src_cell {
-                    continue;
-                }
-
-                let TranscriptFixedState {
-                    original_voxel,
-                    gene,
-                } = self.transcript_fixed_state[moved.dest.transcript_idx as usize];
-
-                let k_origin = original_voxel.k() as usize;
-                let density = self.get_voxel_density_hint(quad, original_voxel);
-
-                if moved.dest_cell == BACKGROUND_CELL {
-                    params.unassigned_counts[density][k_origin].add(gene as usize, 1);
-                } else {
-                    let counts_c = params.counts.row(moved.dest_cell as usize);
-                    counts_c
-                        .write()
-                        .add(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
-                }
-            }
-        });
-        info!("merge counts merge: {:?}", t0.elapsed());
     }
 
     // Scale the number of voxels on the x/y axis by `scale`
