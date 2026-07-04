@@ -140,10 +140,10 @@ impl TranscriptRepo {
             transcript_idx,
         } in quad_transcripts_ref.transcripts.iter()
         {
-            let &TranscriptFixedState {
+            let TranscriptFixedState {
                 original_voxel,
                 gene,
-            } = voxels.transcript_fixed_state.get(transcript_idx);
+            } = voxels.transcript_fixed_state[transcript_idx as usize];
             let gene = gene as usize;
 
             let cell = quad_states

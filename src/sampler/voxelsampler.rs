@@ -354,10 +354,10 @@ impl VoxelSampler {
         // TODO: Previous version of this tried to avoid redundant lookups. This rewrite is more direct,
         // so it may be an optimization oppourtunity.
         for transcript_idx in quad_transcripts.iter_voxel_transcripts(proposal.voxel) {
-            let &TranscriptFixedState {
+            let TranscriptFixedState {
                 original_voxel,
                 gene,
-            } = voxels.transcript_fixed_state.get(transcript_idx);
+            } = voxels.transcript_fixed_state[transcript_idx as usize];
             let gene = gene as usize;
 
             let origin_density = voxels.get_voxel_density_hint(quad, original_voxel);
@@ -570,10 +570,10 @@ impl VoxelSampler {
             let mut total_count = 0;
 
             for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = voxels.transcript_fixed_state.get(transcript_id);
+                } = voxels.transcript_fixed_state[transcript_id as usize];
                 let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 counts_row_write.sub(
@@ -593,10 +593,10 @@ impl VoxelSampler {
             }
         } else {
             for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = voxels.transcript_fixed_state.get(transcript_id);
+                } = voxels.transcript_fixed_state[transcript_id as usize];
                 let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 let background_counts_k =
@@ -627,10 +627,10 @@ impl VoxelSampler {
             let mut counts_row_write = counts_row.write();
 
             for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = voxels.transcript_fixed_state.get(transcript_id);
+                } = voxels.transcript_fixed_state[transcript_id as usize];
                 let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 counts_row_write.add(
@@ -640,10 +640,10 @@ impl VoxelSampler {
             }
         } else {
             for transcript_id in quad_transcripts.iter_voxel_transcripts(voxel) {
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = voxels.transcript_fixed_state.get(transcript_id);
+                } = voxels.transcript_fixed_state[transcript_id as usize];
                 let density = voxels.get_voxel_density_hint(quad, original_voxel);
 
                 let background_counts_k =

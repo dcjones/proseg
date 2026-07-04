@@ -164,10 +164,10 @@ impl ParamSampler {
                 // Get destination cell from the current voxel's state in the checkerboard
                 let cell = voxel_states.get_voxel_cell(transcript.voxel);
 
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = voxels.transcript_fixed_state.get(idx as u32);
+                } = voxels.transcript_fixed_state[idx];
 
                 let density = voxels.get_voxel_density(original_voxel);
                 let k_origin = original_voxel.k() as usize;
