@@ -9,7 +9,7 @@ use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
-use super::shardedvec::ShardedVec;
+use super::atomiccountvec::AtomicCountVec;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
@@ -2404,9 +2404,9 @@ impl VoxelCheckerboard {
 
     pub fn compute_cell_volume_surface_area(
         &self,
-        volume: &mut ShardedVec<u32>,
-        layer_volume: &mut [ShardedVec<u32>],
-        layer_surface_area: &mut [ShardedVec<u32>],
+        volume: &mut AtomicCountVec,
+        layer_volume: &mut [AtomicCountVec],
+        layer_surface_area: &mut [AtomicCountVec],
     ) {
         volume.zero();
         layer_volume.iter_mut().for_each(|v_k| v_k.zero());
@@ -2448,7 +2448,7 @@ impl VoxelCheckerboard {
     pub fn compute_counts(
         &self,
         counts: &mut CSRMat<CountMatRowKey, u32>,
-        unassigned_counts: &mut [Vec<ShardedVec<u32>>],
+        unassigned_counts: &mut [Vec<AtomicCountVec>],
     ) {
         counts.zero();
         unassigned_counts.iter_mut().for_each(|c_d| {

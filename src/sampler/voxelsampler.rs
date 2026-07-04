@@ -548,21 +548,16 @@ impl VoxelSampler {
 
         // Updating count matrices
         if current_cell != BACKGROUND_CELL {
-            params
-                .cell_voxel_count
-                .modify(current_cell as usize, |volume| *volume -= 1);
+            params.cell_voxel_count.sub(current_cell as usize, 1);
 
-            params.cell_layer_voxel_count[k as usize]
-                .modify(current_cell as usize, |volume| *volume -= 1);
+            params.cell_layer_voxel_count[k as usize].sub(current_cell as usize, 1);
 
             let other_cell_neighbors =
                 proposal.proposed_cell_neighbors + proposal.other_cell_neighbors;
-            params.cell_layer_surface_area[k as usize].modify(
+            params.cell_layer_surface_area[k as usize].add_sub(
                 current_cell as usize,
-                |surface_area| {
-                    *surface_area += proposal.current_cell_neighbors;
-                    *surface_area -= other_cell_neighbors;
-                },
+                proposal.current_cell_neighbors,
+                other_cell_neighbors,
             );
 
             let counts_row = params.counts.row(current_cell as usize);
@@ -606,21 +601,16 @@ impl VoxelSampler {
         }
 
         if proposed_cell != BACKGROUND_CELL {
-            params
-                .cell_voxel_count
-                .modify(proposed_cell as usize, |volume| *volume += 1);
+            params.cell_voxel_count.add(proposed_cell as usize, 1);
 
-            params.cell_layer_voxel_count[k as usize]
-                .modify(proposed_cell as usize, |volume| *volume += 1);
+            params.cell_layer_voxel_count[k as usize].add(proposed_cell as usize, 1);
 
             let other_cell_neighbors =
                 proposal.current_cell_neighbors + proposal.other_cell_neighbors;
-            params.cell_layer_surface_area[k as usize].modify(
+            params.cell_layer_surface_area[k as usize].add_sub(
                 proposed_cell as usize,
-                |surface_area| {
-                    *surface_area += other_cell_neighbors;
-                    *surface_area -= proposal.proposed_cell_neighbors;
-                },
+                other_cell_neighbors,
+                proposal.proposed_cell_neighbors,
             );
 
             let counts_row = params.counts.row(proposed_cell as usize);
