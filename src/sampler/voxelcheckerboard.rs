@@ -37,6 +37,7 @@ use rand::seq::SliceRandom;
 use rayon::iter::{
     IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
 };
+use rayon::slice::ParallelSliceMut;
 use rstar::primitives::GeomWithData;
 use rstar::{PointDistance, RTree};
 use std::cell::RefCell;
@@ -764,6 +765,15 @@ impl Voxel {
         }
     }
 
+    // The packed u64 index. Round-trips through `from_raw`.
+    pub fn raw(&self) -> u64 {
+        self.index
+    }
+
+    pub fn from_raw(index: u64) -> Voxel {
+        Voxel { index }
+    }
+
     // pub fn zero() -> Voxel {
     //     Voxel::new(0, 0, 0)
     // }
@@ -1147,6 +1157,48 @@ pub struct VoxelTranscript {
     pub transcript_idx: TranscriptIndex,
 }
 
+// A derived voxel→transcript index, rebuilt from the flat `transcript_voxel`
+// array by parallel-sorting (voxel, transcript_idx) pairs. Replaces the per-quad
+// BTreeSet's ordered-range role: `voxel_transcripts` locates a voxel's transcripts
+// by binary search over the sorted array (cache-friendly, vs. the tree's pointer
+// chasing). Rebuilt once per sampling step, before morphology reads it.
+pub struct VoxelIndex {
+    // (packed voxel, transcript_idx), sorted by packed voxel.
+    sorted: Vec<(u64, u32)>,
+}
+
+#[allow(dead_code)] // new/rebuild/voxel_transcripts wired to consumers in a following step
+impl VoxelIndex {
+    pub fn new() -> VoxelIndex {
+        VoxelIndex { sorted: Vec::new() }
+    }
+
+    pub fn build(transcript_voxel: &[std::sync::atomic::AtomicU64]) -> VoxelIndex {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut sorted: Vec<(u64, u32)> = transcript_voxel
+            .iter()
+            .enumerate()
+            .map(|(idx, v)| (v.load(Relaxed), idx as u32))
+            .collect();
+        sorted.par_sort_unstable_by_key(|&(v, _)| v);
+        VoxelIndex { sorted }
+    }
+
+    pub fn rebuild(&mut self, transcript_voxel: &[std::sync::atomic::AtomicU64]) {
+        *self = VoxelIndex::build(transcript_voxel);
+    }
+
+    // Transcripts currently located in `voxel`.
+    pub fn voxel_transcripts(&self, voxel: Voxel) -> impl Iterator<Item = TranscriptIndex> + '_ {
+        let key = voxel.raw();
+        let start = self.sorted.partition_point(|&(v, _)| v < key);
+        self.sorted[start..]
+            .iter()
+            .take_while(move |&&(v, _)| v == key)
+            .map(|&(_, idx)| idx)
+    }
+}
+
 // A transcript accepted for repositioning, carrying enough state to apply the
 // move during the merge phase without re-reading voxel cell assignments. The
 // source and destination cell are recorded at proposal time (voxel assignments
@@ -1321,6 +1373,13 @@ pub struct VoxelCheckerboard {
     // search over a ~ntranscripts-length array.
     pub transcript_fixed_state: Vec<TranscriptFixedState>,
 
+    // Current voxel of each transcript, indexed directly by transcript index.
+    // This is (becoming) the authoritative record of transcript positions,
+    // replacing the per-quad `BTreeSet<VoxelTranscript>`. Stored as AtomicU64
+    // (packed Voxel) so the repositioning merge can update entries concurrently.
+    // Maintained in parallel with the BTreeSet during the migration.
+    pub transcript_voxel: Vec<std::sync::atomic::AtomicU64>,
+
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
     //
@@ -1370,6 +1429,7 @@ impl VoxelCheckerboard {
             voxelsize_z,
             used_cells_map: Vec::new(),
             transcript_fixed_state: Vec::new(),
+            transcript_voxel: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
             frozen_cells: Vec::new(),
@@ -1387,6 +1447,10 @@ impl VoxelCheckerboard {
                 original_voxel: voxel,
                 gene: transcript.gene,
             });
+            // Authoritative current position (initially == original voxel),
+            // maintained in parallel with the per-quad BTreeSet.
+            self.transcript_voxel
+                .push(std::sync::atomic::AtomicU64::new(voxel.raw()));
 
             let key = VoxelTranscript {
                 voxel,
@@ -2199,6 +2263,60 @@ impl VoxelCheckerboard {
         }
     }
 
+    // Verify the authoritative flat `transcript_voxel` array agrees with the
+    // per-quad BTreeSets during the migration: every set entry's voxel must match
+    // the flat array, and the total entry count must equal the number of
+    // transcripts (i.e. each transcript is present in exactly one voxel).
+    pub fn check_transcript_voxel(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut n = 0usize;
+        for quad in self.quads.values() {
+            let qt = quad.transcripts.read().unwrap();
+            for vt in qt.transcripts.iter() {
+                let stored =
+                    Voxel::from_raw(self.transcript_voxel[vt.transcript_idx as usize].load(Relaxed));
+                assert_eq!(
+                    stored, vt.voxel,
+                    "transcript_voxel mismatch for transcript {}",
+                    vt.transcript_idx
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(
+            n,
+            self.transcript_voxel.len(),
+            "transcript count mismatch: BTreeSets have {} entries, flat array has {}",
+            n,
+            self.transcript_voxel.len()
+        );
+    }
+
+    // Verify a freshly-built VoxelIndex is sorted and has exactly the same
+    // (voxel, transcript) contents as the per-quad BTreeSets.
+    pub fn check_voxel_index(&self) {
+        let index = VoxelIndex::build(&self.transcript_voxel);
+        assert_eq!(index.sorted.len(), self.transcript_voxel.len());
+        for w in index.sorted.windows(2) {
+            assert!(w[0].0 <= w[1].0, "voxel index is not sorted");
+        }
+
+        let mut from_sets: Vec<(u64, u32)> = Vec::with_capacity(self.transcript_voxel.len());
+        for quad in self.quads.values() {
+            let qt = quad.transcripts.read().unwrap();
+            for vt in qt.transcripts.iter() {
+                from_sets.push((vt.voxel.raw(), vt.transcript_idx));
+            }
+        }
+        from_sets.sort_unstable();
+        let mut from_index = index.sorted.clone();
+        from_index.sort_unstable();
+        assert!(
+            from_sets == from_index,
+            "voxel index contents disagree with BTreeSets"
+        );
+    }
+
     pub fn check_mirrored_quad_edges(&self) {
         for (&(u, v), quad) in &self.quads {
             let quad_states = quad.states.read().unwrap();
@@ -2900,6 +3018,12 @@ impl VoxelCheckerboard {
             // destination cell (again skipping same-cell moves).
             for moved in quad_transcripts_lock_ref.incoming_transcripts.drain(..) {
                 quad_transcripts_lock_ref.transcripts.insert(moved.dest);
+                // Mirror the move into the authoritative flat array. Each moved
+                // transcript is routed to exactly one quad's incoming list, so
+                // this stores each transcript's new voxel exactly once. Distinct
+                // transcript indices → no contention on the same atomic.
+                self.transcript_voxel[moved.dest.transcript_idx as usize]
+                    .store(moved.dest.voxel.raw(), std::sync::atomic::Ordering::Relaxed);
 
                 if moved.dest_cell == moved.src_cell {
                     continue;
@@ -2992,6 +3116,7 @@ impl VoxelCheckerboard {
             voxelsize_z,
             used_cells_map: self.used_cells_map,
             transcript_fixed_state: Vec::new(),
+            transcript_voxel: Vec::new(),
             quads,
             quads_coords,
             frozen_cells: self.frozen_cells,
