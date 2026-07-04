@@ -27,7 +27,7 @@ fn random_region_counts(
 
     for i in 0..nregions {
         let centroid_transcript =
-            &dataset.transcripts.runs[rng.random_range(0..dataset.transcripts.runs.len())].value;
+            &dataset.transcripts[rng.random_range(0..dataset.transcripts.len())];
 
         let cx = centroid_transcript.x;
         let cy = centroid_transcript.y;
@@ -39,12 +39,12 @@ fn random_region_counts(
 
     let mut counts = Array2::zeros((nregions, dataset.ngenes()));
 
-    for transcript_run in dataset.transcripts.iter_runs() {
-        let bin_x = (transcript_run.value.x / bin_size).floor() as usize;
-        let bin_y = (transcript_run.value.y / bin_size).floor() as usize;
+    for transcript in dataset.transcripts.iter() {
+        let bin_x = (transcript.x / bin_size).floor() as usize;
+        let bin_y = (transcript.y / bin_size).floor() as usize;
         let region = region_map.get(&(bin_x, bin_y));
         if let Some(region) = region {
-            counts[[*region, transcript_run.value.gene as usize]] += transcript_run.len as f32;
+            counts[[*region, transcript.gene as usize]] += 1.0;
         }
     }
 
@@ -368,8 +368,8 @@ impl TranscriptDataset {
         }
 
         self.gene_names = ord.iter().map(|&i| self.gene_names[i].clone()).collect();
-        for transcript_run in self.transcripts.iter_runs_mut() {
-            transcript_run.value.gene = rev_ord[transcript_run.value.gene as usize] as u32;
+        for transcript in self.transcripts.iter_mut() {
+            transcript.gene = rev_ord[transcript.gene as usize] as u32;
         }
     }
 }

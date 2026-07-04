@@ -499,7 +499,7 @@ pub fn write_transcript_metadata(
     output_transcript_metadata: &Option<String>,
     output_transcript_metadata_fmt: OutputFormat,
     voxels: &VoxelCheckerboard,
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     transcript_ids: &Option<Vec<u64>>,
     metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
@@ -581,7 +581,7 @@ pub fn write_transcript_metadata(
 fn write_transcript_metadata_with_fn<F: FnMut(&RecordBatch)>(
     schema: Arc<Schema>,
     voxels: &VoxelCheckerboard,
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     transcript_ids: &Option<Vec<u64>>,
     metadata: &RunVec<u32, TranscriptMetadata>,
     gene_names: &[String],
@@ -718,12 +718,12 @@ pub fn write_gene_metadata(
     output_gene_metadata_fmt: OutputFormat,
     params: &ModelParams,
     gene_names: &[String],
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
 ) {
     let ngenes = gene_names.len();
     let mut total_gene_counts = vec![0; ngenes];
-    for transcript_run in transcripts.iter_runs() {
-        total_gene_counts[transcript_run.value.gene as usize] += transcript_run.len as usize;
+    for transcript in transcripts.iter() {
+        total_gene_counts[transcript.gene as usize] += 1;
     }
 
     if let Some(output_gene_metadata) = output_gene_metadata {

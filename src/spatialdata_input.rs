@@ -333,8 +333,8 @@ fn read_transcript_parquet_files(
     let mut cell_id_map = HashMap::new();
     let mut gene_names = Vec::new();
     let mut gene_exclusion_mask = Vec::new();
-    let mut transcripts = RunVec::new();
-    let mut priorseg = RunVec::new();
+    let mut transcripts = Vec::new();
+    let mut priorseg = Vec::new();
 
     for filename in filenames {
         read_transcript_parquet(
@@ -392,8 +392,8 @@ fn read_transcript_parquet(
     gene_name_map: &mut HashMap<String, usize>,
     gene_names: &mut Vec<String>,
     gene_exclusion_mask: &mut Vec<bool>,
-    transcripts: &mut RunVec<u32, Transcript>,
-    priorseg: &mut RunVec<u32, PriorTranscriptSeg>,
+    transcripts: &mut Vec<Transcript>,
+    priorseg: &mut Vec<PriorTranscriptSeg>,
 ) {
     let input_file =
         File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{filename:?}'."));

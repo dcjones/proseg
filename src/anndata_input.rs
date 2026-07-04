@@ -92,8 +92,8 @@ fn read_anndata_zarr_transcripts_from_store(
         }
     }
 
-    let mut transcripts: RunVec<u32, Transcript> = RunVec::with_run_capacity(nruns);
-    let mut priorseg: RunVec<u32, PriorTranscriptSeg> = RunVec::with_run_capacity(nruns);
+    let mut transcripts: Vec<Transcript> = Vec::with_capacity(nruns);
+    let mut priorseg: Vec<PriorTranscriptSeg> = Vec::with_capacity(nruns);
 
     for (&indfrom, &indto, &x, &y, &cell_id) in izip!(
         &indptr[0..indptr.len() - 1],
@@ -108,24 +108,22 @@ fn read_anndata_zarr_transcripts_from_store(
             .zip(indices[range.clone()].iter())
         {
             if let Some(&gene) = gene_index.get(&(j as usize)) {
-                transcripts.push_run(
-                    Transcript {
+                // Expand the count into individual transcripts (matches how the
+                // rest of the pipeline treats each transcript index individually).
+                for _ in 0..count {
+                    transcripts.push(Transcript {
                         x: x * coordinate_scale,
                         y: y * coordinate_scale,
                         z: 0.0,
                         qv: f32::INFINITY,
                         gene: gene as u32,
-                    },
-                    count,
-                );
+                    });
 
-                priorseg.push_run(
-                    PriorTranscriptSeg {
+                    priorseg.push(PriorTranscriptSeg {
                         nucleus: cell_id,
                         cell: cell_id,
-                    },
-                    count,
-                );
+                    });
+                }
             }
         }
     }

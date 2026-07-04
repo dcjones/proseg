@@ -2311,8 +2311,8 @@ impl VoxelCheckerboard {
     ) {
         let rtree_elements: Vec<_> = dataset
             .transcripts
-            .iter_runs()
-            .map(|run| GeomWithData::new([run.value.x, run.value.y], run.len))
+            .iter()
+            .map(|t| GeomWithData::new([t.x, t.y], ()))
             .collect();
         let rtree = RTree::bulk_load(rtree_elements);
 
@@ -2698,7 +2698,7 @@ impl VoxelCheckerboard {
     pub fn transcript_metadata(
         &self,
         params: &ModelParams,
-        transcripts: &RunVec<u32, Transcript>,
+        transcripts: &[Transcript],
     ) -> RunVec<u32, TranscriptMetadata> {
         let mut offsets = vec![VoxelOffset::zero(); transcripts.len()];
         self.quads.iter().for_each(|((_u, _v), quad)| {

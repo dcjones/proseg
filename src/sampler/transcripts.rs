@@ -50,9 +50,9 @@ pub struct PriorTranscriptSeg {
 }
 
 pub struct TranscriptDataset {
-    pub transcripts: RunVec<u32, Transcript>, // [ntranscripts]
+    pub transcripts: Vec<Transcript>,         // [ntranscripts]
     pub transcript_ids: Option<Vec<u64>>,     // [ntranscripts] if present
-    pub priorseg: RunVec<u32, PriorTranscriptSeg>, // [ntranscripts]
+    pub priorseg: Vec<PriorTranscriptSeg>,    // [ntranscripts]
     pub fovs: RunVec<usize, u32>,             // [ntranscripts] (Why to we need to save this?)
     pub barcode_positions: Option<HashMap<String, (f32, f32)>>,
 
@@ -141,8 +141,8 @@ impl TranscriptDataset {
                 .collect::<Vec<_>>();
             self.transcript_ids = Some(transcript_ids);
         }
-        self.transcripts.retain_masked(&mask);
-        self.priorseg.retain_masked(&mask);
+        retain_masked_vec(&mut self.transcripts, &mask);
+        retain_masked_vec(&mut self.priorseg, &mask);
         self.fovs.retain_masked(&mask);
         self.shrink_to_fit();
 
@@ -150,21 +150,9 @@ impl TranscriptDataset {
     }
 
     pub fn normalize_z_coordinates(&mut self) -> (f32, f32) {
-        let xs = self
-            .transcripts
-            .iter_runs()
-            .map(|run| run.value.x)
-            .collect::<Vec<_>>();
-        let ys = self
-            .transcripts
-            .iter_runs()
-            .map(|run| run.value.y)
-            .collect::<Vec<_>>();
-        let mut zs = self
-            .transcripts
-            .iter_runs()
-            .map(|run| run.value.z)
-            .collect::<Vec<_>>();
+        let xs = self.transcripts.iter().map(|t| t.x).collect::<Vec<_>>();
+        let ys = self.transcripts.iter().map(|t| t.y).collect::<Vec<_>>();
+        let mut zs = self.transcripts.iter().map(|t| t.z).collect::<Vec<_>>();
 
         regress_out_tilt(&xs, &ys, &mut zs);
 
@@ -180,8 +168,8 @@ impl TranscriptDataset {
         zs.iter_mut()
             .for_each(|z| *z = (z.max(zmin).min(zmax) - zmin) / zspan);
 
-        for (run, z) in self.transcripts.iter_runs_mut().zip(zs.iter()) {
-            run.value.z = *z;
+        for (t, z) in self.transcripts.iter_mut().zip(zs.iter()) {
+            t.z = *z;
         }
 
         (zmin, zmax)
@@ -190,10 +178,10 @@ impl TranscriptDataset {
     pub fn z_mean(&self) -> f32 {
         let z_sum = self
             .transcripts
-            .iter_runs()
-            .map(|run| run.len as f64 * run.value.z as f64)
+            .iter()
+            .map(|t| t.z as f64)
             .sum::<f64>();
-        let z_mean = z_sum / self.transcripts.len as f64;
+        let z_mean = z_sum / self.transcripts.len() as f64;
         z_mean as f32
     }
 
@@ -205,8 +193,7 @@ impl TranscriptDataset {
         let mut min_z = f32::MAX;
         let mut max_z = f32::MIN;
 
-        for run in self.transcripts.iter_runs() {
-            let t = &run.value;
+        for t in self.transcripts.iter() {
             min_x = min_x.min(t.x);
             max_x = max_x.max(t.x);
             min_y = min_y.min(t.y);
@@ -220,9 +207,9 @@ impl TranscriptDataset {
 
     pub fn prior_nuclei_populations(&self) -> Array1<u32> {
         let mut counts = Array1::zeros(self.ncells);
-        for run in self.priorseg.iter_runs() {
-            if run.value.nucleus != BACKGROUND_CELL {
-                counts[run.value.nucleus as usize] += run.len;
+        for p in self.priorseg.iter() {
+            if p.nucleus != BACKGROUND_CELL {
+                counts[p.nucleus as usize] += 1;
             }
         }
         counts
@@ -400,7 +387,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
     assert_eq!(nsquares, barcodes.len());
 
     let nnz = headers[2].parse::<usize>().unwrap();
-    let mut transcripts = RunVec::with_run_capacity(nnz);
+    let mut transcripts: Vec<Transcript> = Vec::with_capacity(nnz);
     for result in rdr.records() {
         let row = result.unwrap();
 
@@ -416,16 +403,17 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 
         let (x, y) = barcode_positions[&barcodes[square]];
 
-        transcripts.push_run(
-            Transcript {
+        // Expand the count into individual transcripts (matches how the rest of
+        // the pipeline treats each transcript index individually).
+        for _ in 0..count {
+            transcripts.push(Transcript {
                 x,
                 y,
                 z: 0.0,
                 qv: f32::INFINITY,
                 gene,
-            },
-            count,
-        );
+            });
+        }
     }
 
     let gene_names: Vec<String> = gene_names
@@ -445,7 +433,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
     let mut dataset = TranscriptDataset {
         transcripts,
         transcript_ids: None,
-        priorseg: RunVec::new(),
+        priorseg: Vec::new(),
         fovs: RunVec::new(),
         barcode_positions: Some(barcode_positions),
         gene_names,
@@ -590,29 +578,38 @@ fn find_optional_column(headers: &csv::StringRecord, column: &Option<String>) ->
     }
 }
 
+// Retain only the elements of `v` whose corresponding `mask` entry is true.
+pub fn retain_masked_vec<T>(v: &mut Vec<T>, mask: &[bool]) {
+    debug_assert_eq!(v.len(), mask.len());
+    let mut i = 0;
+    v.retain(|_| {
+        let keep = mask[i];
+        i += 1;
+        keep
+    });
+}
+
 // Make sure numerical cell ids are sequential with no empty cells.
-pub fn compact_priorseg(priorseg: &mut RunVec<u32, PriorTranscriptSeg>) -> usize {
+pub fn compact_priorseg(priorseg: &mut [PriorTranscriptSeg]) -> usize {
     let mut used_cell_ids: HashMap<CellIndex, CellIndex> = HashMap::new();
 
-    for assignment_run in priorseg.iter_runs() {
-        if assignment_run.value.nucleus != BACKGROUND_CELL {
+    for assignment in priorseg.iter() {
+        if assignment.nucleus != BACKGROUND_CELL {
             let next_cell_id = used_cell_ids.len() as CellIndex;
             used_cell_ids
-                .entry(assignment_run.value.nucleus)
+                .entry(assignment.nucleus)
                 .or_insert(next_cell_id);
         }
-        if assignment_run.value.cell != BACKGROUND_CELL {
+        if assignment.cell != BACKGROUND_CELL {
             let next_cell_id = used_cell_ids.len() as CellIndex;
-            used_cell_ids
-                .entry(assignment_run.value.cell)
-                .or_insert(next_cell_id);
+            used_cell_ids.entry(assignment.cell).or_insert(next_cell_id);
         }
     }
     used_cell_ids.insert(BACKGROUND_CELL, BACKGROUND_CELL);
 
-    for assignment_run in priorseg.iter_runs_mut() {
-        assignment_run.value.nucleus = *used_cell_ids.get(&assignment_run.value.nucleus).unwrap();
-        assignment_run.value.cell = *used_cell_ids.get(&assignment_run.value.cell).unwrap();
+    for assignment in priorseg.iter_mut() {
+        assignment.nucleus = *used_cell_ids.get(&assignment.nucleus).unwrap();
+        assignment.cell = *used_cell_ids.get(&assignment.cell).unwrap();
     }
 
     used_cell_ids.len() - 1
@@ -671,10 +668,10 @@ where
     let cell_assignment_col = find_optional_column(headers, &cell_assignment_column);
     let cell_assignment_unassigned = cell_assignment_unassigned.unwrap_or(String::from(""));
 
-    let mut transcripts = RunVec::new();
+    let mut transcripts: Vec<Transcript> = Vec::new();
     let mut gene_name_map: HashMap<String, usize> = HashMap::new();
     let mut gene_names = Vec::new();
-    let mut priorseg = RunVec::new();
+    let mut priorseg: Vec<PriorTranscriptSeg> = Vec::new();
     let mut fovs = RunVec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
@@ -936,11 +933,11 @@ where
     let z_col_idx = schema.index_of(z_col_name).unwrap();
     let qv_col_idx = schema.index_of(qv_col_name).unwrap();
 
-    let mut transcripts = RunVec::new();
+    let mut transcripts: Vec<Transcript> = Vec::new();
     let mut transcript_ids = Vec::new();
     let mut gene_name_map: HashMap<String, usize> = HashMap::new();
     let mut gene_names = Vec::new();
-    let mut priorseg = RunVec::new();
+    let mut priorseg: Vec<PriorTranscriptSeg> = Vec::new();
     let mut fovs = RunVec::new();
 
     let mut fov_map: HashMap<u16, u32> = HashMap::new();
@@ -1231,11 +1228,11 @@ where
     let z_col_idx = schema.index_of(z_col_name).unwrap();
     let qv_col_idx = schema.index_of(qv_col_name).unwrap();
 
-    let mut transcripts = RunVec::new();
+    let mut transcripts: Vec<Transcript> = Vec::new();
     let mut transcript_ids = Vec::new();
     let mut gene_name_map: HashMap<String, usize> = HashMap::new();
     let mut gene_names = Vec::new();
-    let mut priorseg = RunVec::new();
+    let mut priorseg: Vec<PriorTranscriptSeg> = Vec::new();
     let mut fovs = RunVec::new();
 
     let mut fov_map: HashMap<String, u32> = HashMap::new();
@@ -1511,12 +1508,12 @@ fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
 }
 
 pub fn filter_unexpressed_genes(
-    transcripts: &mut RunVec<u32, Transcript>,
+    transcripts: &mut [Transcript],
     gene_names: Vec<String>,
 ) -> Vec<String> {
     let mut counts: Vec<usize> = vec![0; gene_names.len()];
-    for run in transcripts.iter_runs() {
-        counts[run.value.gene as usize] += 1;
+    for t in transcripts.iter() {
+        counts[t.gene as usize] += 1;
     }
 
     // reassign ids
@@ -1529,8 +1526,8 @@ pub fn filter_unexpressed_genes(
         }
     }
 
-    for run in transcripts.iter_runs_mut() {
-        run.value.gene = id_map[run.value.gene as usize];
+    for t in transcripts.iter_mut() {
+        t.gene = id_map[t.gene as usize];
     }
 
     let mut filtered_gene_names = Vec::new();

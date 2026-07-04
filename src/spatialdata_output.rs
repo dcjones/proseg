@@ -40,7 +40,7 @@ pub fn write_spatialdata_zarr(
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
     gene_names: &[String],
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     transcript_ids: &Option<Vec<u64>>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &[MultiPolygon<f32>],
@@ -85,7 +85,7 @@ fn write_spatialdata_parts(
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
     gene_names: &[String],
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     transcript_ids: &Option<Vec<u64>>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     polygons: &[MultiPolygon<f32>],
@@ -253,7 +253,7 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
 fn write_transcripts_zarr<T: ReadableWritableStorageTraits>(
     path: &Path,
     store: Arc<T>,
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     transcript_ids: &Option<Vec<u64>>,
     transcript_metadata: &RunVec<u32, TranscriptMetadata>,
     voxels: &VoxelCheckerboard,
@@ -416,7 +416,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     cell_centroids: &Array2<f32>,
     original_cell_ids: &[String],
     gene_names: &[String],
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     run_metadata: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(store.clone(), "/tables", None)?.store_metadata()?;
@@ -892,7 +892,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     store: Arc<T>,
     params: &ModelParams,
     gene_names: &[String],
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ngenes = gene_names.len();
 
@@ -973,8 +973,8 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     )?;
 
     let mut total_counts = Array1::<u32>::zeros(ngenes);
-    for run in transcripts.iter_runs() {
-        total_counts[run.value.gene as usize] += run.len;
+    for transcript in transcripts.iter() {
+        total_counts[transcript.gene as usize] += 1;
     }
 
     arr.store_array_subset_elements(&arr.subset_all(), &total_counts.to_vec())?;
@@ -1655,7 +1655,7 @@ pub fn write_transcript_posteriors_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     nsamples: usize,
 ) {
     let path = if let Some(outputpath) = output_path {
@@ -1676,7 +1676,7 @@ pub fn write_transcript_posteriors_zarr(
 fn write_transcript_posteriors_parts(
     path: &Path,
     params: &ModelParams,
-    transcripts: &RunVec<u32, Transcript>,
+    transcripts: &[Transcript],
     nsamples: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::sampler::transcripts::BACKGROUND_CELL;
