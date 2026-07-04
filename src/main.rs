@@ -1157,6 +1157,10 @@ fn main() {
     );
     trace!("write_sparse_mtx (max post counts): {:?}", t0.elapsed());
 
+    // Rebuild the voxel index from final transcript positions so output paths
+    // that query it (e.g. consensus polygons) see the current state.
+    voxels.rebuild_voxel_index();
+
     let cell_centroids = voxels.cell_centroids(&params);
     let transcript_metadata = voxels.transcript_metadata(&params, &dataset.transcripts);
 
@@ -1395,6 +1399,11 @@ fn run_sampler(
     check_consistency: bool,
     prog: &ProgressBar,
 ) {
+    // Rebuild the voxel→transcript index from current positions before morphology
+    // reads it. Positions are static across the morphology sub-iterations (only
+    // repositioning moves transcripts), so one rebuild per iteration suffices.
+    voxels.rebuild_voxel_index();
+
     let t_morph = Instant::now();
     for _morph_step in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
         voxel_sampler.sample(voxels, priors, params, temperature, record_samples);

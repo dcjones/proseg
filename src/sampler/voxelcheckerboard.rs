@@ -35,7 +35,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::iter::{
-    IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
+    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+    ParallelDrainFull, ParallelIterator,
 };
 use rayon::slice::ParallelSliceMut;
 use rstar::primitives::GeomWithData;
@@ -1197,6 +1198,11 @@ impl VoxelIndex {
             .take_while(move |&&(v, _)| v == key)
             .map(|&(_, idx)| idx)
     }
+
+    // Number of transcripts currently located in `voxel`.
+    pub fn voxel_population(&self, voxel: Voxel) -> usize {
+        self.voxel_transcripts(voxel).count()
+    }
 }
 
 // A transcript accepted for repositioning, carrying enough state to apply the
@@ -1230,6 +1236,7 @@ impl QuadTranscripts {
         }
     }
 
+    #[allow(dead_code)] // BTreeSet range query, superseded by VoxelIndex; removed with the set
     pub fn iter_voxel_transcripts(&self, voxel: Voxel) -> impl Iterator<Item = TranscriptIndex> {
         self.transcripts
             .range((
@@ -1248,6 +1255,7 @@ impl QuadTranscripts {
 
 impl<'a> QuadTranscripts {
     // Iterator all the transcript in a particular voxel
+    #[allow(dead_code)] // superseded by VoxelIndex; removed with the BTreeSet
     pub fn voxel_transcripts(
         &'a self,
         voxel: Voxel,
@@ -1265,6 +1273,7 @@ impl<'a> QuadTranscripts {
 }
 
 impl QuadTranscripts {
+    #[allow(dead_code)] // superseded by VoxelIndex; removed with the BTreeSet
     pub fn voxel_population(&self, voxel: Voxel) -> usize {
         self.voxel_transcripts(voxel).count()
     }
@@ -1380,6 +1389,10 @@ pub struct VoxelCheckerboard {
     // Maintained in parallel with the BTreeSet during the migration.
     pub transcript_voxel: Vec<std::sync::atomic::AtomicU64>,
 
+    // Derived voxel→transcript index, rebuilt from `transcript_voxel` before each
+    // morphology phase (see `rebuild_voxel_index`). Read-only during morphology.
+    pub voxel_index: VoxelIndex,
+
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
     //
@@ -1430,6 +1443,7 @@ impl VoxelCheckerboard {
             used_cells_map: Vec::new(),
             transcript_fixed_state: Vec::new(),
             transcript_voxel: Vec::new(),
+            voxel_index: VoxelIndex::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
             frozen_cells: Vec::new(),
@@ -2292,6 +2306,13 @@ impl VoxelCheckerboard {
         );
     }
 
+    // Rebuild the voxel→transcript index from the authoritative flat array.
+    // Must be called before morphology reads it (positions change during
+    // repositioning and initialization, but are static during morphology).
+    pub fn rebuild_voxel_index(&mut self) {
+        self.voxel_index = VoxelIndex::build(&self.transcript_voxel);
+    }
+
     // Verify a freshly-built VoxelIndex is sorted and has exactly the same
     // (voxel, transcript) contents as the per-quad BTreeSets.
     pub fn check_voxel_index(&self) {
@@ -2451,34 +2472,48 @@ impl VoxelCheckerboard {
         let kernel_norm = 1.0 / (bandwidth * (2.0 * f32::consts::PI).sqrt());
         let eps = 1e-3_f32;
         let max_distance = -2.0 * bandwidth_sq * eps.ln();
-        self.quads.par_iter_mut().for_each(|((_u, _v), quad)| {
-            let transcripts = quad.transcripts.read().unwrap();
+        // Distinct occupied voxels grouped by owning quad, from the flat position
+        // array (replaces reading each quad's transcript BTreeSet). A transcript in
+        // voxel V belongs to quad `quad_index(V)`, so this reproduces the previous
+        // per-quad partitioning exactly.
+        let mut occupied_by_quad: HashMap<(u32, u32), Vec<Voxel>> = HashMap::new();
+        {
+            let mut seen: HashSet<Voxel> = HashSet::new();
+            for v in &self.transcript_voxel {
+                let voxel = Voxel::from_raw(v.load(std::sync::atomic::Ordering::Relaxed));
+                if seen.insert(voxel) {
+                    occupied_by_quad
+                        .entry(self.quad_index(voxel))
+                        .or_default()
+                        .push(voxel);
+                }
+            }
+        }
+
+        self.quads.par_iter_mut().for_each(|(&(u, v), quad)| {
             let mut densities = quad.densities.write().unwrap();
+            let empty = Vec::new();
+            let occupied = occupied_by_quad.get(&(u, v)).unwrap_or(&empty);
 
-            transcripts.transcripts.iter().for_each(
-                |VoxelTranscript {
-                     voxel,
-                     transcript_idx: _,
-                 }| {
-                    let [i, j, _k] = voxel.coords();
-                    let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
-                    let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
+            occupied.iter().for_each(|voxel| {
+                let [i, j, _k] = voxel.coords();
+                let x = ((i as f32) + 0.5) * self.voxelsize + self.xmin;
+                let y = ((j as f32) + 0.5) * self.voxelsize + self.ymin;
 
-                    let voxel = voxel.setk(0);
-                    for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
-                        let neighbor = voxel.offset_coords(di, dj, dk);
-                        densities.entry(neighbor).or_insert_with(|| {
-                            let mut voxel_density = 0.0;
+                let voxel = voxel.setk(0);
+                for (di, dj, dk) in SELF_RADIUS3_2D_OFFSETS {
+                    let neighbor = voxel.offset_coords(di, dj, dk);
+                    densities.entry(neighbor).or_insert_with(|| {
+                        let mut voxel_density = 0.0;
 
-                            for neighbor in rtree.locate_within_distance([x, y], max_distance) {
-                                let d2 = neighbor.distance_2(&[x, y]);
-                                voxel_density += (-d2 / (2.0 * bandwidth_sq)).exp();
-                            }
-                            voxel_density / kernel_norm
-                        });
-                    }
-                },
-            );
+                        for neighbor in rtree.locate_within_distance([x, y], max_distance) {
+                            let d2 = neighbor.distance_2(&[x, y]);
+                            voxel_density += (-d2 / (2.0 * bandwidth_sq)).exp();
+                        }
+                        voxel_density / kernel_norm
+                    });
+                }
+            });
         });
 
         let mut quant_est = (1..nbins + 1)
@@ -2588,22 +2623,18 @@ impl VoxelCheckerboard {
             })
         });
 
-        self.quads.par_iter().for_each(|((_u, _v), quad)| {
-            let quad_states = quad.states.read().unwrap();
-            let transcripts = quad.transcripts.read().unwrap();
-
-            for &VoxelTranscript {
-                voxel,
-                transcript_idx,
-            } in transcripts.transcripts.iter()
-            {
+        self.transcript_voxel
+            .par_iter()
+            .enumerate()
+            .for_each(|(idx, v)| {
+                let voxel = Voxel::from_raw(v.load(std::sync::atomic::Ordering::Relaxed));
                 let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self.transcript_fixed_state[transcript_idx as usize];
+                } = self.transcript_fixed_state[idx];
                 let k_origin = original_voxel.k();
-                let density = self.get_voxel_density_hint(quad, original_voxel);
-                let cell = quad_states.get_voxel_cell(voxel);
+                let density = self.get_voxel_density(original_voxel);
+                let cell = self.get_voxel_cell(voxel);
 
                 if cell != BACKGROUND_CELL {
                     counts
@@ -2613,8 +2644,7 @@ impl VoxelCheckerboard {
                 } else {
                     unassigned_counts[density][k_origin as usize].add(gene as usize, 1);
                 }
-            }
-        });
+            });
     }
 
     pub fn compute_background_region_volumes(&self, background_region_volume: &mut Array1<f32>) {
@@ -2730,7 +2760,6 @@ impl VoxelCheckerboard {
         let mut top_voxel: HashMap<CellIndex, (Voxel, u32)> = HashMap::new();
         self.quads.values().for_each(|quad| {
             let quad_states = quad.states.read().unwrap();
-            let quad_transcripts = quad.transcripts.read().unwrap();
 
             quad_states.states.iter().for_each(|(&voxel, &state)| {
                 let cell = state.cell;
@@ -2739,7 +2768,7 @@ impl VoxelCheckerboard {
                 }
                 let [i, j, _k] = voxel.coords();
 
-                let transcript_count = quad_transcripts.voxel_population(voxel) as u32;
+                let transcript_count = self.voxel_index.voxel_population(voxel) as u32;
 
                 voxel_votes
                     .entry((i, j))
@@ -2832,15 +2861,11 @@ impl VoxelCheckerboard {
         transcripts: &[Transcript],
     ) -> RunVec<u32, TranscriptMetadata> {
         let mut offsets = vec![VoxelOffset::zero(); transcripts.len()];
-        self.quads.iter().for_each(|((_u, _v), quad)| {
-            let transcripts = quad.transcripts.read().unwrap();
-            transcripts.transcripts.iter().for_each(|transcript| {
-                let original_voxel =
-                    self.transcript_fixed_state[transcript.transcript_idx as usize].original_voxel;
-                offsets[transcript.transcript_idx as usize] =
-                    VoxelOffset::between(original_voxel, transcript.voxel);
-            })
-        });
+        for (idx, v) in self.transcript_voxel.iter().enumerate() {
+            let current_voxel = Voxel::from_raw(v.load(std::sync::atomic::Ordering::Relaxed));
+            let original_voxel = self.transcript_fixed_state[idx].original_voxel;
+            offsets[idx] = VoxelOffset::between(original_voxel, current_voxel);
+        }
 
         let mut metadata = RunVec::new();
         for (state, &offset) in params.transcript_state.iter().zip(offsets.iter()) {
@@ -3117,6 +3142,7 @@ impl VoxelCheckerboard {
             used_cells_map: self.used_cells_map,
             transcript_fixed_state: Vec::new(),
             transcript_voxel: Vec::new(),
+            voxel_index: VoxelIndex::new(),
             quads,
             quads_coords,
             frozen_cells: self.frozen_cells,
