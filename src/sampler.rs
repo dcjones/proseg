@@ -9,7 +9,7 @@ mod polyagamma;
 mod polygons;
 pub mod runvec;
 mod sampleset;
-mod shardedvec;
+mod atomiccountvec;
 pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcripts;
@@ -33,7 +33,7 @@ use onlinestats::CountMeanEstimator;
 use parking_lot::Mutex;
 use rand::rng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use shardedvec::ShardedVec;
+use atomiccountvec::AtomicCountVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Add, AddAssign};
@@ -43,7 +43,6 @@ use voxelcheckerboard::VoxelCheckerboard;
 
 // Shard size used for sharded vectors and matrices
 const CELL_SHARDSIZE: usize = 256;
-const GENE_SHARDSIZE: usize = 16;
 
 const RAYON_CELL_MIN_LEN: usize = 32;
 
@@ -392,13 +391,13 @@ impl num::traits::Zero for FlowStats {
 #[allow(non_snake_case)]
 pub struct ModelParams {
     // [ncells] cell volume in voxel count
-    pub cell_voxel_count: ShardedVec<u32>,
+    pub cell_voxel_count: AtomicCountVec,
 
     // [nlayers, ncells] cell volume in exposed voxel surface count
-    pub cell_layer_voxel_count: Vec<ShardedVec<u32>>,
+    pub cell_layer_voxel_count: Vec<AtomicCountVec>,
 
     // [nlayers, ncells] cell volume in exposed voxel surface count
-    pub cell_layer_surface_area: Vec<ShardedVec<u32>>,
+    pub cell_layer_surface_area: Vec<AtomicCountVec>,
 
     // [ncells] cell volume in cubic microns
     pub log_cell_volume: Array1<f32>,
@@ -453,10 +452,10 @@ pub struct ModelParams {
     pub transition_counts: CSRMat<u32, u32>,
 
     // [density_nbins, nlayers, ngenes] background transcripts counts
-    unassigned_counts: Vec<Vec<ShardedVec<u32>>>,
+    unassigned_counts: Vec<Vec<AtomicCountVec>>,
 
     // [density_nbins, nlayers, ngenes]
-    background_counts: Vec<Vec<ShardedVec<u32>>>,
+    background_counts: Vec<Vec<AtomicCountVec>>,
 
     // [ncells, nhidden]
     pub cell_latent_counts: CSRMat<u32, u32>,
@@ -605,12 +604,12 @@ impl ModelParams {
             (ngenes, ngenes)
         };
 
-        let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
+        let mut cell_voxel_count = AtomicCountVec::zeros(ncells);
         let mut cell_layer_voxel_count = Vec::new();
         let mut cell_layer_surface_area = Vec::new();
         for _ in 0..nlayers {
-            cell_layer_voxel_count.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
-            cell_layer_surface_area.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+            cell_layer_voxel_count.push(AtomicCountVec::zeros(ncells));
+            cell_layer_surface_area.push(AtomicCountVec::zeros(ncells));
         }
 
         voxels.compute_cell_volume_surface_area(
@@ -639,7 +638,7 @@ impl ModelParams {
         let mut unassigned_counts = (0..density_nbins)
             .map(|_density| {
                 (0..nlayers)
-                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -680,7 +679,7 @@ impl ModelParams {
         let background_counts = (0..density_nbins)
             .map(|_density| {
                 (0..nlayers)
-                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -965,12 +964,12 @@ impl ModelParams {
         let nlayers = (voxels.kmax + 1) as usize;
         let density_nbins = voxels.density_nbins;
 
-        let mut cell_voxel_count = ShardedVec::zeros(ncells, CELL_SHARDSIZE);
+        let mut cell_voxel_count = AtomicCountVec::zeros(ncells);
         let mut cell_layer_voxel_count = Vec::new();
         let mut cell_layer_surface_area = Vec::new();
         for _ in 0..nlayers {
-            cell_layer_voxel_count.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
-            cell_layer_surface_area.push(ShardedVec::zeros(ncells, CELL_SHARDSIZE));
+            cell_layer_voxel_count.push(AtomicCountVec::zeros(ncells));
+            cell_layer_surface_area.push(AtomicCountVec::zeros(ncells));
         }
         voxels.compute_cell_volume_surface_area(
             &mut cell_voxel_count,
@@ -993,7 +992,7 @@ impl ModelParams {
         let mut unassigned_counts = (0..density_nbins)
             .map(|_density| {
                 (0..nlayers)
-                    .map(|_layer| ShardedVec::zeros(ngenes, GENE_SHARDSIZE))
+                    .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
