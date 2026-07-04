@@ -460,14 +460,8 @@ pub struct ModelParams {
     // [ncells, nhidden]
     pub cell_latent_counts: CSRMat<u32, u32>,
 
-    // [ngenes, nhidden]
+    // [ngenes, nfactored_hidden]
     pub gene_latent_counts: Array2<u32>,
-
-    // Thread local [ngenes, nhidden] matrices for accumulation
-    pub gene_latent_counts_tl: ThreadLocal<RefCell<Array2<u32>>>,
-
-    // [nhidden]
-    pub latent_counts: Array1<u32>,
 
     // [nhidden] thread local storage for sampling latent counts
     pub multinomials: ThreadLocal<RefCell<Multinomial<f32>>>,
@@ -684,10 +678,14 @@ impl ModelParams {
             })
             .collect::<Vec<_>>();
 
+        // gene_latent_counts only needs to hold the *factored* block of hidden
+        // dimensions: the unfactored genes map identically into cell_latent_counts
+        // and their gene-level counts are never consumed. Storing only the factored
+        // columns roughly halves the (per-thread) accumulator that dominates
+        // sample_latent_counts.
+        let nfactored_hidden = nhidden - nunfactored;
         let cell_latent_counts = CSRMat::zeros(ncells, nhidden as u32 - 1);
-        let gene_latent_counts = Array2::<u32>::zeros((ngenes, nhidden));
-        let gene_latent_counts_tl = ThreadLocal::new();
-        let latent_counts = Array1::<u32>::zeros(nhidden);
+        let gene_latent_counts = Array2::<u32>::zeros((ngenes, nfactored_hidden));
         let multinomials = ThreadLocal::new();
         let z_probs = ThreadLocal::new();
         let (z, θ_centroids) = initial_component_assignments(&counts, ncomponents);
@@ -799,8 +797,6 @@ impl ModelParams {
             background_counts,
             cell_latent_counts,
             gene_latent_counts,
-            gene_latent_counts_tl,
-            latent_counts,
             multinomials,
             z_probs,
             z,
@@ -946,6 +942,7 @@ impl ModelParams {
         self.φ.shape()[0]
     }
 
+    #[allow(dead_code)]
     pub fn ngenes(&self) -> usize {
         self.θ.shape()[0]
     }

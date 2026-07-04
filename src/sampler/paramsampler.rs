@@ -12,6 +12,7 @@ use rand::{Rng, rng};
 use rand_distr::{Distribution, Gamma, Normal};
 use rayon::prelude::*;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 // Setting parallel iterator min length for simple operations
@@ -515,49 +516,63 @@ impl ParamSampler {
             params.cell_latent_counts.zero();
         }
 
-        // zero out thread local gene latent counts
-        for x in params.gene_latent_counts_tl.iter_mut() {
-            x.get_mut().fill(0);
-        }
-
-        let ngenes = params.ngenes();
         let nhidden = params.nhidden();
-        params
-            .cell_latent_counts
+        let nfactored_hidden = nhidden - params.nunfactored;
+        let nunfactored = params.nunfactored;
+
+        // Zero the gene latent counts, then accumulate directly into it from every
+        // worker thread through an atomic view. This replaces a large per-thread
+        // dense accumulator that had to be zeroed and reduced every iteration (both
+        // memory-bandwidth bound on ngenes*nfactored_hidden*nthreads). Zeroing is
+        // now a single pass over one matrix and the reduction is gone entirely.
+        let gene_latent_slice = params.gene_latent_counts.as_slice_mut().unwrap();
+        gene_latent_slice.par_iter_mut().for_each(|x| *x = 0);
+        // SAFETY: AtomicU32 has the same size, alignment, and representation as u32.
+        // We hold the unique `&mut` for the lifetime of this view and only ever
+        // access the memory atomically through it, so exposing it as shared atomics
+        // for concurrent accumulation is sound.
+        let gene_latent_atomic: &[AtomicU32] =
+            unsafe { &*(gene_latent_slice as *mut [u32] as *const [AtomicU32]) };
+
+        // Bind the other participating fields as disjoint shared borrows so the
+        // parallel closure doesn't capture all of `params` (which would collide
+        // with the mutable borrow backing `gene_latent_atomic`).
+        let cell_latent_counts = &params.cell_latent_counts;
+        let foreground_counts = &params.foreground_counts;
+        let φ = &params.φ;
+        let θ = &params.θ;
+        let multinomials = &params.multinomials;
+
+        cell_latent_counts
             .par_rows()
-            .zip(params.foreground_counts.par_rows())
-            .zip(params.φ.outer_iter())
+            .zip(foreground_counts.par_rows())
+            .zip(φ.outer_iter())
             .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each_init(rng, |rng, ((cell_latent_counts_c, x_c), φ_c)| {
-                let mut multinomial = params
-                    .multinomials
-                    .get_or(|| RefCell::new(Multinomial::new(nhidden - params.nunfactored)))
-                    .borrow_mut();
-
-                let mut gene_latent_counts_tl = params
-                    .gene_latent_counts_tl
-                    .get_or(|| RefCell::new(Array2::zeros((ngenes, nhidden))))
+                let mut multinomial = multinomials
+                    .get_or(|| RefCell::new(Multinomial::new(nfactored_hidden)))
                     .borrow_mut();
 
                 let x_c = x_c.read();
                 let mut cell_latent_counts_c = cell_latent_counts_c.write();
 
-                // assign counts from unfactored genes
-                for (g, x_cg) in x_c.iter_nonzeros_to(params.nunfactored as u32) {
+                // assign counts from unfactored genes. These map identically into
+                // the cell latent counts; the gene-level counts are never consumed,
+                // so we don't accumulate them.
+                for (g, x_cg) in x_c.iter_nonzeros_to(nunfactored as u32) {
                     if x_cg > 0 {
                         cell_latent_counts_c.add(g, x_cg);
-                        gene_latent_counts_tl[[g as usize, g as usize]] += x_cg;
                     }
                 }
 
                 // distribute counts from factored genes
-                let φ_c_factored = φ_c.slice(s![params.nunfactored..]);
-                for (g, x_cg) in x_c.iter_nonzeros_from(params.nunfactored as u32) {
+                let φ_c_factored = φ_c.slice(s![nunfactored..]);
+                for (g, x_cg) in x_c.iter_nonzeros_from(nunfactored as u32) {
                     if x_cg == 0 {
                         continue;
                     }
 
-                    let θ_g_factored = params.θ.slice(s![g as usize, params.nunfactored..]);
+                    let θ_g_factored = θ.slice(s![g as usize, nunfactored..]);
 
                     let prob_iter = φ_c_factored
                         .iter()
@@ -565,43 +580,13 @@ impl ParamSampler {
                         .map(|(φ_ck, θ_gk)| *φ_ck * *θ_gk);
                     multinomial.set_probs_from_iter(prob_iter);
 
-                    let mut gene_latent_counts_g = gene_latent_counts_tl.row_mut(g as usize);
-                    let nunfactored = params.nunfactored;
+                    let row_base = g as usize * nfactored_hidden;
                     multinomial.sample(rng, x_cg, |k, x| {
                         cell_latent_counts_c.add((k + nunfactored) as u32, x);
-                        gene_latent_counts_g[k + nunfactored] += x;
+                        gene_latent_atomic[row_base + k].fetch_add(x, Ordering::Relaxed);
                     });
                 }
             });
-
-        // accumulate from thread locate matrices
-        let tl_matrices: Vec<&Array2<u32>> = params
-            .gene_latent_counts_tl
-            .iter_mut()
-            .map(|x| &*x.get_mut())
-            .collect();
-
-        params
-            .gene_latent_counts
-            .axis_iter_mut(Axis(0))
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(g, mut row)| {
-                row.fill(0);
-                for tl in &tl_matrices {
-                    row += &tl.row(g);
-                }
-            });
-        // marginal count along the hidden axis
-        Zip::from(&mut params.latent_counts)
-            .and(params.gene_latent_counts.columns())
-            .par_for_each(|lc, glc| {
-                *lc = glc.sum();
-            });
-
-        let count = params.latent_counts.mapv(|v| v as u64).sum();
-        assert!(params.gene_latent_counts.mapv(|v| v as u64).sum() == count);
-        assert!(params.cell_latent_counts.sum() == count);
 
         // compute component-wise counts
         params.component_population.fill(0);
@@ -621,18 +606,15 @@ impl ParamSampler {
                 component_latent_counts_z[g as usize] += x_cg;
             }
         }
-        info!("sample_latent_counts: accumulation: {:?}", t0.elapsed());
-
-        info!("component_population: {:?}", &params.component_population);
+        trace!("sample_latent_counts: {:?}", t0.elapsed());
     }
 
     fn sample_θ(&self, priors: &ModelPriors, params: &mut ModelParams) {
         let mut θfac = params
             .θ
             .slice_mut(s![params.nunfactored.., params.nunfactored..]);
-        let gene_latent_counts_fac = params
-            .gene_latent_counts
-            .slice(s![params.nunfactored.., params.nunfactored..]);
+        // gene_latent_counts already holds only the factored hidden columns.
+        let gene_latent_counts_fac = params.gene_latent_counts.slice(s![params.nunfactored.., ..]);
 
         // Sampling with Dirichlet prior on θ (I think Gamma makes more
         // sense, but this is an alternative to consider)
