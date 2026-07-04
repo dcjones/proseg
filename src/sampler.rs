@@ -12,7 +12,6 @@ mod sampleset;
 mod shardedvec;
 pub mod sparsevec;
 pub mod transcriptrepo;
-pub mod transcriptrunmap;
 pub mod transcripts;
 pub mod transitionmat;
 pub mod voxelcheckerboard;

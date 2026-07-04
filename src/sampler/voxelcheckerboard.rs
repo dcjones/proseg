@@ -10,7 +10,6 @@ use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
 use super::shardedvec::ShardedVec;
-use super::transcriptrunmap::TranscriptRunMap;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
@@ -1302,9 +1301,12 @@ pub struct VoxelCheckerboard {
     // map cells indexes after initialization to their indexed prior to removing usused cells
     pub used_cells_map: Vec<u32>,
 
-    // Ok, not sure this a great idea. It's just going to get expanded to 8 bytes per. Depends what
-    // we save on doing rle.
-    pub transcript_fixed_state: TranscriptRunMap<TranscriptFixedState>,
+    // Immutable per-transcript state (original voxel + gene), indexed directly by
+    // transcript index. Previously run-length encoded, but on large gene panels
+    // consecutive transcripts almost never share the same (voxel, gene) pair, so
+    // the encoding compressed nothing while turning every lookup into a binary
+    // search over a ~ntranscripts-length array.
+    pub transcript_fixed_state: Vec<TranscriptFixedState>,
 
     // Main thing is we'll need to look up arbitrary Voxels,
     // which means first looking up which VoxelSet this is in.
@@ -1354,7 +1356,7 @@ impl VoxelCheckerboard {
             voxelsize,
             voxelsize_z,
             used_cells_map: Vec::new(),
-            transcript_fixed_state: TranscriptRunMap::empty(),
+            transcript_fixed_state: Vec::new(),
             quads: HashMap::new(),
             quads_coords: HashSet::new(),
             frozen_cells: Vec::new(),
@@ -2038,7 +2040,7 @@ impl VoxelCheckerboard {
 
     #[allow(dead_code)]
     pub fn transcript_gene(&self, transcript_idx: TranscriptIndex) -> GeneIndex {
-        self.transcript_fixed_state.get(transcript_idx).gene
+        self.transcript_fixed_state[transcript_idx as usize].gene
     }
 
     fn write_quad_states(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadStates> {
@@ -2464,10 +2466,10 @@ impl VoxelCheckerboard {
                 transcript_idx,
             } in transcripts.transcripts.iter()
             {
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self.transcript_fixed_state.get(transcript_idx);
+                } = self.transcript_fixed_state[transcript_idx as usize];
                 let k_origin = original_voxel.k();
                 let density = self.get_voxel_density_hint(quad, original_voxel);
                 let cell = quad_states.get_voxel_cell(voxel);
@@ -2702,10 +2704,8 @@ impl VoxelCheckerboard {
         self.quads.iter().for_each(|((_u, _v), quad)| {
             let transcripts = quad.transcripts.read().unwrap();
             transcripts.transcripts.iter().for_each(|transcript| {
-                let original_voxel = self
-                    .transcript_fixed_state
-                    .get(transcript.transcript_idx)
-                    .original_voxel;
+                let original_voxel =
+                    self.transcript_fixed_state[transcript.transcript_idx as usize].original_voxel;
                 offsets[transcript.transcript_idx as usize] =
                     VoxelOffset::between(original_voxel, transcript.voxel);
             })
@@ -2871,12 +2871,10 @@ impl VoxelCheckerboard {
                     .map(|state| state.cell)
                     .unwrap_or(BACKGROUND_CELL);
 
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self
-                    .transcript_fixed_state
-                    .get(voxel_transcript.transcript_idx);
+                } = self.transcript_fixed_state[voxel_transcript.transcript_idx as usize];
 
                 let k_origin = original_voxel.k() as usize;
                 let density = self.get_voxel_density_hint(quad, original_voxel);
@@ -2906,12 +2904,10 @@ impl VoxelCheckerboard {
                     .map(|state| state.cell)
                     .unwrap_or(BACKGROUND_CELL);
 
-                let &TranscriptFixedState {
+                let TranscriptFixedState {
                     original_voxel,
                     gene,
-                } = self
-                    .transcript_fixed_state
-                    .get(voxel_transcript.transcript_idx);
+                } = self.transcript_fixed_state[voxel_transcript.transcript_idx as usize];
 
                 let k_origin = original_voxel.k() as usize;
                 let density = self.get_voxel_density_hint(quad, original_voxel);
@@ -2994,7 +2990,7 @@ impl VoxelCheckerboard {
             voxelsize,
             voxelsize_z,
             used_cells_map: self.used_cells_map,
-            transcript_fixed_state: TranscriptRunMap::empty(),
+            transcript_fixed_state: Vec::new(),
             quads,
             quads_coords,
             frozen_cells: self.frozen_cells,
