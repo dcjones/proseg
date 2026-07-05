@@ -993,62 +993,173 @@ pub struct VoxelState {
     pub log_1m_prior: f16, // log(1-p)
 }
 
-impl VoxelState {
-    fn new_cell_only(cell: CellIndex) -> VoxelState {
-        VoxelState {
-            cell,
-            prior_cell: BACKGROUND_CELL,
-            log_prior: f16::NAN,
-            log_1m_prior: f16::NAN,
-        }
-    }
-}
 
+// Dense per-quad voxel state in struct-of-arrays layout over a 1-voxel-haloed
+// grid. Local extent is (quadsize+2) in i and j — local index 0 and quadsize+1
+// are the halo ring that mirrors neighbor quads' edge cells so morphology can
+// always stay in-quad for radius-1 neighborhoods — and nzlayers in k (no k halo).
+//
+// `cell` is the hot field: read ~15M×/iter in repo/fg-bg and on every morphology
+// neighborhood scan. The prior arrays are stored densely (to support granular /
+// full-cell priors) but are cold — read only in the acceptance ratio, and only
+// for interior voxels — so keeping them in separate arrays keeps `cell` reads
+// cache-compact. Replaces a per-quad `HashMap<Voxel, VoxelState>`.
 pub struct QuadStates {
-    // Voxel state and prior.
-    pub states: HashMap<Voxel, VoxelState>,
+    min_i: i32,
+    min_j: i32,
+    dim_i: usize, // quadsize + 2
+    dim_j: usize, // quadsize + 2
+    nzlayers: usize,
+    cell: Vec<CellIndex>,
+    prior_cell: Vec<CellIndex>,
+    log_prior: Vec<f16>,
+    log_1m_prior: Vec<f16>,
     pub mismatch_edges: SampleSet<UndirectedVoxelPair>,
 }
 
 impl QuadStates {
-    pub fn new() -> QuadStates {
+    pub fn new(min_i: i32, min_j: i32, quadsize: usize, nzlayers: usize) -> QuadStates {
+        let dim_i = quadsize + 2;
+        let dim_j = quadsize + 2;
+        let n = dim_i * dim_j * nzlayers;
         QuadStates {
-            states: HashMap::new(),
+            min_i,
+            min_j,
+            dim_i,
+            dim_j,
+            nzlayers,
+            cell: vec![BACKGROUND_CELL; n],
+            prior_cell: vec![BACKGROUND_CELL; n],
+            log_prior: vec![f16::NAN; n],
+            log_1m_prior: vec![f16::NAN; n],
             mismatch_edges: SampleSet::new(),
         }
     }
 
-    pub fn get_voxel_state(&self, voxel: Voxel) -> Option<&VoxelState> {
-        self.states.get(&voxel)
+    // Linear slot for a voxel, or None if it lies outside this quad's grid
+    // (beyond the 1-voxel halo, or outside the z range).
+    #[inline]
+    fn slot(&self, voxel: Voxel) -> Option<usize> {
+        let il = voxel.i() - self.min_i + 1;
+        let jl = voxel.j() - self.min_j + 1;
+        let k = voxel.k();
+        if il < 0
+            || il as usize >= self.dim_i
+            || jl < 0
+            || jl as usize >= self.dim_j
+            || k < 0
+            || k as usize >= self.nzlayers
+        {
+            return None;
+        }
+        Some((il as usize * self.dim_j + jl as usize) * self.nzlayers + k as usize)
+    }
+
+    #[inline]
+    fn voxel_at(&self, s: usize) -> Voxel {
+        let k = s % self.nzlayers;
+        let ij = s / self.nzlayers;
+        let jl = ij % self.dim_j;
+        let il = ij / self.dim_j;
+        Voxel::new(
+            self.min_i + il as i32 - 1,
+            self.min_j + jl as i32 - 1,
+            k as i32,
+        )
+    }
+
+    pub fn get_voxel_state(&self, voxel: Voxel) -> Option<VoxelState> {
+        self.slot(voxel).map(|s| VoxelState {
+            cell: self.cell[s],
+            prior_cell: self.prior_cell[s],
+            log_prior: self.log_prior[s],
+            log_1m_prior: self.log_1m_prior[s],
+        })
     }
 
     pub fn set_voxel_cell(&mut self, voxel: Voxel, cell: CellIndex) {
-        if cell == BACKGROUND_CELL {
-            let mut remove = false;
-            if let Some(state) = self.states.get_mut(&voxel) {
-                // Don't remove the state if it's being used to store a prior
-                if state.log_prior.is_finite() {
-                    state.cell = cell;
-                } else {
-                    remove = true;
-                }
-            }
-            if remove {
-                self.states.remove(&voxel);
-            }
-        } else {
-            self.states
-                .entry(voxel)
-                .and_modify(|state| state.cell = cell)
-                .or_insert_with(|| VoxelState::new_cell_only(cell));
+        if let Some(s) = self.slot(voxel) {
+            self.cell[s] = cell;
         }
     }
 
+    // Set the full state (cell + prior) for a voxel.
+    pub fn insert_state(&mut self, voxel: Voxel, state: VoxelState) {
+        if let Some(s) = self.slot(voxel) {
+            self.cell[s] = state.cell;
+            self.prior_cell[s] = state.prior_cell;
+            self.log_prior[s] = state.log_prior;
+            self.log_1m_prior[s] = state.log_1m_prior;
+        }
+    }
+
+    // Set state only if the slot is currently empty: background cell and no prior.
+    pub fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
+        if let Some(s) = self.slot(voxel) {
+            if self.cell[s] == BACKGROUND_CELL && !self.log_prior[s].is_finite() {
+                let state = f();
+                self.cell[s] = state.cell;
+                self.prior_cell[s] = state.prior_cell;
+                self.log_prior[s] = state.log_prior;
+                self.log_1m_prior[s] = state.log_1m_prior;
+            }
+        }
+    }
+
+    // Iterate interior + halo slots carrying a cell assignment. Matches the old
+    // hashmap iteration for all consumers (they filter cell!=BG / voxel_in_bounds).
+    pub fn iter_occupied(&self) -> impl Iterator<Item = (Voxel, VoxelState)> + '_ {
+        (0..self.cell.len()).filter_map(move |s| {
+            let cell = self.cell[s];
+            if cell == BACKGROUND_CELL {
+                return None;
+            }
+            Some((
+                self.voxel_at(s),
+                VoxelState {
+                    cell,
+                    prior_cell: self.prior_cell[s],
+                    log_prior: self.log_prior[s],
+                    log_1m_prior: self.log_1m_prior[s],
+                },
+            ))
+        })
+    }
+
+    // Iterate slots that carry any state — a cell assignment or a prior. Matches
+    // the old hashmap's exact membership; needed where priors on background voxels
+    // must be preserved (e.g. resolution doubling).
+    pub fn iter_stateful(&self) -> impl Iterator<Item = (Voxel, VoxelState)> + '_ {
+        (0..self.cell.len()).filter_map(move |s| {
+            if self.cell[s] == BACKGROUND_CELL && !self.log_prior[s].is_finite() {
+                return None;
+            }
+            Some((
+                self.voxel_at(s),
+                VoxelState {
+                    cell: self.cell[s],
+                    prior_cell: self.prior_cell[s],
+                    log_prior: self.log_prior[s],
+                    log_1m_prior: self.log_1m_prior[s],
+                },
+            ))
+        })
+    }
+
+    // Remap cell (and prior_cell) indices through `map` for every occupied voxel.
+    pub fn remap_cells(&mut self, map: &HashMap<CellIndex, CellIndex>) {
+        for s in 0..self.cell.len() {
+            if self.cell[s] != BACKGROUND_CELL {
+                let new_cell = *map.get(&self.cell[s]).unwrap();
+                self.cell[s] = new_cell;
+                self.prior_cell[s] = new_cell;
+            }
+        }
+    }
+
+    #[inline]
     pub fn get_voxel_cell(&self, voxel: Voxel) -> CellIndex {
-        self.states
-            .get(&voxel)
-            .map(|state| state.cell)
-            .unwrap_or(BACKGROUND_CELL)
+        self.slot(voxel).map_or(BACKGROUND_CELL, |s| self.cell[s])
     }
 
     // If the given voxel in is bounds of this quad and is a bubble (i.e. von
@@ -1206,8 +1317,10 @@ pub struct VoxelQuad {
 impl VoxelQuad {
     // Initialize empty voxel set
     fn new(kmax: i32, quadsize: usize, u: u32, v: u32) -> VoxelQuad {
+        let min_i = (u as usize * quadsize) as i32;
+        let min_j = (v as usize * quadsize) as i32;
         VoxelQuad {
-            states: RwLock::new(QuadStates::new()),
+            states: RwLock::new(QuadStates::new(min_i, min_j, quadsize, (kmax + 1) as usize)),
             densities: RwLock::new(HashMap::new()),
             densities_grid: OnceLock::new(),
             connectivity: RwLock::new(MooreConnectivityChecker::new()),
@@ -1475,12 +1588,7 @@ impl VoxelCheckerboard {
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
-            let mut quad_states = quad.states.write();
-            for state in quad_states.states.values_mut() {
-                let cell = *used_cells.get(&state.cell).unwrap();
-                state.cell = cell;
-                state.prior_cell = cell;
-            }
+            quad.states.write().remap_cells(&used_cells);
         }
 
         // assign cell priors, by once again voting
@@ -1974,7 +2082,7 @@ impl VoxelCheckerboard {
         // figure out which cells we are actually using
         let mut used_cells = HashMap::new();
         checkerboard.quads.values().for_each(|quad| {
-            for (_voxel, state) in quad.states.read().states.iter() {
+            for (_voxel, state) in quad.states.read().iter_occupied() {
                 if state.cell != BACKGROUND_CELL {
                     let next_cell_id = used_cells.len() as u32;
                     used_cells.entry(state.cell).or_insert(next_cell_id);
@@ -1996,12 +2104,7 @@ impl VoxelCheckerboard {
 
         // re-assign cell indices so that there are no cells without any assigned voxel
         for quad in &mut checkerboard.quads.values() {
-            let mut quad_states = quad.states.write();
-            for state in quad_states.states.values_mut() {
-                let cell = *used_cells.get(&state.cell).unwrap();
-                state.cell = cell;
-                state.prior_cell = cell;
-            }
+            quad.states.write().remap_cells(&used_cells);
         }
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
@@ -2127,14 +2230,11 @@ impl VoxelCheckerboard {
     // }
 
     fn insert_state(&mut self, voxel: Voxel, state: VoxelState) {
-        self.write_quad_states(voxel).states.insert(voxel, state);
+        self.write_quad_states(voxel).insert_state(voxel, state);
     }
 
     fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
-        self.write_quad_states(voxel)
-            .states
-            .entry(voxel)
-            .or_insert_with(f);
+        self.write_quad_states(voxel).insert_state_if_missing(voxel, f);
     }
 
     // fn update_state(
@@ -2158,10 +2258,12 @@ impl VoxelCheckerboard {
             let quad_states = quad.states.read();
             self.for_each_quad_neighbor_states(u, v, |neighbor_quad, neighbor_quad_states| {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
-                for (voxel, state) in &quad_states.states {
+                // Copy this quad's edge cells into the neighbor's halo ring. Only
+                // the cell is mirrored — priors are interior-only.
+                for (voxel, state) in quad_states.iter_occupied() {
                     let [i, j, _k] = voxel.coords();
                     if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
-                        neighbor_quad_states.states.insert(*voxel, *state);
+                        neighbor_quad_states.set_voxel_cell(voxel, state.cell);
                     }
                 }
             });
@@ -2180,19 +2282,13 @@ impl VoxelCheckerboard {
             let quad_states = quad.states.read();
             self.for_each_quad_neighbor_states(u, v, |neighbor_quad, neighbor_quad_states| {
                 let (min_i, max_i, min_j, max_j) = neighbor_quad.bounds();
-                for (voxel, state) in &quad_states.states {
+                for (voxel, state) in quad_states.iter_occupied() {
                     let [i, j, _k] = voxel.coords();
 
                     if (min_i - 1..max_i + 2).contains(&i) && (min_j - 1..max_j + 2).contains(&j) {
-                        if state.cell == BACKGROUND_CELL
-                            && !neighbor_quad_states.states.contains_key(voxel)
-                        {
-                            continue;
-                        }
-
-                        let mirrored_state = neighbor_quad_states.states.get(voxel).unwrap();
-                        assert!(mirrored_state.cell == state.cell);
-                        assert!(mirrored_state.prior_cell == state.prior_cell);
+                        // Only the cell is mirrored into the halo (priors are
+                        // interior-only), so we only check the cell matches.
+                        assert!(neighbor_quad_states.get_voxel_cell(voxel) == state.cell);
                     }
                 }
             });
@@ -2233,7 +2329,7 @@ impl VoxelCheckerboard {
         mismatch_edges: &mut Vec<UndirectedVoxelPair>,
     ) {
         mismatch_edges.clear();
-        for (&voxel, state) in &quad_states.states {
+        for (voxel, state) in quad_states.iter_occupied() {
             let cell = state.cell;
             if cell == BACKGROUND_CELL {
                 continue;
@@ -2245,10 +2341,7 @@ impl VoxelCheckerboard {
                     continue;
                 }
 
-                let neighbor_cell = quad_states
-                    .states
-                    .get(&neighbor)
-                    .map_or(BACKGROUND_CELL, |state| state.cell);
+                let neighbor_cell = quad_states.get_voxel_cell(neighbor);
 
                 if cell != neighbor_cell {
                     mismatch_edges.push(UndirectedVoxelPair::new(voxel, neighbor));
@@ -2417,7 +2510,7 @@ impl VoxelCheckerboard {
 
         self.quads.par_iter().for_each(|((_u, _v), quad)| {
             let quad_states = quad.states.read();
-            for (&voxel, state) in &quad_states.states {
+            for (voxel, state) in quad_states.iter_occupied() {
                 // We mirror state on the border. We need to skip these mirrored voxels to avoid double-counting.
                 if !quad.voxel_in_bounds(voxel) {
                     continue;
@@ -2511,7 +2604,7 @@ impl VoxelCheckerboard {
         self.quads.values().for_each(|quad| {
             let quad_states = quad.states.read();
             let (i_min, i_max, j_min, j_max) = quad.bounds();
-            for (voxel, state) in quad_states.states.iter() {
+            for (voxel, state) in quad_states.iter_occupied() {
                 if state.cell != BACKGROUND_CELL {
                     let [i, j, k] = voxel.coords();
 
@@ -2548,9 +2641,8 @@ impl VoxelCheckerboard {
         self.quads.values().for_each(|quad| {
             quad.states
                 .read()
-                .states
-                .iter()
-                .for_each(|(&voxel, &state)| {
+                .iter_occupied()
+                .for_each(|(voxel, state)| {
                     if state.cell != BACKGROUND_CELL {
                         cell_voxels[state.cell as usize].insert(voxel);
                     }
@@ -2598,7 +2690,7 @@ impl VoxelCheckerboard {
         self.quads.values().for_each(|quad| {
             let quad_states = quad.states.read();
 
-            quad_states.states.iter().for_each(|(&voxel, &state)| {
+            quad_states.iter_occupied().for_each(|(voxel, state)| {
                 let cell = state.cell;
                 if cell == BACKGROUND_CELL || !quad.voxel_in_bounds(voxel) {
                     return;
@@ -2723,7 +2815,7 @@ impl VoxelCheckerboard {
                 let mut quad_states = quad.states.write();
 
                 let mut state_changes = Vec::new();
-                quad_states.states.iter().for_each(|(voxel, state)| {
+                quad_states.iter_occupied().for_each(|(voxel, state)| {
                     if state.cell == BACKGROUND_CELL {
                         return;
                     }
@@ -2758,7 +2850,7 @@ impl VoxelCheckerboard {
             let mut quad_states = quad.states.write();
 
             let mut state_changes = Vec::new();
-            quad_states.states.iter().for_each(|(voxel, state)| {
+            quad_states.iter_occupied().for_each(|(voxel, state)| {
                 if state.cell == BACKGROUND_CELL || self.frozen_cells[state.cell as usize] {
                     return;
                 }
@@ -2834,7 +2926,7 @@ impl VoxelCheckerboard {
             {
                 let old_quad_states = old_quad.states.read();
                 let mut new_quad_states = new_quad.states.write();
-                old_quad_states.states.iter().for_each(|(voxel, state)| {
+                old_quad_states.iter_stateful().for_each(|(voxel, state)| {
                     if state.cell != BACKGROUND_CELL
                         && self.frozen_cells[state.cell as usize]
                         && reinit_frozen
@@ -2850,7 +2942,7 @@ impl VoxelCheckerboard {
 
                             // excluding mirrored edge states
                             if new_quad.voxel_in_bounds(subvoxel) {
-                                new_quad_states.states.insert(subvoxel, *state);
+                                new_quad_states.insert_state(subvoxel, state);
                             }
                         }
                     }

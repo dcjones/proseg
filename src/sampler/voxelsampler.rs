@@ -164,7 +164,7 @@ impl VoxelSampler {
         }
 
         let mut proposed_cell = quad_states.get_voxel_cell(source);
-        let current_state = quad_states.get_voxel_state(target).copied();
+        let current_state = quad_states.get_voxel_state(target);
         let current_cell = current_state
             .map(|state| state.cell)
             .unwrap_or(BACKGROUND_CELL);
