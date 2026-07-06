@@ -14,6 +14,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, trace, warn};
 use rayon::current_num_threads;
 use regex::Regex;
+use sampler::paramoptimizer::ParamOptimizer;
 use sampler::paramsampler::ParamSampler;
 use sampler::transcriptrepo::TranscriptRepo;
 use sampler::transcripts::{ParquetFmt, read_transcripts_csv, read_visium_data};
@@ -265,6 +266,12 @@ struct Args {
     /// this to 1.0 disables annealing and recovers the previous sampling behavior.
     #[arg(long, default_value_t = 0.1)]
     min_temperature: f32,
+
+    /// Disable the optimization (coordinate-ascent / EM) parameter updates during
+    /// the point-estimate phase and use the Gibbs sampler in every phase instead.
+    /// Mainly for A/B comparison against the optimizer.
+    #[arg(long, default_value_t = false)]
+    no_param_optimization: bool,
 
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
@@ -1072,6 +1079,10 @@ fn main() {
     );
 
     let param_sampler = ParamSampler::new();
+    let param_optimizer = ParamOptimizer::new();
+    // When true (default), the point-estimate phase uses coordinate-ascent /
+    // EM parameter updates instead of Gibbs sampling.
+    let optimize_params = !args.no_param_optimization;
     let mut voxel_sampler =
         VoxelSampler::new(0, args.voxel_layers as i32 - 1, args.ab_nihlo_bubble_prob);
 
@@ -1089,16 +1100,20 @@ fn main() {
     );
 
     for _ in 0..INIT_ITERATIONS {
-        param_sampler.sample(
-            &priors,
-            &mut params,
-            &voxels,
-            true,
-            1.0,
-            false,
-            false,
-            false,
-        );
+        if optimize_params {
+            param_optimizer.optimize(&priors, &mut params, &voxels, true, false, false);
+        } else {
+            param_sampler.sample(
+                &priors,
+                &mut params,
+                &voxels,
+                true,
+                1.0,
+                false,
+                false,
+                false,
+            );
+        }
         prog.inc(1);
     }
 
@@ -1115,6 +1130,7 @@ fn main() {
             anneal_temperature(optimization_step, optimization_steps, args.min_temperature);
         run_sampler(
             &param_sampler,
+            &param_optimizer,
             &mut voxel_sampler,
             &transcript_repo,
             &mut voxels,
@@ -1124,6 +1140,7 @@ fn main() {
             args.morphology_steps_per_iter,
             true,
             temperature,
+            optimize_params,
             false,
             args.check_consistency,
             &prog,
@@ -1151,6 +1168,7 @@ fn main() {
             anneal_temperature(optimization_step, optimization_steps, args.min_temperature);
         run_sampler(
             &param_sampler,
+            &param_optimizer,
             &mut voxel_sampler,
             &transcript_repo,
             &mut voxels,
@@ -1160,6 +1178,7 @@ fn main() {
             args.morphology_steps_per_iter,
             false,
             temperature,
+            optimize_params,
             false,
             args.check_consistency,
             &prog,
@@ -1326,9 +1345,11 @@ fn main() {
     }
 
     // Do additional sampling to estimate transcript assignment uncertainties.
+    // Phase B always uses the Gibbs sampler (optimize = false), seeded at the mode.
     for _it in 0..args.uncertainty_samples {
         run_sampler(
             &param_sampler,
+            &param_optimizer,
             &mut voxel_sampler,
             &transcript_repo,
             &mut voxels,
@@ -1338,6 +1359,7 @@ fn main() {
             args.morphology_steps_per_iter,
             false,
             1.0,
+            false,
             true,
             args.check_consistency,
             &prog,
@@ -1421,6 +1443,7 @@ fn anneal_temperature(step: usize, total_steps: usize, min_temperature: f32) -> 
 #[allow(clippy::too_many_arguments)]
 fn run_sampler(
     param_sampler: &ParamSampler,
+    param_optimizer: &ParamOptimizer,
     voxel_sampler: &mut VoxelSampler,
     transcript_repo: &TranscriptRepo,
     voxels: &mut VoxelCheckerboard,
@@ -1430,6 +1453,7 @@ fn run_sampler(
     morphology_steps_per_iter: usize,
     burnin: bool,
     temperature: f32,
+    optimize: bool,
     record_samples: bool,
     check_consistency: bool,
     prog: &ProgressBar,
@@ -1453,16 +1477,22 @@ fn run_sampler(
     }
 
     let t_param = Instant::now();
-    param_sampler.sample(
-        priors,
-        params,
-        voxels,
-        burnin,
-        temperature,
-        record_samples,
-        true,
-        true,
-    );
+    if optimize {
+        // Coordinate-ascent / EM parameter updates (Phase A point estimate).
+        param_optimizer.optimize(priors, params, voxels, burnin, true, true);
+    } else {
+        // Gibbs parameter sampling (uncertainty phase, or --no-param-optimization).
+        param_sampler.sample(
+            priors,
+            params,
+            voxels,
+            burnin,
+            temperature,
+            record_samples,
+            true,
+            true,
+        );
+    }
     let d_param = t_param.elapsed();
 
     if record_samples {

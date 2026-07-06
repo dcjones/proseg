@@ -4,6 +4,7 @@ mod featureselection;
 mod math;
 mod multinomial;
 pub mod onlinestats;
+pub mod paramoptimizer;
 pub mod paramsampler;
 mod polyagamma;
 mod polygons;

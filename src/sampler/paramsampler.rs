@@ -435,7 +435,7 @@ impl ParamSampler {
     // Sample the zero-inflation gates b_ck. A cell with any counts assigned to
     // metagene k must be "on"; cells with zero counts are drawn from the
     // posterior P(on | x=0) ∝ ξ·NB(0), P(off | x=0) ∝ (1-ξ).
-    fn sample_gate(&self, params: &mut ModelParams) {
+    pub(crate) fn sample_gate(&self, params: &mut ModelParams) {
         Zip::indexed(params.gate.outer_iter_mut()) // for each cell
             .and(&params.z)
             .and(&params.effective_cell_volume)
@@ -474,7 +474,7 @@ impl ParamSampler {
 
     // Sample the per-component, per-metagene activation probability ξ from its
     // Beta(a_ξ + #on, b_ξ + #off) posterior.
-    fn sample_ξ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    pub(crate) fn sample_ξ(&self, priors: &ModelPriors, params: &mut ModelParams) {
         let ncomponents = params.ncomponents();
         let nhidden = params.nhidden();
 
@@ -731,7 +731,7 @@ impl ParamSampler {
             .for_each(|log_π_t, π_t| *log_π_t = π_t.ln());
     }
 
-    fn sample_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    pub(crate) fn sample_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
         // for each cell
         Zip::indexed(params.lφ.outer_iter_mut()) // for every cell
             .and(&params.z)
@@ -782,7 +782,7 @@ impl ParamSampler {
             });
     }
 
-    fn sample_ωck(&self, params: &mut ModelParams) {
+    pub(crate) fn sample_ωck(&self, params: &mut ModelParams) {
         // for every cell
         Zip::indexed(params.ωφ.outer_iter_mut()) // for every cell
             .and(&params.z)
@@ -814,7 +814,7 @@ impl ParamSampler {
             });
     }
 
-    fn sample_sφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    pub(crate) fn sample_sφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
         let ncomponents = params.ncomponents();
         let nhidden = params.nhidden();
 
