@@ -257,6 +257,15 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     uncertainty_samples: usize,
 
+    /// Final temperature for the annealed optimization (hill-climbing) phase.
+    /// The morphology and repo samplers are annealed geometrically from 1.0 down
+    /// to this value across the combined burn-in and point-estimate iterations,
+    /// making moves increasingly greedy so the reported point estimate is a
+    /// high-probability mode rather than a single random MCMC sample. Setting
+    /// this to 1.0 disables annealing and recovers the previous sampling behavior.
+    #[arg(long, default_value_t = 0.1)]
+    min_temperature: f32,
+
     /// Number of CPU threads (by default, all cores are used)
     #[arg(short = 't', long, default_value=None)]
     nthreads: Option<usize>,
@@ -1093,7 +1102,17 @@ fn main() {
         prog.inc(1);
     }
 
+    // The optimization (hill-climbing) phase spans burn-in and the point-estimate
+    // ("samples") iterations as a single geometric annealing schedule: temperature
+    // starts at 1.0 and cools to `args.min_temperature` by the final sample, so the
+    // morphology and repo samplers become progressively greedier and converge to a
+    // high-probability mode. The uncertainty phase later runs at a fixed 1.0.
+    let optimization_steps = args.burnin_samples + args.samples;
+    let mut optimization_step = 0;
+
     for _it in 0..args.burnin_samples {
+        let temperature =
+            anneal_temperature(optimization_step, optimization_steps, args.min_temperature);
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -1104,11 +1123,12 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             true,
-            1.0,
+            temperature,
             false,
             args.check_consistency,
             &prog,
         );
+        optimization_step += 1;
     }
 
     let mut voxels = if burnin_voxel_scale != 1 {
@@ -1127,6 +1147,8 @@ fn main() {
 
     // Do enough samples to arrive at a relatively high probability point estimate to report
     for _it in 0..args.samples {
+        let temperature =
+            anneal_temperature(optimization_step, optimization_steps, args.min_temperature);
         run_sampler(
             &param_sampler,
             &mut voxel_sampler,
@@ -1137,11 +1159,12 @@ fn main() {
             dataset.transcripts.len(),
             args.morphology_steps_per_iter,
             false,
-            1.0,
+            temperature,
             false,
             args.check_consistency,
             &prog,
         );
+        optimization_step += 1;
     }
 
     // TODO: we may want to reimplement hillclimbing to get a better point
@@ -1383,6 +1406,18 @@ fn main() {
     trace!("write_sparse_mtx (expected counts): {:?}", t0.elapsed());
 }
 
+// Geometric annealing schedule for the optimization phase: returns 1.0 at
+// `step == 0` and `min_temperature` at `step == total_steps - 1`, interpolating
+// geometrically in between (t = min_temperature^(step/(total-1))). A
+// `min_temperature` of 1.0 yields a constant 1.0 (annealing disabled).
+fn anneal_temperature(step: usize, total_steps: usize, min_temperature: f32) -> f32 {
+    if total_steps <= 1 {
+        return min_temperature;
+    }
+    let frac = step as f32 / (total_steps - 1) as f32;
+    min_temperature.powf(frac)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sampler(
     param_sampler: &ParamSampler,
@@ -1441,7 +1476,7 @@ fn run_sampler(
     let nassigned = params.nassigned();
     let nforeground = params.nforeground();
     prog.set_message(format!(
-        "log-likelihood: {ll} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
+        "T: {temperature:.3} | log-likelihood: {ll} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
         ll = params.log_likelihood(priors),
         nassigned = nassigned,
         perc_assigned = 100.0 * (nassigned as f32) / (ntranscripts as f32),

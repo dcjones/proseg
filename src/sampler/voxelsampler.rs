@@ -123,11 +123,17 @@ impl VoxelSampler {
 
                     let mut logu =
                         self.evaluate_proposal(voxels, quad, priors, params, voxelsize_z, proposal);
-                    if temperature < 1.0 {
-                        logu /= temperature;
-                    } else {
-                        logu += proposal.log_proposal_imbalance
-                    }
+                    // Simulated-annealing acceptance for target π^(1/temperature):
+                    // temper only the log-posterior ratio (δ) and keep the
+                    // Metropolis-Hastings proposal-imbalance correction untempered.
+                    // The imbalance term is the detailed-balance correction for the
+                    // proposal geometry; dropping it (as an earlier revision did for
+                    // temperature < 1) removes the brake on aggressive boundary
+                    // growth/shrinkage and drives cells to collapse toward their
+                    // high-density cores. At temperature == 1 this reduces exactly to
+                    // the original Metropolis acceptance (δ + imbalance).
+                    logu /= temperature;
+                    logu += proposal.log_proposal_imbalance;
                     let s = rng().random::<f32>().ln();
 
                     if s < logu {

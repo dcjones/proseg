@@ -85,7 +85,7 @@ impl TranscriptRepo {
         voxels: &mut VoxelCheckerboard,
         priors: &ModelPriors,
         params: &mut ModelParams,
-        _temperature: f32,
+        temperature: f32,
         record_samples: bool,
     ) {
         let t0 = Instant::now();
@@ -101,7 +101,16 @@ impl TranscriptRepo {
         (0..ntranscripts)
             .into_par_iter()
             .for_each_init(rng, |rng, idx| {
-                self.repo_transcript(voxels, &states, rng, priors, params, idx, record_samples);
+                self.repo_transcript(
+                    voxels,
+                    &states,
+                    rng,
+                    priors,
+                    params,
+                    idx,
+                    temperature,
+                    record_samples,
+                );
             });
         trace!("transcript repo: {:?}", t0.elapsed());
     }
@@ -119,6 +128,7 @@ impl TranscriptRepo {
         priors: &ModelPriors,
         params: &ModelParams,
         idx: usize,
+        temperature: f32,
         record_samples: bool,
     ) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -206,7 +216,19 @@ impl TranscriptRepo {
                 };
             }
 
-            λ_proposed / λ_current
+            let ratio = λ_proposed / λ_current;
+            // Annealing toward a greedy (hill-climbing) point estimate: tempering
+            // the likelihood-ratio acceptance by 1/temperature sharpens it as
+            // temperature → 0 (improving moves accepted, worsening moves rejected),
+            // and recovers the exact Metropolis independence sampler at
+            // temperature == 1. The prior terms already cancel (independence
+            // proposal from the diffusion prior), so the ratio is purely the
+            // likelihood ratio and tempering it is the correct annealed kernel.
+            if temperature < 1.0 {
+                ratio.powf(1.0 / temperature)
+            } else {
+                ratio
+            }
         };
 
         if rng.random::<f32>() > accept_prob {
