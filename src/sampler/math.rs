@@ -69,6 +69,22 @@ pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
     }
 }
 
+// Continuous generalization of `negbin_logpmf` accepting a fractional count `k`
+// (an EM expected count). Identical to the integer form with `k!` replaced by
+// Γ(k+1); reduces to `negbin_logpmf` at integer `k`.
+pub fn negbin_logpmf_f(r: f32, lgamma_r: f32, p: f32, k: f32) -> f32 {
+    const MINP: f32 = 0.999999_f32;
+    let p = p.min(MINP);
+
+    if k == 0.0 {
+        r * (-p).ln_1p()
+    } else {
+        let lgamma_kp1 = lgammaf(k + 1.0);
+        let lgamma_rpk = lgammaf(r + k);
+        lgamma_rpk - lgamma_r - lgamma_kp1 + k * p.ln() + r * (-p).ln_1p()
+    }
+}
+
 // fn normal_cdf(μ: f32, σ: f32, x: f32) -> f32 {
 //     return 0.5 * (1.0 + erff((x - μ) / (SQRT2 * σ)));
 // }

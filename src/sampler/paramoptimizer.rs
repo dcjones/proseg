@@ -16,16 +16,19 @@
 // The uncertainty phase (Phase B) continues to use `ParamSampler::sample`; the
 // optimizer only runs during the point-estimate (Phase A) iterations.
 
-use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob};
+use super::math::{negbin_logpmf_f, normal_logpdf, odds_to_prob, randn};
 use super::paramsampler::ParamSampler;
+use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, Voxel, VoxelCheckerboard};
 use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
-use ndarray::{Axis, Zip, s};
+use ndarray::{Array2, Axis, Zip, s};
+use rand::{Rng, rng};
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::cell::RefCell;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 const SIMPLE_PAR_ITER_MIN_LEN: usize = 64;
@@ -225,7 +228,7 @@ impl ParamOptimizer {
         self.optimize_π(params);
 
         if zero_inflation {
-            self.sampler.sample_gate(params);
+            self.optimize_gate(params);
             self.sampler.sample_ξ(priors, params);
         }
 
@@ -240,18 +243,20 @@ impl ParamOptimizer {
         params.update_phi_theta_dot();
         trace_time("optimize_φ", t0);
 
-        // Dispersion / scale nuisance parameters: reuse the sampler's updates.
-        if let Some(dispersion) = priors.dispersion {
-            params.rφ.fill(dispersion);
-        } else if burnin && priors.burnin_dispersion.is_some() {
-            let dispersion = priors.burnin_dispersion.unwrap();
-            params.rφ.fill(dispersion);
-        } else {
-            self.sampler.sample_rφ(priors, params);
-        }
+        // Metagene dispersion rφ is held fixed during optimization. A deterministic
+        // MAP update needs a continuous-count (digamma) CRT relaxation and is
+        // deferred; fixing it (as the Gibbs sampler already does throughout burn-in
+        // via --burnin-dispersion) keeps the NB shape well-conditioned and avoids
+        // the integer-only `rand_crt`.
+        let fixed_dispersion = priors
+            .dispersion
+            .or(priors.burnin_dispersion)
+            .unwrap_or(1.0);
+        params.rφ.fill(fixed_dispersion);
 
-        self.sampler.sample_ωck(params);
-        self.sampler.sample_sφ(priors, params);
+        // Scale updates, reimplemented on the fractional f32 counts.
+        self.optimize_ωck(params);
+        self.optimize_sφ(priors, params);
 
         if priors.use_cell_scales {
             self.optimize_cell_scales(priors, params);
@@ -266,94 +271,104 @@ impl ParamOptimizer {
         }
     }
 
-    // Hard E-step: assign every count of a (cell, factored-gene) pair to the single
-    // metagene maximizing φ_ck·θ_gk. This replaces the multinomial draw of
-    // `ParamSampler::sample_latent_counts`; the dot products are the same, but the
-    // per-category prefix sum and RNG draw are gone.
+    // Soft EM E-step: distribute each (cell, factored-gene) count over metagenes by
+    // the responsibilities E[z_cgk] = x_cg · φ_ck·θ_gk / Σ_k'(φ_ck'·θ_gk'), the
+    // conditional expectation the multinomial draws in the sampler. These
+    // fractional counts feed all downstream updates (θ, φ, z, and the dispersion /
+    // scale updates rφ/ωck/sφ, which are reimplemented in this struct to consume
+    // f32 directly). Rounding fractional responsibilities per metagene would zero
+    // the many small (<0.5) entries — for the 79% of pairs with a single count the
+    // responsibilities never exceed ~0.4 — losing nearly all factored mass, so we
+    // keep everything fractional.
     fn compute_latent_counts(&self, params: &mut ModelParams, purge: bool) {
         if purge {
-            params.cell_latent_counts.clear();
+            params.cell_latent_counts_f.clear();
         } else {
-            params.cell_latent_counts.zero();
+            params.cell_latent_counts_f.zero();
         }
 
         let nhidden = params.nhidden();
         let nfactored_hidden = nhidden - params.nunfactored;
         let nunfactored = params.nunfactored;
+        let ngenes = params.θ.shape()[0];
 
-        let gene_latent_slice = params.gene_latent_counts.as_slice_mut().unwrap();
-        gene_latent_slice.par_iter_mut().for_each(|x| *x = 0);
-        // SAFETY: identical to sample_latent_counts — AtomicU32 shares layout with
-        // u32, we hold the unique &mut for the view's lifetime, and only access it
-        // atomically for concurrent accumulation.
-        let gene_latent_atomic: &[AtomicU32] =
-            unsafe { &*(gene_latent_slice as *mut [u32] as *const [AtomicU32]) };
+        // Zero the per-thread gene accumulators (persisted across iterations).
+        for tl in params.gene_latent_counts_f_tl.iter_mut() {
+            tl.borrow_mut().fill(0.0);
+        }
 
-        let cell_latent_counts = &params.cell_latent_counts;
+        let cell_latent_counts_f = &params.cell_latent_counts_f;
         let foreground_counts = &params.foreground_counts;
         let φ = &params.φ;
         let θ = &params.θ;
+        let gene_tl = &params.gene_latent_counts_f_tl;
 
-        cell_latent_counts
+        cell_latent_counts_f
             .par_rows()
             .zip(foreground_counts.par_rows())
             .zip(φ.outer_iter())
             .with_min_len(RAYON_CELL_MIN_LEN)
-            .for_each(|((cell_latent_counts_c, x_c), φ_c)| {
-                let x_c = x_c.read();
-                let mut cell_latent_counts_c = cell_latent_counts_c.write();
+            .for_each(|((cf_c, x_c), φ_c)| {
+                let mut gene_acc = gene_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ngenes, nfactored_hidden))))
+                    .borrow_mut();
 
-                // unfactored genes map identically into the cell latent counts
+                let x_c = x_c.read();
+                let mut cf_c = cf_c.write();
+
+                // Unfactored genes map identically into the cell latent counts.
                 for (g, x_cg) in x_c.iter_nonzeros_to(nunfactored as u32) {
                     if x_cg > 0 {
-                        cell_latent_counts_c.add(g, x_cg);
+                        cf_c.update(g, || 0.0, |v| *v += x_cg as f32);
                     }
                 }
 
-                // factored genes: hard-assign all counts to the argmax metagene
+                // Factored genes: distribute counts over metagenes by responsibility.
                 let φ_c_factored = φ_c.slice(s![nunfactored..]);
                 for (g, x_cg) in x_c.iter_nonzeros_from(nunfactored as u32) {
                     if x_cg == 0 {
                         continue;
                     }
-
                     let θ_g_factored = θ.slice(s![g as usize, nunfactored..]);
 
-                    let mut best_k = 0usize;
-                    let mut best_val = f32::NEG_INFINITY;
+                    let mut sum = 0.0_f32;
+                    for (φ_ck, θ_gk) in φ_c_factored.iter().zip(θ_g_factored.iter()) {
+                        sum += *φ_ck * *θ_gk;
+                    }
+                    if sum <= 0.0 {
+                        // Degenerate (no metagene supports this gene in this cell);
+                        // skip — leaves the count unassigned this iteration.
+                        continue;
+                    }
+                    let scale = x_cg as f32 / sum;
+
+                    let mut gene_acc_g = gene_acc.row_mut(g as usize);
                     for (k, (φ_ck, θ_gk)) in
                         φ_c_factored.iter().zip(θ_g_factored.iter()).enumerate()
                     {
-                        let v = *φ_ck * *θ_gk;
-                        if v > best_val {
-                            best_val = v;
-                            best_k = k;
+                        let e = *φ_ck * *θ_gk * scale;
+                        if e > 0.0 {
+                            cf_c.update((k + nunfactored) as u32, || 0.0, |v| *v += e);
+                            gene_acc_g[k] += e;
                         }
                     }
-
-                    cell_latent_counts_c.add((best_k + nunfactored) as u32, x_cg);
-                    gene_latent_atomic[g as usize * nfactored_hidden + best_k]
-                        .fetch_add(x_cg, Ordering::Relaxed);
                 }
             });
 
-        // component-wise aggregation (unchanged from the sampler; still integer)
+        // Reduce the per-thread gene accumulators into gene_latent_counts_f.
+        params.gene_latent_counts_f.fill(0.0);
+        for tl in params.gene_latent_counts_f_tl.iter_mut() {
+            params.gene_latent_counts_f += &*tl.borrow();
+        }
+
+        // component-wise aggregation of population / volume (component_latent_counts
+        // has no downstream consumer, so it is not recomputed here).
         params.component_population.fill(0);
         params.component_volume.fill(0.0);
-        params.component_latent_counts.fill(0);
-        for ((z_c, v_c), x_c) in params
-            .z
-            .iter()
-            .zip(params.cell_voxel_count.iter())
-            .zip(params.cell_latent_counts.rows())
-        {
+        for (z_c, v_c) in params.z.iter().zip(params.cell_voxel_count.iter()) {
             let z_c = *z_c as usize;
             params.component_population[z_c] += 1;
             params.component_volume[z_c] += (v_c as f32) * params.voxel_volume;
-            let mut component_latent_counts_z = params.component_latent_counts.row_mut(z_c);
-            for (g, x_cg) in x_c.read().iter_nonzeros() {
-                component_latent_counts_z[g as usize] += x_cg;
-            }
         }
     }
 
@@ -375,7 +390,7 @@ impl ParamOptimizer {
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each(|(i, z_c, ev_c, log_v_c)| {
-                let x_c_lock = params.cell_latent_counts.row(i);
+                let x_c_lock = params.cell_latent_counts_f.row(i);
                 let x_c = x_c_lock.read();
 
                 let mut best_t = 0u32;
@@ -406,16 +421,16 @@ impl ParamOptimizer {
                     ) {
                         let p = odds_to_prob(*s_tk * *ev_c * *θ_k_sum);
                         let contrib = if zero_inflation {
-                            if x_ck == 0 {
+                            if x_ck == 0.0 {
                                 let a = log_ξ_tk + *r_tk * (-p).ln_1p();
                                 let b = log_1m_ξ_tk;
                                 let m = a.max(b);
                                 (m + ((a - m).exp() + (b - m).exp()).ln()) as f64
                             } else {
-                                (log_ξ_tk + negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck)) as f64
+                                (log_ξ_tk + negbin_logpmf_f(*r_tk, *lgamma_r_tk, p, x_ck)) as f64
                             }
                         } else {
-                            negbin_logpmf(*r_tk, *lgamma_r_tk, p, x_ck) as f64
+                            negbin_logpmf_f(*r_tk, *lgamma_r_tk, p, x_ck) as f64
                         };
                         lp += contrib;
                     }
@@ -458,7 +473,9 @@ impl ParamOptimizer {
         let mut θfac = params
             .θ
             .slice_mut(s![params.nunfactored.., params.nunfactored..]);
-        let gene_latent_counts_fac = params.gene_latent_counts.slice(s![params.nunfactored.., ..]);
+        let gene_latent_counts_fac = params
+            .gene_latent_counts_f
+            .slice(s![params.nunfactored.., ..]);
 
         Zip::from(θfac.axis_iter_mut(Axis(1)))
             .and(gene_latent_counts_fac.axis_iter(Axis(1)))
@@ -466,7 +483,7 @@ impl ParamOptimizer {
             .for_each(|(mut θ_k, x_k)| {
                 let mut sum = 0.0_f32;
                 for (θ_gk, &x_gk) in θ_k.iter_mut().zip(x_k.iter()) {
-                    let w = αθ + x_gk as f32;
+                    let w = αθ + x_gk;
                     *θ_gk = w;
                     sum += w;
                 }
@@ -492,7 +509,7 @@ impl ParamOptimizer {
             .into_par_iter()
             .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each(|(c, φ_c, z_c, v_c, gate_c)| {
-                let x_c = params.cell_latent_counts.row(c);
+                let x_c = params.cell_latent_counts_f.row(c);
                 let z_c = *z_c as usize;
 
                 for (φ_ck, &θ_k_sum, x_ck, &r_k, s_k, &g_ck) in izip!(
@@ -506,7 +523,7 @@ impl ParamOptimizer {
                     if !g_ck {
                         *φ_ck = 0.0;
                     } else {
-                        let shape = r_k + x_ck as f32;
+                        let shape = r_k + x_ck;
                         let scale = s_k / (1.0 + s_k * v_c * θ_k_sum);
                         *φ_ck = shape * scale;
                     }
@@ -532,7 +549,7 @@ impl ParamOptimizer {
             .with_min_len(RAYON_CELL_MIN_LEN)
             .for_each(|(c, a_c, eff_v_c, &log_v_c, &z_c, ω_c)| {
                 let z_c = z_c as usize;
-                let x_c = params.cell_latent_counts.row(c);
+                let x_c = params.cell_latent_counts_f.row(c);
 
                 let τ = priors.τv + ω_c.sum();
                 let σ2 = τ.recip();
@@ -545,12 +562,157 @@ impl ParamOptimizer {
                     params.sφ.row(z_c),
                     ω_c
                 ) {
-                    μ += (x_ck as f32 - r_tk) / 2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c);
+                    μ += (x_ck - r_tk) / 2.0 - ω_ck * ((s_tk * θ_k_sum).ln() + log_v_c);
                 }
                 μ *= σ2;
 
                 *a_c = μ.exp();
                 *eff_v_c = (μ + log_v_c).exp();
+            });
+    }
+
+    // Zero-inflation gate update on fractional counts (mirrors sample_gate; only
+    // active when zero-inflation is enabled). A cell/metagene with any expected
+    // count is on; otherwise the gate is drawn from its Bernoulli posterior.
+    fn optimize_gate(&self, params: &mut ModelParams) {
+        Zip::indexed(params.gate.outer_iter_mut())
+            .and(&params.z)
+            .and(&params.effective_cell_volume)
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each_init(rng, |rng, (c, gate_c, &z_c, &ev_c)| {
+                let z_c = z_c as usize;
+                let x_c_lock = params.cell_latent_counts_f.row(c);
+                let x_c = x_c_lock.read();
+                let r_t = params.rφ.row(z_c);
+                let s_t = params.sφ.row(z_c);
+                let log_ξ_t = params.log_ξ.row(z_c);
+                let log_1m_ξ_t = params.log_1m_ξ.row(z_c);
+
+                for (g_ck, x_ck, &r_tk, &s_tk, &log_ξ_tk, &log_1m_ξ_tk, &θ_k_sum) in izip!(
+                    gate_c,
+                    x_c.iter(),
+                    r_t,
+                    s_t,
+                    log_ξ_t,
+                    log_1m_ξ_t,
+                    &params.θksum
+                ) {
+                    if x_ck > 0.0 {
+                        *g_ck = true;
+                    } else {
+                        let p = odds_to_prob(s_tk * ev_c * θ_k_sum);
+                        let log_on = log_ξ_tk + r_tk * (-p).ln_1p();
+                        let log_off = log_1m_ξ_tk;
+                        let p_on = 1.0 / (1.0 + (log_off - log_on).exp());
+                        *g_ck = rng.random::<f32>() < p_on;
+                    }
+                }
+            });
+    }
+
+    // Polya-Gamma augmentation draw for the sφ update, on fractional counts.
+    // Mirrors sample_ωck; kept stochastic (the auxiliary variable's deterministic
+    // MAP is deferred with the rest of the dispersion/scale machinery).
+    fn optimize_ωck(&self, params: &mut ModelParams) {
+        Zip::indexed(params.ωφ.outer_iter_mut())
+            .and(&params.z)
+            .and(&params.effective_cell_volume)
+            .and(params.gate.outer_iter())
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each_init(rng, |rng, (c, ω_c, &z_c, &v_c, gate_c)| {
+                let z_c = z_c as usize;
+                let x_c = params.cell_latent_counts_f.row(c);
+
+                for (ω_ck, x_ck, &r_k, &s_k, &θ_k_sum, &g_ck) in izip!(
+                    ω_c,
+                    x_c.read().iter(),
+                    params.rφ.row(z_c),
+                    params.sφ.row(z_c),
+                    &params.θksum,
+                    gate_c
+                ) {
+                    if g_ck {
+                        let ε = (s_k * v_c * θ_k_sum).ln();
+                        *ω_ck = PolyaGamma::new(x_ck + r_k, ε).sample(rng);
+                    } else {
+                        *ω_ck = 0.0;
+                    }
+                }
+            });
+    }
+
+    // sφ (per-component metagene scale) update on fractional counts. Mirrors
+    // sample_sφ exactly, reading the f32 latent counts.
+    fn optimize_sφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        let ncomponents = params.ncomponents();
+        let nhidden = params.nhidden();
+
+        for x in params.sφ_work_tl.iter_mut() {
+            x.borrow_mut().fill(0.0);
+        }
+        Zip::from(&params.z)
+            .and(params.ωφ.outer_iter())
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(&z_c, ω_c)| {
+                let mut τ_sφ_tl = params
+                    .sφ_work_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
+                    .borrow_mut();
+                let z_c = z_c as usize;
+                let mut τ_sφ_k = τ_sφ_tl.row_mut(z_c);
+                τ_sφ_k.scaled_add(1.0, &ω_c);
+            });
+
+        params.τ_sφ.fill(priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            params.τ_sφ.scaled_add(1.0, &x.borrow());
+        }
+
+        for x in params.sφ_work_tl.iter_mut() {
+            x.borrow_mut().fill(0.0);
+        }
+        Zip::indexed(&params.z)
+            .and(&params.effective_cell_volume)
+            .and(params.ωφ.outer_iter())
+            .and(params.gate.outer_iter())
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(c, &z_c, &v_c, ω_c, gate_c)| {
+                let mut μ_sφ_tl = params
+                    .sφ_work_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomponents, nhidden))))
+                    .borrow_mut();
+
+                let z_c = z_c as usize;
+                let x_c = params.cell_latent_counts_f.row(c);
+                let r_t = params.rφ.row(z_c);
+                let μ_sφ_t = μ_sφ_tl.row_mut(z_c);
+
+                for (μ_sφ_tk, x_ck, &ω_ck, &r_tk, &θ_k_sum, &g_ck) in
+                    izip!(μ_sφ_t, x_c.read().iter(), ω_c, r_t, &params.θksum, gate_c)
+                {
+                    if g_ck {
+                        *μ_sφ_tk += (x_ck - r_tk) / 2.0 - ω_ck * (v_c * θ_k_sum).ln();
+                    }
+                }
+            });
+
+        params.μ_sφ.fill(priors.μφ * priors.τφ);
+        for x in params.sφ_work_tl.iter_mut() {
+            params.μ_sφ.scaled_add(1.0, &x.borrow());
+        }
+
+        Zip::from(&mut params.sφ)
+            .and(&params.μ_sφ)
+            .and(&params.τ_sφ)
+            .into_par_iter()
+            .for_each_init(rng, |rng, (s_tk, &μ_tk, &τ_tk)| {
+                let σ2_tk = τ_tk.recip();
+                let μ_tk = μ_tk * σ2_tk;
+                *s_tk = (μ_tk + σ2_tk.sqrt() * randn(rng)).exp();
             });
     }
 

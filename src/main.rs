@@ -1505,13 +1505,24 @@ fn run_sampler(
 
     let nassigned = params.nassigned();
     let nforeground = params.nforeground();
+    let ll = params.log_likelihood(priors);
     prog.set_message(format!(
         "T: {temperature:.3} | log-likelihood: {ll} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
-        ll = params.log_likelihood(priors),
         nassigned = nassigned,
         perc_assigned = 100.0 * (nassigned as f32) / (ntranscripts as f32),
         perc_foreground = 100.0 * (nforeground as f32) / (ntranscripts as f32),
     ));
+
+    // Env-gated per-iteration log-likelihood trace (like PROSEG_VOLTRACE), emitted
+    // to stdout as a parseable TSV row so convergence can be compared between the
+    // optimizer and the sampler without the progress bar overwriting it.
+    if std::env::var_os("PROSEG_LLTRACE").is_some() {
+        println!(
+            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}",
+            t = params.iteration(),
+            phase = if burnin { "burnin" } else { "post" },
+        );
+    }
 
     if check_consistency {
         voxels.check_mirrored_quad_edges();

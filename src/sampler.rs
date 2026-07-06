@@ -464,6 +464,20 @@ pub struct ModelParams {
     // [ngenes, nfactored_hidden]
     pub gene_latent_counts: Array2<u32>,
 
+    // Fractional (expected) latent-count accumulators used by the soft-EM
+    // ParamOptimizer. The Gibbs sampler continues to use the integer versions
+    // above; these are populated only during the optimization phase.
+    // [ncells, nhidden]
+    pub cell_latent_counts_f: CSRMat<u32, f32>,
+
+    // [ngenes, nfactored_hidden]
+    pub gene_latent_counts_f: Array2<f32>,
+
+    // Thread-local [ngenes, nfactored_hidden] buffers reduced into
+    // gene_latent_counts_f (f32 has no atomic add, so we accumulate per-thread
+    // and sum, mirroring sφ_work_tl).
+    pub gene_latent_counts_f_tl: ThreadLocal<RefCell<Array2<f32>>>,
+
     // [nhidden] thread local storage for sampling latent counts
     pub multinomials: ThreadLocal<RefCell<Multinomial<f32>>>,
 
@@ -687,6 +701,9 @@ impl ModelParams {
         let nfactored_hidden = nhidden - nunfactored;
         let cell_latent_counts = CSRMat::zeros(ncells, nhidden as u32 - 1);
         let gene_latent_counts = Array2::<u32>::zeros((ngenes, nfactored_hidden));
+        let cell_latent_counts_f = CSRMat::<u32, f32>::zeros(ncells, nhidden as u32 - 1);
+        let gene_latent_counts_f = Array2::<f32>::zeros((ngenes, nfactored_hidden));
+        let gene_latent_counts_f_tl = ThreadLocal::new();
         let multinomials = ThreadLocal::new();
         let z_probs = ThreadLocal::new();
         let (z, θ_centroids) = initial_component_assignments(&counts, ncomponents);
@@ -798,6 +815,9 @@ impl ModelParams {
             background_counts,
             cell_latent_counts,
             gene_latent_counts,
+            cell_latent_counts_f,
+            gene_latent_counts_f,
+            gene_latent_counts_f_tl,
             multinomials,
             z_probs,
             z,
@@ -925,6 +945,12 @@ impl ModelParams {
         // TODO: Do we want to include other parameter probabilities?
 
         ll
+    }
+
+    // Monotonic parameter-update counter, incremented once per sample()/optimize()
+    // call across all phases. Used as the x-axis for the log-likelihood trace.
+    pub fn iteration(&self) -> u32 {
+        self.t
     }
 
     pub fn nassigned(&self) -> usize {
