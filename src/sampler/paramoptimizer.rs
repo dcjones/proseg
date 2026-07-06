@@ -448,10 +448,11 @@ impl ParamOptimizer {
             .for_each(|log_π_t, π_t| *log_π_t = π_t.ln());
     }
 
-    // Dirichlet mode of each metagene's gene distribution:
-    // θ_gk ∝ max(αθ + count_gk − 1, 0), renormalized over genes. If the whole
-    // column clamps to zero (a dead metagene) fall back to the posterior mean
-    // (αθ + count) so the column stays a valid distribution.
+    // Posterior *mean* of each metagene's gene distribution, θ_gk ∝ αθ + count_gk,
+    // renormalized over genes. The Dirichlet mode ∝ max(αθ + count − 1, 0) is
+    // boundary-degenerate for αθ < 1 (it zeros every gene with count ≤ 1 − αθ,
+    // sparsifying θ aggressively); the mean keeps every metagene a well-defined
+    // distribution, mirroring the mean-not-mode choice made for φ.
     fn optimize_θ(&self, priors: &ModelPriors, params: &mut ModelParams) {
         let αθ = priors.αθ;
         let mut θfac = params
@@ -465,25 +466,12 @@ impl ParamOptimizer {
             .for_each(|(mut θ_k, x_k)| {
                 let mut sum = 0.0_f32;
                 for (θ_gk, &x_gk) in θ_k.iter_mut().zip(x_k.iter()) {
-                    let w = (αθ + x_gk as f32 - 1.0).max(0.0);
+                    let w = αθ + x_gk as f32;
                     *θ_gk = w;
                     sum += w;
                 }
-
-                if sum > 0.0 {
-                    let inv = sum.recip();
-                    θ_k.iter_mut().for_each(|θ_gk| *θ_gk *= inv);
-                } else {
-                    // dead metagene: posterior-mean fallback (αθ + count)
-                    let mut msum = 0.0_f32;
-                    for (θ_gk, &x_gk) in θ_k.iter_mut().zip(x_k.iter()) {
-                        let w = αθ + x_gk as f32;
-                        *θ_gk = w;
-                        msum += w;
-                    }
-                    let inv = msum.recip();
-                    θ_k.iter_mut().for_each(|θ_gk| *θ_gk *= inv);
-                }
+                let inv = sum.recip();
+                θ_k.iter_mut().for_each(|θ_gk| *θ_gk *= inv);
             });
 
         Zip::from(&mut params.θksum)
