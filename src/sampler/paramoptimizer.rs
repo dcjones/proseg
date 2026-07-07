@@ -248,16 +248,13 @@ impl ParamOptimizer {
         // (high overdispersion), which fits per-cell counts better but washes out
         // the shared metagene structure that separates cell types — an overfit that
         // hurts segmentation despite raising the likelihood. So by default the
-        // optimizer PINS rφ to a regularizing value (`optimizer_dispersion`, ~5),
-        // which concentrates the factorization and matches/beats the Gibbs point
-        // estimate. An explicit `--dispersion` overrides; `--optimizer-free-dispersion`
-        // re-enables the experimental EM update (`optimize_rφ`).
+        // optimizer estimates rφ under a size-calibrated prior that shrinks it
+        // toward `optimizer_dispersion` (see optimize_rφ); an explicit `--dispersion`
+        // hard-pins it instead.
         if let Some(dispersion) = priors.dispersion {
             params.rφ.fill(dispersion);
-        } else if priors.optimizer_free_dispersion {
-            self.optimize_rφ(priors, params);
         } else {
-            params.rφ.fill(priors.optimizer_dispersion);
+            self.optimize_rφ(priors, params);
         }
 
         // Scale updates, reimplemented on the fractional f32 counts.
@@ -644,18 +641,40 @@ impl ParamOptimizer {
             sinv_total += &*tl.borrow();
         }
 
-        let eφ = priors.eφ;
-        let inv_fφ = 1.0 / priors.fφ;
+        // Size-calibrated Gamma prior on rφ. Its strength scales with the
+        // component's cell count pop_t (the natural sample size for rφ_tk): rate
+        // b0 = w·pop_t, shape a0 = target·b0. The posterior mode is then a
+        // dataset-size-invariant weighted average of `target` and the data
+        // estimate — mode ≈ (target·w + l̄)/(w + s̄), with per-cell weight `w`
+        // (w→∞ pins to `target`, w=0 is the unregularized MAP). This regularizes
+        // rφ away from the small (overfit) values likelihood prefers, without a
+        // hard pin, and stays calibrated as the dataset grows.
+        let target = priors.optimizer_dispersion;
+        let w = if priors.optimizer_free_dispersion {
+            0.0
+        } else {
+            priors.optimizer_dispersion_prior_weight
+        };
         let min_rφ = priors.min_rφ;
-        Zip::from(&mut params.rφ)
-            .and(&lsum_total)
-            .and(&sinv_total)
-            .for_each(|r_tk, &lsum, &sinv| {
-                // Mode of Gamma(shape = eφ + Σl, rate = 1/fφ + Σln1p) = (shape−1)/rate.
-                let shape = eφ + lsum;
-                let rate = inv_fφ + sinv;
-                let mode = (shape - 1.0).max(0.0) / rate;
-                *r_tk = mode.max(min_rφ);
+        let pop: Vec<f32> = params
+            .component_population
+            .iter()
+            .map(|&p| p as f32)
+            .collect();
+        Zip::indexed(params.rφ.outer_iter_mut())
+            .and(lsum_total.outer_iter())
+            .and(sinv_total.outer_iter())
+            .for_each(|t, r_t, l_t, s_t| {
+                let b0 = w * pop[t];
+                let a0 = target * b0;
+                Zip::from(r_t).and(l_t).and(s_t).for_each(|r_tk, &lsum, &sinv| {
+                    let rate = b0 + sinv;
+                    *r_tk = if rate > 0.0 {
+                        ((a0 + lsum - 1.0).max(0.0) / rate).max(min_rφ)
+                    } else {
+                        target
+                    };
+                });
             });
     }
 

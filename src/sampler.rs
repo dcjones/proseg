@@ -62,6 +62,12 @@ pub struct ModelPriors {
     pub optimizer_dispersion: f32,
     pub optimizer_free_dispersion: bool,
 
+    // Per-cell strength of the size-calibrated rφ prior (see optimize_rφ). The
+    // prior's total weight scales with each component's cell count, so this knob
+    // controls the (dataset-size-invariant) prior/data balance: large → rφ pinned
+    // near `optimizer_dispersion`, 0 → unregularized MAP.
+    pub optimizer_dispersion_prior_weight: f32,
+
     pub use_cell_scales: bool,
     pub unmodeled_fixed_cells: bool,
     pub prior_weight: f32,

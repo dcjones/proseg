@@ -248,11 +248,11 @@ struct Args {
     // schedule: Vec<usize>,
 
     // Number of initial burnin samples
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 50)]
     burnin_samples: usize,
 
     // Number of (post-burnin) samples to run
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 100)]
     samples: usize,
 
     #[arg(long, default_value_t = 100)]
@@ -361,12 +361,19 @@ struct Args {
     /// regularize toward a concentrated, better-separating factorization
     /// (freely maximizing likelihood drives rφ small and overfits). Ignored if
     /// --dispersion is set or --optimizer-free-dispersion is used.
-    #[arg(long, default_value_t = 5.0)]
+    #[arg(long, default_value_t = 1.0)]
     optimizer_dispersion: f32,
 
-    /// Estimate rφ during the optimization phase via its EM (expected-CRT) update
-    /// instead of pinning it to --optimizer-dispersion. Experimental: this tends
-    /// to overfit (higher likelihood, worse segmentation), so it is off by default.
+    /// Per-cell strength of the size-calibrated rφ prior. The prior's total weight
+    /// scales with each component's cell count, so this controls the
+    /// (dataset-size-invariant) prior/data balance: larger shrinks rφ harder toward
+    /// --optimizer-dispersion, 0 recovers the unregularized MAP.
+    #[arg(long, default_value_t = 20.0)]
+    optimizer_dispersion_prior_weight: f32,
+
+    /// Estimate rφ during the optimization phase with NO regularizing prior (pure
+    /// EM/expected-CRT MAP), overriding --optimizer-dispersion-prior-weight.
+    /// Experimental: tends to overfit (higher likelihood, worse segmentation).
     #[arg(long, default_value_t = false)]
     optimizer_free_dispersion: bool,
 
@@ -1016,6 +1023,7 @@ fn main() {
 
         optimizer_dispersion: args.optimizer_dispersion,
         optimizer_free_dispersion: args.optimizer_free_dispersion,
+        optimizer_dispersion_prior_weight: args.optimizer_dispersion_prior_weight,
 
         use_cell_scales: args.use_scaled_cells,
         unmodeled_fixed_cells: args.unmodeled_fixed_cells,
