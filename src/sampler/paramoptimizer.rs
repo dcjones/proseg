@@ -290,12 +290,45 @@ impl ParamOptimizer {
             params.cell_latent_counts_f.zero();
         }
 
+        // The gene statistic is a [ngenes × K] accumulation over cell×gene work.
+        // Two implementations, each optimal in a different regime (measured):
+        //  - dense: per-thread [ngenes × K] accumulator. Fastest while it fits cache
+        //    (targeted panels, few genes) — e.g. 377 genes / 81k cells: ~63 ms.
+        //  - transposed: gene-parallel gather from φ, no big accumulator. Wins when
+        //    the dense accumulator no longer fits cache (whole-transcriptome, many
+        //    genes) — e.g. 18k genes / 1.3k cells: ~119 ms vs the dense ~190 ms;
+        //    but ~40% slower than dense on the small panel (~88 vs ~63 ms).
+        // Dispatch on the accumulator size: ~4 MB (1M f32 elements) ≈ the L2/L3
+        // boundary where the dense scatter starts cache-missing.
+        const LARGE_GENE_ACCUM_ELEMS: usize = 1_000_000;
+        let ngenes = params.θ.shape()[0];
+        let nfactored_hidden = params.nhidden() - params.nunfactored;
+        if ngenes * nfactored_hidden > LARGE_GENE_ACCUM_ELEMS {
+            self.compute_latent_counts_transposed(params);
+        } else {
+            self.compute_latent_counts_dense(params);
+        }
+
+        // component-wise aggregation of population / volume (component_latent_counts
+        // has no downstream consumer, so it is not recomputed here).
+        params.component_population.fill(0);
+        params.component_volume.fill(0.0);
+        for (z_c, v_c) in params.z.iter().zip(params.cell_voxel_count.iter()) {
+            let z_c = *z_c as usize;
+            params.component_population[z_c] += 1;
+            params.component_volume[z_c] += (v_c as f32) * params.voxel_volume;
+        }
+    }
+
+    // Dense-gene-accumulator E-step: per-cell dense buffer for cell latent counts,
+    // and a per-thread dense [ngenes × K] gene accumulator (reduced at the end).
+    // Fastest when the gene accumulator fits cache (few genes).
+    fn compute_latent_counts_dense(&self, params: &mut ModelParams) {
         let nhidden = params.nhidden();
         let nfactored_hidden = nhidden - params.nunfactored;
         let nunfactored = params.nunfactored;
         let ngenes = params.θ.shape()[0];
 
-        // Zero the per-thread gene accumulators (persisted across iterations).
         for tl in params.gene_latent_counts_f_tl.iter_mut() {
             tl.borrow_mut().fill(0.0);
         }
@@ -305,11 +338,6 @@ impl ParamOptimizer {
         let φ = &params.φ;
         let θ = &params.θ;
         let gene_tl = &params.gene_latent_counts_f_tl;
-        // Per-cell dense buffer for the factored latent counts. Accumulating into a
-        // dense [nfactored_hidden] vector and writing the sparse row ONCE per cell
-        // (instead of a B+tree update per (cell, gene, metagene)) turns the cell
-        // side from O(genes·K) tree traversals into O(genes·K) flat adds + O(K)
-        // tree inserts — the dominant cost on whole-transcriptome panels.
         let cbuf_tl: ThreadLocal<RefCell<Vec<f32>>> = ThreadLocal::new();
 
         cell_latent_counts_f
@@ -329,16 +357,12 @@ impl ParamOptimizer {
                 let x_c = x_c.read();
                 let mut cf_c = cf_c.write();
 
-                // Unfactored genes map identically into the cell latent counts
-                // (one sparse update per nonzero gene — already O(nnz)).
                 for (g, x_cg) in x_c.iter_nonzeros_to(nunfactored as u32) {
                     if x_cg > 0 {
                         cf_c.update(g, || 0.0, |v| *v += x_cg as f32);
                     }
                 }
 
-                // Factored genes: distribute counts over metagenes by responsibility,
-                // accumulating into the dense cell buffer and the (dense) gene accum.
                 let φ_c_factored = φ_c.slice(s![nunfactored..]);
                 for (g, x_cg) in x_c.iter_nonzeros_from(nunfactored as u32) {
                     if x_cg == 0 {
@@ -351,8 +375,6 @@ impl ParamOptimizer {
                         sum += *φ_ck * *θ_gk;
                     }
                     if sum <= 0.0 {
-                        // Degenerate (no metagene supports this gene in this cell);
-                        // skip — leaves the count unassigned this iteration.
                         continue;
                     }
                     let scale = x_cg as f32 / sum;
@@ -369,7 +391,6 @@ impl ParamOptimizer {
                     }
                 }
 
-                // Flush the dense factored buffer to the sparse row once.
                 for (k, &v) in cbuf.iter().enumerate() {
                     if v > 0.0 {
                         cf_c.update((k + nunfactored) as u32, || 0.0, |x| *x += v);
@@ -377,21 +398,143 @@ impl ParamOptimizer {
                 }
             });
 
-        // Reduce the per-thread gene accumulators into gene_latent_counts_f.
         params.gene_latent_counts_f.fill(0.0);
         for tl in params.gene_latent_counts_f_tl.iter_mut() {
             params.gene_latent_counts_f += &*tl.borrow();
         }
+    }
 
-        // component-wise aggregation of population / volume (component_latent_counts
-        // has no downstream consumer, so it is not recomputed here).
-        params.component_population.fill(0);
-        params.component_volume.fill(0.0);
-        for (z_c, v_c) in params.z.iter().zip(params.cell_voxel_count.iter()) {
-            let z_c = *z_c as usize;
-            params.component_population[z_c] += 1;
-            params.component_volume[z_c] += (v_c as f32) * params.voxel_volume;
+    // Transpose-partitioned E-step for whole-transcriptome panels. The cell pass
+    // computes cell latent counts and emits the responsibility weights
+    // W_cg = x_cg / Σ_k(φ_ck·θ_gk) as (gene, cell, W) triples; those are
+    // transposed to gene-major (CSC), and a gene-parallel pass computes
+    // gene_latent[g,k] = θ_gk·Σ_c W_cg·φ_ck. Each gene owns its output row and
+    // gathers from the small φ matrix, so there is no scatter into a large gene
+    // accumulator and no cross-thread reduction — the win on many-gene panels.
+    fn compute_latent_counts_transposed(&self, params: &mut ModelParams) {
+        let nhidden = params.nhidden();
+        let nfactored_hidden = nhidden - params.nunfactored;
+        let nunfactored = params.nunfactored;
+        let ngenes = params.θ.shape()[0];
+        let ncells = params.φ.shape()[0];
+
+        let cell_latent_counts_f = &params.cell_latent_counts_f;
+        let foreground_counts = &params.foreground_counts;
+        let φ = &params.φ;
+        let θ = &params.θ;
+        let mut coo_tl: ThreadLocal<RefCell<Vec<(u32, u32, f32)>>> = ThreadLocal::new();
+        let cbuf_tl: ThreadLocal<RefCell<Vec<f32>>> = ThreadLocal::new();
+
+        // Cell pass: cell latent counts (dense buffer → sparse row) + emit W triples.
+        let t_loop = Instant::now();
+        (0..ncells)
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|c| {
+                let mut coo = coo_tl.get_or(|| RefCell::new(Vec::new())).borrow_mut();
+                let mut cbuf = cbuf_tl
+                    .get_or(|| RefCell::new(vec![0.0_f32; nfactored_hidden]))
+                    .borrow_mut();
+                cbuf.iter_mut().for_each(|v| *v = 0.0);
+
+                let x_c_lock = foreground_counts.row(c);
+                let x_c = x_c_lock.read();
+                let cf_c_lock = cell_latent_counts_f.row(c);
+                let mut cf_c = cf_c_lock.write();
+                let φ_c = φ.row(c);
+                let φ_c_factored = φ_c.slice(s![nunfactored..]);
+
+                for (g, x_cg) in x_c.iter_nonzeros_to(nunfactored as u32) {
+                    if x_cg > 0 {
+                        cf_c.update(g, || 0.0, |v| *v += x_cg as f32);
+                    }
+                }
+
+                for (g, x_cg) in x_c.iter_nonzeros_from(nunfactored as u32) {
+                    if x_cg == 0 {
+                        continue;
+                    }
+                    let θ_g_factored = θ.slice(s![g as usize, nunfactored..]);
+                    let mut sum = 0.0_f32;
+                    for (φ_ck, θ_gk) in φ_c_factored.iter().zip(θ_g_factored.iter()) {
+                        sum += *φ_ck * *θ_gk;
+                    }
+                    if sum <= 0.0 {
+                        continue;
+                    }
+                    let w = x_cg as f32 / sum;
+                    for (k, (φ_ck, θ_gk)) in
+                        φ_c_factored.iter().zip(θ_g_factored.iter()).enumerate()
+                    {
+                        cbuf[k] += w * *φ_ck * *θ_gk;
+                    }
+                    coo.push((g, c as u32, w));
+                }
+
+                for (k, &v) in cbuf.iter().enumerate() {
+                    if v > 0.0 {
+                        cf_c.update((k + nunfactored) as u32, || 0.0, |x| *x += v);
+                    }
+                }
+            });
+        log::trace!("  clc cell pass: {:?}", t_loop.elapsed());
+
+        // Transpose the W triples to gene-major (CSC): count per gene, prefix-sum,
+        // scatter into contiguous (cell, W) arrays.
+        let t_transpose = Instant::now();
+        let mut gene_ptr = vec![0u32; ngenes + 1];
+        for tl in coo_tl.iter_mut() {
+            for &(g, _, _) in tl.borrow().iter() {
+                gene_ptr[g as usize + 1] += 1;
+            }
         }
+        for g in 0..ngenes {
+            gene_ptr[g + 1] += gene_ptr[g];
+        }
+        let nnz = gene_ptr[ngenes] as usize;
+        let mut cell_idx = vec![0u32; nnz];
+        let mut wval = vec![0.0f32; nnz];
+        let mut cursor = gene_ptr.clone();
+        for tl in coo_tl.iter_mut() {
+            for &(g, c, w) in tl.borrow().iter() {
+                let pos = cursor[g as usize] as usize;
+                cell_idx[pos] = c;
+                wval[pos] = w;
+                cursor[g as usize] += 1;
+            }
+        }
+        log::trace!("  clc transpose: {:?}", t_transpose.elapsed());
+
+        // Gene pass: parallel over genes, gather φ (cache-friendly), scale by θ.
+        let t_gene = Instant::now();
+        let φ = &params.φ;
+        let θ = &params.θ;
+        let gene_ptr = &gene_ptr;
+        let cell_idx = &cell_idx;
+        let wval = &wval;
+        Zip::indexed(params.gene_latent_counts_f.outer_iter_mut())
+            .into_par_iter()
+            .for_each(|(g, mut gl_g)| {
+                gl_g.fill(0.0);
+                let start = gene_ptr[g] as usize;
+                let end = gene_ptr[g + 1] as usize;
+                if start == end {
+                    return;
+                }
+                for idx in start..end {
+                    let c = cell_idx[idx] as usize;
+                    let w = wval[idx];
+                    let φ_c_factored = φ.slice(s![c, nunfactored..]);
+                    for (glk, φ_ck) in gl_g.iter_mut().zip(φ_c_factored.iter()) {
+                        *glk += w * *φ_ck;
+                    }
+                }
+                let θ_g_factored = θ.slice(s![g, nunfactored..]);
+                for (glk, θ_gk) in gl_g.iter_mut().zip(θ_g_factored.iter()) {
+                    *glk *= *θ_gk;
+                }
+            });
+        log::trace!("  clc gene pass: {:?}", t_gene.elapsed());
     }
 
     // Assign each cell to the component maximizing its posterior (argmax) rather
