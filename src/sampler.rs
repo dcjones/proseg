@@ -53,6 +53,15 @@ pub struct ModelPriors {
     pub dispersion: Option<f32>,
     pub burnin_dispersion: Option<f32>,
 
+    // Optimization (ParamOptimizer) regularization for the metagene dispersion rφ.
+    // Freely MAP-estimating rφ overfits — likelihood always prefers small rφ (high
+    // overdispersion), which washes out the shared metagene structure that
+    // separates cell types. So the optimizer pins rφ to `optimizer_dispersion` by
+    // default; `optimizer_free_dispersion` re-enables the (experimental) EM update.
+    // An explicit `dispersion` still overrides both.
+    pub optimizer_dispersion: f32,
+    pub optimizer_free_dispersion: bool,
+
     pub use_cell_scales: bool,
     pub unmodeled_fixed_cells: bool,
     pub prior_weight: f32,
@@ -951,6 +960,27 @@ impl ModelParams {
     // call across all phases. Used as the x-axis for the log-likelihood trace.
     pub fn iteration(&self) -> u32 {
         self.t
+    }
+
+    // Cheap concentration summary of the factored-metagene loadings, used as a
+    // per-iteration proxy for cell-type separability (empirically the fraction of
+    // loading mass in the dominant metagene tracks downstream Leiden ARI: a
+    // concentrated shared expression axis separates types better than mass spread
+    // thinly across many overfit metagenes). Returns (top-metagene mass fraction,
+    // number of metagenes holding >0.1% of the mass).
+    pub fn metagene_concentration(&self) -> (f32, usize) {
+        let nhidden = self.nhidden();
+        let mut mass = vec![0.0_f32; nhidden - self.nunfactored];
+        for (k, m) in (self.nunfactored..nhidden).zip(mass.iter_mut()) {
+            *m = self.φ.column(k).sum();
+        }
+        let total: f32 = mass.iter().sum();
+        if total <= 0.0 {
+            return (0.0, 0);
+        }
+        let top = mass.iter().cloned().fold(0.0_f32, f32::max) / total;
+        let n_active = mass.iter().filter(|&&m| m / total > 1e-3).count();
+        (top, n_active)
     }
 
     pub fn nassigned(&self) -> usize {

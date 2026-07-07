@@ -16,7 +16,7 @@
 // The uncertainty phase (Phase B) continues to use `ParamSampler::sample`; the
 // optimizer only runs during the point-estimate (Phase A) iterations.
 
-use super::math::{negbin_logpmf_f, normal_logpdf, odds_to_prob, randn};
+use super::math::{expected_crt, negbin_logpmf_f, normal_logpdf, odds_to_prob, randn};
 use super::paramsampler::ParamSampler;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
@@ -30,6 +30,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+use thread_local::ThreadLocal;
 
 const SIMPLE_PAR_ITER_MIN_LEN: usize = 64;
 
@@ -243,16 +244,21 @@ impl ParamOptimizer {
         params.update_phi_theta_dot();
         trace_time("optimize_φ", t0);
 
-        // Metagene dispersion rφ is held fixed during optimization. A deterministic
-        // MAP update needs a continuous-count (digamma) CRT relaxation and is
-        // deferred; fixing it (as the Gibbs sampler already does throughout burn-in
-        // via --burnin-dispersion) keeps the NB shape well-conditioned and avoids
-        // the integer-only `rand_crt`.
-        let fixed_dispersion = priors
-            .dispersion
-            .or(priors.burnin_dispersion)
-            .unwrap_or(1.0);
-        params.rφ.fill(fixed_dispersion);
+        // Metagene dispersion rφ. Freely maximizing likelihood drives rφ small
+        // (high overdispersion), which fits per-cell counts better but washes out
+        // the shared metagene structure that separates cell types — an overfit that
+        // hurts segmentation despite raising the likelihood. So by default the
+        // optimizer PINS rφ to a regularizing value (`optimizer_dispersion`, ~5),
+        // which concentrates the factorization and matches/beats the Gibbs point
+        // estimate. An explicit `--dispersion` overrides; `--optimizer-free-dispersion`
+        // re-enables the experimental EM update (`optimize_rφ`).
+        if let Some(dispersion) = priors.dispersion {
+            params.rφ.fill(dispersion);
+        } else if priors.optimizer_free_dispersion {
+            self.optimize_rφ(priors, params);
+        } else {
+            params.rφ.fill(priors.optimizer_dispersion);
+        }
 
         // Scale updates, reimplemented on the fractional f32 counts.
         self.optimize_ωck(params);
@@ -568,6 +574,88 @@ impl ParamOptimizer {
 
                 *a_c = μ.exp();
                 *eff_v_c = (μ + log_v_c).exp();
+            });
+    }
+
+    // Deterministic EM update of the metagene dispersion rφ. The Gibbs sampler
+    // draws an integer CRT latent l_ck = CRT(x_ck, r_k) then samples
+    // rφ ~ Gamma(eφ + Σl, (1/fφ + Σ ln1p(s·v·θksum))^-1). The EM counterpart
+    // replaces the CRT draw with its expectation E[CRT] = r·(ψ(r+x) − ψ(r))
+    // (fractional-count safe) and takes the Gamma-posterior mode. Per-component
+    // sums are accumulated over cells via thread-local reduction (small
+    // [ncomponents, nhidden] buffers), avoiding the sampler's O(ncomp·nhidden·ncells)
+    // rescan.
+    fn optimize_rφ(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        let ncomp = params.ncomponents();
+        let nhidden = params.nhidden();
+        // Per-thread [ncomponents, nhidden] accumulators: expected CRT counts and
+        // the log1p scale-inverse term.
+        let mut lsum_tl: ThreadLocal<RefCell<Array2<f32>>> = ThreadLocal::new();
+        let mut sinv_tl: ThreadLocal<RefCell<Array2<f32>>> = ThreadLocal::new();
+
+        let rφ = &params.rφ;
+        let sφ = &params.sφ;
+        let θksum = &params.θksum;
+        let cell_latent_counts_f = &params.cell_latent_counts_f;
+
+        Zip::indexed(&params.z)
+            .and(&params.effective_cell_volume)
+            .and(params.gate.outer_iter())
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(c, &z_c, &v_c, gate_c)| {
+                let z_c = z_c as usize;
+                let mut lsum = lsum_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomp, nhidden))))
+                    .borrow_mut();
+                let mut sinv = sinv_tl
+                    .get_or(|| RefCell::new(Array2::zeros((ncomp, nhidden))))
+                    .borrow_mut();
+
+                let x_c = cell_latent_counts_f.row(c);
+                let x_c = x_c.read();
+                let mut lsum_z = lsum.row_mut(z_c);
+                let mut sinv_z = sinv.row_mut(z_c);
+
+                for (lsum_zk, sinv_zk, x_ck, &r_k, &s_k, &θk, &g_ck) in izip!(
+                    lsum_z.iter_mut(),
+                    sinv_z.iter_mut(),
+                    x_c.iter(),
+                    rφ.row(z_c),
+                    sφ.row(z_c),
+                    θksum,
+                    gate_c
+                ) {
+                    *lsum_zk += expected_crt(x_ck, r_k);
+                    // Only on-cells (gate) are NB observations contributing to the
+                    // dispersion rate term.
+                    if g_ck {
+                        *sinv_zk += (s_k * v_c * θk).ln_1p();
+                    }
+                }
+            });
+
+        let mut lsum_total = Array2::<f32>::zeros((ncomp, nhidden));
+        let mut sinv_total = Array2::<f32>::zeros((ncomp, nhidden));
+        for tl in lsum_tl.iter_mut() {
+            lsum_total += &*tl.borrow();
+        }
+        for tl in sinv_tl.iter_mut() {
+            sinv_total += &*tl.borrow();
+        }
+
+        let eφ = priors.eφ;
+        let inv_fφ = 1.0 / priors.fφ;
+        let min_rφ = priors.min_rφ;
+        Zip::from(&mut params.rφ)
+            .and(&lsum_total)
+            .and(&sinv_total)
+            .for_each(|r_tk, &lsum, &sinv| {
+                // Mode of Gamma(shape = eφ + Σl, rate = 1/fφ + Σln1p) = (shape−1)/rate.
+                let shape = eφ + lsum;
+                let rate = inv_fφ + sinv;
+                let mode = (shape - 1.0).max(0.0) / rate;
+                *r_tk = mode.max(min_rφ);
             });
     }
 

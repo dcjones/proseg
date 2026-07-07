@@ -69,6 +69,32 @@ pub fn negbin_logpmf(r: f32, lgamma_r: f32, p: f32, k: u32) -> f32 {
     }
 }
 
+// Digamma function ψ(x) = d/dx ln Γ(x), for x > 0. Recurrence up to x ≥ 6 then
+// the standard asymptotic expansion; accurate to well within f32 precision.
+pub fn digamma(mut x: f32) -> f32 {
+    let mut result = 0.0_f32;
+    while x < 6.0 {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    let inv = 1.0 / x;
+    let inv2 = inv * inv;
+    result + x.ln() - 0.5 * inv
+        - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 * (1.0 / 252.0)))
+}
+
+// Expected Chinese-restaurant-table count: E[CRT(n, r)] = Σ_{t=0}^{n-1} r/(r+t)
+// = r·(ψ(r+n) − ψ(r)), extended continuously to fractional n. The deterministic
+// (EM) counterpart of the stochastic `rand_crt` draw used by the Gibbs sampler
+// for the metagene-dispersion (rφ) update.
+pub fn expected_crt(n: f32, r: f32) -> f32 {
+    if n <= 0.0 {
+        0.0
+    } else {
+        r * (digamma(r + n) - digamma(r))
+    }
+}
+
 // Continuous generalization of `negbin_logpmf` accepting a fractional count `k`
 // (an EM expected count). Identical to the integer form with `k!` replaced by
 // Γ(k+1); reduces to `negbin_logpmf` at integer `k`.

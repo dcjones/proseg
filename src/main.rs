@@ -357,6 +357,19 @@ struct Args {
     #[arg(long, default_value = None)]
     dispersion: Option<f32>,
 
+    /// Metagene dispersion (rφ) the optimization phase pins to. Larger values
+    /// regularize toward a concentrated, better-separating factorization
+    /// (freely maximizing likelihood drives rφ small and overfits). Ignored if
+    /// --dispersion is set or --optimizer-free-dispersion is used.
+    #[arg(long, default_value_t = 5.0)]
+    optimizer_dispersion: f32,
+
+    /// Estimate rφ during the optimization phase via its EM (expected-CRT) update
+    /// instead of pinning it to --optimizer-dispersion. Experimental: this tends
+    /// to overfit (higher likelihood, worse segmentation), so it is off by default.
+    #[arg(long, default_value_t = false)]
+    optimizer_free_dispersion: bool,
+
     /// Probability of proposing ab nihlo bubble formation
     #[arg(long, default_value_t = 0.05)]
     ab_nihlo_bubble_prob: f32,
@@ -1001,6 +1014,9 @@ fn main() {
             Some(args.burnin_dispersion)
         },
 
+        optimizer_dispersion: args.optimizer_dispersion,
+        optimizer_free_dispersion: args.optimizer_free_dispersion,
+
         use_cell_scales: args.use_scaled_cells,
         unmodeled_fixed_cells: args.unmodeled_fixed_cells,
         prior_weight: auto_prior_weight,
@@ -1517,8 +1533,9 @@ fn run_sampler(
     // to stdout as a parseable TSV row so convergence can be compared between the
     // optimizer and the sampler without the progress bar overwriting it.
     if std::env::var_os("PROSEG_LLTRACE").is_some() {
+        let (top_metagene, n_active_metagenes) = params.metagene_concentration();
         println!(
-            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}",
+            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}\t{top_metagene:.4}\t{n_active_metagenes}",
             t = params.iteration(),
             phase = if burnin { "burnin" } else { "post" },
         );
