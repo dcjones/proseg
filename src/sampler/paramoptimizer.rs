@@ -305,6 +305,12 @@ impl ParamOptimizer {
         let φ = &params.φ;
         let θ = &params.θ;
         let gene_tl = &params.gene_latent_counts_f_tl;
+        // Per-cell dense buffer for the factored latent counts. Accumulating into a
+        // dense [nfactored_hidden] vector and writing the sparse row ONCE per cell
+        // (instead of a B+tree update per (cell, gene, metagene)) turns the cell
+        // side from O(genes·K) tree traversals into O(genes·K) flat adds + O(K)
+        // tree inserts — the dominant cost on whole-transcriptome panels.
+        let cbuf_tl: ThreadLocal<RefCell<Vec<f32>>> = ThreadLocal::new();
 
         cell_latent_counts_f
             .par_rows()
@@ -315,18 +321,24 @@ impl ParamOptimizer {
                 let mut gene_acc = gene_tl
                     .get_or(|| RefCell::new(Array2::zeros((ngenes, nfactored_hidden))))
                     .borrow_mut();
+                let mut cbuf = cbuf_tl
+                    .get_or(|| RefCell::new(vec![0.0_f32; nfactored_hidden]))
+                    .borrow_mut();
+                cbuf.iter_mut().for_each(|v| *v = 0.0);
 
                 let x_c = x_c.read();
                 let mut cf_c = cf_c.write();
 
-                // Unfactored genes map identically into the cell latent counts.
+                // Unfactored genes map identically into the cell latent counts
+                // (one sparse update per nonzero gene — already O(nnz)).
                 for (g, x_cg) in x_c.iter_nonzeros_to(nunfactored as u32) {
                     if x_cg > 0 {
                         cf_c.update(g, || 0.0, |v| *v += x_cg as f32);
                     }
                 }
 
-                // Factored genes: distribute counts over metagenes by responsibility.
+                // Factored genes: distribute counts over metagenes by responsibility,
+                // accumulating into the dense cell buffer and the (dense) gene accum.
                 let φ_c_factored = φ_c.slice(s![nunfactored..]);
                 for (g, x_cg) in x_c.iter_nonzeros_from(nunfactored as u32) {
                     if x_cg == 0 {
@@ -351,9 +363,16 @@ impl ParamOptimizer {
                     {
                         let e = *φ_ck * *θ_gk * scale;
                         if e > 0.0 {
-                            cf_c.update((k + nunfactored) as u32, || 0.0, |v| *v += e);
+                            cbuf[k] += e;
                             gene_acc_g[k] += e;
                         }
+                    }
+                }
+
+                // Flush the dense factored buffer to the sparse row once.
+                for (k, &v) in cbuf.iter().enumerate() {
+                    if v > 0.0 {
+                        cf_c.update((k + nunfactored) as u32, || 0.0, |x| *x += v);
                     }
                 }
             });
