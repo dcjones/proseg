@@ -989,6 +989,27 @@ impl ModelParams {
         (top, n_active)
     }
 
+    // Summary of the metagene dispersion rφ over the factored metagenes (across
+    // all components): (mean, median). rφ spans orders of magnitude, so the median
+    // is the more robust locator; both are reported to compare how the optimizer's
+    // MAP and the Gibbs sampler's draws settle at whole-transcriptome scale.
+    pub fn rφ_summary(&self) -> (f32, f32) {
+        let nhidden = self.nhidden();
+        let mut vals: Vec<f32> = self
+            .rφ
+            .slice(s![.., self.nunfactored..nhidden])
+            .iter()
+            .cloned()
+            .collect();
+        if vals.is_empty() {
+            return (0.0, 0.0);
+        }
+        let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = vals[vals.len() / 2];
+        (mean, median)
+    }
+
     pub fn nassigned(&self) -> usize {
         self.counts.sum() as usize
     }

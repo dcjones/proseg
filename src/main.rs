@@ -259,13 +259,25 @@ struct Args {
     uncertainty_samples: usize,
 
     /// Final temperature for the annealed optimization (hill-climbing) phase.
-    /// The morphology and repo samplers are annealed geometrically from 1.0 down
+    /// The morphology (voxel) sampler is annealed geometrically from 1.0 down
     /// to this value across the combined burn-in and point-estimate iterations,
     /// making moves increasingly greedy so the reported point estimate is a
     /// high-probability mode rather than a single random MCMC sample. Setting
     /// this to 1.0 disables annealing and recovers the previous sampling behavior.
     #[arg(long, default_value_t = 0.1)]
     min_temperature: f32,
+
+    /// Final temperature for the transcript-repositioning (repo) sampler, annealed
+    /// separately from the morphology sampler. Repo only runs in the post-burn-in
+    /// point-estimate phase, so it is annealed from 1.0 down to this value across
+    /// just those iterations (starting warm, unlike morphology which is already
+    /// cold by the time repo activates). Repo is a powerful move that, driven too
+    /// cold with deterministic parameters, over-commits transcript assignments and
+    /// over-clusters dense (whole-transcriptome) panels; keeping its floor warmer
+    /// than --min-temperature avoids that runaway. Set to 1.0 to disable repo
+    /// annealing entirely.
+    #[arg(long, default_value_t = 0.5)]
+    repo_min_temperature: f32,
 
     /// Disable the optimization (coordinate-ascent / EM) parameter updates during
     /// the point-estimate phase and use the Gibbs sampler in every phase instead.
@@ -1164,6 +1176,7 @@ fn main() {
             args.morphology_steps_per_iter,
             true,
             temperature,
+            1.0, // repo inactive during burn-in
             optimize_params,
             false,
             args.check_consistency,
@@ -1187,9 +1200,13 @@ fn main() {
     transcript_repo.set_voxel_size(&priors, voxels.voxelsize, voxels.voxelsize_z);
 
     // Do enough samples to arrive at a relatively high probability point estimate to report
-    for _it in 0..args.samples {
+    for it in 0..args.samples {
         let temperature =
             anneal_temperature(optimization_step, optimization_steps, args.min_temperature);
+        // Repo runs only in this phase, so it gets its own schedule spanning just
+        // these iterations: warm start (1.0) cooling to --repo-min-temperature,
+        // rather than inheriting the already-cold shared schedule.
+        let repo_temperature = anneal_temperature(it, args.samples, args.repo_min_temperature);
         run_sampler(
             &param_sampler,
             &param_optimizer,
@@ -1202,6 +1219,7 @@ fn main() {
             args.morphology_steps_per_iter,
             false,
             temperature,
+            repo_temperature,
             optimize_params,
             false,
             args.check_consistency,
@@ -1383,6 +1401,7 @@ fn main() {
             args.morphology_steps_per_iter,
             false,
             1.0,
+            1.0,
             false,
             true,
             args.check_consistency,
@@ -1477,6 +1496,7 @@ fn run_sampler(
     morphology_steps_per_iter: usize,
     burnin: bool,
     temperature: f32,
+    repo_temperature: f32,
     optimize: bool,
     record_samples: bool,
     check_consistency: bool,
@@ -1496,7 +1516,7 @@ fn run_sampler(
     let mut d_repo = Duration::from_secs(0);
     if !burnin && priors.use_diffusion_model {
         let t_repo = Instant::now();
-        transcript_repo.sample(voxels, priors, params, temperature, record_samples);
+        transcript_repo.sample(voxels, priors, params, repo_temperature, record_samples);
         d_repo = t_repo.elapsed();
     }
 
@@ -1542,8 +1562,9 @@ fn run_sampler(
     // optimizer and the sampler without the progress bar overwriting it.
     if std::env::var_os("PROSEG_LLTRACE").is_some() {
         let (top_metagene, n_active_metagenes) = params.metagene_concentration();
+        let (rphi_mean, rphi_median) = params.rφ_summary();
         println!(
-            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}\t{top_metagene:.4}\t{n_active_metagenes}",
+            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}\t{top_metagene:.4}\t{n_active_metagenes}\t{rphi_mean:.4}\t{rphi_median:.4}",
             t = params.iteration(),
             phase = if burnin { "burnin" } else { "post" },
         );
