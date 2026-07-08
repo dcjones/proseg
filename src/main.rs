@@ -235,8 +235,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     ncomponents: usize,
 
-    /// Dimenionality of the latent space
-    #[arg(long, default_value_t = 200)]
+    /// Number of factored metagenes in the latent space. The factorization is
+    /// combinatorial, so a modest count is expressive; it needs to cover the number
+    /// of distinct expression programs in the tissue (complex tissues may want more).
+    #[arg(long, default_value_t = 50)]
     nhidden: usize,
 
     /// Number of layers of voxels in the z-axis used for segmentation
@@ -512,7 +514,12 @@ struct Args {
     #[arg(long, default_value_t = false)]
     enforce_connectivity: bool,
 
-    #[arg(long, default_value_t = 200)]
+    /// Number of unfactored genes: the top-N genes by expression each get a
+    /// dedicated latent dimension (identity loading), modeled directly instead of
+    /// through the shared metagenes. Originally introduced for large targeted panels
+    /// (top genes hold most signal); benchmarking on whole-transcriptome and panel
+    /// data found it inert-to-harmful, so it defaults to 0 (pure factorization).
+    #[arg(long, default_value_t = 0)]
     nunfactored: usize,
 
     /// Disable factorization model and use genes directly
