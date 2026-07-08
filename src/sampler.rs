@@ -989,6 +989,26 @@ impl ModelParams {
         (top, n_active)
     }
 
+    // Summary of how the mixture components are populated by cells, to detect
+    // whether raising --ncomponents fabricates artificial (tiny) cell populations
+    // vs leaving extra components as harmless empty slack. Returns
+    // (n_used, largest_frac, smallest_used_frac) where "used" = holds ≥1% of cells.
+    pub fn component_population_summary(&self) -> (usize, f32, f32) {
+        let ncells: u32 = self.component_population.iter().sum();
+        if ncells == 0 {
+            return (0, 0.0, 0.0);
+        }
+        let fracs: Vec<f32> = self
+            .component_population
+            .iter()
+            .map(|&p| p as f32 / ncells as f32)
+            .collect();
+        let used: Vec<f32> = fracs.iter().cloned().filter(|&f| f >= 0.01).collect();
+        let largest = fracs.iter().cloned().fold(0.0_f32, f32::max);
+        let smallest_used = used.iter().cloned().fold(1.0_f32, f32::min);
+        (used.len(), largest, smallest_used)
+    }
+
     // Summary of the metagene dispersion rφ over the factored metagenes (across
     // all components): (mean, median). rφ spans orders of magnitude, so the median
     // is the more robust locator; both are reported to compare how the optimizer's

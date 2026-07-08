@@ -231,8 +231,11 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     cells_per_chunk: usize,
 
-    /// Number of components in the mixture model of cellular gene expression
-    #[arg(long, default_value_t = 10)]
+    /// Number of components in the mixture model of cellular gene expression. The
+    /// model self-limits (only as many as the data supports get populated; extra are
+    /// empty slack, not artificial populations), so this is a generous cap rather than
+    /// a target — benchmarking found ~22-25 populated and quality plateauing by ~30.
+    #[arg(long, default_value_t = 30)]
     ncomponents: usize,
 
     /// Number of factored metagenes in the latent space. The factorization is
@@ -1570,8 +1573,9 @@ fn run_sampler(
     if std::env::var_os("PROSEG_LLTRACE").is_some() {
         let (top_metagene, n_active_metagenes) = params.metagene_concentration();
         let (rphi_mean, rphi_median) = params.rφ_summary();
+        let (n_used_comp, top_comp, min_comp) = params.component_population_summary();
         println!(
-            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}\t{top_metagene:.4}\t{n_active_metagenes}\t{rphi_mean:.4}\t{rphi_median:.4}",
+            "LLTRACE\t{t}\t{phase}\t{optimize}\t{temperature:.4}\t{ll}\t{nassigned}\t{nforeground}\t{top_metagene:.4}\t{n_active_metagenes}\t{rphi_mean:.4}\t{rphi_median:.4}\t{n_used_comp}\t{top_comp:.4}\t{min_comp:.4}",
             t = params.iteration(),
             phase = if burnin { "burnin" } else { "post" },
         );
