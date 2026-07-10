@@ -230,6 +230,17 @@ impl ParamSampler {
                         });
                     }
 
+                    // Heterotypic uncertainty: record off-diagonal, foreground
+                    // cell→cell moves relative to the point estimate (src_state =
+                    // reported cell, `cell` = currently-sampled cell). Always on.
+                    if !src_state.background && !is_background && src_state.cell != cell {
+                        params
+                            .het_transitions
+                            .row(src_state.cell as usize)
+                            .write()
+                            .add(cell, 1);
+                    }
+
                     if priors.record_state_transitions {
                         let src_state = if src_state.background {
                             ncells

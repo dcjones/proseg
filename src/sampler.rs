@@ -450,6 +450,14 @@ pub struct ModelParams {
     // reported in another cell/state.
     pub expected_outflow: CSRMat<u32, FlowStats>,
 
+    // [ncells, ncells] Off-diagonal, foreground-only cell→cell transition counts
+    // accumulated during the uncertainty phase, keyed (reported/point-estimate
+    // cell, currently-sampled cell). Unlike `state_transitions` this is always
+    // recorded (not gated on the state-transition output flag) and drops both the
+    // gene dimension and the "stayed put" diagonal, keeping it cheap. It is the
+    // basis for the distance-weighted heterotypic uncertainty metric.
+    pub het_transitions: CSRMat<u32, u32>,
+
     // [ntranscripts] Per-transcript assignment counts: for each transcript, a map from
     // cell index to the number of times it was assigned to that cell during uncertainty sampling.
     // Only allocated when transcript posteriors output is requested.
@@ -696,6 +704,7 @@ impl ModelParams {
 
         let expected_inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let expected_outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
+        let het_transitions = CSRMat::zeros(ncells, ncells as u32 - 1);
 
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
 
@@ -822,6 +831,7 @@ impl ModelParams {
             state_transitions,
             expected_inflow,
             expected_outflow,
+            het_transitions,
             transcript_assignment_counts,
             foreground_counts,
             transition_counts,
@@ -878,6 +888,89 @@ impl ModelParams {
         {
             reported.store(state.load());
         }
+    }
+
+    /// Per-cell heterotypic uncertainty: how much a cell's gene composition is at
+    /// risk of being altered by *consequential* (between-type) missegmentation.
+    ///
+    /// Each accumulated cell→cell transition (relative to the point estimate) is
+    /// weighted by the cosine distance between the two cells' metagene-rate (φ)
+    /// profiles, so churn between similar cells contributes ~nothing while churn
+    /// across a type boundary contributes fully. Returns `(het_inflow, het_outflow)`
+    /// per cell; the combined metric is their sum.
+    ///
+    /// - `het_outflow[c]`: c's own transcripts reassigned to a different-type cell,
+    ///   as a fraction of c's point-estimate mass (bleed-out risk).
+    /// - `het_inflow[c]`: transcripts from a different-type cell reassigned into c,
+    ///   relative to c's point-estimate mass (contamination risk).
+    ///
+    /// Normalized by `n_c · nsamples` (the state-transition row sum), i.e. the total
+    /// recorded assignment observations for the cell, so it reads as a per-sample
+    /// fraction rather than a raw count.
+    pub fn heterotypic_uncertainty(&self, nsamples: usize) -> (Vec<f32>, Vec<f32>) {
+        let ncells = self.ncells();
+        let mut het_in = vec![0.0f32; ncells];
+        let mut het_out = vec![0.0f32; ncells];
+
+        if nsamples == 0 {
+            return (het_in, het_out);
+        }
+
+        // L2 norm of each cell's φ profile, for cosine distance.
+        let phi_norm: Vec<f32> = (0..ncells)
+            .map(|i| {
+                self.φ
+                    .row(i)
+                    .iter()
+                    .map(|&v| v * v)
+                    .sum::<f32>()
+                    .sqrt()
+                    .max(1e-12)
+            })
+            .collect();
+
+        // Point-estimate foreground transcript count per cell. This equals the
+        // (background- and diagonal-inclusive) state-transition row sum divided by
+        // nsamples, so `n_reported · nsamples` is the correct normalizer.
+        let mut n_reported = vec![0u64; ncells];
+        for state in &self.reported_transcript_state {
+            let s = state.load();
+            if !s.background {
+                n_reported[s.cell as usize] += 1;
+            }
+        }
+
+        for i in 0..ncells {
+            let phi_i = self.φ.row(i);
+            let norm_i = phi_norm[i];
+            let row = self.het_transitions.row(i);
+            let row_read = row.read();
+            for (j, count) in row_read.iter_nonzeros() {
+                let j = j as usize;
+                let dot: f32 = phi_i
+                    .iter()
+                    .zip(self.φ.row(j).iter())
+                    .map(|(&a, &b)| a * b)
+                    .sum();
+                let d = (1.0 - dot / (norm_i * phi_norm[j])).clamp(0.0, 2.0);
+                let w = count as f32 * d;
+                het_out[i] += w;
+                het_in[j] += w;
+            }
+        }
+
+        for c in 0..ncells {
+            let denom = n_reported[c] as f32 * nsamples as f32;
+            if denom > 0.0 {
+                het_out[c] /= denom;
+                het_in[c] /= denom;
+            } else {
+                het_out[c] = 0.0;
+                het_in[c] = 0.0;
+            }
+        }
+
+        (het_in, het_out)
     }
 
     pub fn enable_transcript_assignment_tracking(&mut self, ntranscripts: usize) {

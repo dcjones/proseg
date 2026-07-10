@@ -618,15 +618,11 @@ fn default_blosc_compressor() -> Result<MetadataV2, serde_json::Error> {
     }))
 }
 
-fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
-    store: Arc<T>,
-    params: &ModelParams,
-    cell_centroids: &Array2<f32>,
-    original_cell_ids: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let ncells = cell_centroids.shape()[0];
-
-    let cols = vec![
+/// Base column order for the `obs` dataframe, written up front. The heterotypic
+/// uncertainty columns are appended later (see `write_heterotypic_uncertainty_zarr`)
+/// once the uncertainty phase has populated the transition counts.
+fn obs_base_column_order() -> Vec<String> {
+    vec![
         "cell".to_string(),
         "original_cell_id".to_string(),
         "centroid_x".to_string(),
@@ -637,7 +633,18 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         "surface_area".to_string(),
         "scale".to_string(),
         "region".to_string(),
-    ];
+    ]
+}
+
+fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    params: &ModelParams,
+    cell_centroids: &Array2<f32>,
+    original_cell_ids: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ncells = cell_centroids.shape()[0];
+
+    let cols = obs_base_column_order();
 
     new_zarr_group(
         store.clone(),
@@ -1317,7 +1324,7 @@ fn write_state_transitions_parts(
             sorted_cells.sort_by_key(|k| k.0);
 
             for (dest_cell, count) in sorted_cells {
-                agg_data.push(count as f32 / total_sum);
+                agg_data.push(count);
                 agg_indices.push(dest_cell as i32);
                 agg_offset += 1;
             }
@@ -1333,7 +1340,7 @@ fn write_state_transitions_parts(
         &agg_data,
         &agg_indices,
         &agg_indptr,
-        "<f4",
+        "<u4",
         "<i4",
     )?;
 
@@ -1352,14 +1359,15 @@ fn write_state_transitions_parts(
             for &(key, count) in &row_entries {
                 if Some(key.gene) != current_gene {
                     if let Some(g) = current_gene
-                        && current_sum > 0.0 {
-                            for (dest_cell, c) in current_entries {
-                                gene_entries[g as usize].push((
-                                    (i * ncells + dest_cell as usize) as i64,
-                                    c as f32 / current_sum,
-                                ));
-                            }
+                        && current_sum > 0.0
+                    {
+                        for (dest_cell, c) in current_entries {
+                            gene_entries[g as usize].push((
+                                (i * ncells + dest_cell as usize) as i64,
+                                c as f32 / current_sum,
+                            ));
                         }
+                    }
                     current_gene = Some(key.gene);
                     current_sum = 0.0;
                     current_entries = Vec::new();
@@ -1372,14 +1380,15 @@ fn write_state_transitions_parts(
             }
             // handle last gene in row
             if let Some(g) = current_gene
-                && current_sum > 0.0 {
-                    for (dest_cell, c) in current_entries {
-                        gene_entries[g as usize].push((
-                            (i * ncells + dest_cell as usize) as i64,
-                            c as f32 / current_sum,
-                        ));
-                    }
+                && current_sum > 0.0
+            {
+                for (dest_cell, c) in current_entries {
+                    gene_entries[g as usize].push((
+                        (i * ncells + dest_cell as usize) as i64,
+                        c as f32 / current_sum,
+                    ));
                 }
+            }
         }
 
         let mut data = Vec::new();
@@ -1537,6 +1546,99 @@ fn write_expected_flow_parts(
         "<f4",
         "<i4",
     )?;
+
+    Ok(())
+}
+
+/// Write a single f32-valued column into the already-created `obs` dataframe group.
+fn write_obs_f32_column<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    name: &str,
+    values: &[f32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ncells = values.len();
+    let arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/{name}"),
+        vec![ncells as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<f4")),
+        FillValueMetadataV2::NaN,
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    arr.store_array_subset_elements(&arr.subset_all(), values)?;
+    arr.store_metadata()?;
+    Ok(())
+}
+
+/// Compute the per-cell heterotypic uncertainty metric and append it to the `obs`
+/// dataframe as `het_inflow`, `het_outflow`, and `heterotypic_uncertainty`.
+///
+/// Called after the uncertainty phase (which populates `params.het_transitions`).
+/// The `obs` group already exists from `write_spatialdata_zarr`; here we add the
+/// three arrays and re-store the group metadata with an extended `column-order`.
+pub fn write_heterotypic_uncertainty_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+    nsamples: usize,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_heterotypic_uncertainty_parts(&path, params, nsamples) {
+        panic!(
+            "Failed to write heterotypic uncertainty to {}: {}",
+            path.display(),
+            e
+        )
+    }
+}
+
+fn write_heterotypic_uncertainty_parts(
+    path: &Path,
+    params: &ModelParams,
+    nsamples: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    let (het_in, het_out) = params.heterotypic_uncertainty(nsamples);
+    let het: Vec<f32> = het_in
+        .iter()
+        .zip(het_out.iter())
+        .map(|(a, b)| a + b)
+        .collect();
+
+    write_obs_f32_column(store.clone(), "het_inflow", &het_in)?;
+    write_obs_f32_column(store.clone(), "het_outflow", &het_out)?;
+    write_obs_f32_column(store.clone(), "heterotypic_uncertainty", &het)?;
+
+    // Extend the obs dataframe column-order so the appended columns are read back.
+    let mut cols = obs_base_column_order();
+    cols.push("het_inflow".to_string());
+    cols.push("het_outflow".to_string());
+    cols.push("heterotypic_uncertainty".to_string());
+
+    new_zarr_group(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs"),
+        Some(
+            json!({
+                "encoding-type": "dataframe",
+                "encoding-version": "0.2.0",
+                "_index": "_index",
+                "column-order": cols
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
 
     Ok(())
 }
