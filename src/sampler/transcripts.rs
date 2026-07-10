@@ -859,7 +859,7 @@ fn read_merfish_transcripts_parquet(
 
     match string_type {
         arrow::datatypes::DataType::Utf8 => {
-            read_merfish_transcripts_parquet_str_type(
+            read_merfish_transcripts_parquet_str_type::<arrow::array::StringArray>(
                 rdr,
                 schema,
                 excluded_genes,
@@ -878,7 +878,7 @@ fn read_merfish_transcripts_parquet(
             )
         }
         arrow::datatypes::DataType::LargeUtf8 => {
-            read_merfish_transcripts_parquet_str_type(
+            read_merfish_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
                 rdr,
                 schema,
                 excluded_genes,
@@ -901,7 +901,7 @@ fn read_merfish_transcripts_parquet(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_merfish_transcripts_parquet_str_type(
+fn read_merfish_transcripts_parquet_str_type<T>(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
@@ -917,7 +917,11 @@ fn read_merfish_transcripts_parquet_str_type(
     ignore_z_column: bool,
     coordinate_scale: f32,
     non_unique_cell_ids: bool,
-) -> TranscriptDataset {
+) -> TranscriptDataset
+where
+    T: 'static,
+    for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
+{
     let id_col_idx = 0; // These seem to be always in a
     let gene_col_idx = schema.index_of(gene_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
@@ -943,7 +947,7 @@ fn read_merfish_transcripts_parquet_str_type(
         let gene_col = rec_batch
             .column(gene_col_idx)
             .as_any()
-            .downcast_ref::<arrow::array::StringArray>()
+            .downcast_ref::<T>()
             .unwrap();
 
         let id_col = rec_batch
