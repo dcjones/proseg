@@ -66,13 +66,12 @@ where
     }
 
     pub fn push(&mut self, value: T) {
-        if let Some(last) = self.runs.last_mut() {
-            if last.value == value {
+        if let Some(last) = self.runs.last_mut()
+            && last.value == value {
                 last.len += I::one();
                 self.len += 1;
                 return;
             }
-        }
 
         self.runs.push(Run {
             len: I::one(),
@@ -89,7 +88,7 @@ where
     //     self.runs.len()
     // }
 
-    pub fn iter(&self) -> RunVecIter<I, T> {
+    pub fn iter(&self) -> RunVecIter<'_, I, T> {
         RunVecIter {
             it: self.runs.iter(),
             value: None,

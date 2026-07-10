@@ -558,7 +558,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
         attr.insert("encoding-type".to_string(), "string".into());
         attr.insert("encoding-version".to_string(), "0.2.0".into());
 
-        arr.store_array_subset_elements(&arr.subset_all(), &[value.clone()])?;
+        arr.store_array_subset_elements(&arr.subset_all(), std::slice::from_ref(value))?;
         arr.store_metadata()?;
     }
 
@@ -1148,7 +1148,7 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
     let mut indptr = Vec::with_capacity(counts.m + 1);
     let mut offset = 0;
     for row in counts.rows() {
-        indptr.push(offset as i32);
+        indptr.push(offset);
         let row_lock = row.read();
         for (j, count) in row_lock.iter_nonzeros() {
             if count > 0 {
@@ -1299,7 +1299,7 @@ fn write_state_transitions_parts(
     let mut agg_offset = 0;
 
     for i in 0..ncells {
-        agg_indptr.push(agg_offset as i32);
+        agg_indptr.push(agg_offset);
         let row_entries = params.state_transitions.iter_row_sorted(i);
 
         let mut cell_sums = HashMap::new();
@@ -1323,7 +1323,7 @@ fn write_state_transitions_parts(
             }
         }
     }
-    agg_indptr.push(agg_offset as i32);
+    agg_indptr.push(agg_offset);
 
     write_anndata_csr_matrix_raw(
         store.clone(),
@@ -1351,8 +1351,8 @@ fn write_state_transitions_parts(
 
             for &(key, count) in &row_entries {
                 if Some(key.gene) != current_gene {
-                    if let Some(g) = current_gene {
-                        if current_sum > 0.0 {
+                    if let Some(g) = current_gene
+                        && current_sum > 0.0 {
                             for (dest_cell, c) in current_entries {
                                 gene_entries[g as usize].push((
                                     (i * ncells + dest_cell as usize) as i64,
@@ -1360,7 +1360,6 @@ fn write_state_transitions_parts(
                                 ));
                             }
                         }
-                    }
                     current_gene = Some(key.gene);
                     current_sum = 0.0;
                     current_entries = Vec::new();
@@ -1372,8 +1371,8 @@ fn write_state_transitions_parts(
                 }
             }
             // handle last gene in row
-            if let Some(g) = current_gene {
-                if current_sum > 0.0 {
+            if let Some(g) = current_gene
+                && current_sum > 0.0 {
                     for (dest_cell, c) in current_entries {
                         gene_entries[g as usize].push((
                             (i * ncells + dest_cell as usize) as i64,
@@ -1381,7 +1380,6 @@ fn write_state_transitions_parts(
                         ));
                     }
                 }
-            }
         }
 
         let mut data = Vec::new();
@@ -1389,9 +1387,9 @@ fn write_state_transitions_parts(
         let mut indptr: Vec<i64> = Vec::with_capacity(ngenes + 1);
         let mut offset: i64 = 0;
 
-        for g in 0..ngenes {
+        for entries in &gene_entries {
             indptr.push(offset);
-            for (idx, val) in &gene_entries[g] {
+            for (idx, val) in entries {
                 data.push(*val);
                 indices.push(*idx);
                 offset += 1;
@@ -1492,7 +1490,7 @@ fn write_expected_flow_parts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    let ncells = flow_matrix.m as usize;
+    let ncells = flow_matrix.m;
     let ngenes = flow_matrix.n as usize;
 
     let mut mean_data: Vec<f32> = Vec::new();

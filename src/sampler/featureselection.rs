@@ -163,7 +163,7 @@ fn select_k_clusters<T: PartialOrd + Copy>(
         let total = 2 * n - 1;
         let mut parent: Vec<usize> = (0..total).collect();
 
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 parent[x] = parent[parent[x]];
                 x = parent[x];
@@ -214,7 +214,7 @@ fn select_k_clusters<T: PartialOrd + Copy>(
     let total = 2 * n - 1;
     let mut parent: Vec<usize> = (0..total).collect();
 
-    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
             x = parent[x];
@@ -236,11 +236,11 @@ fn select_k_clusters<T: PartialOrd + Copy>(
     // Map each original observation to a contiguous cluster index 0..nclusters.
     let mut root_to_cluster: HashMap<usize, usize> = HashMap::new();
     let mut labels = vec![0usize; n];
-    for i in 0..n {
+    for (i, label) in labels.iter_mut().enumerate() {
         let root = find(&mut parent, i);
         let next_id = root_to_cluster.len();
         let cluster_id = *root_to_cluster.entry(root).or_insert(next_id);
-        labels[i] = cluster_id;
+        *label = cluster_id;
     }
 
     labels

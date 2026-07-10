@@ -47,7 +47,7 @@ where
     }
 
     // Create an iterator over non-zero key-value pairs
-    pub fn iter(&self) -> SparseCountVecIter<K, V> {
+    pub fn iter(&self) -> SparseCountVecIter<'_, K, V> {
         if self.leaf_arena.is_empty() {
             return SparseCountVecIter {
                 vec: self,
@@ -77,7 +77,7 @@ where
         }
     }
 
-    pub fn iter_from(&self, from: K) -> SparseCountVecIter<K, V> {
+    pub fn iter_from(&self, from: K) -> SparseCountVecIter<'_, K, V> {
         if self.leaf_arena.is_empty() {
             return SparseCountVecIter {
                 vec: self,
@@ -102,7 +102,7 @@ where
         }
     }
 
-    pub fn iter_to(&self, to: K) -> SparseCountVecIter<K, V> {
+    pub fn iter_to(&self, to: K) -> SparseCountVecIter<'_, K, V> {
         if self.leaf_arena.is_empty() {
             return SparseCountVecIter {
                 vec: self,
@@ -134,7 +134,7 @@ where
 
     // Create an iterator over all values (including implicit zeros)
     // Iterates from key 0 (K::zero()) up to and including the bound parameter
-    pub fn iter_dense(&self, bound: K) -> DenseIter<K, V>
+    pub fn iter_dense(&self, bound: K) -> DenseIter<'_, K, V>
     where
         K: Zero + Increment,
     {
@@ -521,11 +521,10 @@ where
                 self.position_in_leaf += 1;
 
                 // Check if we've exceeded the to bound
-                if let Some(to) = self.to {
-                    if key > to {
+                if let Some(to) = self.to
+                    && key > to {
                         return None;
                     }
-                }
 
                 // Skip zero values (both explicit zeros in the tree)
                 if !val.is_zero() {

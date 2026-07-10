@@ -257,7 +257,7 @@ fn read_visium_tissue_positions_parquet(
     microns_per_pixel: f32,
 ) -> HashMap<String, (f32, f32)> {
     let input_file =
-        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
     let schema = builder.schema().as_ref().clone();
     let rdr = builder
@@ -708,11 +708,10 @@ where
 
         let gene_name = &row[gene_col];
 
-        if let Some(excluded_genes) = &excluded_genes {
-            if excluded_genes.is_match(gene_name) {
+        if let Some(excluded_genes) = &excluded_genes
+            && excluded_genes.is_match(gene_name) {
                 continue;
             }
-        }
 
         let gene = if let Some(gene) = gene_name_map.get(gene_name) {
             *gene
@@ -747,15 +746,14 @@ where
 
         fovs.push(fov);
 
-        if let Some(cell_assignment_col) = cell_assignment_col {
-            if row[cell_assignment_col] == cell_assignment_unassigned {
+        if let Some(cell_assignment_col) = cell_assignment_col
+            && row[cell_assignment_col] == cell_assignment_unassigned {
                 priorseg.push(PriorTranscriptSeg {
                     nucleus: BACKGROUND_CELL,
                     cell: BACKGROUND_CELL,
                 });
                 continue;
-            }
-        };
+            };
 
         let cell_id_fov = if non_unique_cell_ids { fov } else { 0 };
         let cell_id_str = &row[cell_id_col];
@@ -849,7 +847,7 @@ fn read_merfish_transcripts_parquet(
     non_unique_cell_ids: bool,
 ) -> TranscriptDataset {
     let input_file =
-        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
     let schema = builder.schema().as_ref().clone();
     let rdr = builder
@@ -861,7 +859,7 @@ fn read_merfish_transcripts_parquet(
 
     match string_type {
         arrow::datatypes::DataType::Utf8 => {
-            read_merfish_transcripts_parquet_str_type::<arrow::array::StringArray>(
+            read_merfish_transcripts_parquet_str_type(
                 rdr,
                 schema,
                 excluded_genes,
@@ -880,7 +878,7 @@ fn read_merfish_transcripts_parquet(
             )
         }
         arrow::datatypes::DataType::LargeUtf8 => {
-            read_merfish_transcripts_parquet_str_type::<arrow::array::LargeStringArray>(
+            read_merfish_transcripts_parquet_str_type(
                 rdr,
                 schema,
                 excluded_genes,
@@ -903,7 +901,7 @@ fn read_merfish_transcripts_parquet(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_merfish_transcripts_parquet_str_type<T>(
+fn read_merfish_transcripts_parquet_str_type(
     rdr: ParquetRecordBatchReader,
     schema: arrow::datatypes::Schema,
     excluded_genes: Option<Regex>,
@@ -919,11 +917,7 @@ fn read_merfish_transcripts_parquet_str_type<T>(
     ignore_z_column: bool,
     coordinate_scale: f32,
     non_unique_cell_ids: bool,
-) -> TranscriptDataset
-where
-    T: 'static,
-    for<'a> &'a T: IntoIterator<Item = Option<&'a str>>,
-{
+) -> TranscriptDataset {
     let id_col_idx = 0; // These seem to be always in a
     let gene_col_idx = schema.index_of(gene_col_name).unwrap();
     let cell_id_col_idx = schema.index_of(cell_id_col_name).unwrap();
@@ -1017,11 +1011,10 @@ where
                 continue;
             }
 
-            if let Some(excluded_genes) = &excluded_genes {
-                if excluded_genes.is_match(gene) {
+            if let Some(excluded_genes) = &excluded_genes
+                && excluded_genes.is_match(gene) {
                     continue;
                 }
-            }
 
             let fov = match fov_map.get(&fov) {
                 Some(fov) => *fov,
@@ -1132,7 +1125,7 @@ fn read_xenium_transcripts_parquet(
     non_unique_cell_ids: bool,
 ) -> TranscriptDataset {
     let input_file =
-        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", &filename));
+        File::open(filename).unwrap_or_else(|_| panic!("Unable to open '{}'.", filename));
     let builder = ParquetRecordBatchReaderBuilder::try_new(input_file).unwrap();
     let schema = builder.schema().as_ref().clone();
     let rdr = builder
@@ -1320,11 +1313,10 @@ where
                 continue;
             }
 
-            if let Some(excluded_genes) = &excluded_genes {
-                if excluded_genes.is_match(transcript) {
+            if let Some(excluded_genes) = &excluded_genes
+                && excluded_genes.is_match(transcript) {
                     continue;
                 }
-            }
 
             let fov = match fov_map.get(fov) {
                 Some(fov) => *fov,

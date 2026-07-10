@@ -92,7 +92,7 @@ where
 
     pub fn set_probs_from_iter(&mut self, probs: impl IntoIterator<Item = T>) {
         let mut cumprob = T::zero();
-        for (cumprob_i, prob) in self.cumprobs.iter_mut().zip(probs.into_iter()) {
+        for (cumprob_i, prob) in self.cumprobs.iter_mut().zip(probs) {
             *cumprob_i = cumprob;
             cumprob += prob;
         }

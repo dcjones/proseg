@@ -909,7 +909,7 @@ fn main() {
 
     // We are going to try to initialize at full resolution.
     let t0 = Instant::now();
-    let mut voxels = if args.zarr && args.zarr_shape.is_some() {
+    let mut voxels = if args.zarr && let Some(zarr_shape) = &args.zarr_shape {
         if args.zarr_shape_geometry_column.is_none() || args.zarr_shape_cell_id_column.is_none() {
             panic!(
                 "--zarr-shape-geometry-column and --zarr-shape-cell-id-column must be specified."
@@ -917,7 +917,7 @@ fn main() {
         }
         let cell_polygons = read_spatialdata_zarr_cell_polygons(
             &args.transcript_csv,
-            &args.zarr_shape.unwrap(),
+            zarr_shape,
             &args.zarr_shape_geometry_column.unwrap(),
             &args.zarr_shape_cell_id_column.unwrap(),
             args.coordinate_scale.unwrap_or(1.0),
@@ -1370,7 +1370,7 @@ fn main() {
         let t0 = Instant::now();
         write_spatialdata_zarr(
             &args.output_path,
-            &output_spatialdata,
+            output_spatialdata,
             &params.foreground_counts,
             &params,
             &voxels,

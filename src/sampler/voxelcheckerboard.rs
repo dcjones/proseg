@@ -977,14 +977,6 @@ impl UndirectedVoxelPair {
 
 type GeneIndex = u32;
 
-// Ok, so each key is 8 + 8 + 4 = 20 bytes
-#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
-pub struct VoxelCountKey {
-    pub voxel: Voxel,
-    pub gene: GeneIndex,
-    pub offset: VoxelOffset,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoxelState {
     pub cell: CellIndex,
@@ -1095,15 +1087,14 @@ impl QuadStates {
 
     // Set state only if the slot is currently empty: background cell and no prior.
     pub fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
-        if let Some(s) = self.slot(voxel) {
-            if self.cell[s] == BACKGROUND_CELL && !self.log_prior[s].is_finite() {
+        if let Some(s) = self.slot(voxel)
+            && self.cell[s] == BACKGROUND_CELL && !self.log_prior[s].is_finite() {
                 let state = f();
                 self.cell[s] = state.cell;
                 self.prior_cell[s] = state.prior_cell;
                 self.log_prior[s] = state.log_prior;
                 self.log_1m_prior[s] = state.log_1m_prior;
             }
-        }
     }
 
     // Iterate interior + halo slots carrying a cell assignment. Matches the old
@@ -1599,8 +1590,8 @@ impl VoxelCheckerboard {
         let mut vote_winner_count: u32 = 0;
         for ((voxel, cell), count) in cell_votes {
             if voxel != current_voxel {
-                if !current_voxel.is_oob() {
-                    if let Some(&vote_winner) = used_cells.get(&vote_winner) {
+                if !current_voxel.is_oob()
+                    && let Some(&vote_winner) = used_cells.get(&vote_winner) {
                         checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
                             cell: BACKGROUND_CELL,
                             prior_cell: vote_winner,
@@ -1608,7 +1599,6 @@ impl VoxelCheckerboard {
                             log_1m_prior: log_1m_cellprior,
                         });
                     }
-                }
                 vote_winner = cell;
                 vote_winner_count = count;
                 current_voxel = voxel;
@@ -1617,8 +1607,8 @@ impl VoxelCheckerboard {
                 vote_winner_count = count;
             }
         }
-        if !current_voxel.is_oob() {
-            if let Some(&vote_winner) = used_cells.get(&vote_winner) {
+        if !current_voxel.is_oob()
+            && let Some(&vote_winner) = used_cells.get(&vote_winner) {
                 checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
                     cell: BACKGROUND_CELL,
                     prior_cell: vote_winner,
@@ -1626,7 +1616,6 @@ impl VoxelCheckerboard {
                     log_1m_prior: log_1m_cellprior,
                 });
             }
-        }
         trace!("assigned cell priors: {:?}", t0.elapsed());
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
@@ -1664,7 +1653,7 @@ impl VoxelCheckerboard {
         let barcode_positions = dataset.barcode_positions.as_ref().unwrap();
 
         let barcode_mapping_file = File::open(barcode_mappings_filename)
-            .unwrap_or_else(|_| panic!("Unable to open '{}'.", &barcode_mappings_filename));
+            .unwrap_or_else(|_| panic!("Unable to open '{}'.", barcode_mappings_filename));
         let builder = ParquetRecordBatchReaderBuilder::try_new(barcode_mapping_file).unwrap();
         let schema = builder.schema().as_ref().clone();
 
@@ -2139,11 +2128,11 @@ impl VoxelCheckerboard {
         self.transcript_fixed_state[transcript_idx as usize].gene
     }
 
-    fn write_quad_states(&mut self, voxel: Voxel) -> RwLockWriteGuard<QuadStates> {
+    fn write_quad_states(&mut self, voxel: Voxel) -> RwLockWriteGuard<'_, QuadStates> {
         self.write_quad_index_states(self.quad_index(voxel))
     }
 
-    fn write_quad_index_states(&mut self, index: (u32, u32)) -> RwLockWriteGuard<QuadStates> {
+    fn write_quad_index_states(&mut self, index: (u32, u32)) -> RwLockWriteGuard<'_, QuadStates> {
         let (u, v) = index;
 
         self.quads
@@ -2452,7 +2441,7 @@ impl VoxelCheckerboard {
 
         self.quads.iter().for_each(|((_u, _v), quad)| {
             let densities = quad.densities.read();
-            for (_voxel, &density) in densities.iter() {
+            for &density in densities.values() {
                 for quant_est_q in quant_est.iter_mut() {
                     quant_est_q.update(density);
                 }
@@ -2586,7 +2575,7 @@ impl VoxelCheckerboard {
 
         for ((_u, _v), quad) in self.quads.iter() {
             let densities = quad.densities.read();
-            for (_voxel, &density) in densities.iter() {
+            for &density in densities.values() {
                 background_region_voxel_count[density as usize] += 1;
             }
         }
@@ -2891,11 +2880,10 @@ impl VoxelCheckerboard {
                     if cell == BACKGROUND_CELL {
                         bubbles.insert((edge.a, neighbor_cell));
                     }
-                } else if let Some((cell, neighbor_cell)) = quad_states.is_bubble(quad, edge.b) {
-                    if cell == BACKGROUND_CELL {
+                } else if let Some((cell, neighbor_cell)) = quad_states.is_bubble(quad, edge.b)
+                    && cell == BACKGROUND_CELL {
                         bubbles.insert((edge.b, neighbor_cell));
                     }
-                }
             }
 
             for (voxel, neighbor_cell) in bubbles {

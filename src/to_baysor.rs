@@ -40,7 +40,7 @@ fn main() {
         FilesystemStore::new(&args.proseg_spatialdata_zarr).unwrap_or_else(|_err| {
             panic!(
                 "Unable to open proseg spatialdata at {}",
-                &args.proseg_spatialdata_zarr
+                args.proseg_spatialdata_zarr
             )
         }),
     );

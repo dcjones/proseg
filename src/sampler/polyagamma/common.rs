@@ -208,7 +208,7 @@ fn confluent_p_smaller<T: Float>(p: T, x: T) -> T {
     f
 }
 
-#[allow(clippy::excessive_precision)]
+#[allow(clippy::excessive_precision, clippy::approx_constant)]
 const LOG_FACTORIAL: [f64; 200] = [
     0.00000000000000000000,
     0.00000000000000000000,

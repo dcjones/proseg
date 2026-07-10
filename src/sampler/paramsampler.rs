@@ -314,8 +314,9 @@ impl ParamSampler {
         let t0 = Instant::now();
         if let Some(dispersion) = priors.dispersion {
             params.rφ.fill(dispersion);
-        } else if burnin && priors.burnin_dispersion.is_some() {
-            let dispersion = priors.burnin_dispersion.unwrap();
+        } else if burnin
+            && let Some(dispersion) = priors.burnin_dispersion
+        {
             params.rφ.fill(dispersion);
         } else {
             self.sample_rφ(priors, params);

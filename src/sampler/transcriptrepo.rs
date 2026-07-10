@@ -120,6 +120,7 @@ impl TranscriptRepo {
     // every transcript's move is independent of the others: it reads its own
     // current voxel/cell, proposes from its original voxel, and on acceptance
     // updates its position and moves its count between cells.
+    #[allow(clippy::too_many_arguments)]
     fn repo_transcript(
         &self,
         voxels: &VoxelCheckerboard,

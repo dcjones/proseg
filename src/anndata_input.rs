@@ -202,7 +202,7 @@ fn read_gene_names(store: Arc<FilesystemStore>, gene_column_name: &Option<String
 fn read_coordinates(store: Arc<FilesystemStore>, coordinate_key: &str) -> (Vec<f32>, Vec<f32>) {
     let coordinate_path = format!("/obsm/{coordinate_key}");
     let arr = zarrs::array::Array::open(store.clone(), &coordinate_path)
-        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", &coordinate_path));
+        .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", coordinate_path));
 
     // Should be a [ncells, 2] matrix
     let shape = arr.shape();
