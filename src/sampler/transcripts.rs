@@ -1461,6 +1461,7 @@ where
 fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     assert!(xs.len() == ys.len());
     assert!(xs.len() == zs.len());
+    let ntranscripts = xs.len();
 
     // If all z values are the same, return early (nothing to regress out)
     if zs.is_empty() || zs.iter().all(|&z| z == zs[0]) {
@@ -1476,12 +1477,8 @@ fn regress_out_tilt(xs: &[f32], ys: &[f32], zs: &mut [f32]) {
     let mut zvec = Vec::with_capacity(npoints);
 
     let mut rng = rand::rng();
-    let shuffle_key = (0..npoints)
-        .map(|_| rng.random::<u32>())
-        .collect::<Vec<_>>();
-    let mut random_perm = (0..npoints).collect::<Vec<_>>();
-    random_perm.sort_by_key(|&i| shuffle_key[i]);
-    for &i in random_perm[0..npoints].iter() {
+    for _ in 0..npoints {
+        let i = rng.random_range(0..ntranscripts);
         xvec.push(xs[i] as f64);
         yvec.push(ys[i] as f64);
         zvec.push(zs[i] as f64);
