@@ -1,4 +1,11 @@
 
+# 3.2.0
+  - Fix a bug when regressing out z-axis tilt.
+  - Add support for reading MERSCOPE parquet files.
+  - Fix two minor (likely inconsequential bugs) in the sampler.
+  - Tweaks in the factorization scheme to better accommodate whole transcriptome data.
+  - Calibrate priors to better account for high transcript density assays.
+
 # 3.1.1
   - Fix some inaccuracies in how posterior mean estimates are computed.
   - Check that the output directory exists before running inference.
