@@ -86,13 +86,16 @@ impl ParamOptimizer {
     // term); the mode of the inverse-gamma posterior on the variance is
     // (β + SS/2) / (α + pop/2 + 1).
     fn optimize_volume_params(&self, priors: &ModelPriors, params: &mut ModelParams) {
-        params
-            .log_cell_volume
-            .iter_mut()
-            .zip(params.cell_voxel_count.iter())
-            .par_bridge()
-            .for_each(|(log_cell_volume_c, cell_volume_c)| {
-                *log_cell_volume_c = (cell_volume_c as f32 * params.voxel_volume).ln();
+        // Index-parallel map over cells. (`par_bridge` here funnels through a shared
+        // sequential iterator whose contention grows with thread count, so it
+        // actually regressed with more threads; a split range does not.)
+        let voxel_volume = params.voxel_volume;
+        let cell_voxel_count = &params.cell_voxel_count;
+        Zip::indexed(&mut params.log_cell_volume)
+            .into_par_iter()
+            .with_min_len(RAYON_CELL_MIN_LEN)
+            .for_each(|(c, log_cell_volume_c)| {
+                *log_cell_volume_c = (cell_voxel_count.get(c) as f32 * voxel_volume).ln();
             });
 
         // accumulate Σ log_volume per component into μ_volume
@@ -695,10 +698,14 @@ impl ParamOptimizer {
                 }
             });
 
+        // Parallel over metagenes: each φ_v_dot[k] is an independent dot over cells,
+        // so this is a per-column reduction the sequential tail was leaving on one core.
+        let effective_cell_volume = &params.effective_cell_volume;
         Zip::from(&mut params.φ_v_dot)
             .and(params.φ.axis_iter(Axis(1)))
-            .for_each(|φ_v_dot_k, φ_k| {
-                *φ_v_dot_k = φ_k.dot(&params.effective_cell_volume);
+            .into_par_iter()
+            .for_each(|(φ_v_dot_k, φ_k)| {
+                *φ_v_dot_k = φ_k.dot(effective_cell_volume);
             });
     }
 
