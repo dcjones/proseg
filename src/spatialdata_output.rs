@@ -1617,11 +1617,17 @@ fn write_heterotypic_uncertainty_parts(
     write_obs_f32_column(store.clone(), "het_outflow", &het_out)?;
     write_obs_f32_column(store.clone(), "heterotypic_uncertainty", &het)?;
 
+    let (flow_lost, flow_noise) = params.background_flow(nsamples);
+    write_obs_f32_column(store.clone(), "expected_lost_counts", &flow_lost)?;
+    write_obs_f32_column(store.clone(), "expected_noise_counts", &flow_noise)?;
+
     // Extend the obs dataframe column-order so the appended columns are read back.
     let mut cols = obs_base_column_order();
     cols.push("het_inflow".to_string());
     cols.push("het_outflow".to_string());
     cols.push("heterotypic_uncertainty".to_string());
+    cols.push("expected_lost_counts".to_string());
+    cols.push("expected_noise_counts".to_string());
 
     new_zarr_group(
         store.clone(),

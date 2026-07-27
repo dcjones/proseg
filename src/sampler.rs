@@ -890,6 +890,88 @@ impl ModelParams {
         }
     }
 
+    /// Per-cell transcript mass exchanged with the background component, measured
+    /// from the uncertainty phase. Returns `(lost, retained_noise)` — the mass the
+    /// cell's reported counts are missing, and the noise mass they carry — the pair
+    /// as a posterior Monte Carlo average over the recorded samples, rather than
+    /// a plug-in at the final parameters.
+    ///
+    /// Both flow matrices are recorded relative to the point estimate, and both
+    /// lump cell↔cell movement together with cell↔background movement:
+    ///
+    /// - `expected_inflow[c,g]` counts events where a transcript reported
+    ///   foreground in `c` is currently *anywhere else*: foreground in another
+    ///   cell, or background (whether it stayed inside `c` or drifted out).
+    /// - `expected_outflow[c,g]` counts events where a transcript currently
+    ///   foreground in `c` was reported *elsewhere*: another cell, or background.
+    ///
+    /// `het_transitions` records exactly the foreground cell→cell half of both
+    /// (keyed reported cell → current cell, no gene dimension), so differencing
+    /// the two isolates the background half:
+    ///
+    ///   retained_noise[c] = (Σ_g inflow[c,g]  - Σ_j het[c,j]) / nsamples
+    ///   lost[c]           = (Σ_g outflow[c,g] - Σ_i het[i,c]) / nsamples
+    ///
+    /// Because the flows are keyed on the *reported* cell, this also captures mass
+    /// that leaves the cell's volume entirely: a transcript that drifts out into
+    /// unassigned space and is called noise there still counts against the cell
+    /// that reported it.
+    ///
+    /// The bias-corrected size factor for downstream normalization is
+    ///
+    ///   size_factor[c] ≈ total_counts[c] + lost[c] - retained_noise[c]
+    ///
+    /// Note that the recorded samples come from the Gibbs sampler, which labels
+    /// foreground/background by Bernoulli draw, while the point estimate these are
+    /// measured against comes from the optimizer's hard argmax. The two sit at
+    /// appreciably different foreground/background balances, so the correction is a
+    /// posterior expectation, not a restatement of the point estimate's own split.
+    ///
+    /// Only meaningful after the uncertainty phase; returns zeros when
+    /// `--uncertainty-samples 0` leaves the flow matrices empty.
+    pub fn background_flow(&self, nsamples: usize) -> (Vec<f32>, Vec<f32>) {
+        let ncells = self.ncells();
+        let mut lost = vec![0.0_f32; ncells];
+        let mut retained_noise = vec![0.0_f32; ncells];
+
+        if nsamples == 0 {
+            return (lost, retained_noise);
+        }
+
+        // Foreground cell→cell events, by reported cell (row sums) and by current
+        // cell (column sums).
+        let mut het_from = vec![0.0_f32; ncells];
+        let mut het_to = vec![0.0_f32; ncells];
+        for (i, het_from_i) in het_from.iter_mut().enumerate() {
+            let row = self.het_transitions.row(i);
+            let row_read = row.read();
+            for (j, count) in row_read.iter_nonzeros() {
+                *het_from_i += count as f32;
+                het_to[j as usize] += count as f32;
+            }
+        }
+
+        let flow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
+            flow.row(c)
+                .read()
+                .iter_nonzeros()
+                .map(|(_gene, stats)| stats.count as f32)
+                .sum()
+        };
+
+        let nsamples = nsamples as f32;
+        for c in 0..ncells {
+            // Clamped: the two matrices are accumulated in the same loop over the
+            // same events, so the cell→cell part can only be a subset, but keep the
+            // reported quantity non-negative regardless.
+            retained_noise[c] =
+                ((flow_row_sum(&self.expected_inflow, c) - het_from[c]) / nsamples).max(0.0);
+            lost[c] = ((flow_row_sum(&self.expected_outflow, c) - het_to[c]) / nsamples).max(0.0);
+        }
+
+        (lost, retained_noise)
+    }
+
     /// Per-cell heterotypic uncertainty: how much a cell's gene composition is at
     /// risk of being altered by *consequential* (between-type) missegmentation.
     ///
