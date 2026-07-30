@@ -458,6 +458,7 @@ pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> Transcript
 #[allow(clippy::too_many_arguments)]
 pub fn read_transcripts_csv(
     path: &str,
+    csv_delimiter: char,
     parquet_fmt: ParquetFmt,
     excluded_genes: Option<Regex>,
     transcript_column: &str,
@@ -482,7 +483,10 @@ pub fn read_transcripts_csv(
 
     match fmt {
         OutputFormat::Csv => {
-            let mut rdr = csv::Reader::from_path(path).unwrap();
+            let mut rdr = csv::ReaderBuilder::new()
+                .delimiter(csv_delimiter as u8)
+                .from_path(path)
+                .unwrap();
             read_transcripts_csv_xyz(
                 &mut rdr,
                 excluded_genes,
@@ -506,7 +510,9 @@ pub fn read_transcripts_csv(
             )
         }
         OutputFormat::CsvGz => {
-            let mut rdr = csv::Reader::from_reader(MultiGzDecoder::new(File::open(path).unwrap()));
+            let mut rdr = csv::ReaderBuilder::new()
+                .delimiter(csv_delimiter as u8)
+                .from_reader(MultiGzDecoder::new(File::open(path).unwrap()));
             read_transcripts_csv_xyz(
                 &mut rdr,
                 excluded_genes,

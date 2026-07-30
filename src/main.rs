@@ -197,6 +197,10 @@ struct Args {
     #[arg(long, default_value = None)]
     qv_column: Option<String>,
 
+    /// Delimiter to use for csv/tsv files.
+    #[arg(long, default_value_t = ',')]
+    csv_delimiter: char,
+
     /// Platform-specific format to use when reading parquet files
     #[arg(value_enum, default_value = "none")]
     parquet_fmt: ParquetFmt,
@@ -758,6 +762,7 @@ fn main() {
     } else {
         read_transcripts_csv(
             &args.transcript_csv,
+            args.csv_delimiter,
             args.parquet_fmt,
             excluded_genes,
             &expect_arg(args.gene_column, "gene-column"),
