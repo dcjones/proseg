@@ -440,6 +440,16 @@ pub struct ModelParams {
     // +1 is added to cell indexes to make the indexing here dense.
     pub state_transitions: TransitionMat,
 
+    // Direction convention for the two flow matrices below: flow is measured
+    // against the reported segmentation as the *ledger being audited*, not as a
+    // starting position transcripts move away from. So inflow to cell c is
+    // contamination c received (mass in c's reported counts that the posterior
+    // puts elsewhere), and outflow from c is mass c leaked (mass the posterior
+    // puts in c that the reported counts credited elsewhere). A single c→d
+    // disagreement therefore increments inflow for c and outflow for d — the
+    // mirror image of what you get treating the point estimate as the origin, so
+    // check this comment before "fixing" either name.
+
     // [ncells, ngenes]
     // For cell c and gene g, count the number of times a transcript that was reported
     // in cell c is in a cell/state other than c.
@@ -896,26 +906,32 @@ impl ModelParams {
     /// as a posterior Monte Carlo average over the recorded samples, rather than
     /// a plug-in at the final parameters.
     ///
-    /// Both flow matrices are recorded relative to the point estimate, and both
-    /// lump cell↔cell movement together with cell↔background movement:
+    /// These are just the background-state components of `expected_inflow` and
+    /// `expected_outflow` (see the direction convention documented at their
+    /// declarations — inflow to `c` is contamination `c` received, outflow is mass
+    /// `c` leaked). Each of those lumps the cell↔cell and cell↔background halves
+    /// together:
     ///
     /// - `expected_inflow[c,g]` counts events where a transcript reported
-    ///   foreground in `c` is currently *anywhere else*: foreground in another
-    ///   cell, or background (whether it stayed inside `c` or drifted out).
+    ///   foreground in `c` is *anywhere else*: foreground in another cell, or
+    ///   background (whether it stayed inside `c` or drifted out).
     /// - `expected_outflow[c,g]` counts events where a transcript currently
     ///   foreground in `c` was reported *elsewhere*: another cell, or background.
     ///
-    /// `het_transitions` records exactly the foreground cell→cell half of both
-    /// (keyed reported cell → current cell, no gene dimension), so differencing
-    /// the two isolates the background half:
+    /// `het_transitions` is exactly the foreground cell→cell half of both (keyed
+    /// reported cell → current cell, no gene dimension), so differencing leaves the
+    /// background half:
     ///
     ///   retained_noise[c] = (Σ_g inflow[c,g]  - Σ_j het[c,j]) / nsamples
     ///   lost[c]           = (Σ_g outflow[c,g] - Σ_i het[i,c]) / nsamples
     ///
-    /// Because the flows are keyed on the *reported* cell, this also captures mass
-    /// that leaves the cell's volume entirely: a transcript that drifts out into
-    /// unassigned space and is called noise there still counts against the cell
-    /// that reported it.
+    /// Note which side of `het_transitions` pairs with which matrix: the one keyed
+    /// on the reported cell takes row sums, the one keyed on the current cell takes
+    /// column sums.
+    ///
+    /// Keying on the reported cell also means this captures mass that leaves the
+    /// cell's volume entirely: a transcript that drifts out into unassigned space
+    /// and is called noise there still counts against the cell that reported it.
     ///
     /// The bias-corrected size factor for downstream normalization is
     ///
