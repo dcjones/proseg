@@ -216,8 +216,7 @@ impl ParamSampler {
                         let src_state = params.reported_transcript_state[idx].load();
 
                         if !src_state.background && src_state != new_assignment {
-                            let mut inflow_row =
-                                params.expected_inflow.row(src_state.cell as usize).write();
+                            let mut inflow_row = params.inflow.row(src_state.cell as usize).write();
 
                             inflow_row.update(gene, FlowStats::default, |v| {
                                 v.sample_count += 1;
@@ -226,10 +225,8 @@ impl ParamSampler {
                         }
 
                         if !new_assignment.background && src_state != new_assignment {
-                            let mut outflow_row = params
-                                .expected_outflow
-                                .row(new_assignment.cell as usize)
-                                .write();
+                            let mut outflow_row =
+                                params.outflow.row(new_assignment.cell as usize).write();
                             outflow_row.update(gene, FlowStats::default, |v| {
                                 v.sample_count += 1;
                                 v.count += 1;
@@ -290,7 +287,7 @@ impl ParamSampler {
             params
                 .foreground_counts
                 .par_rows()
-                .zip(params.expected_outflow.par_rows())
+                .zip(params.outflow.par_rows())
                 .zip(params.retention.par_rows())
                 .for_each(|((x_c, o_c), retention_c)| {
                     let x_c = x_c.read();

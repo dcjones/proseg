@@ -1442,7 +1442,7 @@ fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'stat
     )
 }
 
-pub fn write_expected_inflow_zarr(
+pub fn write_inflow_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
@@ -1454,9 +1454,7 @@ pub fn write_expected_inflow_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) =
-        write_expected_flow_parts(&path, &params.expected_inflow, nsamples, "expected_inflow")
-    {
+    if let Err(e) = write_flow_parts(&path, &params.inflow, nsamples, "inflow") {
         panic!(
             "Failed to write expected inflow to {}: {}",
             path.display(),
@@ -1465,7 +1463,7 @@ pub fn write_expected_inflow_zarr(
     }
 }
 
-pub fn write_expected_outflow_zarr(
+pub fn write_outflow_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
@@ -1477,12 +1475,7 @@ pub fn write_expected_outflow_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_expected_flow_parts(
-        &path,
-        &params.expected_outflow,
-        nsamples,
-        "expected_outflow",
-    ) {
+    if let Err(e) = write_flow_parts(&path, &params.outflow, nsamples, "outflow") {
         panic!(
             "Failed to write expected outflow to {}: {}",
             path.display(),
@@ -1571,7 +1564,7 @@ fn write_retention_parts(
     Ok(())
 }
 
-fn write_expected_flow_parts(
+fn write_flow_parts(
     path: &Path,
     flow_matrix: &CSRMat<u32, FlowStats>,
     nsamples: usize,

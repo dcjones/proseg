@@ -31,9 +31,8 @@ use output::*;
 use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::{
-    write_dispersion_params_zarr, write_expected_inflow_zarr, write_expected_outflow_zarr,
-    write_heterotypic_uncertainty_zarr, write_retention_zarr, write_spatialdata_zarr,
-    write_state_transitions_zarr,
+    write_dispersion_params_zarr, write_heterotypic_uncertainty_zarr, write_inflow_zarr,
+    write_outflow_zarr, write_retention_zarr, write_spatialdata_zarr, write_state_transitions_zarr,
     write_transcript_posteriors_zarr,
 };
 
@@ -911,7 +910,9 @@ fn main() {
 
     // We are going to try to initialize at full resolution.
     let t0 = Instant::now();
-    let mut voxels = if args.zarr && let Some(zarr_shape) = &args.zarr_shape {
+    let mut voxels = if args.zarr
+        && let Some(zarr_shape) = &args.zarr_shape
+    {
         if args.zarr_shape_geometry_column.is_none() || args.zarr_shape_cell_id_column.is_none() {
             panic!(
                 "--zarr-shape-geometry-column and --zarr-shape-cell-id-column must be specified."
@@ -1433,7 +1434,7 @@ fn main() {
         }
 
         let t0 = Instant::now();
-        write_expected_inflow_zarr(
+        write_inflow_zarr(
             &args.output_path,
             output_spatialdata,
             &params,
@@ -1442,7 +1443,7 @@ fn main() {
         info!("write expected inflow: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        write_expected_outflow_zarr(
+        write_outflow_zarr(
             &args.output_path,
             output_spatialdata,
             &params,

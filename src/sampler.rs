@@ -494,12 +494,12 @@ pub struct ModelParams {
     // [ncells, ngenes]
     // For cell c and gene g, count the number of times a transcript that was reported
     // in cell c is in a cell/state other than c.
-    pub expected_inflow: CSRMat<u32, FlowStats>,
+    pub inflow: CSRMat<u32, FlowStats>,
 
     // [ncells, ngenes]
     // For cell c and gene g, count the number of times a transcript is in cell c that was
     // reported in another cell/state.
-    pub expected_outflow: CSRMat<u32, FlowStats>,
+    pub outflow: CSRMat<u32, FlowStats>,
 
     // [ncells, ngenes]
     // Tracking stats to compute posterior mean and var for retention.
@@ -757,8 +757,8 @@ impl ModelParams {
 
         let state_transitions = TransitionMat::new(ncells + 1);
 
-        let expected_inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
-        let expected_outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
+        let inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
+        let outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let retention = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let het_transitions = CSRMat::zeros(ncells, ncells as u32 - 1);
 
@@ -885,8 +885,8 @@ impl ModelParams {
             transcript_state,
             reported_transcript_state,
             state_transitions,
-            expected_inflow,
-            expected_outflow,
+            inflow,
+            outflow,
             retention,
             het_transitions,
             transcript_assignment_counts,
@@ -1027,9 +1027,8 @@ impl ModelParams {
             // Clamped: the two matrices are accumulated in the same loop over the
             // same events, so the cell→cell part can only be a subset, but keep the
             // reported quantity non-negative regardless.
-            retained_noise[c] =
-                ((flow_row_sum(&self.expected_inflow, c) - het_from[c]) / nsamples).max(0.0);
-            lost[c] = ((flow_row_sum(&self.expected_outflow, c) - het_to[c]) / nsamples).max(0.0);
+            retained_noise[c] = ((flow_row_sum(&self.inflow, c) - het_from[c]) / nsamples).max(0.0);
+            lost[c] = ((flow_row_sum(&self.outflow, c) - het_to[c]) / nsamples).max(0.0);
         }
 
         (lost, retained_noise)
@@ -1140,8 +1139,8 @@ impl ModelParams {
                 }
             });
         };
-        self.expected_inflow.par_rows().for_each(flush_row);
-        self.expected_outflow.par_rows().for_each(flush_row);
+        self.inflow.par_rows().for_each(flush_row);
+        self.outflow.par_rows().for_each(flush_row);
     }
 
     pub fn update_phi_theta_dot(&mut self) {
