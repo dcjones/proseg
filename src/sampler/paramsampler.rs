@@ -305,14 +305,10 @@ impl ParamSampler {
                         // "Outflow" is the number of transcripts in the current
                         // estimate that were not present in the point estimate.
                         let r = (x_cg - o_cg) as f32 / (x_cg as f32);
-                        retention_c.update(
-                            g,
-                            || RetentionFlowStats::default(),
-                            |rfs| {
-                                rfs.x_sum += r;
-                                rfs.x_sq_sum += r * r;
-                            },
-                        );
+                        retention_c.update(g, RetentionFlowStats::default, |rfs| {
+                            rfs.x_sum += r;
+                            rfs.x_sq_sum += r * r;
+                        });
                     });
                 });
         }
