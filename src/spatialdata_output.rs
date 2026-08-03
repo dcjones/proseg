@@ -24,7 +24,7 @@ use super::sampler::csrmat::CSRMat;
 use super::sampler::runvec::RunVec;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::TranscriptMetadata;
-use super::sampler::{FlowStats, ModelParams};
+use super::sampler::{FlowStats, ModelParams, RetentionFlowStats};
 use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
 use crate::schemas::*;
 
@@ -1489,6 +1489,86 @@ pub fn write_expected_outflow_zarr(
             e
         )
     }
+}
+
+/// Write the posterior mean and variance of the per-(cell, gene) retention rate,
+/// i.e. the fraction of cell `c`'s currently sampled gene-`g` transcripts that
+/// are also present in `c` in the reported point estimate. Written as the
+/// `retention` and `retention_var` layers.
+pub fn write_retention_zarr(
+    output_path: &Option<String>,
+    filename: &str,
+    params: &ModelParams,
+    nsamples: usize,
+) {
+    let path = if let Some(outputpath) = output_path {
+        Path::new(outputpath).join(filename)
+    } else {
+        Path::new(filename).to_path_buf()
+    };
+
+    if let Err(e) = write_retention_parts(&path, &params.retention, nsamples, "retention") {
+        panic!("Failed to write retention to {}: {}", path.display(), e)
+    }
+}
+
+fn write_retention_parts(
+    path: &Path,
+    retention_matrix: &CSRMat<u32, RetentionFlowStats>,
+    nsamples: usize,
+    layer_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+
+    let ncells = retention_matrix.m;
+    let ngenes = retention_matrix.n as usize;
+
+    let mut mean_data: Vec<f32> = Vec::new();
+    let mut var_data: Vec<f32> = Vec::new();
+    let mut indices: Vec<i32> = Vec::new();
+    let mut indptr: Vec<i32> = Vec::with_capacity(ncells + 1);
+    let mut offset = 0i32;
+
+    for i in 0..ncells {
+        indptr.push(offset);
+
+        let retention_read = retention_matrix.row(i).read();
+        for (gene, stats) in retention_read.iter_nonzeros() {
+            mean_data.push(stats.x_sum / nsamples as f32);
+            var_data.push(stats.variance(nsamples));
+            indices.push(gene as i32);
+            offset += 1;
+        }
+    }
+    indptr.push(offset);
+
+    // Mean layer (posterior mean retention rate)
+    write_anndata_csr_matrix_raw(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}"),
+        ncells,
+        ngenes,
+        &mean_data,
+        &indices,
+        &indptr,
+        "<f4",
+        "<i4",
+    )?;
+
+    // Variance layer (posterior variance of the retention rate)
+    write_anndata_csr_matrix_raw(
+        store,
+        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}_var"),
+        ncells,
+        ngenes,
+        &var_data,
+        &indices,
+        &indptr,
+        "<f4",
+        "<i4",
+    )?;
+
+    Ok(())
 }
 
 fn write_expected_flow_parts(

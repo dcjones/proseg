@@ -32,7 +32,8 @@ use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::{
     write_dispersion_params_zarr, write_expected_inflow_zarr, write_expected_outflow_zarr,
-    write_heterotypic_uncertainty_zarr, write_spatialdata_zarr, write_state_transitions_zarr,
+    write_heterotypic_uncertainty_zarr, write_retention_zarr, write_spatialdata_zarr,
+    write_state_transitions_zarr,
     write_transcript_posteriors_zarr,
 };
 
@@ -1448,6 +1449,15 @@ fn main() {
             args.uncertainty_samples,
         );
         info!("write expected outflow: {:?}", t0.elapsed());
+
+        let t0 = Instant::now();
+        write_retention_zarr(
+            &args.output_path,
+            output_spatialdata,
+            &params,
+            args.uncertainty_samples,
+        );
+        info!("write retention: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
         write_heterotypic_uncertainty_zarr(
