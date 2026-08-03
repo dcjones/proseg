@@ -1,3 +1,5 @@
+use crate::sampler::RetentionFlowStats;
+
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
@@ -158,124 +160,162 @@ impl ParamSampler {
         // locking on every per-transcript cell lookup.
         let states = voxels.states_view();
         let ntranscripts = voxels.transcript_voxel.len();
-        (0..ntranscripts).into_par_iter().for_each_init(rng, |rng, idx| {
-            {
-                // Current voxel and its cell assignment.
-                let voxel = Voxel::from_raw(
-                    voxels.transcript_voxel[idx].load(std::sync::atomic::Ordering::Relaxed),
-                );
-                let cell = states.get_voxel_cell(voxel);
+        (0..ntranscripts)
+            .into_par_iter()
+            .for_each_init(rng, |rng, idx| {
+                {
+                    // Current voxel and its cell assignment.
+                    let voxel = Voxel::from_raw(
+                        voxels.transcript_voxel[idx].load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    let cell = states.get_voxel_cell(voxel);
 
-                let TranscriptFixedState {
-                    original_voxel,
-                    gene,
-                } = voxels.transcript_fixed_state[idx];
+                    let TranscriptFixedState {
+                        original_voxel,
+                        gene,
+                    } = voxels.transcript_fixed_state[idx];
 
-                let density = voxels.get_voxel_density(original_voxel);
-                let k_origin = original_voxel.k() as usize;
+                    let density = voxels.get_voxel_density(original_voxel);
+                    let k_origin = original_voxel.k() as usize;
 
-                let is_background = if cell == BACKGROUND_CELL {
-                    true
-                } else {
-                    let is_frozen = params.frozen_cells[cell as usize];
-
-                    let λ_cg = if (gene as usize) < params.nunfactored {
-                        params.φ[[cell as usize, gene as usize]]
+                    let is_background = if cell == BACKGROUND_CELL {
+                        true
                     } else {
-                        let φ_c_factored = params.φ.slice(s![cell as usize, params.nunfactored..]);
-                        let θ_g_factored = params.θ.slice(s![gene as usize, params.nunfactored..]);
-                        φ_c_factored.dot(&θ_g_factored)
-                    };
+                        let is_frozen = params.frozen_cells[cell as usize];
 
-                    let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
-
-                    let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
-                        1.0
-                    } else {
-                        λ_cg / (λ_cg + λ_bg)
-                    };
-
-                    rng.random::<f32>() > fg_prob
-                };
-
-                let new_assignment = TranscriptAssignment {
-                    cell,
-                    background: is_background,
-                };
-                params.transcript_state[idx].store(new_assignment);
-
-                // Update transition counts
-                if record_samples {
-                    let ncells = voxels.ncells as u32;
-                    let src_state = params.reported_transcript_state[idx].load();
-
-                    if !src_state.background && src_state != new_assignment {
-                        let mut inflow_row =
-                            params.expected_inflow.row(src_state.cell as usize).write();
-
-                        inflow_row.update(gene, FlowStats::default, |v| {
-                            v.sample_count += 1;
-                            v.count += 1;
-                        });
-                    }
-
-                    if !new_assignment.background && src_state != new_assignment {
-                        let mut outflow_row = params
-                            .expected_outflow
-                            .row(new_assignment.cell as usize)
-                            .write();
-                        outflow_row.update(gene, FlowStats::default, |v| {
-                            v.sample_count += 1;
-                            v.count += 1;
-                        });
-                    }
-
-                    // Heterotypic uncertainty: record off-diagonal, foreground
-                    // cell→cell moves relative to the point estimate (src_state =
-                    // reported cell, `cell` = currently-sampled cell). Always on.
-                    if !src_state.background && !is_background && src_state.cell != cell {
-                        params
-                            .het_transitions
-                            .row(src_state.cell as usize)
-                            .write()
-                            .add(cell, 1);
-                    }
-
-                    if priors.record_state_transitions {
-                        let src_state = if src_state.background {
-                            ncells
+                        let λ_cg = if (gene as usize) < params.nunfactored {
+                            params.φ[[cell as usize, gene as usize]]
                         } else {
-                            src_state.cell
+                            let φ_c_factored =
+                                params.φ.slice(s![cell as usize, params.nunfactored..]);
+                            let θ_g_factored =
+                                params.θ.slice(s![gene as usize, params.nunfactored..]);
+                            φ_c_factored.dot(&θ_g_factored)
                         };
 
-                        let dest_state = if is_background { ncells } else { cell };
+                        let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
 
+                        let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
+                            1.0
+                        } else {
+                            λ_cg / (λ_cg + λ_bg)
+                        };
+
+                        rng.random::<f32>() > fg_prob
+                    };
+
+                    let new_assignment = TranscriptAssignment {
+                        cell,
+                        background: is_background,
+                    };
+                    params.transcript_state[idx].store(new_assignment);
+
+                    // Update transition counts
+                    if record_samples {
+                        let ncells = voxels.ncells as u32;
+                        let src_state = params.reported_transcript_state[idx].load();
+
+                        if !src_state.background && src_state != new_assignment {
+                            let mut inflow_row =
+                                params.expected_inflow.row(src_state.cell as usize).write();
+
+                            inflow_row.update(gene, FlowStats::default, |v| {
+                                v.sample_count += 1;
+                                v.count += 1;
+                            });
+                        }
+
+                        if !new_assignment.background && src_state != new_assignment {
+                            let mut outflow_row = params
+                                .expected_outflow
+                                .row(new_assignment.cell as usize)
+                                .write();
+                            outflow_row.update(gene, FlowStats::default, |v| {
+                                v.sample_count += 1;
+                                v.count += 1;
+                            });
+                        }
+
+                        // Heterotypic uncertainty: record off-diagonal, foreground
+                        // cell→cell moves relative to the point estimate (src_state =
+                        // reported cell, `cell` = currently-sampled cell). Always on.
+                        if !src_state.background && !is_background && src_state.cell != cell {
+                            params
+                                .het_transitions
+                                .row(src_state.cell as usize)
+                                .write()
+                                .add(cell, 1);
+                        }
+
+                        if priors.record_state_transitions {
+                            let src_state = if src_state.background {
+                                ncells
+                            } else {
+                                src_state.cell
+                            };
+
+                            let dest_state = if is_background { ncells } else { cell };
+
+                            params.state_transitions.add_local(
+                                src_state as usize,
+                                gene,
+                                dest_state,
+                            );
+                        }
+
+                        if let Some(ref counts) = params.transcript_assignment_counts {
+                            let assigned_cell = if is_background { BACKGROUND_CELL } else { cell };
+                            let mut map = counts[idx].lock();
+                            *map.entry(assigned_cell).or_insert(0) += 1;
+                        }
+                    }
+
+                    // Update count matrices
+                    if is_background {
+                        // if cell != BACKGROUND_CELL {
+                        params.background_counts[density][k_origin].add(gene as usize, 1);
+                        // }
+                    } else {
                         params
-                            .state_transitions
-                            .add_local(src_state as usize, gene, dest_state);
-                    }
-
-                    if let Some(ref counts) = params.transcript_assignment_counts {
-                        let assigned_cell = if is_background { BACKGROUND_CELL } else { cell };
-                        let mut map = counts[idx].lock();
-                        *map.entry(assigned_cell).or_insert(0) += 1;
+                            .foreground_counts
+                            .row(cell as usize)
+                            .write()
+                            .add(gene, 1);
                     }
                 }
+            });
 
-                // Update count matrices
-                if is_background {
-                    // if cell != BACKGROUND_CELL {
-                    params.background_counts[density][k_origin].add(gene as usize, 1);
-                    // }
-                } else {
-                    params
-                        .foreground_counts
-                        .row(cell as usize)
-                        .write()
-                        .add(gene, 1);
-                }
-            }
-        });
+        // Update retention rate estimates
+        if record_samples {
+            params
+                .foreground_counts
+                .par_rows()
+                .zip(params.expected_outflow.par_rows())
+                .zip(params.retention.par_rows())
+                .for_each(|((x_c, o_c), retention_c)| {
+                    let x_c = x_c.read();
+                    let o_c = o_c.read();
+                    let mut retention_c = retention_c.write();
+
+                    x_c.iter_nonzeros().for_each(|(g, x_cg)| {
+                        let o_cg = o_c.get(g).map_or(0, |fs| fs.sample_count);
+                        assert!(o_cg <= x_cg);
+                        // Reminder: "retention" is the rate at which c's
+                        // transcripts are present in the point estimate.
+                        // "Outflow" is the number of transcripts in the current
+                        // estimate that were not present in the point estimate.
+                        let r = (x_cg - o_cg) as f32 / (x_cg as f32);
+                        retention_c.update(
+                            g,
+                            || RetentionFlowStats::default(),
+                            |rfs| {
+                                rfs.x_sum += r;
+                                rfs.x_sq_sum += r * r;
+                            },
+                        );
+                    });
+                });
+        }
 
         if priors.record_state_transitions && record_samples {
             params.state_transitions.flush_locals();
@@ -325,9 +365,7 @@ impl ParamSampler {
         let t0 = Instant::now();
         if let Some(dispersion) = priors.dispersion {
             params.rφ.fill(dispersion);
-        } else if burnin
-            && let Some(dispersion) = priors.burnin_dispersion
-        {
+        } else if burnin && let Some(dispersion) = priors.burnin_dispersion {
             params.rφ.fill(dispersion);
         } else {
             self.sample_rφ(priors, params);
@@ -381,7 +419,17 @@ impl ParamSampler {
 
                 // for every component
                 let mut z_probs_sum = 0.0;
-                for (z_probs_t, log_π_t, r_t, lgamma_r_t, s_t, log_ξ_t, log_1m_ξ_t, μ_vol_c, σ_vol_c) in izip!(
+                for (
+                    z_probs_t,
+                    log_π_t,
+                    r_t,
+                    lgamma_r_t,
+                    s_t,
+                    log_ξ_t,
+                    log_1m_ξ_t,
+                    μ_vol_c,
+                    σ_vol_c,
+                ) in izip!(
                     z_probs.iter_mut(),
                     params.log_π.iter(),
                     params.rφ.rows(),
@@ -626,7 +674,9 @@ impl ParamSampler {
             .θ
             .slice_mut(s![params.nunfactored.., params.nunfactored..]);
         // gene_latent_counts already holds only the factored hidden columns.
-        let gene_latent_counts_fac = params.gene_latent_counts.slice(s![params.nunfactored.., ..]);
+        let gene_latent_counts_fac = params
+            .gene_latent_counts
+            .slice(s![params.nunfactored.., ..]);
 
         // Sampling with Dirichlet prior on θ (I think Gamma makes more
         // sense, but this is an alternative to consider)

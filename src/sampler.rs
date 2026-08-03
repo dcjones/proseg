@@ -1,3 +1,4 @@
+mod atomiccountvec;
 pub mod connectivity;
 pub mod csrmat;
 mod featureselection;
@@ -10,7 +11,6 @@ mod polyagamma;
 mod polygons;
 pub mod runvec;
 mod sampleset;
-mod atomiccountvec;
 pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcripts;
@@ -24,6 +24,7 @@ use csrmat::Increment;
 use transcripts::CellIndex;
 use transitionmat::TransitionMat;
 
+use atomiccountvec::AtomicCountVec;
 use itertools::izip;
 use math::randn;
 use multinomial::Multinomial;
@@ -34,7 +35,6 @@ use onlinestats::CountMeanEstimator;
 use parking_lot::Mutex;
 use rand::rng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use atomiccountvec::AtomicCountVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Add, AddAssign};
@@ -350,6 +350,47 @@ impl TranscriptState {
     }
 }
 
+// Track statistics needed to compute the posterior mean and varance over retention rates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RetentionFlowStats {
+    pub x_sum: f32,
+    pub x_sq_sum: f32,
+}
+
+impl RetentionFlowStats {
+    pub fn variance(&self, nsamples: usize) -> f32 {
+        if nsamples <= 1 {
+            return 0.0;
+        }
+        let n = nsamples as f64;
+        let x_sum = self.x_sum as f64;
+        let x_sq_sum = self.x_sq_sum as f64;
+        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
+        ((x_sq_sum - x_sum * x_sum / n) / (n - 1.0)) as f32
+    }
+}
+
+impl std::ops::Add for RetentionFlowStats {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            x_sum: self.x_sum + rhs.x_sum,
+            x_sq_sum: self.x_sq_sum + rhs.x_sq_sum,
+        }
+    }
+}
+
+impl num::traits::Zero for RetentionFlowStats {
+    fn zero() -> Self {
+        Self::default()
+    }
+    fn is_zero(&self) -> bool {
+        // An entry is considered zero (and will be skipped by iter_nonzeros)
+        // only when no events have ever been recorded for it.
+        self.x_sum == 0f32 && self.x_sq_sum == 0f32
+    }
+}
+
 /// Per-entry statistics for tracking expected flow and its sample variance across MCMC samples.
 /// The variance is computed using the algebraically equivalent form of Welford's online algorithm:
 /// sum-of-squares accumulation avoids needing to process zero-valued sample observations explicitly.
@@ -459,6 +500,10 @@ pub struct ModelParams {
     // For cell c and gene g, count the number of times a transcript is in cell c that was
     // reported in another cell/state.
     pub expected_outflow: CSRMat<u32, FlowStats>,
+
+    // [ncells, ngenes]
+    // Tracking stats to compute posterior mean and var for retention.
+    pub retention: CSRMat<u32, RetentionFlowStats>,
 
     // [ncells, ncells] Off-diagonal, foreground-only cell→cell transition counts
     // accumulated during the uncertainty phase, keyed (reported/point-estimate
@@ -714,6 +759,7 @@ impl ModelParams {
 
         let expected_inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let expected_outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
+        let retention = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let het_transitions = CSRMat::zeros(ncells, ncells as u32 - 1);
 
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
@@ -841,6 +887,7 @@ impl ModelParams {
             state_transitions,
             expected_inflow,
             expected_outflow,
+            retention,
             het_transitions,
             transcript_assignment_counts,
             foreground_counts,

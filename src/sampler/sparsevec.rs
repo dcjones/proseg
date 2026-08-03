@@ -169,6 +169,18 @@ where
         }
     }
 
+    pub fn get(&self, key: K) -> Option<V> {
+        if self.leaf_arena.is_empty() {
+            return None;
+        }
+        let leaf_idx = self.find_leaf(key);
+        let leaf = self.leaf(leaf_idx);
+        match leaf.binary_search(key) {
+            Ok(pos) => Some(leaf.keyvals[pos].1),
+            Err(_) => None,
+        }
+    }
+
     // Set all values to zero (keeps the keys)
     pub fn zero_all(&mut self)
     where
@@ -522,9 +534,10 @@ where
 
                 // Check if we've exceeded the to bound
                 if let Some(to) = self.to
-                    && key > to {
-                        return None;
-                    }
+                    && key > to
+                {
+                    return None;
+                }
 
                 // Skip zero values (both explicit zeros in the tree)
                 if !val.is_zero() {
@@ -685,18 +698,6 @@ mod tests {
         K: Copy + Ord + std::fmt::Debug,
         V: Copy + Zero + std::fmt::Debug,
     {
-        fn get(&self, key: K) -> Option<V> {
-            if self.leaf_arena.is_empty() {
-                return None;
-            }
-            let leaf_idx = self.find_leaf(key);
-            let leaf = self.leaf(leaf_idx);
-            match leaf.binary_search(key) {
-                Ok(pos) => Some(leaf.keyvals[pos].1),
-                Err(_) => None,
-            }
-        }
-
         // Collect all key-value pairs in sorted order by traversing leaf siblings
         fn collect_all(&self) -> Vec<(K, V)> {
             let mut result = Vec::new();
