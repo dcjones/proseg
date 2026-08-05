@@ -350,81 +350,72 @@ impl TranscriptState {
     }
 }
 
-// Track statistics needed to compute the posterior mean and varance over retention rates.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct RetentionFlowStats {
-    pub x_sum: f32,
-    pub x_sq_sum: f32,
-}
-
-impl RetentionFlowStats {
-    pub fn variance(&self, nsamples: usize) -> f32 {
-        if nsamples <= 1 {
-            return 0.0;
-        }
-        let n = nsamples as f64;
-        let x_sum = self.x_sum as f64;
-        let x_sq_sum = self.x_sq_sum as f64;
-        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
-        ((x_sq_sum - x_sum * x_sum / n) / (n - 1.0)) as f32
-    }
-}
-
-impl std::ops::Add for RetentionFlowStats {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            x_sum: self.x_sum + rhs.x_sum,
-            x_sq_sum: self.x_sq_sum + rhs.x_sq_sum,
-        }
-    }
-}
-
-impl num::traits::Zero for RetentionFlowStats {
-    fn zero() -> Self {
-        Self::default()
-    }
-    fn is_zero(&self) -> bool {
-        // An entry is considered zero (and will be skipped by iter_nonzeros)
-        // only when no events have ever been recorded for it.
-        self.x_sum == 0f32 && self.x_sq_sum == 0f32
-    }
-}
-
-/// Per-entry statistics for tracking expected flow and its sample variance across MCMC samples.
-/// The variance is computed using the algebraically equivalent form of Welford's online algorithm:
-/// sum-of-squares accumulation avoids needing to process zero-valued sample observations explicitly.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct FlowStats {
-    /// Flow events accumulated during the current sample; reset to 0 after each flush.
-    pub sample_count: u32,
-    /// Total accumulated count across all recorded samples: sum(x_i).
-    pub count: u32,
-    /// Sum of squared per-sample counts: sum(x_i^2); used for variance computation.
-    pub count_sq: u64,
+    // re-computed every iteration
+    pub outflow: u32,
+    pub inflow: u32,
+
+    // accumulated over sample
+    pub outflow_sum: u32,
+    pub inflow_sum: u32,
+    pub outflow_sq_sum: u64,
+    pub inflow_sq_sum: u64,
+
+    // for co-variance estimation
+    outflow_mean: f32,
+    inflow_mean: f32,
+    cov: f32,
 }
 
 impl FlowStats {
-    /// Sample variance of the per-sample flow count across `nsamples` samples.
-    pub fn variance(&self, nsamples: usize) -> f32 {
+    pub fn covariance(&self, nsamples: usize) -> f32 {
         if nsamples <= 1 {
             return 0.0;
         }
+        (self.cov as f64 / (nsamples - 1) as f64) as f32
+    }
+
+    pub fn inflow_variance(&self, nsamples: usize) -> f32 {
         let n = nsamples as f64;
-        let count = self.count as f64;
-        let count_sq = self.count_sq as f64;
+        let x = self.inflow_sum as f64;
+        let x_sq = self.inflow_sq_sum as f64;
         // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
-        ((count_sq - count * count / n) / (n - 1.0)) as f32
+        ((x_sq - x * x / n) / (n - 1.0)) as f32
+    }
+
+    pub fn outflow_variance(&self, nsamples: usize) -> f32 {
+        let n = nsamples as f64;
+        let x = self.outflow_sum as f64;
+        let x_sq = self.outflow_sq_sum as f64;
+        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
+        ((x_sq - x * x / n) / (n - 1.0)) as f32
+    }
+
+    // Called after outflow and inflow have been computed to update online covariance stats
+    pub fn update_cov_stats(&mut self, sample_num: u32) {
+        let n = (sample_num + 1) as f32;
+        let dx = self.inflow as f32 - self.inflow_mean;
+        self.inflow_mean += dx / n;
+        self.outflow_mean += (self.outflow as f32 - self.outflow_mean) / n;
+        self.cov += dx * (self.outflow as f32 - self.outflow_mean);
     }
 }
 
+// This is slightly silly, and isn't used, but necessary to define the Zero trait.
 impl std::ops::Add for FlowStats {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         Self {
-            sample_count: self.sample_count + rhs.sample_count,
-            count: self.count + rhs.count,
-            count_sq: self.count_sq + rhs.count_sq,
+            outflow: self.outflow + rhs.outflow,
+            inflow: self.inflow + rhs.inflow,
+            outflow_sum: self.outflow_sum + rhs.outflow_sum,
+            inflow_sum: self.inflow_sum + rhs.inflow_sum,
+            outflow_sq_sum: self.outflow_sq_sum + rhs.outflow_sq_sum,
+            inflow_sq_sum: self.inflow_sq_sum + rhs.inflow_sq_sum,
+            outflow_mean: self.outflow_mean + rhs.outflow_mean,
+            inflow_mean: self.inflow_mean + rhs.inflow_mean,
+            cov: self.cov + rhs.cov,
         }
     }
 }
@@ -433,10 +424,9 @@ impl num::traits::Zero for FlowStats {
     fn zero() -> Self {
         Self::default()
     }
+
     fn is_zero(&self) -> bool {
-        // An entry is considered zero (and will be skipped by iter_nonzeros)
-        // only when no events have ever been recorded for it.
-        self.count == 0 && self.sample_count == 0
+        *self == Self::default()
     }
 }
 
@@ -492,18 +482,7 @@ pub struct ModelParams {
     // check this comment before "fixing" either name.
 
     // [ncells, ngenes]
-    // For cell c and gene g, count the number of times a transcript that was reported
-    // in cell c is in a cell/state other than c.
-    pub inflow: CSRMat<u32, FlowStats>,
-
-    // [ncells, ngenes]
-    // For cell c and gene g, count the number of times a transcript is in cell c that was
-    // reported in another cell/state.
-    pub outflow: CSRMat<u32, FlowStats>,
-
-    // [ncells, ngenes]
-    // Tracking stats to compute posterior mean and var for retention.
-    pub retention: CSRMat<u32, RetentionFlowStats>,
+    pub flow_stats: CSRMat<u32, FlowStats>,
 
     // [ncells, ncells] Off-diagonal, foreground-only cell→cell transition counts
     // accumulated during the uncertainty phase, keyed (reported/point-estimate
@@ -649,7 +628,7 @@ pub struct ModelParams {
     // [ncells] True where morphology updates are prohibited.
     pub frozen_cells: Vec<bool>,
 
-    // time, which is incremented after every iteration
+    // time, which is incremented after every uncertainty sample (i.e. when record_samples is true)
     t: u32,
 }
 
@@ -757,9 +736,7 @@ impl ModelParams {
 
         let state_transitions = TransitionMat::new(ncells + 1);
 
-        let inflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
-        let outflow = CSRMat::zeros(ncells, ngenes as u32 - 1);
-        let retention = CSRMat::zeros(ncells, ngenes as u32 - 1);
+        let flow_stats = CSRMat::zeros(ncells, ngenes as u32 - 1);
         let het_transitions = CSRMat::zeros(ncells, ncells as u32 - 1);
 
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
@@ -885,9 +862,7 @@ impl ModelParams {
             transcript_state,
             reported_transcript_state,
             state_transitions,
-            inflow,
-            outflow,
-            retention,
+            flow_stats,
             het_transitions,
             transcript_assignment_counts,
             foreground_counts,
@@ -1014,11 +989,19 @@ impl ModelParams {
             }
         }
 
-        let flow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
+        let inflow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
             flow.row(c)
                 .read()
                 .iter_nonzeros()
-                .map(|(_gene, stats)| stats.count as f32)
+                .map(|(_gene, stats)| stats.inflow_sum as f32)
+                .sum()
+        };
+
+        let outflow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
+            flow.row(c)
+                .read()
+                .iter_nonzeros()
+                .map(|(_gene, stats)| stats.outflow_sum as f32)
                 .sum()
         };
 
@@ -1027,8 +1010,9 @@ impl ModelParams {
             // Clamped: the two matrices are accumulated in the same loop over the
             // same events, so the cell→cell part can only be a subset, but keep the
             // reported quantity non-negative regardless.
-            retained_noise[c] = ((flow_row_sum(&self.inflow, c) - het_from[c]) / nsamples).max(0.0);
-            lost[c] = ((flow_row_sum(&self.outflow, c) - het_to[c]) / nsamples).max(0.0);
+            retained_noise[c] =
+                ((inflow_row_sum(&self.flow_stats, c) - het_from[c]) / nsamples).max(0.0);
+            lost[c] = ((outflow_row_sum(&self.flow_stats, c) - het_to[c]) / nsamples).max(0.0);
         }
 
         (lost, retained_noise)
@@ -1133,14 +1117,13 @@ impl ModelParams {
         let flush_row = |row: csrmat::CSRRow<'_, u32, FlowStats>| {
             let mut guard = row.write();
             guard.guard.scale_all(|stats| {
-                if stats.sample_count > 0 {
-                    stats.count_sq += stats.sample_count as u64 * stats.sample_count as u64;
-                    stats.sample_count = 0;
-                }
+                stats.inflow_sq_sum += stats.inflow as u64 * stats.inflow as u64;
+                stats.outflow_sq_sum += stats.outflow as u64 * stats.outflow as u64;
+                stats.inflow = 0;
+                stats.outflow = 0;
             });
         };
-        self.inflow.par_rows().for_each(flush_row);
-        self.outflow.par_rows().for_each(flush_row);
+        self.flow_stats.par_rows().for_each(flush_row);
     }
 
     pub fn update_phi_theta_dot(&mut self) {

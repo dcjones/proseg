@@ -1,5 +1,3 @@
-use crate::sampler::RetentionFlowStats;
-
 use super::math::{negbin_logpmf, normal_logpdf, odds_to_prob, rand_crt, randn};
 use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
@@ -73,7 +71,9 @@ impl ParamSampler {
                 .update(&params.foreground_counts);
         }
 
-        params.t += 1;
+        if record_samples {
+            params.t += 1;
+        }
     }
 
     fn sample_volume_params(&self, priors: &ModelPriors, params: &mut ModelParams) {
@@ -216,20 +216,19 @@ impl ParamSampler {
                         let src_state = params.reported_transcript_state[idx].load();
 
                         if !src_state.background && src_state != new_assignment {
-                            let mut inflow_row = params.inflow.row(src_state.cell as usize).write();
-
-                            inflow_row.update(gene, FlowStats::default, |v| {
-                                v.sample_count += 1;
-                                v.count += 1;
-                            });
+                            let mut row = params.flow_stats.row(src_state.cell as usize).write();
+                            row.update(gene, FlowStats::default, |v| {
+                                v.inflow_sum += 1;
+                                v.inflow += 1;
+                            })
                         }
 
                         if !new_assignment.background && src_state != new_assignment {
-                            let mut outflow_row =
-                                params.outflow.row(new_assignment.cell as usize).write();
-                            outflow_row.update(gene, FlowStats::default, |v| {
-                                v.sample_count += 1;
-                                v.count += 1;
+                            let mut row =
+                                params.flow_stats.row(new_assignment.cell as usize).write();
+                            row.update(gene, FlowStats::default, |v| {
+                                v.outflow_sum += 1;
+                                v.outflow += 1;
                             });
                         }
 
@@ -282,33 +281,13 @@ impl ParamSampler {
                 }
             });
 
-        // Update retention rate estimates
-        if record_samples {
-            params
-                .foreground_counts
-                .par_rows()
-                .zip(params.outflow.par_rows())
-                .zip(params.retention.par_rows())
-                .for_each(|((x_c, o_c), retention_c)| {
-                    let x_c = x_c.read();
-                    let o_c = o_c.read();
-                    let mut retention_c = retention_c.write();
-
-                    x_c.iter_nonzeros().for_each(|(g, x_cg)| {
-                        let o_cg = o_c.get(g).map_or(0, |fs| fs.sample_count);
-                        assert!(o_cg <= x_cg);
-                        // Reminder: "retention" is the rate at which c's
-                        // transcripts are present in the point estimate.
-                        // "Outflow" is the number of transcripts in the current
-                        // estimate that were not present in the point estimate.
-                        let r = (x_cg - o_cg) as f32 / (x_cg as f32);
-                        retention_c.update(g, RetentionFlowStats::default, |rfs| {
-                            rfs.x_sum += r;
-                            rfs.x_sq_sum += r * r;
-                        });
-                    });
-                });
-        }
+        // Update covariance stats
+        params.flow_stats.par_rows().for_each(|row| {
+            let mut row = row.write();
+            row.guard.iter_mut().for_each(|(_gene, stats)| {
+                stats.update_cov_stats(params.t);
+            });
+        });
 
         if priors.record_state_transitions && record_samples {
             params.state_transitions.flush_locals();

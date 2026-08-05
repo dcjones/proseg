@@ -318,10 +318,6 @@ where
     pub fn iter_nonzeros_to<'b>(&'b self, to: J) -> impl Iterator<Item = (J, T)> + 'b {
         self.guard.iter_to(to)
     }
-
-    pub fn get(&self, key: J) -> Option<T> {
-        self.guard.get(key)
-    }
 }
 
 impl<'a, J, T> CSRRowReadLock<'a, J, T>

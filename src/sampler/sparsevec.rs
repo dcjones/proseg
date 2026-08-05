@@ -1,6 +1,7 @@
 use arrayvec::ArrayVec;
 use num::traits::Zero;
 use std::cmp::Ord;
+use std::marker::PhantomData;
 
 use super::csrmat::Increment;
 
@@ -132,6 +133,39 @@ where
         }
     }
 
+    // Create an iterator giving mutable access to the values of every stored
+    // entry, in key order. Unlike `iter`, entries with explicitly stored zero
+    // values are included, so they can be updated in place.
+    pub fn iter_mut(&mut self) -> SparseCountVecIterMut<'_, K, V> {
+        if self.leaf_arena.is_empty() {
+            return SparseCountVecIterMut {
+                arena: self.leaf_arena.as_mut_ptr(),
+                current_leaf: NULL_IDX,
+                position_in_leaf: 0,
+                _marker: PhantomData,
+            };
+        }
+
+        // Find the leftmost leaf
+        let mut current = self.root;
+        let first_leaf = loop {
+            match current {
+                NodePtr::Leaf(idx) => break idx,
+                NodePtr::Internal(idx) => {
+                    let internal = self.internal(idx);
+                    current = internal.children[0];
+                }
+            }
+        };
+
+        SparseCountVecIterMut {
+            arena: self.leaf_arena.as_mut_ptr(),
+            current_leaf: first_leaf,
+            position_in_leaf: 0,
+            _marker: PhantomData,
+        }
+    }
+
     // Create an iterator over all values (including implicit zeros)
     // Iterates from key 0 (K::zero()) up to and including the bound parameter
     pub fn iter_dense(&self, bound: K) -> DenseIter<'_, K, V>
@@ -166,18 +200,6 @@ where
             bound,
             current_leaf: first_leaf,
             position_in_leaf: 0,
-        }
-    }
-
-    pub fn get(&self, key: K) -> Option<V> {
-        if self.leaf_arena.is_empty() {
-            return None;
-        }
-        let leaf_idx = self.find_leaf(key);
-        let leaf = self.leaf(leaf_idx);
-        match leaf.binary_search(key) {
-            Ok(pos) => Some(leaf.keyvals[pos].1),
-            Err(_) => None,
         }
     }
 
@@ -552,6 +574,52 @@ where
     }
 }
 
+// Iterator giving mutable access to the values of every stored entry.
+//
+// Holds a raw pointer to the leaf arena rather than a `&mut SparseCountVec` so
+// that yielded references can outlive each `next` call. This is sound because
+// the iterator borrows the vector mutably for its whole lifetime (so the arena
+// can't be moved or otherwise accessed), leaves are visited at most once by
+// following the sibling chain, and `position_in_leaf` strictly increases within
+// a leaf, so no two yielded references alias.
+pub struct SparseCountVecIterMut<'a, K, V> {
+    arena: *mut LeafNode<K, V>,
+    current_leaf: LeafIdx,
+    position_in_leaf: usize,
+    _marker: PhantomData<&'a mut SparseCountVec<K, V>>,
+}
+
+impl<'a, K, V> Iterator for SparseCountVecIterMut<'a, K, V>
+where
+    K: Copy + Ord,
+{
+    type Item = (K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.current_leaf == NULL_IDX {
+                return None;
+            }
+
+            // Safety: see the comment on the struct. `current_leaf` is always a
+            // valid index into the arena, and the arena is exclusively borrowed.
+            let leaf = unsafe { &mut *self.arena.add(self.current_leaf as usize) };
+
+            if self.position_in_leaf < leaf.keyvals.len() {
+                let (key, val) = &mut leaf.keyvals[self.position_in_leaf];
+                let key = *key;
+                let val = val as *mut V;
+                self.position_in_leaf += 1;
+                return Some((key, unsafe { &mut *val }));
+            }
+
+            // Move to the next leaf
+            self.current_leaf = leaf.sibling;
+            self.position_in_leaf = 0;
+        }
+    }
+}
+
 // Iterator for traversing all values including implicit zeros
 pub struct DenseIter<'a, K, V> {
     vec: &'a SparseCountVec<K, V>,
@@ -781,6 +849,34 @@ mod tests {
         }
         assert_eq!(vec.get(10), Some(100));
         assert_eq!(vec.get(11), None); // Odd numbers not inserted
+        assert!(vec.verify_sorted());
+    }
+
+    #[test]
+    fn test_iter_mut() {
+        let mut vec: SparseCountVec<u32, i32> = SparseCountVec::new();
+
+        // Empty vector
+        assert_eq!(vec.iter_mut().count(), 0);
+
+        // Enough entries to span multiple leaves
+        for i in 0..100u32 {
+            vec.update_count(i, |v| *v += i as i32);
+        }
+        // An explicitly stored zero, which iter_mut should still visit
+        vec.update_count(50, |v| *v = 0);
+
+        // Keys come out in order, and every stored entry is visited
+        let keys: Vec<u32> = vec.iter_mut().map(|(k, _)| k).collect();
+        assert_eq!(keys, (0..100u32).collect::<Vec<u32>>());
+
+        for (k, v) in vec.iter_mut() {
+            *v = k as i32 * 2;
+        }
+
+        for i in 0..100u32 {
+            assert_eq!(vec.get(i), Some(i as i32 * 2));
+        }
         assert!(vec.verify_sorted());
     }
 

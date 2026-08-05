@@ -24,7 +24,7 @@ use super::sampler::csrmat::CSRMat;
 use super::sampler::runvec::RunVec;
 use super::sampler::transcripts::Transcript;
 use super::sampler::voxelcheckerboard::TranscriptMetadata;
-use super::sampler::{FlowStats, ModelParams, RetentionFlowStats};
+use super::sampler::{FlowStats, ModelParams};
 use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
 use crate::schemas::*;
 
@@ -1454,7 +1454,7 @@ pub fn write_inflow_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_flow_parts(&path, &params.inflow, nsamples, "inflow") {
+    if let Err(e) = write_flow_parts(&path, &params.flow_stats, nsamples, FlowDirection::In) {
         panic!(
             "Failed to write expected inflow to {}: {}",
             path.display(),
@@ -1475,7 +1475,7 @@ pub fn write_outflow_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_flow_parts(&path, &params.outflow, nsamples, "outflow") {
+    if let Err(e) = write_flow_parts(&path, &params.flow_stats, nsamples, FlowDirection::Out) {
         panic!(
             "Failed to write expected outflow to {}: {}",
             path.display(),
@@ -1484,11 +1484,12 @@ pub fn write_outflow_zarr(
     }
 }
 
-/// Write the posterior mean and variance of the per-(cell, gene) retention rate,
-/// i.e. the fraction of cell `c`'s currently sampled gene-`g` transcripts that
-/// are also present in `c` in the reported point estimate. Written as the
-/// `retention` and `retention_var` layers.
-pub fn write_retention_zarr(
+/// Write the posterior covariance between per-sample inflow and outflow for each
+/// (cell, gene), as the `flow_covariance` layer. A strongly negative value means
+/// the cell tends to either gain or lose that gene's transcripts in a given
+/// sample but not both; a positive value means the transcripts churn in and out
+/// together.
+pub fn write_flow_covariance_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
@@ -1500,24 +1501,26 @@ pub fn write_retention_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) = write_retention_parts(&path, &params.retention, nsamples, "retention") {
-        panic!("Failed to write retention to {}: {}", path.display(), e)
+    if let Err(e) = write_flow_covariance_parts(&path, &params.flow_stats, nsamples) {
+        panic!(
+            "Failed to write flow covariance to {}: {}",
+            path.display(),
+            e
+        )
     }
 }
 
-fn write_retention_parts(
+fn write_flow_covariance_parts(
     path: &Path,
-    retention_matrix: &CSRMat<u32, RetentionFlowStats>,
+    flow_matrix: &CSRMat<u32, FlowStats>,
     nsamples: usize,
-    layer_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    let ncells = retention_matrix.m;
-    let ngenes = retention_matrix.n as usize;
+    let ncells = flow_matrix.m;
+    let ngenes = flow_matrix.n as usize;
 
-    let mut mean_data: Vec<f32> = Vec::new();
-    let mut var_data: Vec<f32> = Vec::new();
+    let mut cov_data: Vec<f32> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
     let mut indptr: Vec<i32> = Vec::with_capacity(ncells + 1);
     let mut offset = 0i32;
@@ -1525,36 +1528,27 @@ fn write_retention_parts(
     for i in 0..ncells {
         indptr.push(offset);
 
-        let retention_read = retention_matrix.row(i).read();
-        for (gene, stats) in retention_read.iter_nonzeros() {
-            mean_data.push(stats.x_sum / nsamples as f32);
-            var_data.push(stats.variance(nsamples));
+        let flow_read = flow_matrix.row(i).read();
+        for (gene, stats) in flow_read.iter_nonzeros() {
+            // Entries where one direction never fired have zero covariance, which
+            // is the implicit value anyway, so leave them out of the pattern.
+            let cov = stats.covariance(nsamples);
+            if cov == 0.0 {
+                continue;
+            }
+            cov_data.push(cov);
             indices.push(gene as i32);
             offset += 1;
         }
     }
     indptr.push(offset);
 
-    // Mean layer (posterior mean retention rate)
-    write_anndata_csr_matrix_raw(
-        store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}"),
-        ncells,
-        ngenes,
-        &mean_data,
-        &indices,
-        &indptr,
-        "<f4",
-        "<i4",
-    )?;
-
-    // Variance layer (posterior variance of the retention rate)
     write_anndata_csr_matrix_raw(
         store,
-        &format!("/tables/{SD_TABLE_NAME}/layers/{layer_name}_var"),
+        &format!("/tables/{SD_TABLE_NAME}/layers/flow_covariance"),
         ncells,
         ngenes,
-        &var_data,
+        &cov_data,
         &indices,
         &indptr,
         "<f4",
@@ -1564,13 +1558,47 @@ fn write_retention_parts(
     Ok(())
 }
 
+/// Which half of the combined per-(cell, gene) [`FlowStats`] entry to write out.
+/// Inflow and outflow now share one sparse matrix, so the direction selects both
+/// the accumulators read and the layer names written.
+#[derive(Clone, Copy)]
+enum FlowDirection {
+    In,
+    Out,
+}
+
+impl FlowDirection {
+    fn layer_name(self) -> &'static str {
+        match self {
+            FlowDirection::In => "inflow",
+            FlowDirection::Out => "outflow",
+        }
+    }
+
+    /// Total flow events accumulated across all recorded samples.
+    fn sum(self, stats: &FlowStats) -> u32 {
+        match self {
+            FlowDirection::In => stats.inflow_sum,
+            FlowDirection::Out => stats.outflow_sum,
+        }
+    }
+
+    fn variance(self, stats: &FlowStats, nsamples: usize) -> f32 {
+        match self {
+            FlowDirection::In => stats.inflow_variance(nsamples),
+            FlowDirection::Out => stats.outflow_variance(nsamples),
+        }
+    }
+}
+
 fn write_flow_parts(
     path: &Path,
     flow_matrix: &CSRMat<u32, FlowStats>,
     nsamples: usize,
-    layer_name: &str,
+    direction: FlowDirection,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
+    let layer_name = direction.layer_name();
 
     let ncells = flow_matrix.m;
     let ngenes = flow_matrix.n as usize;
@@ -1586,8 +1614,15 @@ fn write_flow_parts(
 
         let flow_read = flow_matrix.row(i).read();
         for (gene, stats) in flow_read.iter_nonzeros() {
-            mean_data.push(stats.count as f32 / nsamples as f32);
-            var_data.push(stats.variance(nsamples));
+            // An entry is nonzero if *either* direction saw a flow event, so skip
+            // the ones that are zero for the direction being written rather than
+            // storing explicit zeros in both layers.
+            let sum = direction.sum(&stats);
+            if sum == 0 {
+                continue;
+            }
+            mean_data.push(sum as f32 / nsamples as f32);
+            var_data.push(direction.variance(&stats, nsamples));
             indices.push(gene as i32);
             offset += 1;
         }

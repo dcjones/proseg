@@ -77,8 +77,6 @@ impl ParamOptimizer {
         let t0 = Instant::now();
         self.optimize_background_rates(priors, params);
         trace_time("optimize_background_rates", t0);
-
-        params.t += 1;
     }
 
     // Posterior mode of the per-component log-volume mean μ and std σ. The mode of
@@ -564,17 +562,18 @@ impl ParamOptimizer {
                 let mut best_t = 0u32;
                 let mut best_lp = f64::NEG_INFINITY;
 
-                for (t, (log_π_t, r_t, lgamma_r_t, s_t, log_ξ_t, log_1m_ξ_t, μ_vol_c, σ_vol_c)) in izip!(
-                    params.log_π.iter(),
-                    params.rφ.rows(),
-                    params.lgamma_rφ.rows(),
-                    params.sφ.rows(),
-                    params.log_ξ.rows(),
-                    params.log_1m_ξ.rows(),
-                    &params.μ_volume,
-                    &params.σ_volume
-                )
-                .enumerate()
+                for (t, (log_π_t, r_t, lgamma_r_t, s_t, log_ξ_t, log_1m_ξ_t, μ_vol_c, σ_vol_c)) in
+                    izip!(
+                        params.log_π.iter(),
+                        params.rφ.rows(),
+                        params.lgamma_rφ.rows(),
+                        params.sφ.rows(),
+                        params.log_ξ.rows(),
+                        params.log_1m_ξ.rows(),
+                        &params.μ_volume,
+                        &params.σ_volume
+                    )
+                    .enumerate()
                 {
                     let mut lp = *log_π_t as f64;
 
@@ -836,14 +835,17 @@ impl ParamOptimizer {
             .for_each(|t, r_t, l_t, s_t| {
                 let b0 = w * pop[t];
                 let a0 = target * b0;
-                Zip::from(r_t).and(l_t).and(s_t).for_each(|r_tk, &lsum, &sinv| {
-                    let rate = b0 + sinv;
-                    *r_tk = if rate > 0.0 {
-                        ((a0 + lsum - 1.0).max(0.0) / rate).max(min_rφ)
-                    } else {
-                        target
-                    };
-                });
+                Zip::from(r_t)
+                    .and(l_t)
+                    .and(s_t)
+                    .for_each(|r_tk, &lsum, &sinv| {
+                        let rate = b0 + sinv;
+                        *r_tk = if rate > 0.0 {
+                            ((a0 + lsum - 1.0).max(0.0) / rate).max(min_rφ)
+                        } else {
+                            target
+                        };
+                    });
             });
     }
 
