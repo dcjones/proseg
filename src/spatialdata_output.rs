@@ -1265,12 +1265,13 @@ fn write_anndata_csr_matrix_raw<
     Ok(())
 }
 
+/// Write the cell↔cell state transition counts to `obsp/state_transitions`, along
+/// with the background transitions, which don't fit in an [ncells, ncells] matrix,
+/// as the `obs` columns `from_bg_trans_count` and `to_bg_trans_count`.
 pub fn write_state_transitions_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
-    gene_names: &[String],
-    output_gene_transitions: bool,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -1278,9 +1279,7 @@ pub fn write_state_transitions_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) =
-        write_state_transitions_parts(&path, params, gene_names, output_gene_transitions)
-    {
+    if let Err(e) = write_state_transitions_parts(&path, params) {
         panic!(
             "Failed to write state transitions to {}: {}",
             path.display(),
@@ -1292,134 +1291,57 @@ pub fn write_state_transitions_zarr(
 fn write_state_transitions_parts(
     path: &Path,
     params: &ModelParams,
-    gene_names: &[String],
-    output_gene_transitions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
     let ncells = params.ncells();
+    // Index `ncells` in `state_transitions` is the background state.
+    let bg = ncells as u32;
 
-    // 1. Write aggregated transition matrix
-    let mut agg_data = Vec::new();
-    let mut agg_indices = Vec::new();
-    let mut agg_indptr = Vec::with_capacity(ncells + 1);
-    let mut agg_offset = 0;
+    // Cell→cell transitions, with the background row/column split off into obs
+    // columns since obsp entries must be [ncells, ncells].
+    let mut data = Vec::new();
+    let mut indices: Vec<i32> = Vec::new();
+    let mut indptr: Vec<i32> = Vec::with_capacity(ncells + 1);
+    let mut offset: i32 = 0;
+    let mut to_bg = vec![0_u32; ncells];
 
-    for i in 0..ncells {
-        agg_indptr.push(agg_offset);
-        let row_entries = params.state_transitions.iter_row_sorted(i);
-
-        let mut cell_sums = HashMap::new();
-        let mut total_sum = 0.0;
-
-        for &(key, count) in &row_entries {
-            total_sum += count as f32;
-            if (key.dest_cell as usize) < ncells {
-                *cell_sums.entry(key.dest_cell).or_insert(0) += count;
-            }
-        }
-
-        if total_sum > 0.0 {
-            let mut sorted_cells: Vec<_> = cell_sums.into_iter().collect();
-            sorted_cells.sort_by_key(|k| k.0);
-
-            for (dest_cell, count) in sorted_cells {
-                agg_data.push(count);
-                agg_indices.push(dest_cell as i32);
-                agg_offset += 1;
+    for (i, to_bg_i) in to_bg.iter_mut().enumerate() {
+        indptr.push(offset);
+        for (dest, count) in params.state_transitions.iter_row_sorted(i) {
+            if dest == bg {
+                *to_bg_i = count;
+            } else {
+                data.push(count);
+                indices.push(dest as i32);
+                offset += 1;
             }
         }
     }
-    agg_indptr.push(agg_offset);
+    indptr.push(offset);
 
     write_anndata_csr_matrix_raw(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions"),
         ncells,
         ncells,
-        &agg_data,
-        &agg_indices,
-        &agg_indptr,
+        &data,
+        &indices,
+        &indptr,
         "<u4",
         "<i4",
     )?;
 
-    // 2. Write gene-wise transition matrices
-    if output_gene_transitions {
-        let ngenes = gene_names.len();
-        let mut gene_entries: Vec<Vec<(i64, f32)>> = vec![Vec::new(); ngenes];
-
-        for i in 0..ncells {
-            let row_entries = params.state_transitions.iter_row_sorted(i);
-
-            let mut current_gene = None;
-            let mut current_sum = 0.0;
-            let mut current_entries = Vec::new();
-
-            for &(key, count) in &row_entries {
-                if Some(key.gene) != current_gene {
-                    if let Some(g) = current_gene
-                        && current_sum > 0.0
-                    {
-                        for (dest_cell, c) in current_entries {
-                            gene_entries[g as usize].push((
-                                (i * ncells + dest_cell as usize) as i64,
-                                c as f32 / current_sum,
-                            ));
-                        }
-                    }
-                    current_gene = Some(key.gene);
-                    current_sum = 0.0;
-                    current_entries = Vec::new();
-                }
-
-                current_sum += count as f32;
-                if (key.dest_cell as usize) < ncells {
-                    current_entries.push((key.dest_cell, count));
-                }
-            }
-            // handle last gene in row
-            if let Some(g) = current_gene
-                && current_sum > 0.0
-            {
-                for (dest_cell, c) in current_entries {
-                    gene_entries[g as usize].push((
-                        (i * ncells + dest_cell as usize) as i64,
-                        c as f32 / current_sum,
-                    ));
-                }
-            }
-        }
-
-        let mut data = Vec::new();
-        let mut indices: Vec<i64> = Vec::new();
-        let mut indptr: Vec<i64> = Vec::with_capacity(ngenes + 1);
-        let mut offset: i64 = 0;
-
-        for entries in &gene_entries {
-            indptr.push(offset);
-            for (idx, val) in entries {
-                data.push(*val);
-                indices.push(*idx);
-                offset += 1;
-            }
-        }
-        indptr.push(offset);
-
-        if !data.is_empty() {
-            write_anndata_csr_matrix_raw(
-                store.clone(),
-                &format!("/tables/{SD_TABLE_NAME}/varm/state_transitions"),
-                ngenes,
-                ncells * ncells,
-                &data,
-                &indices,
-                &indptr,
-                "<f4",
-                "<i8",
-            )?;
+    let mut from_bg = vec![0_u32; ncells];
+    for (dest, count) in params.state_transitions.iter_row_sorted(ncells) {
+        if dest != bg {
+            from_bg[dest as usize] = count;
         }
     }
+
+    write_obs_u32_column(store.clone(), "from_bg_trans_count", &from_bg)?;
+    write_obs_u32_column(store.clone(), "to_bg_trans_count", &to_bg)?;
+    append_obs_column_order(store.clone(), &["from_bg_trans_count", "to_bg_trans_count"])?;
 
     Ok(())
 }
@@ -1680,6 +1602,63 @@ fn write_obs_f32_column<T: ReadableWritableStorageTraits + 'static>(
     Ok(())
 }
 
+fn write_obs_u32_column<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    name: &str,
+    values: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ncells = values.len();
+    let arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/{name}"),
+        vec![ncells as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<u4")),
+        FillValueMetadataV2::Number(serde_json::Number::from(0)),
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    arr.store_array_subset_elements(&arr.subset_all(), values)?;
+    arr.store_metadata()?;
+    Ok(())
+}
+
+/// Append column names to the `obs` dataframe's `column-order` attribute, so that
+/// arrays written after `write_spatialdata_zarr` are read back as columns.
+///
+/// Reads the existing `column-order` and extends it, so the various post-hoc obs
+/// writers can run in any order without clobbering each other's columns.
+fn append_obs_column_order<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    new_cols: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut group = zarrs::group::Group::open(store, &format!("/tables/{SD_TABLE_NAME}/obs"))?;
+
+    let mut cols: Vec<String> = group
+        .attributes()
+        .get("column-order")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(obs_base_column_order);
+
+    for col in new_cols {
+        if !cols.iter().any(|c| c == col) {
+            cols.push((*col).to_string());
+        }
+    }
+
+    group
+        .attributes_mut()
+        .insert("column-order".to_string(), json!(cols));
+    group.store_metadata()?;
+
+    Ok(())
+}
+
 /// Compute the per-cell heterotypic uncertainty metric and append it to the `obs`
 /// dataframe as `het_inflow`, `het_outflow`, and `heterotypic_uncertainty`.
 ///
@@ -1730,29 +1709,16 @@ fn write_heterotypic_uncertainty_parts(
     write_obs_f32_column(store.clone(), "expected_noise_counts", &flow_noise)?;
 
     // Extend the obs dataframe column-order so the appended columns are read back.
-    let mut cols = obs_base_column_order();
-    cols.push("het_inflow".to_string());
-    cols.push("het_outflow".to_string());
-    cols.push("heterotypic_uncertainty".to_string());
-    cols.push("expected_lost_counts".to_string());
-    cols.push("expected_noise_counts".to_string());
-
-    new_zarr_group(
+    append_obs_column_order(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/obs"),
-        Some(
-            json!({
-                "encoding-type": "dataframe",
-                "encoding-version": "0.2.0",
-                "_index": "_index",
-                "column-order": cols
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )?
-    .store_metadata()?;
+        &[
+            "het_inflow",
+            "het_outflow",
+            "heterotypic_uncertainty",
+            "expected_lost_counts",
+            "expected_noise_counts",
+        ],
+    )?;
 
     Ok(())
 }
