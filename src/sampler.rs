@@ -465,10 +465,10 @@ pub struct ModelParams {
     // [ntranscripts] State vector used for the reported point estimate.
     reported_transcript_state: Vec<TranscriptState>,
 
-    // Counts the number of transitions between cells for each gene.
-    // We index as counts as (state, (gene, state)).
-    // An encoding quirk used here is that we let 0 be the background state and
-    // +1 is added to cell indexes to make the indexing here dense.
+    // Counts the number of transitions between states for each gene, indexed as
+    // (src state, (gene, dest state)). A state is either a cell or the
+    // background: cell indexes are used as-is and index `ncells` is the
+    // background state, giving `ncells + 1` states in total.
     pub state_transitions: TransitionMat,
 
     // Direction convention for the two flow matrices below: flow is measured

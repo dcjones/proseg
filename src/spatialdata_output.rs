@@ -1344,50 +1344,37 @@ fn write_state_transitions_parts(
         "<i4",
     )?;
 
-    // 2. Write gene-wise transition matrices
+    // 2. Write gene-wise transition matrices, flattened as
+    // [ngenes, nstates * nstates] where nstates = ncells + 1 and the last state
+    // is the background, so transitions to and from background are retained.
     if output_gene_transitions {
         let ngenes = gene_names.len();
+        let nstates = ncells + 1;
         let mut gene_entries: Vec<Vec<(i64, f32)>> = vec![Vec::new(); ngenes];
 
-        for i in 0..ncells {
+        for i in 0..nstates {
             let row_entries = params.state_transitions.iter_row_sorted(i);
 
-            let mut current_gene = None;
-            let mut current_sum = 0.0;
-            let mut current_entries = Vec::new();
-
-            for &(key, count) in &row_entries {
-                if Some(key.gene) != current_gene {
-                    if let Some(g) = current_gene
-                        && current_sum > 0.0
-                    {
-                        for (dest_cell, c) in current_entries {
-                            gene_entries[g as usize].push((
-                                (i * ncells + dest_cell as usize) as i64,
-                                c as f32 / current_sum,
-                            ));
-                        }
-                    }
-                    current_gene = Some(key.gene);
-                    current_sum = 0.0;
-                    current_entries = Vec::new();
+            // Entries are sorted by (gene, dest_state), so each gene occupies a
+            // contiguous run, which we normalize into transition probabilities.
+            let mut run_start = 0;
+            while run_start < row_entries.len() {
+                let gene = row_entries[run_start].0.gene;
+                let mut run_end = run_start;
+                let mut sum = 0.0;
+                while run_end < row_entries.len() && row_entries[run_end].0.gene == gene {
+                    sum += row_entries[run_end].1 as f32;
+                    run_end += 1;
                 }
 
-                current_sum += count as f32;
-                if (key.dest_cell as usize) < ncells {
-                    current_entries.push((key.dest_cell, count));
-                }
-            }
-            // handle last gene in row
-            if let Some(g) = current_gene
-                && current_sum > 0.0
-            {
-                for (dest_cell, c) in current_entries {
-                    gene_entries[g as usize].push((
-                        (i * ncells + dest_cell as usize) as i64,
-                        c as f32 / current_sum,
+                for &(key, count) in &row_entries[run_start..run_end] {
+                    gene_entries[gene as usize].push((
+                        (i * nstates + key.dest_cell as usize) as i64,
+                        count as f32 / sum,
                     ));
                 }
+
+                run_start = run_end;
             }
         }
 
@@ -1411,7 +1398,7 @@ fn write_state_transitions_parts(
                 store.clone(),
                 &format!("/tables/{SD_TABLE_NAME}/varm/state_transitions"),
                 ngenes,
-                ncells * ncells,
+                nstates * nstates,
                 &data,
                 &indices,
                 &indptr,

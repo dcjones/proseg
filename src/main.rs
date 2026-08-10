@@ -499,6 +499,7 @@ struct Args {
     record_state_transitions: bool,
 
     /// Suppress output of per-gene transcript assignment uncertainty matrices
+    /// (varm/state_transitions)
     #[arg(long, default_value_t = false)]
     no_gene_transitions: bool,
 
