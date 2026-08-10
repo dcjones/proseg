@@ -1268,7 +1268,7 @@ fn write_anndata_csr_matrix_raw<
 /// Write the state transition counts: the gene-agnostic cell→cell matrix to
 /// `obsp/state_transitions` with its background row/column split off into the obs
 /// columns `from_bg_trans_count`/`to_bg_trans_count`, and optionally the per-gene
-/// transition probabilities to `varm/state_transitions`.
+/// transition counts to `varm/state_transitions`.
 pub fn write_state_transitions_zarr(
     output_path: &Option<String>,
     filename: &str,
@@ -1362,37 +1362,22 @@ fn write_state_transitions_parts(
     write_obs_u32_column(store.clone(), "to_bg_trans_count", &to_bg)?;
     append_obs_column_order(store.clone(), &["from_bg_trans_count", "to_bg_trans_count"])?;
 
-    // 2. Write gene-wise transition matrices, flattened as
+    // 2. Write gene-wise transition counts, flattened as
     // [ngenes, nstates * nstates] where nstates = ncells + 1 and the last state
     // is the background, so transitions to and from background are retained.
+    // Like the matrix above these are raw counts, leaving the consumer to decide
+    // how to normalize them.
     if output_gene_transitions {
         let ngenes = gene_names.len();
         let nstates = ncells + 1;
-        let mut gene_entries: Vec<Vec<(i64, f32)>> = vec![Vec::new(); ngenes];
+        let mut gene_entries: Vec<Vec<(i64, u32)>> = vec![Vec::new(); ngenes];
 
         for i in 0..nstates {
-            let row_entries = params.state_transitions.iter_row_sorted(i);
-
-            // Entries are sorted by (gene, dest_state), so each gene occupies a
-            // contiguous run, which we normalize into transition probabilities.
-            let mut run_start = 0;
-            while run_start < row_entries.len() {
-                let gene = row_entries[run_start].0.gene;
-                let mut run_end = run_start;
-                let mut sum = 0.0;
-                while run_end < row_entries.len() && row_entries[run_end].0.gene == gene {
-                    sum += row_entries[run_end].1 as f32;
-                    run_end += 1;
-                }
-
-                for &(key, count) in &row_entries[run_start..run_end] {
-                    gene_entries[gene as usize].push((
-                        (i * nstates + key.dest_cell as usize) as i64,
-                        count as f32 / sum,
-                    ));
-                }
-
-                run_start = run_end;
+            // Entries are sorted by (gene, dest_state), so each gene's entries
+            // are appended in increasing flat-index order, as CSR requires.
+            for (key, count) in params.state_transitions.iter_row_sorted(i) {
+                gene_entries[key.gene as usize]
+                    .push(((i * nstates + key.dest_cell as usize) as i64, count));
             }
         }
 
@@ -1420,7 +1405,7 @@ fn write_state_transitions_parts(
                 &data,
                 &indices,
                 &indptr,
-                "<f4",
+                "<u4",
                 "<i8",
             )?;
         }
