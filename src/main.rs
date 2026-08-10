@@ -494,7 +494,9 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
-    /// Enable output of state transition matrices (obsp/state_transitions and varm/state_transitions)
+    /// Enable output of state transition matrices (obsp/state_transitions and
+    /// varm/state_transitions, plus the obs columns from_bg_trans_count and
+    /// to_bg_trans_count)
     #[arg(long, default_value_t = false)]
     record_state_transitions: bool,
 

@@ -1265,6 +1265,10 @@ fn write_anndata_csr_matrix_raw<
     Ok(())
 }
 
+/// Write the state transition counts: the gene-agnostic cell→cell matrix to
+/// `obsp/state_transitions` with its background row/column split off into the obs
+/// columns `from_bg_trans_count`/`to_bg_trans_count`, and optionally the per-gene
+/// transition probabilities to `varm/state_transitions`.
 pub fn write_state_transitions_zarr(
     output_path: &Option<String>,
     filename: &str,
@@ -1298,36 +1302,39 @@ fn write_state_transitions_parts(
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
     let ncells = params.ncells();
+    // Index `ncells` in `state_transitions` is the background state.
+    let bg = ncells as u32;
 
-    // 1. Write aggregated transition matrix
+    // 1. Write the gene-agnostic cell→cell transition matrix. The background
+    // row and column don't fit in an [ncells, ncells] obsp entry, so they are
+    // written as the obs columns `from_bg_trans_count` and `to_bg_trans_count`.
     let mut agg_data = Vec::new();
     let mut agg_indices = Vec::new();
     let mut agg_indptr = Vec::with_capacity(ncells + 1);
     let mut agg_offset = 0;
+    let mut to_bg = vec![0_u32; ncells];
 
-    for i in 0..ncells {
+    for (i, to_bg_i) in to_bg.iter_mut().enumerate() {
         agg_indptr.push(agg_offset);
         let row_entries = params.state_transitions.iter_row_sorted(i);
 
         let mut cell_sums = HashMap::new();
-        let mut total_sum = 0.0;
 
         for &(key, count) in &row_entries {
-            total_sum += count as f32;
-            if (key.dest_cell as usize) < ncells {
+            if key.dest_cell == bg {
+                *to_bg_i += count;
+            } else {
                 *cell_sums.entry(key.dest_cell).or_insert(0) += count;
             }
         }
 
-        if total_sum > 0.0 {
-            let mut sorted_cells: Vec<_> = cell_sums.into_iter().collect();
-            sorted_cells.sort_by_key(|k| k.0);
+        let mut sorted_cells: Vec<_> = cell_sums.into_iter().collect();
+        sorted_cells.sort_by_key(|k| k.0);
 
-            for (dest_cell, count) in sorted_cells {
-                agg_data.push(count);
-                agg_indices.push(dest_cell as i32);
-                agg_offset += 1;
-            }
+        for (dest_cell, count) in sorted_cells {
+            agg_data.push(count);
+            agg_indices.push(dest_cell as i32);
+            agg_offset += 1;
         }
     }
     agg_indptr.push(agg_offset);
@@ -1343,6 +1350,17 @@ fn write_state_transitions_parts(
         "<u4",
         "<i4",
     )?;
+
+    let mut from_bg = vec![0_u32; ncells];
+    for (key, count) in params.state_transitions.iter_row_sorted(ncells) {
+        if key.dest_cell != bg {
+            from_bg[key.dest_cell as usize] += count;
+        }
+    }
+
+    write_obs_u32_column(store.clone(), "from_bg_trans_count", &from_bg)?;
+    write_obs_u32_column(store.clone(), "to_bg_trans_count", &to_bg)?;
+    append_obs_column_order(store.clone(), &["from_bg_trans_count", "to_bg_trans_count"])?;
 
     // 2. Write gene-wise transition matrices, flattened as
     // [ngenes, nstates * nstates] where nstates = ncells + 1 and the last state
@@ -1667,6 +1685,63 @@ fn write_obs_f32_column<T: ReadableWritableStorageTraits + 'static>(
     Ok(())
 }
 
+fn write_obs_u32_column<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    name: &str,
+    values: &[u32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ncells = values.len();
+    let arr = new_zarr_array(
+        store.clone(),
+        &format!("/tables/{SD_TABLE_NAME}/obs/{name}"),
+        vec![ncells as u64],
+        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
+        DataTypeMetadataV2::Simple(String::from("<u4")),
+        FillValueMetadataV2::Number(serde_json::Number::from(0)),
+        Some(default_blosc_compressor()?),
+        None,
+    )?;
+    arr.store_array_subset_elements(&arr.subset_all(), values)?;
+    arr.store_metadata()?;
+    Ok(())
+}
+
+/// Append column names to the `obs` dataframe's `column-order` attribute, so that
+/// arrays written after `write_spatialdata_zarr` are read back as columns.
+///
+/// Reads the existing `column-order` and extends it, so the various post-hoc obs
+/// writers can run in any order without clobbering each other's columns.
+fn append_obs_column_order<T: ReadableWritableStorageTraits + 'static>(
+    store: Arc<T>,
+    new_cols: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut group = zarrs::group::Group::open(store, &format!("/tables/{SD_TABLE_NAME}/obs"))?;
+
+    let mut cols: Vec<String> = group
+        .attributes()
+        .get("column-order")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(obs_base_column_order);
+
+    for col in new_cols {
+        if !cols.iter().any(|c| c == col) {
+            cols.push((*col).to_string());
+        }
+    }
+
+    group
+        .attributes_mut()
+        .insert("column-order".to_string(), json!(cols));
+    group.store_metadata()?;
+
+    Ok(())
+}
+
 /// Compute the per-cell heterotypic uncertainty metric and append it to the `obs`
 /// dataframe as `het_inflow`, `het_outflow`, and `heterotypic_uncertainty`.
 ///
@@ -1717,29 +1792,16 @@ fn write_heterotypic_uncertainty_parts(
     write_obs_f32_column(store.clone(), "expected_noise_counts", &flow_noise)?;
 
     // Extend the obs dataframe column-order so the appended columns are read back.
-    let mut cols = obs_base_column_order();
-    cols.push("het_inflow".to_string());
-    cols.push("het_outflow".to_string());
-    cols.push("heterotypic_uncertainty".to_string());
-    cols.push("expected_lost_counts".to_string());
-    cols.push("expected_noise_counts".to_string());
-
-    new_zarr_group(
+    append_obs_column_order(
         store.clone(),
-        &format!("/tables/{SD_TABLE_NAME}/obs"),
-        Some(
-            json!({
-                "encoding-type": "dataframe",
-                "encoding-version": "0.2.0",
-                "_index": "_index",
-                "column-order": cols
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        ),
-    )?
-    .store_metadata()?;
+        &[
+            "het_inflow",
+            "het_outflow",
+            "heterotypic_uncertainty",
+            "expected_lost_counts",
+            "expected_noise_counts",
+        ],
+    )?;
 
     Ok(())
 }
