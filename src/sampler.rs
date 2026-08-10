@@ -247,6 +247,61 @@ impl Increment for CountMatRowKey {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct TransitionMatRowKey {
+    pub gene: u32,
+    pub dest_cell: CellIndex,
+}
+
+impl Add for TransitionMatRowKey {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        TransitionMatRowKey {
+            gene: self.gene + other.gene,
+            dest_cell: self.dest_cell + other.dest_cell,
+        }
+    }
+}
+
+impl AddAssign for TransitionMatRowKey {
+    fn add_assign(&mut self, other: Self) {
+        *self = TransitionMatRowKey {
+            gene: self.gene + other.gene,
+            dest_cell: self.dest_cell + other.dest_cell,
+        };
+    }
+}
+
+impl Zero for TransitionMatRowKey {
+    fn zero() -> Self {
+        TransitionMatRowKey {
+            gene: 0,
+            dest_cell: CellIndex::zero(),
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.gene == 0 && self.dest_cell.is_zero()
+    }
+}
+
+impl Increment for TransitionMatRowKey {
+    fn inc(&self, bound: TransitionMatRowKey) -> TransitionMatRowKey {
+        if self.dest_cell + 1 > bound.dest_cell {
+            TransitionMatRowKey {
+                gene: self.gene + 1,
+                dest_cell: 0,
+            }
+        } else {
+            TransitionMatRowKey {
+                gene: self.gene,
+                dest_cell: self.dest_cell + 1,
+            }
+        }
+    }
+}
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -410,10 +465,10 @@ pub struct ModelParams {
     // [ntranscripts] State vector used for the reported point estimate.
     reported_transcript_state: Vec<TranscriptState>,
 
-    // [ncells+1, ncells+1] Counts the number of transitions between states,
-    // where a state is either a cell or the background. Index `ncells` is the
-    // background state; cell indexes are used as-is. Includes the "stayed put"
-    // diagonal, and is only recorded when state-transition output is requested.
+    // Counts the number of transitions between cells for each gene.
+    // We index as counts as (state, (gene, state)).
+    // An encoding quirk used here is that we let 0 be the background state and
+    // +1 is added to cell indexes to make the indexing here dense.
     pub state_transitions: TransitionMat,
 
     // Direction convention for the two flow matrices below: flow is measured
