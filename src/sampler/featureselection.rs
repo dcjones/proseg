@@ -247,7 +247,7 @@ fn select_k_clusters<T: PartialOrd + Copy>(
     labels
 }
 
-fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> {
+fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Option<Vec<usize>> {
     let counts = random_region_counts(dataset, NFEATURES, BIN_SIZE);
     let gene_ranking = deviance_ranking(&counts);
 
@@ -290,6 +290,10 @@ fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> 
     let gene_totals: Vec<f32> = expr_indices.iter().map(|&j| gene_totals[j]).collect();
     let mut counts =
         Array2::from_shape_fn((nrows, expr_indices.len()), |(i, j)| counts[[i, expr_indices[j]]]);
+
+    if col_indices.len() < 2 {
+        return None;
+    }
 
     // log1p transform counts
     counts.map_inplace(|v| *v = v.ln_1p());
@@ -341,15 +345,19 @@ fn select_features(dataset: &TranscriptDataset, nfeatures: usize) -> Vec<usize> 
     }
 
     // Map local indices back to original gene indices and return.
-    best_local
-        .into_iter()
-        .filter_map(|opt| opt.map(|local_idx| col_indices[local_idx]))
-        .collect()
+    Some(
+        best_local
+            .into_iter()
+            .filter_map(|opt| opt.map(|local_idx| col_indices[local_idx]))
+            .collect(),
+    )
 }
 
 impl TranscriptDataset {
-    pub fn select_unfactored_genes(&mut self, nunfactored: usize) {
-        let selected_features = select_features(self, nunfactored);
+    pub fn select_unfactored_genes(&mut self, nunfactored: usize) -> bool {
+        let Some(selected_features) = select_features(self, nunfactored) else {
+            return false;
+        };
 
         // Build an ordering that puts selected_features genes first (in the
         // order they appear in selected_features), followed by the remaining
@@ -372,6 +380,8 @@ impl TranscriptDataset {
         for transcript_run in self.transcripts.iter_runs_mut() {
             transcript_run.value.gene = rev_ord[transcript_run.value.gene as usize] as u32;
         }
+
+        true
     }
 }
 
@@ -381,8 +391,7 @@ mod tests {
     use crate::sampler::runvec::RunVec;
     use crate::sampler::transcripts::{PriorTranscriptSeg, Transcript};
 
-    #[test]
-    fn random_region_counts_collapses_duplicate_bins() {
+    fn same_bin_dataset() -> TranscriptDataset {
         let mut transcripts = RunVec::new();
         transcripts.push_run(
             Transcript {
@@ -404,7 +413,7 @@ mod tests {
             },
             3,
         );
-        let dataset = TranscriptDataset {
+        TranscriptDataset {
             transcripts,
             transcript_ids: None,
             priorseg: RunVec::<u32, PriorTranscriptSeg>::new(),
@@ -414,12 +423,26 @@ mod tests {
             fov_names: Vec::new(),
             original_cell_ids: Vec::new(),
             ncells: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn random_region_counts_collapses_duplicate_bins() {
+        let dataset = same_bin_dataset();
 
         let counts = random_region_counts(&dataset, 100, BIN_SIZE);
 
         assert_eq!(counts.shape(), &[1, 2]);
         assert_eq!(counts[[0, 0]], 2.0);
         assert_eq!(counts[[0, 1]], 3.0);
+    }
+
+    #[test]
+    fn feature_selection_fails_cleanly_with_fewer_than_two_filtered_genes() {
+        let mut dataset = same_bin_dataset();
+        let original_gene_names = dataset.gene_names.clone();
+
+        assert!(!dataset.select_unfactored_genes(1));
+        assert_eq!(dataset.gene_names, original_gene_names);
     }
 }

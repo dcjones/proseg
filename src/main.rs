@@ -807,7 +807,12 @@ fn main() {
     // this is true.
 
     if !args.no_factorization {
-        dataset.select_unfactored_genes(args.nunfactored);
+        if !dataset.select_unfactored_genes(args.nunfactored) {
+            warn!(
+                "Fewer than two genes passed feature-selection filters; disabling gene factorization"
+            );
+            args.no_factorization = true;
+        }
     }
 
     // We are going to try to initialize at full resolution.
