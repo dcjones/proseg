@@ -9,7 +9,7 @@ use super::transcripts::TranscriptDataset;
 const NFEATURES: usize = 10_000;
 const BIN_SIZE: f32 = 20.0;
 const NGENES_CANDIDATES: usize = 5000;
-// Subsample rows for the correlation step only; deviance ranking uses all NFEATURES rows.
+// Subsample rows for the correlation step only; deviance ranking uses all sampled bins.
 const NCORR_ROWS: usize = 2000;
 // Minimum mean transcripts per region; genes below this are excluded before clustering
 // to avoid selecting essentially-unexpressed genes whose correlation structure is pure noise.
@@ -25,7 +25,7 @@ fn random_region_counts(
     let mut rng = rand::rng();
     let mut region_map = HashMap::new();
 
-    for i in 0..nregions {
+    for _ in 0..nregions {
         let centroid_transcript =
             &dataset.transcripts.runs[rng.random_range(0..dataset.transcripts.runs.len())].value;
 
@@ -34,10 +34,11 @@ fn random_region_counts(
 
         let bin_x = (cx / bin_size).floor() as usize;
         let bin_y = (cy / bin_size).floor() as usize;
-        region_map.insert((bin_x, bin_y), i);
+        let next_region = region_map.len();
+        region_map.entry((bin_x, bin_y)).or_insert(next_region);
     }
 
-    let mut counts = Array2::zeros((nregions, dataset.ngenes()));
+    let mut counts = Array2::zeros((region_map.len(), dataset.ngenes()));
 
     for transcript_run in dataset.transcripts.iter_runs() {
         let bin_x = (transcript_run.value.x / bin_size).floor() as usize;
@@ -371,5 +372,54 @@ impl TranscriptDataset {
         for transcript_run in self.transcripts.iter_runs_mut() {
             transcript_run.value.gene = rev_ord[transcript_run.value.gene as usize] as u32;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sampler::runvec::RunVec;
+    use crate::sampler::transcripts::{PriorTranscriptSeg, Transcript};
+
+    #[test]
+    fn random_region_counts_collapses_duplicate_bins() {
+        let mut transcripts = RunVec::new();
+        transcripts.push_run(
+            Transcript {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+                qv: 1.0,
+                gene: 0,
+            },
+            2,
+        );
+        transcripts.push_run(
+            Transcript {
+                x: 2.0,
+                y: 2.0,
+                z: 0.0,
+                qv: 1.0,
+                gene: 1,
+            },
+            3,
+        );
+        let dataset = TranscriptDataset {
+            transcripts,
+            transcript_ids: None,
+            priorseg: RunVec::<u32, PriorTranscriptSeg>::new(),
+            fovs: RunVec::new(),
+            barcode_positions: None,
+            gene_names: vec!["A".to_string(), "B".to_string()],
+            fov_names: Vec::new(),
+            original_cell_ids: Vec::new(),
+            ncells: 0,
+        };
+
+        let counts = random_region_counts(&dataset, 100, BIN_SIZE);
+
+        assert_eq!(counts.shape(), &[1, 2]);
+        assert_eq!(counts[[0, 0]], 2.0);
+        assert_eq!(counts[[0, 1]], 3.0);
     }
 }
