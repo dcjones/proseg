@@ -75,6 +75,7 @@ pub fn read_spatialdata_zarr_transcripts(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    transcript_id_column: &Option<String>,
     anndata_coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
@@ -91,6 +92,7 @@ pub fn read_spatialdata_zarr_transcripts(
             feature_column,
             cell_id_column,
             cell_id_unassigned,
+            transcript_id_column,
             anndata_coordinate_key,
             coordinate_scale,
         );

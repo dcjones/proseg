@@ -846,6 +846,7 @@ fn main() {
             &args.gene_column,
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("".to_string()),
+            &args.transcript_id_column,
             &args.anndata_coordinate_key,
             args.coordinate_scale.unwrap_or(1.0),
         )
@@ -856,6 +857,7 @@ fn main() {
             &args.gene_column,
             &args.cell_id_column,
             &args.cell_id_unassigned.unwrap_or("0".to_string()),
+            &args.transcript_id_column,
             &args.anndata_coordinate_key,
             args.coordinate_scale.unwrap_or(1.0),
         )

@@ -24,6 +24,7 @@ pub fn read_anndata_zarr_transcripts(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    transcript_id_column: &Option<String>,
     coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
@@ -40,6 +41,7 @@ pub fn read_anndata_zarr_transcripts(
             feature_column,
             cell_id_column,
             cell_id_unassigned,
+            transcript_id_column,
             coordinate_key,
             coordinate_scale,
         )
@@ -54,6 +56,7 @@ fn read_anndata_zarr_transcripts_from_store(
     feature_column: &Option<String>,
     cell_id_column: &Option<String>,
     cell_id_unassigned: &str,
+    transcript_id_column: &Option<String>,
     coordinate_key: &str,
     coordinate_scale: f32,
 ) -> TranscriptDataset {
@@ -148,9 +151,11 @@ fn read_anndata_zarr_transcripts_from_store(
         original_cell_ids_vec[i as usize] = original_cell_id;
     }
 
+    let transcript_ids = read_transcript_ids(store.clone(), transcript_id_column);
+
     let mut dataset = TranscriptDataset {
         transcripts,
-        transcript_ids: None,
+        transcript_ids,
         priorseg,
         fovs: RunVec::new(),
         barcode_positions: None,
@@ -214,6 +219,33 @@ fn read_coordinates(store: Arc<FilesystemStore>, coordinate_key: &str) -> (Vec<f
 
     (xs, ys)
 }
+
+
+fn read_transcript_ids(
+    store: Arc<FilesystemStore>,
+    transcript_id_column: &Option<String>,
+) -> Option<Vec<u64>> {
+    if let Some(transcript_id_column) = transcript_id_column {
+        let path = format!("/obs/{transcript_id_column}");
+
+        let arr = zarrs::array::Array::open(store.clone(), &path)
+            .unwrap_or_else(|_err| panic!("Array /obs/{} not found in zarr store", transcript_id_column));
+
+        // We assume we are working with some sort of integer
+        let transcript_ids = match arr.data_type() {
+            DataType::Int32 => read_array1d::<i32, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
+            DataType::Int64 => read_array1d::<i64, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
+            DataType::UInt32 => read_array1d::<u32, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
+            DataType::UInt64 => read_array1d::<u64, FilesystemStore>(&arr),
+            _ => panic!("Unsupported data type for transcript IDs"),
+        };
+
+        Some(transcript_ids)
+    } else {
+        None
+    }
+}
+
 
 fn read_cell_assignments(
     store: Arc<FilesystemStore>,
