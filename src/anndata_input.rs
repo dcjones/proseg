@@ -198,10 +198,46 @@ fn read_gene_names(store: Arc<FilesystemStore>, gene_column_name: &Option<String
     };
     let path = format!("/var/{gene_column_name}");
 
-    let arr = Array::open(store.clone(), &path)
-        .unwrap_or_else(|_err| panic!("No var_names gene column in AnnData object."));
-    arr.retrieve_array_subset_elements::<String>(&arr.subset_all())
-        .unwrap_or_else(|_err| panic!("Unable to read gene names"))
+    if let Ok(group) = Group::open(store.clone(), &path) {
+        let attrs = group.attributes();
+        if attrs
+            .get("encoding-type")
+            .unwrap_or(&serde_json::Value::Null)
+            != "nullable-string-array"
+        {
+            panic!("Gene name column is not a nullable array of strings.");
+        }
+
+        let na_value = attrs
+            .get("na-value")
+            .map(|v| v.as_str().unwrap())
+            .unwrap_or("NA");
+
+        let arr = Array::open(store.clone(), &(path.clone() + "/values")).unwrap_or_else(|_err| {
+            panic!("No values for var_names gene column in AnnData object.")
+        });
+        let mut values = arr
+            .retrieve_array_subset_elements::<String>(&arr.subset_all())
+            .unwrap_or_else(|_err| panic!("Unable to read gene names"));
+
+        let arr = Array::open(store.clone(), &(path.clone() + "/mask"))
+            .unwrap_or_else(|_err| panic!("No mask for var_names gene column in AnnData object."));
+        let mask = arr
+            .retrieve_array_subset_elements::<bool>(&arr.subset_all())
+            .unwrap_or_else(|_err| panic!("Unable to read gene names"));
+        for (value, &isnull) in values.iter_mut().zip(&mask) {
+            if isnull {
+                *value = na_value.to_string();
+            }
+        }
+
+        values
+    } else {
+        let arr = Array::open(store.clone(), &path)
+            .unwrap_or_else(|_err| panic!("No var_names gene column in AnnData object."));
+        arr.retrieve_array_subset_elements::<String>(&arr.subset_all())
+            .unwrap_or_else(|_err| panic!("Unable to read gene names"))
+    }
 }
 
 fn read_coordinates(store: Arc<FilesystemStore>, coordinate_key: &str) -> (Vec<f32>, Vec<f32>) {
@@ -220,7 +256,6 @@ fn read_coordinates(store: Arc<FilesystemStore>, coordinate_key: &str) -> (Vec<f
     (xs, ys)
 }
 
-
 fn read_transcript_ids(
     store: Arc<FilesystemStore>,
     transcript_id_column: &Option<String>,
@@ -228,14 +263,27 @@ fn read_transcript_ids(
     if let Some(transcript_id_column) = transcript_id_column {
         let path = format!("/obs/{transcript_id_column}");
 
-        let arr = zarrs::array::Array::open(store.clone(), &path)
-            .unwrap_or_else(|_err| panic!("Array /obs/{} not found in zarr store", transcript_id_column));
+        let arr = zarrs::array::Array::open(store.clone(), &path).unwrap_or_else(|_err| {
+            panic!(
+                "Array /obs/{} not found in zarr store",
+                transcript_id_column
+            )
+        });
 
         // We assume we are working with some sort of integer
         let transcript_ids = match arr.data_type() {
-            DataType::Int32 => read_array1d::<i32, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
-            DataType::Int64 => read_array1d::<i64, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
-            DataType::UInt32 => read_array1d::<u32, FilesystemStore>(&arr).into_iter().map(|x| x as u64).collect(),
+            DataType::Int32 => read_array1d::<i32, FilesystemStore>(&arr)
+                .into_iter()
+                .map(|x| x as u64)
+                .collect(),
+            DataType::Int64 => read_array1d::<i64, FilesystemStore>(&arr)
+                .into_iter()
+                .map(|x| x as u64)
+                .collect(),
+            DataType::UInt32 => read_array1d::<u32, FilesystemStore>(&arr)
+                .into_iter()
+                .map(|x| x as u64)
+                .collect(),
             DataType::UInt64 => read_array1d::<u64, FilesystemStore>(&arr),
             _ => panic!("Unsupported data type for transcript IDs"),
         };
@@ -245,7 +293,6 @@ fn read_transcript_ids(
         None
     }
 }
-
 
 fn read_cell_assignments(
     store: Arc<FilesystemStore>,
