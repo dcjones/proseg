@@ -131,6 +131,34 @@ fn read_anndata_zarr_transcripts_from_store(
         }
     }
 
+    let index_transcript_ids = read_transcript_ids(store.clone(), transcript_id_column);
+    let transcript_ids = index_transcript_ids.map(|index_transcript_ids| {
+        let mut transcript_ids = Vec::with_capacity(nruns);
+        for (&indfrom, &indto, transcript_id) in izip!(
+            &indptr[0..indptr.len() - 1],
+            &indptr[1..],
+            &index_transcript_ids
+        ) {
+            let range = (indfrom as usize)..(indto as usize);
+            for (&count, &j) in data[range.clone()]
+                .iter()
+                .zip(indices[range.clone()].iter())
+            {
+                if gene_index.contains_key(&(j as usize)) {
+                    for _ in 0..count {
+                        transcript_ids.push(transcript_id.clone());
+                    }
+                }
+            }
+        }
+
+        transcript_ids
+    });
+
+    if let Some(transcript_ids) = &transcript_ids {
+        assert!(transcripts.len() == transcript_ids.len());
+    }
+
     let gene_names: Vec<String> = gene_names
         .iter()
         .enumerate()
@@ -150,8 +178,6 @@ fn read_anndata_zarr_transcripts_from_store(
     for (original_cell_id, i) in original_cell_ids {
         original_cell_ids_vec[i as usize] = original_cell_id;
     }
-
-    let transcript_ids = read_transcript_ids(store.clone(), transcript_id_column);
 
     let mut dataset = TranscriptDataset {
         transcripts,
