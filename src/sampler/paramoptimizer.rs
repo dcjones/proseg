@@ -75,7 +75,7 @@ impl ParamOptimizer {
         log::info!("optimize_factor_model: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.optimize_background_rates(priors, params);
+        self.optimize_background_rates(priors, params, voxels);
         trace_time("optimize_background_rates", t0);
     }
 
@@ -997,7 +997,16 @@ impl ParamOptimizer {
     // Posterior mean of the background Poisson rates (α + count)/(β + volume).
     // With more than one background region each region's rate is shrunk toward
     // the rate pooled across regions, matching sample_background_rates.
-    fn optimize_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    fn optimize_background_rates(
+        &self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        voxels: &VoxelCheckerboard,
+    ) {
+        if params.background_counts.len() > 1 && !priors.bg_free_spectrum {
+            ParamSampler::new().background_mixture(priors, params, voxels, false);
+            return;
+        }
         let nregions = params.background_counts.len();
         params.λ_bg_pooled.fill(0.0);
         let total_volume: f32 = params.background_region_volume.sum();

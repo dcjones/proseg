@@ -127,6 +127,11 @@ pub struct ModelPriors {
     // them. 1.0 or more removes the cap.
     pub bg_max_frac: f32,
 
+    // Use the original free per-gene spectrum per background region instead of
+    // the mixture form. Retained for comparison; it is not identifiable against
+    // a homogeneous compartment.
+    pub bg_free_spectrum: bool,
+
     pub σ_iiq: f32,
 
     // // scaling factor for circle perimeters
@@ -646,6 +651,25 @@ pub struct ModelParams {
     // construction. Bounds how much of a gene background may claim.
     pub region_total_counts: Vec<Vec<AtomicCountVec>>,
 
+    // --- mixture-form background -------------------------------------------
+    // Instead of a free per-gene spectrum per region, the background spectrum is
+    // the expression of the cells that sit in that region, scaled by one number.
+    // A free spectrum is unidentifiable against a homogeneous compartment: it can
+    // take a gene's entire local signal, and does. Tying the spectrum to the local
+    // cells removes that degree of freedom -- the background can only look like a
+    // blend of the local cells, so it scales every gene down together rather than
+    // erasing one.
+    //
+    // [nbgregions, nhidden] volume-weighted mean latent profile of the cells whose
+    // centroid falls in each region.
+    pub bg_latent: Array2<f32>,
+
+    // [nbgregions, nlayers] ambient intensity per region: the one free parameter.
+    pub bg_scale: Array2<f32>,
+
+    // [ncells] background region containing each cell's centroid
+    pub cell_bg_region: Vec<u32>,
+
     // Size of the upper block of θ that is the identity matrix
     nunfactored: usize,
 
@@ -885,6 +909,10 @@ impl ModelParams {
             .collect::<Vec<_>>();
         voxels.compute_region_total_counts(&mut region_total_counts);
 
+        let bg_latent = Array2::<f32>::zeros((nbgregions, nhidden));
+        let bg_scale = Array2::<f32>::ones((nbgregions, nlayers));
+        let cell_bg_region = vec![0u32; ncells];
+
         // Initialize this here to the layer volume, and voxelcheckerboard will
         // update it when it computes density values.
         let mut background_region_volume = Array1::zeros(nbgregions);
@@ -951,6 +979,9 @@ impl ModelParams {
             logλ_bg,
             λ_bg_pooled,
             region_total_counts,
+            bg_latent,
+            bg_scale,
+            cell_bg_region,
             nunfactored,
             voxel_volume,
             background_region_volume,

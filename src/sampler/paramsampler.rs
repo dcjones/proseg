@@ -7,7 +7,7 @@ use super::{FlowStats, ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptA
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
-use ndarray::{Array2, Axis, Zip, s};
+use ndarray::{Array1, Array2, Axis, Zip, s};
 use rand::{Rng, rng};
 use rand_distr::{Distribution, Gamma, Normal};
 use rayon::prelude::*;
@@ -56,7 +56,7 @@ impl ParamSampler {
         info!("sample_factor_model: {:?}", t0.elapsed());
 
         let t0 = Instant::now();
-        self.sample_background_rates(priors, params);
+        self.sample_background_rates(priors, params, voxels);
         trace!("sample_background_rates: {:?}", t0.elapsed());
 
         if !burnin && record_samples {
@@ -923,7 +923,144 @@ impl ParamSampler {
             });
     }
 
-    fn sample_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
+    // Mixture-form background: the spectrum of region r is the expression of the
+    // cells sitting in r, scaled by a single ambient intensity s[r, l].
+    //
+    //   lambda_bg[g, l, r] = s[r, l] * (psi[r] . theta[g])
+    //
+    // psi[r] is the volume-weighted mean latent profile of those cells, so the
+    // background can only look like a blend of the local cells. That is the point:
+    // a free per-gene spectrum is unidentifiable against a homogeneous compartment
+    // and will take a gene's entire local signal, whereas this can only scale every
+    // gene down together.
+    //
+    // s has a conjugate Gamma update, because summing the Poisson rate over genes
+    // collapses to psi[r] . theta_ksum:
+    //
+    //   s[r, l] ~ Gamma(a + total background counts in (r, l),
+    //                   b + volume_r * (psi[r] . theta_ksum))
+    pub fn background_mixture(
+        &self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        voxels: &VoxelCheckerboard,
+        sample: bool,
+    ) {
+        // refresh which region each cell sits in; cells move between iterations
+        voxels.compute_cell_bg_regions(&mut params.cell_bg_region);
+
+        let nregions = params.background_counts.len();
+        let nlayers = params.background_counts[0].len();
+        let nhidden = params.θ.shape()[1];
+        let ngenes = params.θ.shape()[0];
+
+        // psi[r] = volume-weighted mean latent profile of the cells in region r,
+        // falling back to the tissue-wide mean where a region holds no cells.
+        params.bg_latent.fill(0.0);
+        let mut mass = Array1::<f32>::zeros(nregions);
+        let mut global = Array1::<f32>::zeros(nhidden);
+        let mut global_mass = 0.0_f32;
+        for c in 0..params.φ.shape()[0] {
+            let w = params.effective_cell_volume[c] * params.cell_scale[c];
+            if !(w > 0.0) {
+                continue;
+            }
+            let r = params.cell_bg_region[c] as usize;
+            let φ_c = params.φ.row(c);
+            let mut ψ_r = params.bg_latent.row_mut(r.min(nregions - 1));
+            Zip::from(&mut ψ_r).and(&φ_c).for_each(|a, &b| *a += w * b);
+            Zip::from(&mut global).and(&φ_c).for_each(|a, &b| *a += w * b);
+            mass[r.min(nregions - 1)] += w;
+            global_mass += w;
+        }
+        if global_mass > 0.0 {
+            global /= global_mass;
+        }
+        for r in 0..nregions {
+            let m = mass[r];
+            let mut ψ_r = params.bg_latent.row_mut(r);
+            if m > 0.0 {
+                ψ_r /= m;
+            } else {
+                ψ_r.assign(&global);
+            }
+        }
+
+        // Volume of each region NOT claimed by a cell. The ambient intensity is
+        // identified there and nowhere else: inside a cell, background and cell
+        // predict the same thing once the spectrum is the local cell average, so
+        // the split is arbitrary. Estimating s from the interstitium -- where
+        // there is no cell to compete -- and applying it everywhere is what makes
+        // it a measurement rather than a fixed point of its own initialisation.
+        let mut cell_volume = Array1::<f32>::zeros(nregions);
+        for c in 0..params.φ.shape()[0] {
+            let r = (params.cell_bg_region[c] as usize).min(nregions - 1);
+            cell_volume[r] += params.effective_cell_volume[c];
+        }
+
+        // one scalar per (region, layer)
+        let mut rng = rng();
+        for r in 0..nregions {
+            let ψθsum = params.bg_latent.row(r).dot(&params.θksum).max(1e-12);
+            let v_all = params.background_region_volume[r];
+            // keep a floor so a region packed edge-to-edge with cells still has
+            // a defined (if weakly determined) intensity
+            let v_r = (v_all - cell_volume[r] / nlayers as f32).max(0.02 * v_all);
+            for l in 0..nlayers {
+                // counts in voxels belonging to no cell, rather than counts the
+                // model has currently decided are background
+                let x: u64 = params.unassigned_counts[r][l].iter().map(|v| v as u64).sum();
+                let α = priors.α_bg + x as f32;
+                let β = priors.β_bg + v_r * ψθsum;
+                let mut s = if sample {
+                    Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32
+                } else {
+                    α / β
+                };
+                // Safety valve on the one free parameter: background may not claim
+                // more than this share of the region's transcripts. Because it acts
+                // on a scalar it cannot distort the spectrum, unlike the per-gene
+                // cap the free-spectrum form needed.
+                if priors.bg_max_frac < 1.0 && v_r > 0.0 {
+                    let total: u64 = params.region_total_counts[r][l]
+                        .iter()
+                        .map(|v| v as u64)
+                        .sum();
+                    let cap = priors.bg_max_frac * (total as f32) / (v_r * ψθsum);
+                    s = s.min(cap.max(1e-12));
+                }
+                params.bg_scale[[r, l]] = s;
+            }
+        }
+
+        // lambda_bg[:, l, r] = s[r, l] * (theta . psi[r]); one GEMM over regions
+        let rates = params.θ.dot(&params.bg_latent.t()); // [ngenes, nregions]
+        for r in 0..nregions {
+            for l in 0..nlayers {
+                let s = params.bg_scale[[r, l]];
+                for g in 0..ngenes {
+                    params.λ_bg[[g, l, r]] = (s * rates[[g, r]]).max(1e-12);
+                }
+            }
+        }
+
+        Zip::from(&mut params.logλ_bg)
+            .and(&params.λ_bg)
+            .for_each(|logλ_bg, λ_bg| {
+                *logλ_bg = λ_bg.ln();
+            });
+    }
+
+    fn sample_background_rates(
+        &self,
+        priors: &ModelPriors,
+        params: &mut ModelParams,
+        voxels: &VoxelCheckerboard,
+    ) {
+        if params.background_counts.len() > 1 && !priors.bg_free_spectrum {
+            self.background_mixture(priors, params, voxels, true);
+            return;
+        }
         // TODO: worth doing ethier of these loops in parallel?
         let mut rng = rng();
 

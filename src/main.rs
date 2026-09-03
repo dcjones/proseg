@@ -602,6 +602,14 @@ struct Args {
     /// stops that. 1.0 removes the cap. Ignored unless --background-tile-size is set
     #[arg(long, default_value_t = 0.5)]
     background_max_frac: f32,
+
+    /// Use a free per-gene background spectrum per tile instead of tying it to the
+    /// expression of the cells in that tile. A free spectrum is not identifiable
+    /// against a homogeneous compartment -- it can absorb a gene's entire local signal,
+    /// and on whole-transcriptome skin it strips keratinocytes of every keratin count.
+    /// Retained only for comparison
+    #[arg(long, default_value_t = false)]
+    background_free_spectrum: bool,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -1122,6 +1130,7 @@ fn main() {
         β_bg: 1.0,
         bg_shrinkage: args.background_shrinkage,
         bg_max_frac: args.background_max_frac,
+        bg_free_spectrum: args.background_free_spectrum,
 
         σ_iiq: args.cell_compactness,
 

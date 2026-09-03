@@ -2748,6 +2748,43 @@ impl VoxelCheckerboard {
             });
     }
 
+    // Background region containing each cell's centroid. Used by the
+    // mixture-form background, which builds each region's background spectrum
+    // from the expression of the cells sitting in it. One pass over occupied
+    // voxels, so cheap enough to refresh every iteration as cells move.
+    pub fn compute_cell_bg_regions(&self, out: &mut [u32]) {
+        let ncells = out.len();
+        let mut isum = vec![0.0_f64; ncells];
+        let mut jsum = vec![0.0_f64; ncells];
+        let mut count = vec![0.0_f64; ncells];
+        self.quads.values().for_each(|quad| {
+            let quad_states = quad.states.read();
+            let (i_min, i_max, j_min, j_max) = quad.bounds();
+            for (voxel, state) in quad_states.iter_occupied() {
+                if state.cell == BACKGROUND_CELL {
+                    continue;
+                }
+                let [i, j, _k] = voxel.coords();
+                if i < i_min || i > i_max || j < j_min || j > j_max {
+                    continue;
+                }
+                let c = state.cell as usize;
+                isum[c] += i as f64;
+                jsum[c] += j as f64;
+                count[c] += 1.0;
+            }
+        });
+        for c in 0..ncells {
+            out[c] = if count[c] > 0.0 {
+                let i = (isum[c] / count[c]).round() as i32;
+                let j = (jsum[c] / count[c]).round() as i32;
+                self.get_voxel_bg_region(Voxel::new(i, j, 0)) as u32
+            } else {
+                0
+            };
+        }
+    }
+
     pub fn cell_centroids(&self, params: &ModelParams) -> Array2<f32> {
         let mut centroids = Array2::zeros((self.ncells, 3));
 
