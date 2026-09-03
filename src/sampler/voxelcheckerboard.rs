@@ -25,6 +25,7 @@ use geo::algorithm::{BoundingRect, Contains};
 use geo::geometry::{MultiPolygon, Point, Polygon};
 use half::f16;
 use itertools::izip;
+use log::warn;
 use log::info;
 use log::trace;
 use ndarray::{Array1, Array2, Zip};
@@ -1363,6 +1364,25 @@ pub struct VoxelCheckerboard {
     // number of transcript density bins
     pub density_nbins: usize,
 
+    // Side length in microns of the square tiles the background rate is allowed
+    // to vary over. 0.0 disables spatial tiling, giving a single background
+    // region set stratified only by density (the original behaviour).
+    pub bg_tile_size: f32,
+
+    // Raster dimensions of the background tile grid, covering the voxel extent.
+    // Both are 1 when tiling is disabled.
+    pub bg_ntiles_i: usize,
+    pub bg_ntiles_j: usize,
+
+    // Dense region id of each raster tile. Region 0 is a shared fallback for
+    // tiles too sparse to estimate a background spectrum; tiles with enough
+    // transcripts get their own. Empty when tiling is disabled.
+    bg_tile_index: Vec<u32>,
+
+    // Number of occupied tiles, i.e. the number of distinct spatial background
+    // regions. 1 when tiling is disabled.
+    pub bg_ntiles: usize,
+
     // maximum z layer
     pub kmax: i32,
 
@@ -1424,6 +1444,7 @@ impl VoxelCheckerboard {
         quadsize: f32,
         nzlayers: usize,
         density_nbins: usize,
+        bg_tile_size: f32,
         ngenes: usize,
         xmin: f32,
         ymin: f32,
@@ -1438,6 +1459,11 @@ impl VoxelCheckerboard {
             ngenes,
             nzlayers,
             density_nbins,
+            bg_tile_size,
+            bg_ntiles_i: 1,
+            bg_ntiles_j: 1,
+            bg_tile_index: Vec::new(),
+            bg_ntiles: 1,
             voxel_volume,
             xmin,
             ymin,
@@ -1493,6 +1519,7 @@ impl VoxelCheckerboard {
         expansion: usize,
         density_bandwidth: f32,
         density_nbins: usize,
+        bg_tile_size: f32,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
 
@@ -1501,6 +1528,7 @@ impl VoxelCheckerboard {
             quadsize,
             nzlayers,
             density_nbins,
+            bg_tile_size,
             dataset.ngenes(),
             xmin,
             ymin,
@@ -1633,6 +1661,7 @@ impl VoxelCheckerboard {
         expansion: usize,
         density_bandwidth: f32,
         density_nbins: usize,
+        bg_tile_size: f32,
     ) -> VoxelCheckerboard {
         let (xmin, _xmax, ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let zmid = dataset.z_mean();
@@ -1644,6 +1673,7 @@ impl VoxelCheckerboard {
             quadsize,
             nzlayers,
             density_nbins,
+            bg_tile_size,
             dataset.ngenes(),
             xmin,
             ymin,
@@ -1804,6 +1834,7 @@ impl VoxelCheckerboard {
         expansion: usize,
         density_bandwidth: f32,
         density_nbins: usize,
+        bg_tile_size: f32,
     ) -> VoxelCheckerboard {
         let masks: Array2<u32> = Self::read_npy_gz(masks_filename).unwrap_or_else(
             |_err| panic!("Unable to read cell masks from {masks_filename}. Make sure it an npy file (possibly gzipped) containing a uint32 matrix")
@@ -1852,6 +1883,7 @@ impl VoxelCheckerboard {
             quadsize,
             nzlayers,
             density_nbins,
+            bg_tile_size,
             dataset.ngenes(),
             xmin,
             ymin,
@@ -2012,6 +2044,7 @@ impl VoxelCheckerboard {
         expansion: usize,
         density_bandwidth: f32,
         density_nbins: usize,
+        bg_tile_size: f32,
     ) -> VoxelCheckerboard {
         let (mut xmin, _xmax, mut ymin, _ymax, zmin, _zmax) = dataset.coordinate_span();
         let (xmin_poly, _xmax_poly, ymin_poly, _ymax_poly) = cell_polygons.bounding_box();
@@ -2025,6 +2058,7 @@ impl VoxelCheckerboard {
             quadsize,
             nzlayers,
             density_nbins,
+            bg_tile_size,
             dataset.ngenes(),
             xmin,
             ymin,
@@ -2109,6 +2143,7 @@ impl VoxelCheckerboard {
     ) {
         self.initialize_transcripts(dataset);
         self.quads_coords.extend(self.quads.keys());
+        self.compute_bg_tile_grid();
         self.estimate_local_transcript_density(dataset, density_bandwidth, density_nbins);
         self.expand_cells_n(expansion);
         self.expand_cells_vertically(false);
@@ -2155,6 +2190,113 @@ impl VoxelCheckerboard {
             quadsize: self.quadsize as u32,
             guards,
         }
+    }
+
+    // Number of distinct background regions: one density-bin set per spatial tile.
+    pub fn nbgregions(&self) -> usize {
+        self.bg_ntiles * self.density_nbins
+    }
+
+    // Index of the background tile containing a voxel. Always 0 when spatial
+    // tiling is disabled.
+    #[inline]
+    fn bg_tile(&self, voxel: Voxel) -> usize {
+        if self.bg_tile_size <= 0.0 {
+            return 0;
+        }
+        let ti = (((voxel.i().max(0) as f32 * self.voxelsize) / self.bg_tile_size) as usize)
+            .min(self.bg_ntiles_i - 1);
+        let tj = (((voxel.j().max(0) as f32 * self.voxelsize) / self.bg_tile_size) as usize)
+            .min(self.bg_ntiles_j - 1);
+        self.bg_tile_index[ti * self.bg_ntiles_j + tj] as usize
+    }
+
+    // Background region index: the density quantile bin within the voxel's
+    // spatial tile. This is what indexes `lambda_bg`.
+    pub fn get_voxel_bg_region(&self, voxel: Voxel) -> usize {
+        self.bg_tile(voxel) * self.density_nbins + self.get_voxel_density(voxel)
+    }
+
+    pub fn get_voxel_bg_region_hint(&self, quad: &VoxelQuad, voxel: Voxel) -> usize {
+        self.bg_tile(voxel) * self.density_nbins + self.get_voxel_density_hint(quad, voxel)
+    }
+
+    // Size the background tile grid from the voxel extent. Called once the
+    // quads are populated, and again after a resolution change.
+    fn compute_bg_tile_grid(&mut self) {
+        if self.bg_tile_size <= 0.0 {
+            self.bg_ntiles_i = 1;
+            self.bg_ntiles_j = 1;
+            self.bg_ntiles = 1;
+            self.bg_tile_index = Vec::new();
+            return;
+        }
+        let mut imax = 0u32;
+        let mut jmax = 0u32;
+        for &(u, v) in self.quads.keys() {
+            imax = imax.max((u + 1) * self.quadsize as u32);
+            jmax = jmax.max((v + 1) * self.quadsize as u32);
+        }
+        let span =
+            |n: u32| (((n as f32 * self.voxelsize) / self.bg_tile_size).ceil() as usize).max(1);
+        self.bg_ntiles_i = span(imax);
+        self.bg_ntiles_j = span(jmax);
+
+        // Region 0 is a shared fallback; every other region belongs to one tile.
+        // Tiles are selected by transcript count, subject to two limits: a tile
+        // needs enough transcripts to estimate anything, and the total must fit
+        // the region field. Everything else pools into region 0. Without this a
+        // handful of stray transcripts far from the tissue would each claim a
+        // tile -- the voxel extent is set by the outliers, not by the tissue.
+        let nti = self.bg_ntiles_i;
+        let ntj = self.bg_ntiles_j;
+        let mut tile_count = vec![0u64; nti * ntj];
+        let tile_of = |n: i32| ((n.max(0) as f32 * self.voxelsize) / self.bg_tile_size) as usize;
+        for v in self.transcript_voxel.iter() {
+            let voxel = Voxel::from_raw(v.load(std::sync::atomic::Ordering::Relaxed));
+            let ti = tile_of(voxel.i()).min(nti - 1);
+            let tj = tile_of(voxel.j()).min(ntj - 1);
+            tile_count[ti * ntj + tj] += 1;
+        }
+        let total: u64 = tile_count.iter().sum();
+        let min_count = (total / 100_000).max(50);
+        let max_tiles = ((CountMatRowKey::REGION_MASK as usize + 1) / self.density_nbins)
+            .saturating_sub(1)
+            .max(1);
+
+        let mut candidates: Vec<(u64, usize)> = tile_count
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c >= min_count)
+            .map(|(t, &c)| (c, t))
+            .collect();
+        candidates.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        let nselected = candidates.len().min(max_tiles);
+        let dropped = candidates.len() - nselected;
+
+        let mut index = vec![0u32; nti * ntj];
+        for (rank, &(_, t)) in candidates.iter().take(nselected).enumerate() {
+            index[t] = rank as u32 + 1;
+        }
+        let ntiles = nselected as u32 + 1;
+        if dropped > 0 {
+            warn!(
+                "Background tiling: {dropped} tiles exceeded the region budget and were pooled \
+                 into the shared region. Consider a larger --background-tile-size."
+            );
+        }
+        self.bg_ntiles = ntiles as usize;
+        self.bg_tile_index = index;
+        info!(
+            "Background: {} tiles of {} um over a {} x {} raster, \
+             x {} density bins = {} regions",
+            self.bg_ntiles,
+            self.bg_tile_size,
+            self.bg_ntiles_i,
+            self.bg_ntiles_j,
+            self.density_nbins,
+            self.nbgregions()
+        );
     }
 
     pub fn get_voxel_density(&self, voxel: Voxel) -> usize {
@@ -2553,18 +2695,36 @@ impl VoxelCheckerboard {
                     gene,
                 } = self.transcript_fixed_state[idx];
                 let k_origin = original_voxel.k();
-                let density = self.get_voxel_density(original_voxel);
+                let region = self.get_voxel_bg_region(original_voxel);
                 let cell = states.get_voxel_cell(voxel);
 
                 if cell != BACKGROUND_CELL {
-                    counts
-                        .row(cell as usize)
-                        .write()
-                        .add(CountMatRowKey::new(gene, k_origin as u32, density as u8), 1);
+                    counts.row(cell as usize).write().add(
+                        CountMatRowKey::new(gene, k_origin as u32, region as u16),
+                        1,
+                    );
                 } else {
-                    unassigned_counts[density][k_origin as usize].add(gene as usize, 1);
+                    unassigned_counts[region][k_origin as usize].add(gene as usize, 1);
                 }
             });
+    }
+
+    // Total transcripts per (background region, layer, gene), keyed by each
+    // transcript's original voxel. Repositioning does not change a transcript's
+    // original voxel, so this is fixed for the lifetime of the checkerboard and
+    // is a model-independent anchor for how much of a gene a region even has.
+    pub fn compute_region_total_counts(&self, totals: &mut [Vec<AtomicCountVec>]) {
+        totals.iter_mut().for_each(|t_r| {
+            t_r.iter_mut().for_each(|t_rl| t_rl.zero())
+        });
+        for idx in 0..self.transcript_fixed_state.len() {
+            let TranscriptFixedState {
+                original_voxel,
+                gene,
+            } = self.transcript_fixed_state[idx];
+            let region = self.get_voxel_bg_region(original_voxel);
+            totals[region][original_voxel.k() as usize].add(gene as usize, 1);
+        }
     }
 
     pub fn compute_background_region_volumes(&self, background_region_volume: &mut Array1<f32>) {
@@ -2575,8 +2735,9 @@ impl VoxelCheckerboard {
 
         for ((_u, _v), quad) in self.quads.iter() {
             let densities = quad.densities.read();
-            for &density in densities.values() {
-                background_region_voxel_count[density as usize] += 1;
+            for (&voxel, &density) in densities.iter() {
+                let region = self.bg_tile(voxel) * self.density_nbins + density as usize;
+                background_region_voxel_count[region] += 1;
             }
         }
 
@@ -2950,6 +3111,11 @@ impl VoxelCheckerboard {
             ngenes: dataset.ngenes(),
             nzlayers: self.nzlayers,
             density_nbins: self.density_nbins,
+            bg_tile_size: self.bg_tile_size,
+            bg_ntiles_i: self.bg_ntiles_i,
+            bg_ntiles_j: self.bg_ntiles_j,
+            bg_tile_index: Vec::new(),
+            bg_ntiles: self.bg_ntiles,
             voxel_volume,
             xmin: self.xmin,
             ymin: self.ymin,
@@ -3037,6 +3203,10 @@ impl VoxelCheckerboard {
             &mut params.cell_layer_voxel_count,
             &mut params.cell_layer_surface_area,
         );
+
+        // voxelsize changed, so the tile grid must be re-derived before any
+        // background region index is computed
+        new_checkerboard.compute_bg_tile_grid();
 
         new_checkerboard.estimate_local_transcript_density(
             dataset,

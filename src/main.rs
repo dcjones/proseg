@@ -576,6 +576,32 @@ struct Args {
 
     #[arg(long, default_value_t = 5)]
     density_bins: usize,
+
+    /// Side length in microns of the square tiles the background rate is allowed to
+    /// vary over. The background spectrum in real tissue is locally sourced -- collagen
+    /// in dermis, keratin in epidermis, immune transcripts in an infiltrate -- and a
+    /// single globally pooled rate cannot represent that, so those counts get pushed
+    /// into cells instead. 0 disables spatial tiling (the default, and the previous
+    /// behaviour). Memory scales as genes x layers x tiles x density-bins, so combine
+    /// a small tile size with --density-bins 1
+    #[arg(long, default_value_t = 0.0)]
+    background_tile_size: f32,
+
+    /// Strength, in pseudo-counts, of the prior pulling each background tile's rate
+    /// toward the rate pooled over all tiles. Counts per tile are sparse once the
+    /// tissue is finely tiled, so some shrinkage is needed; large values recover a
+    /// single global background. Ignored unless --background-tile-size is set
+    #[arg(long, default_value_t = 2.0)]
+    background_shrinkage: f32,
+
+    /// Largest share of a tile's transcripts of any one gene that may be attributed to
+    /// background. Tile rates are estimated from the transcripts currently assigned to
+    /// background, so a locally abundant gene can drive its own background rate up until
+    /// it is absent from every cell in that tile. Capping against the tile's total count
+    /// for that gene -- a property of the data, not of the model's current opinion --
+    /// stops that. 1.0 removes the cap. Ignored unless --background-tile-size is set
+    #[arg(long, default_value_t = 0.5)]
+    background_max_frac: f32,
 }
 
 fn set_xenium_presets(args: &mut Args) {
@@ -943,6 +969,7 @@ fn main() {
             args.expand_initialized_cells,
             args.density_bandwidth,
             args.density_bins,
+            args.background_tile_size,
         )
     } else if let Some(cellpose_masks) = args.cellpose_masks {
         if args.cellpose_scale.is_some()
@@ -992,6 +1019,7 @@ fn main() {
             args.expand_initialized_cells,
             args.density_bandwidth,
             args.density_bins,
+            args.background_tile_size,
         )
     } else if let Some(spaceranger_barcode_mappings) = args.spaceranger_barcode_mappings {
         VoxelCheckerboard::from_visium_barcode_mappings(
@@ -1004,6 +1032,7 @@ fn main() {
             args.expand_initialized_cells,
             args.density_bandwidth,
             args.density_bins,
+            args.background_tile_size,
         )
     } else {
         VoxelCheckerboard::from_prior_transcript_assignments(
@@ -1016,6 +1045,7 @@ fn main() {
             args.expand_initialized_cells,
             args.density_bandwidth,
             args.density_bins,
+            args.background_tile_size,
         )
     };
     info!("initialized voxels: {:?}", t0.elapsed());
@@ -1090,6 +1120,8 @@ fn main() {
 
         α_bg: 1.0,
         β_bg: 1.0,
+        bg_shrinkage: args.background_shrinkage,
+        bg_max_frac: args.background_max_frac,
 
         σ_iiq: args.cell_compactness,
 
@@ -1126,7 +1158,6 @@ fn main() {
         args.nhidden,
         args.nunfactored,
         args.ncomponents,
-        args.density_bins,
     );
 
     let param_sampler = ParamSampler::new();

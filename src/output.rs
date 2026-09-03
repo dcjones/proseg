@@ -747,21 +747,17 @@ pub fn write_gene_metadata(
             ),
         ];
 
-        // background rates
-        for (l, λ_bg_l) in params.λ_bg.axis_iter(Axis(2)).enumerate() {
-            for (d, λ_bg_dl) in λ_bg_l.axis_iter(Axis(1)).enumerate() {
-                schema_fields.push(Field::new(
-                    format!("λ_bg_{l}_{d}"),
-                    DataType::Float32,
-                    false,
-                ));
-                columns.push(Arc::new(
-                    λ_bg_dl
-                        .iter()
-                        .cloned()
-                        .collect::<arrow::array::Float32Array>(),
-                ));
-            }
+        // Background rates, pooled across background regions. The per-region
+        // table is [ngenes, nlayers, nregions] and grows with the number of
+        // spatial tiles, so only the pooled rate is reported here.
+        for (l, λ_bg_l) in params.λ_bg_pooled.axis_iter(Axis(1)).enumerate() {
+            schema_fields.push(Field::new(format!("λ_bg_{l}"), DataType::Float32, false));
+            columns.push(Arc::new(
+                λ_bg_l
+                    .iter()
+                    .cloned()
+                    .collect::<arrow::array::Float32Array>(),
+            ));
         }
 
         let schema = Schema::new(schema_fields);

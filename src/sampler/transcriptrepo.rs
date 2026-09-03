@@ -185,8 +185,8 @@ impl TranscriptRepo {
         let accept_prob = if cell == neighbor_cell {
             1.0
         } else {
-            let density = voxels.get_voxel_density(original_voxel);
-            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, density]];
+            let region = voxels.get_voxel_bg_region(original_voxel);
+            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, region]];
             let θ_g_factored = if gene < params.nunfactored {
                 None
             } else {
@@ -253,17 +253,17 @@ impl TranscriptRepo {
         // gene, and original voxel → same density/layer key — so we skip them.
         if cell != neighbor_cell {
             let k_origin = original_voxel.k() as usize;
-            let density = voxels.get_voxel_density(original_voxel);
-            let key = CountMatRowKey::new(gene as u32, k_origin as u32, density as u8);
+            let region = voxels.get_voxel_bg_region(original_voxel);
+            let key = CountMatRowKey::new(gene as u32, k_origin as u32, region as u16);
 
             if cell == BACKGROUND_CELL {
-                params.unassigned_counts[density][k_origin].sub(gene, 1);
+                params.unassigned_counts[region][k_origin].sub(gene, 1);
             } else {
                 params.counts.row(cell as usize).write().sub(key, 1);
             }
 
             if neighbor_cell == BACKGROUND_CELL {
-                params.unassigned_counts[density][k_origin].add(gene, 1);
+                params.unassigned_counts[region][k_origin].add(gene, 1);
             } else {
                 params.counts.row(neighbor_cell as usize).write().add(key, 1);
             }

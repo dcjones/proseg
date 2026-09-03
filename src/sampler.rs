@@ -109,6 +109,24 @@ pub struct ModelPriors {
     pub α_bg: f32,
     pub β_bg: f32,
 
+    // Strength of the hierarchical prior pulling each background region's rate
+    // toward the globally pooled rate for that gene, in pseudo-counts. Only has
+    // an effect when there is more than one background region; larger values
+    // shrink harder, and a very large value recovers full pooling.
+    pub bg_shrinkage: f32,
+
+    // Largest share of a region's transcripts of a given gene that may be
+    // attributed to background. Region rates are estimated from the transcripts
+    // currently assigned to background, which is a feedback loop: a gene that is
+    // locally abundant pushes its own local background rate up, which sends more
+    // of it to background, and it runs away until the gene is absent from every
+    // cell in that region. Capping against the region's *total* count for that
+    // gene -- a fixed property of the data, not of the model's current opinion --
+    // breaks the loop. A bound relative to the pooled rate does not, because the
+    // pooled rate is itself computed from background assignments and drifts with
+    // them. 1.0 or more removes the cap.
+    pub bg_max_frac: f32,
+
     pub σ_iiq: f32,
 
     // // scaling factor for circle perimeters
@@ -136,50 +154,56 @@ pub struct ModelPriors {
     pub τv: f32,
 }
 
-// Bit-packed structure storing gene (20 bits), density (4 bits), and layer (8 bits) in a single u32
-// Layout (MSB to LSB): gene[31:12] | density[11:8] | layer[7:0]
+// Bit-packed structure storing gene (17 bits), background region (10 bits), and
+// layer (5 bits) in a single u32.
+// Layout (MSB to LSB): gene[31:15] | region[14:5] | layer[4:0]
 // This reduces memory from 8 bytes to 4 bytes per instance (50% reduction)
+//
+// `region` indexes the background rate table. With a single background tile it
+// is just the local-density quantile bin, reproducing the original behaviour;
+// with `--background-tile-size` set it is `tile * density_nbins + density_bin`,
+// so the background rate can vary in space as well as with density.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct CountMatRowKey {
-    // Packed as: [gene: 20 bits][density: 4 bits][layer: 8 bits]
+    // Packed as: [gene: 17 bits][region: 10 bits][layer: 5 bits]
     packed: u32,
 }
 
 impl CountMatRowKey {
-    const LAYER_BITS: u32 = 8;
-    const DENSITY_BITS: u32 = 4;
-    const GENE_BITS: u32 = 20;
+    const LAYER_BITS: u32 = 5;
+    const REGION_BITS: u32 = 10;
+    const GENE_BITS: u32 = 17;
 
-    const LAYER_MASK: u32 = (1 << Self::LAYER_BITS) - 1;
-    const DENSITY_MASK: u32 = (1 << Self::DENSITY_BITS) - 1;
-    const GENE_MASK: u32 = (1 << Self::GENE_BITS) - 1;
+    pub const LAYER_MASK: u32 = (1 << Self::LAYER_BITS) - 1;
+    pub const REGION_MASK: u32 = (1 << Self::REGION_BITS) - 1;
+    pub const GENE_MASK: u32 = (1 << Self::GENE_BITS) - 1;
 
     const LAYER_SHIFT: u32 = 0;
-    const DENSITY_SHIFT: u32 = Self::LAYER_BITS;
-    const GENE_SHIFT: u32 = Self::LAYER_BITS + Self::DENSITY_BITS;
+    const REGION_SHIFT: u32 = Self::LAYER_BITS;
+    const GENE_SHIFT: u32 = Self::LAYER_BITS + Self::REGION_BITS;
 
-    pub fn new(gene: u32, layer: u32, density: u8) -> Self {
+    pub fn new(gene: u32, layer: u32, region: u16) -> Self {
         debug_assert!(
             gene <= Self::GENE_MASK,
-            "Gene index {} exceeds maximum of {} (20 bits)",
+            "Gene index {} exceeds maximum of {} (17 bits)",
             gene,
             Self::GENE_MASK
         );
         debug_assert!(
             layer <= Self::LAYER_MASK,
-            "Layer index {} exceeds maximum of {} (8 bits)",
+            "Layer index {} exceeds maximum of {} (5 bits)",
             layer,
             Self::LAYER_MASK
         );
         debug_assert!(
-            density <= Self::DENSITY_MASK as u8,
-            "Density bin {} exceeds maximum of {} (4 bits)",
-            density,
-            Self::DENSITY_MASK
+            region as u32 <= Self::REGION_MASK,
+            "Background region {} exceeds maximum of {} (10 bits)",
+            region,
+            Self::REGION_MASK
         );
 
         let packed = ((gene & Self::GENE_MASK) << Self::GENE_SHIFT)
-            | ((density as u32 & Self::DENSITY_MASK) << Self::DENSITY_SHIFT)
+            | ((region as u32 & Self::REGION_MASK) << Self::REGION_SHIFT)
             | ((layer & Self::LAYER_MASK) << Self::LAYER_SHIFT);
         CountMatRowKey { packed }
     }
@@ -195,8 +219,8 @@ impl CountMatRowKey {
     }
 
     #[inline]
-    pub fn density(&self) -> u8 {
-        ((self.packed >> Self::DENSITY_SHIFT) & Self::DENSITY_MASK) as u8
+    pub fn region(&self) -> u16 {
+        ((self.packed >> Self::REGION_SHIFT) & Self::REGION_MASK) as u16
     }
 }
 
@@ -207,7 +231,7 @@ impl Add for CountMatRowKey {
         CountMatRowKey::new(
             self.gene() + other.gene(),
             self.layer() + other.layer(),
-            self.density().saturating_add(other.density()),
+            self.region().saturating_add(other.region()),
         )
     }
 }
@@ -217,7 +241,7 @@ impl AddAssign for CountMatRowKey {
         *self = CountMatRowKey::new(
             self.gene() + other.gene(),
             self.layer() + other.layer(),
-            self.density().saturating_add(other.density()),
+            self.region().saturating_add(other.region()),
         );
     }
 }
@@ -234,15 +258,15 @@ impl Zero for CountMatRowKey {
 
 impl Increment for CountMatRowKey {
     fn inc(&self, bound: CountMatRowKey) -> CountMatRowKey {
-        // treating this as three digits, incrementing density then layer then gene
-        if self.density() + 1 > bound.density() {
+        // treating this as three digits, incrementing region then layer then gene
+        if self.region() + 1 > bound.region() {
             if self.layer() + 1 > bound.layer() {
                 CountMatRowKey::new(self.gene() + 1, 0, 0)
             } else {
                 CountMatRowKey::new(self.gene(), self.layer() + 1, 0)
             }
         } else {
-            CountMatRowKey::new(self.gene(), self.layer(), self.density() + 1)
+            CountMatRowKey::new(self.gene(), self.layer(), self.region() + 1)
         }
     }
 }
@@ -614,6 +638,14 @@ pub struct ModelParams {
     pub λ_bg: Array3<f32>,
     pub logλ_bg: Array3<f32>,
 
+    // [ngenes, nlayers] background rate pooled across regions; the prior mean
+    // each region's rate is shrunk toward.
+    pub λ_bg_pooled: Array2<f32>,
+
+    // [nbgregions][nlayers] total transcripts per gene in each region, fixed at
+    // construction. Bounds how much of a gene background may claim.
+    pub region_total_counts: Vec<Vec<AtomicCountVec>>,
+
     // Size of the upper block of θ that is the identity matrix
     nunfactored: usize,
 
@@ -640,28 +672,29 @@ impl ModelParams {
         nhidden: usize,
         nunfactored: usize,
         ncomponents: usize,
-        density_nbins: usize,
     ) -> ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
-        if nlayers > 256 {
+        if nlayers > CountMatRowKey::LAYER_MASK as usize + 1 {
             panic!(
-                "Number of voxel layers ({nlayers}) exceeds maximum of 256. Please reduce --voxel-layers."
+                "Number of voxel layers ({nlayers}) exceeds maximum of {} (5-bit limit). Please reduce --voxel-layers.",
+                CountMatRowKey::LAYER_MASK + 1
             );
         }
         if ngenes > CountMatRowKey::GENE_MASK as usize + 1 {
             panic!(
-                "Number of genes ({}) exceeds maximum of {} (20-bit limit). Consider filtering genes.",
+                "Number of genes ({}) exceeds maximum of {} (17-bit limit). Consider filtering genes.",
                 ngenes,
                 CountMatRowKey::GENE_MASK + 1
             );
         }
-        if density_nbins > CountMatRowKey::DENSITY_MASK as usize + 1 {
+        let nbgregions = voxels.nbgregions();
+        if nbgregions > CountMatRowKey::REGION_MASK as usize + 1 {
             panic!(
-                "Number of density bins ({}) exceeds maximum of {} (4-bit limit). Please reduce --density-bins.",
-                density_nbins,
-                CountMatRowKey::DENSITY_MASK + 1
+                "Number of background regions ({nbgregions}) exceeds maximum of {} (10-bit limit). \
+                 Increase --background-tile-size or reduce --density-bins.",
+                CountMatRowKey::REGION_MASK + 1
             );
         }
         let (nhidden, nunfactored) = if priors.use_factorization {
@@ -698,11 +731,11 @@ impl ModelParams {
             CountMatRowKey::new(
                 ngenes as u32 - 1,
                 (nlayers - 1) as u32,
-                density_nbins as u8 - 1,
+                nbgregions as u16 - 1,
             ),
         );
-        let mut unassigned_counts = (0..density_nbins)
-            .map(|_density| {
+        let mut unassigned_counts = (0..nbgregions)
+            .map(|_region| {
                 (0..nlayers)
                     .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()
@@ -742,8 +775,8 @@ impl ModelParams {
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
 
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
-        let background_counts = (0..density_nbins)
-            .map(|_density| {
+        let background_counts = (0..nbgregions)
+            .map(|_region| {
                 (0..nlayers)
                     .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()
@@ -837,12 +870,24 @@ impl ModelParams {
                 *dot = φ_c.dot(&θksum);
             });
 
-        let λ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
-        let logλ_bg = Array3::<f32>::zeros((ngenes, nlayers, density_nbins));
+        let λ_bg = Array3::<f32>::zeros((ngenes, nlayers, nbgregions));
+        let logλ_bg = Array3::<f32>::zeros((ngenes, nlayers, nbgregions));
+        // pooled-over-regions background rate, the mean of the hierarchical prior
+        let λ_bg_pooled = Array2::<f32>::zeros((ngenes, nlayers));
+
+        // static per-region transcript totals, the anchor for the background cap
+        let mut region_total_counts = (0..nbgregions)
+            .map(|_region| {
+                (0..nlayers)
+                    .map(|_layer| AtomicCountVec::zeros(ngenes))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        voxels.compute_region_total_counts(&mut region_total_counts);
 
         // Initialize this here to the layer volume, and voxelcheckerboard will
         // update it when it computes density values.
-        let mut background_region_volume = Array1::zeros(density_nbins);
+        let mut background_region_volume = Array1::zeros(nbgregions);
         voxels.compute_background_region_volumes(&mut background_region_volume);
 
         let transition_counts = CSRMat::zeros(ncells, ncells as u32 - 1);
@@ -904,6 +949,8 @@ impl ModelParams {
             θksum,
             λ_bg,
             logλ_bg,
+            λ_bg_pooled,
+            region_total_counts,
             nunfactored,
             voxel_volume,
             background_region_volume,
@@ -1263,7 +1310,7 @@ impl ModelParams {
         let ncells = voxels.ncells;
         let ngenes = voxels.ngenes;
         let nlayers = (voxels.kmax + 1) as usize;
-        let density_nbins = voxels.density_nbins;
+        let nbgregions = voxels.nbgregions();
 
         let mut cell_voxel_count = AtomicCountVec::zeros(ncells);
         let mut cell_layer_voxel_count = Vec::new();
@@ -1287,11 +1334,11 @@ impl ModelParams {
             CountMatRowKey::new(
                 ngenes as u32 - 1,
                 (nlayers - 1) as u32,
-                density_nbins as u8 - 1,
+                nbgregions as u16 - 1,
             ),
         );
-        let mut unassigned_counts = (0..density_nbins)
-            .map(|_density| {
+        let mut unassigned_counts = (0..nbgregions)
+            .map(|_region| {
                 (0..nlayers)
                     .map(|_layer| AtomicCountVec::zeros(ngenes))
                     .collect::<Vec<_>>()

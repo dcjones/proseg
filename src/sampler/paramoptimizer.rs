@@ -164,7 +164,7 @@ impl ParamOptimizer {
                 gene,
             } = voxels.transcript_fixed_state[idx];
 
-            let density = voxels.get_voxel_density(original_voxel);
+            let region = voxels.get_voxel_bg_region(original_voxel);
             let k_origin = original_voxel.k() as usize;
 
             let is_background = if cell == BACKGROUND_CELL {
@@ -180,7 +180,7 @@ impl ParamOptimizer {
                     φ_c_factored.dot(&θ_g_factored)
                 };
 
-                let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
+                let λ_bg = params.λ_bg[[gene as usize, k_origin, region]];
 
                 if priors.unmodeled_fixed_cells && is_frozen {
                     false
@@ -197,7 +197,7 @@ impl ParamOptimizer {
             params.transcript_state[idx].store(new_assignment);
 
             if is_background {
-                params.background_counts[density][k_origin].add(gene as usize, 1);
+                params.background_counts[region][k_origin].add(gene as usize, 1);
             } else {
                 params
                     .foreground_counts
@@ -995,16 +995,47 @@ impl ParamOptimizer {
     }
 
     // Posterior mean of the background Poisson rates (α + count)/(β + volume).
+    // With more than one background region each region's rate is shrunk toward
+    // the rate pooled across regions, matching sample_background_rates.
     fn optimize_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
+        let nregions = params.background_counts.len();
+        params.λ_bg_pooled.fill(0.0);
+        let total_volume: f32 = params.background_region_volume.sum();
+        for x_d in params.background_counts.iter() {
+            for (l, x_dl) in x_d.iter().enumerate() {
+                for (g, x_dlg) in x_dl.iter().enumerate() {
+                    params.λ_bg_pooled[[g, l]] += x_dlg as f32;
+                }
+            }
+        }
+        params.λ_bg_pooled.map_inplace(|x| {
+            *x = (priors.α_bg + *x) / (priors.β_bg + total_volume);
+        });
+
+        let κ = priors.bg_shrinkage.max(1e-6);
+        let frac = priors.bg_max_frac;
+        let single = nregions == 1;
+        let λ_bg_pooled = &params.λ_bg_pooled;
+        let totals = &params.region_total_counts;
         Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
             .and(&params.background_counts)
             .and(&params.background_region_volume)
-            .for_each(|mut λ_d, x_d, &v_d| {
-                for (λ_dl, x_dl) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d) {
-                    for (λ_dlg, x_dlg) in izip!(λ_dl, x_dl.iter()) {
-                        let α = priors.α_bg + x_dlg as f32;
-                        let β = priors.β_bg + v_d;
-                        *λ_dlg = α / β;
+            .and(ndarray::ArrayView1::from(&(0..nregions).collect::<Vec<_>>()))
+            .for_each(|mut λ_d, x_d, &v_d, &r| {
+                for (l, (λ_dl, x_dl)) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d).enumerate() {
+                    for (g, (λ_dlg, x_dlg)) in izip!(λ_dl, x_dl.iter()).enumerate() {
+                        if single {
+                            *λ_dlg = (priors.α_bg + x_dlg as f32) / (priors.β_bg + v_d);
+                        } else {
+                            let λ̄ = λ_bg_pooled[[g, l]].max(1e-12);
+                            let λ = (κ + x_dlg as f32) / (κ / λ̄ + v_d);
+                            *λ_dlg = if frac < 1.0 && v_d > 0.0 {
+                                let cap = frac * (totals[r][l].get(g) as f32) / v_d;
+                                λ.min(cap.max(1e-12))
+                            } else {
+                                λ
+                            };
+                        }
                     }
                 }
             });

@@ -175,7 +175,7 @@ impl ParamSampler {
                         gene,
                     } = voxels.transcript_fixed_state[idx];
 
-                    let density = voxels.get_voxel_density(original_voxel);
+                    let region = voxels.get_voxel_bg_region(original_voxel);
                     let k_origin = original_voxel.k() as usize;
 
                     let is_background = if cell == BACKGROUND_CELL {
@@ -193,7 +193,7 @@ impl ParamSampler {
                             φ_c_factored.dot(&θ_g_factored)
                         };
 
-                        let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
+                        let λ_bg = params.λ_bg[[gene as usize, k_origin, region]];
 
                         let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
                             1.0
@@ -269,7 +269,7 @@ impl ParamSampler {
                     // Update count matrices
                     if is_background {
                         // if cell != BACKGROUND_CELL {
-                        params.background_counts[density][k_origin].add(gene as usize, 1);
+                        params.background_counts[region][k_origin].add(gene as usize, 1);
                         // }
                     } else {
                         params
@@ -926,35 +926,67 @@ impl ParamSampler {
     fn sample_background_rates(&self, priors: &ModelPriors, params: &mut ModelParams) {
         // TODO: worth doing ethier of these loops in parallel?
         let mut rng = rng();
-        Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
-            .and(&params.background_counts)
-            .and(&params.background_region_volume)
-            .for_each(|mut λ_d, x_d, &v_d| {
-                for (λ_dl, x_dl) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d) {
-                    for (λ_dlg, x_dlg) in izip!(λ_dl, x_dl.iter()) {
-                        let α = priors.α_bg + x_dlg as f32;
-                        let β = priors.β_bg + v_d;
-                        *λ_dlg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
-                    }
+
+        // Pool counts and volume across background regions to get a global rate
+        // per (gene, layer). With one region this is just that region's rate and
+        // the hierarchical step below is a no-op.
+        let nregions = params.background_counts.len();
+        params.λ_bg_pooled.fill(0.0);
+        let total_volume: f32 = params.background_region_volume.sum();
+        for x_d in params.background_counts.iter() {
+            for (l, x_dl) in x_d.iter().enumerate() {
+                for (g, x_dlg) in x_dl.iter().enumerate() {
+                    params.λ_bg_pooled[[g, l]] += x_dlg as f32;
                 }
-            });
+            }
+        }
+        params.λ_bg_pooled.map_inplace(|x| {
+            *x = (priors.α_bg + *x) / (priors.β_bg + total_volume);
+        });
 
-        // // TODO: Crude hack to see what things look like if we don't vary background rates by layer
-        // let mut background_counts: Array1<u32> = Array1::zeros(params.ngenes());
-        // for x_l in params.background_counts.iter() {
-        //     for (x_lg, y_g) in x_l.iter().zip(background_counts.iter_mut()) {
-        //         *y_g += x_lg;
-        //     }
-        // }
-
-        // let nlayers = params.nlayers();
-        // Zip::from(params.λ_bg.columns_mut()).for_each(|λ_l| {
-        //     for (λ_lg, x_lg) in izip!(λ_l, background_counts.iter()) {
-        //         let α = priors.α_bg + *x_lg as f32;
-        //         let β = priors.β_bg + params.layer_volume * nlayers as f32;
-        //         *λ_lg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
-        //     }
-        // });
+        if nregions == 1 {
+            Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
+                .and(&params.background_counts)
+                .and(&params.background_region_volume)
+                .for_each(|mut λ_d, x_d, &v_d| {
+                    for (λ_dl, x_dl) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d) {
+                        for (λ_dlg, x_dlg) in izip!(λ_dl, x_dl.iter()) {
+                            let α = priors.α_bg + x_dlg as f32;
+                            let β = priors.β_bg + v_d;
+                            *λ_dlg = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+                        }
+                    }
+                });
+        } else {
+            // Hierarchical: each region's rate is drawn with prior mean equal to
+            // the pooled rate and prior strength `bg_shrinkage` pseudo-counts.
+            // Region counts are sparse once the tissue is finely tiled, so
+            // without this the per-region rates are dominated by noise.
+            let κ = priors.bg_shrinkage.max(1e-6);
+            let frac = priors.bg_max_frac;
+            let λ_bg_pooled = &params.λ_bg_pooled;
+            let totals = &params.region_total_counts;
+            Zip::from(params.λ_bg.axis_iter_mut(Axis(2)))
+                .and(&params.background_counts)
+                .and(&params.background_region_volume)
+                .and(ndarray::ArrayView1::from(&(0..nregions).collect::<Vec<_>>()))
+                .for_each(|mut λ_d, x_d, &v_d, &r| {
+                    for (l, (λ_dl, x_dl)) in izip!(λ_d.axis_iter_mut(Axis(1)), x_d).enumerate() {
+                        for (g, (λ_dlg, x_dlg)) in izip!(λ_dl, x_dl.iter()).enumerate() {
+                            let λ̄ = λ_bg_pooled[[g, l]].max(1e-12);
+                            let α = κ + x_dlg as f32;
+                            let β = κ / λ̄ + v_d;
+                            let λ = Gamma::new(α, β.recip()).unwrap().sample(&mut rng) as f32;
+                            *λ_dlg = if frac < 1.0 && v_d > 0.0 {
+                                let cap = frac * (totals[r][l].get(g) as f32) / v_d;
+                                λ.min(cap.max(1e-12))
+                            } else {
+                                λ
+                            };
+                        }
+                    }
+                });
+        }
 
         Zip::from(&mut params.logλ_bg)
             .and(&params.λ_bg)

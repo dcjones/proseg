@@ -905,7 +905,7 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
 
     let mut cols = vec!["gene".to_string(), "total_count".to_string()];
     cols.extend(
-        (0..params.λ_bg.shape()[1])
+        (0..params.λ_bg_pooled.shape()[1])
             .map(|k| format!("lambda_bg_{k}"))
             .collect::<Vec<_>>(),
     );
@@ -987,8 +987,9 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
     arr.store_array_subset_elements(&arr.subset_all(), &total_counts.to_vec())?;
     arr.store_metadata()?;
 
-    // λ_bg_k
-    for (k, λ_bg_k) in params.λ_bg.columns().into_iter().enumerate() {
+    // λ_bg_k, pooled across background regions (the per-region table scales
+    // with the number of spatial tiles, so it is not written here)
+    for (k, λ_bg_k) in params.λ_bg_pooled.columns().into_iter().enumerate() {
         let arr = new_zarr_array(
             store.clone(),
             &format!("/tables/{SD_TABLE_NAME}/var/lambda_bg_{k}"),

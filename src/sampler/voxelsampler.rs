@@ -365,9 +365,9 @@ impl VoxelSampler {
             } = voxels.transcript_fixed_state[transcript_idx as usize];
             let gene = gene as usize;
 
-            let origin_density = voxels.get_voxel_density_hint(quad, original_voxel);
+            let origin_region = voxels.get_voxel_bg_region_hint(quad, original_voxel);
 
-            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, origin_density]];
+            let λ_bg = params.λ_bg[[gene, original_voxel.k() as usize, origin_region]];
 
             let θ_g_factored = if gene < params.nunfactored {
                 None
@@ -573,10 +573,10 @@ impl VoxelSampler {
                     original_voxel,
                     gene,
                 } = voxels.transcript_fixed_state[transcript_id as usize];
-                let density = voxels.get_voxel_density_hint(quad, original_voxel);
+                let region = voxels.get_voxel_bg_region_hint(quad, original_voxel);
 
                 counts_row_write.sub(
-                    CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
+                    CountMatRowKey::new(gene, original_voxel.k() as u32, region as u16),
                     1,
                 );
 
@@ -596,10 +596,10 @@ impl VoxelSampler {
                     original_voxel,
                     gene,
                 } = voxels.transcript_fixed_state[transcript_id as usize];
-                let density = voxels.get_voxel_density_hint(quad, original_voxel);
+                let region = voxels.get_voxel_bg_region_hint(quad, original_voxel);
 
                 let background_counts_k =
-                    &params.unassigned_counts[density][original_voxel.k() as usize];
+                    &params.unassigned_counts[region][original_voxel.k() as usize];
                 background_counts_k.sub(gene as usize, 1);
             }
         }
@@ -625,10 +625,10 @@ impl VoxelSampler {
                     original_voxel,
                     gene,
                 } = voxels.transcript_fixed_state[transcript_id as usize];
-                let density = voxels.get_voxel_density_hint(quad, original_voxel);
+                let region = voxels.get_voxel_bg_region_hint(quad, original_voxel);
 
                 counts_row_write.add(
-                    CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
+                    CountMatRowKey::new(gene, original_voxel.k() as u32, region as u16),
                     1,
                 );
             }
@@ -638,10 +638,10 @@ impl VoxelSampler {
                     original_voxel,
                     gene,
                 } = voxels.transcript_fixed_state[transcript_id as usize];
-                let density = voxels.get_voxel_density_hint(quad, original_voxel);
+                let region = voxels.get_voxel_bg_region_hint(quad, original_voxel);
 
                 let background_counts_k =
-                    &params.unassigned_counts[density][original_voxel.k() as usize];
+                    &params.unassigned_counts[region][original_voxel.k() as usize];
                 background_counts_k.add(gene as usize, 1);
             }
         }
