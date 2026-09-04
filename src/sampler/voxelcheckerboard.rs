@@ -2280,9 +2280,22 @@ impl VoxelCheckerboard {
         }
         let ntiles = nselected as u32 + 1;
         if dropped > 0 {
+            // Say how much tissue actually ended up in the shared region, and what
+            // tile size would fit, rather than degrading quietly toward a single
+            // global background over most of the sample.
+            let selected_counts: u64 =
+                candidates.iter().take(nselected).map(|&(c, _)| c).sum();
+            let pooled_frac = 1.0 - (selected_counts as f64) / (total.max(1) as f64);
+            let suggested = (self.bg_tile_size
+                * ((candidates.len() as f32) / (max_tiles as f32)).sqrt())
+                .ceil();
             warn!(
-                "Background tiling: {dropped} tiles exceeded the region budget and were pooled \
-                 into the shared region. Consider a larger --background-tile-size."
+                "Background tiling: {dropped} of {} eligible tiles exceeded the {max_tiles}-region \
+                 budget and were pooled into the shared region, covering {:.1}% of transcripts. \
+                 The background is effectively global over that share. Use \
+                 --background-tile-size {suggested:.0} or larger.",
+                candidates.len(),
+                100.0 * pooled_frac
             );
         }
         self.bg_ntiles = ntiles as usize;
