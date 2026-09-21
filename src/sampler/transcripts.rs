@@ -275,9 +275,12 @@ fn read_visium_tissue_positions_parquet(
         .build()
         .unwrap_or_else(|_| panic!("Unable to read parquet data from frobm {filename}"));
 
+    // https://www.10xgenomics.com/support/software/space-ranger/latest/analysis/outputs/spatial-outputs#tissue-positions
+    // pxl_col_in_fullres is the x coordinate in pixel space
+    // pxl_row_in_fullres is the y coordinate in pixel space
     let barcode_col_idx = schema.index_of("barcode").unwrap();
-    let row_px_col_idx = schema.index_of("pxl_row_in_fullres").unwrap();
     let col_px_col_idx = schema.index_of("pxl_col_in_fullres").unwrap();
+    let row_px_col_idx = schema.index_of("pxl_row_in_fullres").unwrap();
 
     let mut barcode_positions = HashMap::new();
     for rec_batch in rdr {
@@ -289,25 +292,24 @@ fn read_visium_tissue_positions_parquet(
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
-        let row_pxs = rec_batch
-            .column(row_px_col_idx)
-            .as_any()
-            .downcast_ref::<arrow::array::Float64Array>()
-            .unwrap();
-
-        let col_pxs = rec_batch
+        let x_pxs = rec_batch
             .column(col_px_col_idx)
             .as_any()
             .downcast_ref::<arrow::array::Float64Array>()
             .unwrap();
 
-        // TODO: Should row and col be flipped here?
-        for (barcode, row_px, col_px) in izip!(barcodes, row_pxs, col_pxs) {
+        let y_pxs = rec_batch
+            .column(row_px_col_idx)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap();
+
+        for (barcode, x_px, y_px) in izip!(barcodes, x_pxs, y_pxs) {
             barcode_positions.insert(
                 barcode.unwrap().to_string(),
                 (
-                    microns_per_pixel * row_px.unwrap() as f32,
-                    microns_per_pixel * col_px.unwrap() as f32,
+                    microns_per_pixel * x_px.unwrap() as f32,
+                    microns_per_pixel * y_px.unwrap() as f32,
                 ),
             );
         }
@@ -326,7 +328,7 @@ fn read_visium_scalefactors(filename: &str) -> f32 {
 
 pub fn read_visium_data(path: &str, excluded_genes: Option<Regex>) -> TranscriptDataset {
     const SQUARE_DIR: &str = "square_002um";
-    const MATRIX_DIR: &str = "raw_feature_bc_matrix";
+    const MATRIX_DIR: &str = "filtered_feature_bc_matrix";
 
     let path = Path::new(path);
 
