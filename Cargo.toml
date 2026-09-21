@@ -18,6 +18,10 @@ path = "src/main.rs"
 name = "proseg-to-baysor"
 path = "src/to_baysor.rs"
 
+[[bin]]
+name = "baysor-to-spaceranger"
+path = "src/to_spaceranger.rs"
+
 [profile.release]
 debug = true
 # lto = true

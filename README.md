@@ -38,6 +38,7 @@ And the Research Brief:
     * [CosMx](#cosmx)
     * [MERSCOPE](#merscope)
     * [VisiumHD](#visiumhd)
+      * [Space Ranger Custom Segmentation](#space-ranger-custom-segmentation)
     * [Initializing using Cellpose masks](#initializing-using-cellpose-masks)
   * [Getting help](#getting-help)
 
@@ -329,6 +330,46 @@ proseg --visiumhd
 ```
 There isn't a standardized cellpose output format. See the `extras/cellpose-xenium.py` file for code
 to run cellpose and output to format proseg can read.
+
+### Space Ranger Custom Segmentation
+
+Space Ranger ≥ 4.0.1 supports custom segmentation files as input to `spaceranger count`.
+After segmentation with Proseg, the `MultiPolygon` output can be converted to a
+[GeoJSON `FeatureCollection` containing `Polygon` features accepted by 10x](
+https://www.10xgenomics.com/support/software/space-ranger/latest/analysis/inputs/segmentation-inputs).
+
+  1. First convert the proseg output to a format matching Baysor's using the
+     included `proseg-to-baysor` command:
+    ```sh
+    proseg-to-baysor proseg-output.zarr \
+        --output-transcript-metadata proseg-to-baysor-transcript-metadata.csv \
+        --output-cell-polygons proseg-to-baysor-cell-polygons.geojson
+    ```
+  2. Space Ranger expects pixel positions, however, Proseg tries to put
+     coordinates in microns and report microns. To work around this, we provide
+     a module to convert the micron values to pixels based on scalefactors that
+     come from `spaceranger count`, e.g, `scalefactors_json.json`, or by
+     manually specifying a `--microns-per-pixel` value:
+    ```sh
+    baysor-to-spaceranger proseg-to-baysor-cell-polygons.geojson \
+        --output-cell-polygons baysor-to-spaceranger-cell-polygons.geojson \
+        --scalefactors-json scalefactors_json.json
+    ```
+  3. Space Ranger should be able to read the GeoJSON file and the standard
+     output bundle will be written to a directory named whatever is passed to
+     `--id` (a separate directory matching `--id` must already exist). Set
+     `--nucleus-expansion-distance-micron` to 0 to account for the cell
+     (non-nuclear) segmentation output from Proseg. All other flags must be the
+     same as in the original `spaceranger count` call.
+    ```sh
+    spaceranger count \
+        --id sample_id \
+        --custom-segmentation-file baysor-to-spaceranger-cell-polygons.geojson \
+        --nucleus-expansion-distance-micron 0
+    ```
+
+The results can now be read by tools that accept 10x Visium HD bundles as input
+or visualized in the [Loupe Browser](https://www.10xgenomics.com/support/software/loupe-browser/latest).
 
 ## Initializing using Cellpose masks
 
