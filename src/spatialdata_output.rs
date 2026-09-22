@@ -10,6 +10,7 @@ use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 use serde_json::json;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
@@ -1303,41 +1304,53 @@ fn write_state_transitions_parts(
 
     let ncells = params.ncells();
     // Index `ncells` in `state_transitions` is the background state.
+    debug_assert_eq!(params.state_transitions.nrows(), ncells + 1);
     let bg = ncells as u32;
 
     // 1. Write the gene-agnostic cell→cell transition matrix. The background
     // row and column don't fit in an [ncells, ncells] obsp entry, so they are
     // written as the obs columns `from_bg_trans_count` and `to_bg_trans_count`.
-    let mut agg_data = Vec::new();
-    let mut agg_indices = Vec::new();
-    let mut agg_indptr = Vec::with_capacity(ncells + 1);
-    let mut agg_offset = 0;
-    let mut to_bg = vec![0_u32; ncells];
-
-    for (i, to_bg_i) in to_bg.iter_mut().enumerate() {
-        agg_indptr.push(agg_offset);
-        let row_entries = params.state_transitions.iter_row_sorted(i);
-
-        let mut cell_sums = HashMap::new();
-
-        for &(key, count) in &row_entries {
-            if key.dest_cell == bg {
-                *to_bg_i += count;
-            } else {
-                *cell_sums.entry(key.dest_cell).or_insert(0) += count;
+    // Per row: (dest cell, count) summed over genes, sorted by dest cell, and
+    // the count to background.
+    let agg_rows: Vec<(Vec<(u32, u32)>, u32)> = (0..ncells)
+        .into_par_iter()
+        .map(|i| {
+            let mut to_bg = 0;
+            let mut dests = Vec::new();
+            for (key, count) in params.state_transitions.iter_row_sorted(i) {
+                if key.dest_cell == bg {
+                    to_bg += count;
+                } else {
+                    dests.push((key.dest_cell, count));
+                }
             }
-        }
+            dests.sort_unstable_by_key(|e| e.0);
+            dests.dedup_by(|next, kept| {
+                if next.0 == kept.0 {
+                    kept.1 += next.1;
+                    true
+                } else {
+                    false
+                }
+            });
+            (dests, to_bg)
+        })
+        .collect();
 
-        let mut sorted_cells: Vec<_> = cell_sums.into_iter().collect();
-        sorted_cells.sort_by_key(|k| k.0);
-
-        for (dest_cell, count) in sorted_cells {
+    let nnz: usize = agg_rows.iter().map(|(dests, _)| dests.len()).sum();
+    let mut agg_data = Vec::with_capacity(nnz);
+    let mut agg_indices = Vec::with_capacity(nnz);
+    let mut agg_indptr = Vec::with_capacity(ncells + 1);
+    let mut to_bg = Vec::with_capacity(ncells);
+    agg_indptr.push(0);
+    for (dests, to_bg_i) in agg_rows {
+        for (dest_cell, count) in dests {
             agg_data.push(count);
             agg_indices.push(dest_cell as i32);
-            agg_offset += 1;
         }
+        agg_indptr.push(agg_data.len() as i32);
+        to_bg.push(to_bg_i);
     }
-    agg_indptr.push(agg_offset);
 
     write_anndata_csr_matrix_raw(
         store.clone(),
@@ -1370,31 +1383,56 @@ fn write_state_transitions_parts(
     if output_gene_transitions {
         let ngenes = gene_names.len();
         let nstates = ncells + 1;
-        let mut gene_entries: Vec<Vec<(i64, u32)>> = vec![Vec::new(); ngenes];
 
-        for i in 0..nstates {
-            // Entries are sorted by (gene, dest_state), so each gene's entries
-            // are appended in increasing flat-index order, as CSR requires.
-            for (key, count) in params.state_transitions.iter_row_sorted(i) {
-                gene_entries[key.gene as usize]
-                    .push(((i * nstates + key.dest_cell as usize) as i64, count));
-            }
-        }
+        let gene_counts = (0..nstates)
+            .into_par_iter()
+            .fold(
+                || vec![0_usize; ngenes],
+                |mut acc, i| {
+                    for (key, _) in params.state_transitions.iter_row_sorted(i) {
+                        acc[key.gene as usize] += 1;
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![0_usize; ngenes],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
+                    a
+                },
+            );
 
-        let mut data = Vec::new();
-        let mut indices: Vec<i64> = Vec::new();
         let mut indptr: Vec<i64> = Vec::with_capacity(ngenes + 1);
-        let mut offset: i64 = 0;
+        indptr.push(0);
+        for count in &gene_counts {
+            indptr.push(indptr.last().unwrap() + *count as i64);
+        }
+        let nnz = *indptr.last().unwrap() as usize;
 
-        for entries in &gene_entries {
-            indptr.push(offset);
-            for (idx, val) in entries {
-                data.push(*val);
-                indices.push(*idx);
-                offset += 1;
+        // Scatter entries into place. Rows are visited in increasing order and
+        // each row's entries are sorted by (gene, dest_state), so each gene's
+        // entries land in increasing flat-index order, as CSR requires. Rows are
+        // sorted in parallel, a batch at a time to bound memory.
+        let mut data = vec![0_u32; nnz];
+        let mut indices = vec![0_i64; nnz];
+        let mut cursor: Vec<usize> = indptr[..ngenes].iter().map(|&p| p as usize).collect();
+        const BATCH_SIZE: usize = 1024;
+        for batch_start in (0..nstates).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(nstates);
+            let batch: Vec<_> = (batch_start..batch_end)
+                .into_par_iter()
+                .map(|i| params.state_transitions.iter_row_sorted(i))
+                .collect();
+            for (i, row_entries) in (batch_start..batch_end).zip(batch) {
+                for (key, count) in row_entries {
+                    let pos = &mut cursor[key.gene as usize];
+                    data[*pos] = count;
+                    indices[*pos] = (i * nstates + key.dest_cell as usize) as i64;
+                    *pos += 1;
+                }
             }
         }
-        indptr.push(offset);
 
         if !data.is_empty() {
             write_anndata_csr_matrix_raw(

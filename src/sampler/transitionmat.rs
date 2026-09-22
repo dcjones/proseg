@@ -1,32 +1,24 @@
-use parking_lot::RwLock;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use thread_local::ThreadLocal;
+use ahash::AHashMap as HashMap;
+use parking_lot::Mutex;
+use rayon::prelude::*;
 
 use super::TransitionMatRowKey;
 
-/// Sparse transition-count matrix backed by per-row HashMaps with thread-local
-/// accumulation buffers to avoid write-lock contention during parallel sampling.
+/// Sparse transition-count matrix, indexed as (src state, (gene, dest state)),
+/// backed by per-row, individually locked HashMaps.
 ///
-/// Usage pattern in a parallel section:
-///   - Call `add_local` (no shared-row locking) from rayon threads.
-///   - After the parallel section, call `flush_locals` (takes `&mut self`) once
-///     from the main thread to merge thread-local buffers into the shared rows.
+/// During sampling only off-diagonal transitions (src != dest) are recorded,
+/// via `add` directly into the shared rows. These are a minority of
+/// transcripts, so row-lock contention is low, and it avoids having to merge
+/// per-thread buffers after every sample. The diagonal is instead
+/// reconstructed once, by `finalize`, from the fixed source (reported) state
+/// of each transcript and the number of recorded samples.
 pub struct TransitionMat {
-    rows: Vec<RwLock<HashMap<u64, u32>>>,
-    // Per-rayon-thread accumulation buffer.
-    // RefCell is Send (not Sync), but ThreadLocal::iter_mut only needs Send.
-    local_buf: ThreadLocal<RefCell<HashMap<u64, u32>>>,
-}
-
-// Key layout for thread-local buffer: 21 bits each for src, gene, dest.
-// Supports up to ~2M cells and ~2M genes.
-const BITS: u64 = 21;
-const MASK: u64 = (1 << BITS) - 1;
-
-#[inline]
-fn encode_local(src: u32, gene: u32, dest_cell: u32) -> u64 {
-    ((src as u64) << (2 * BITS)) | ((gene as u64) << BITS) | (dest_cell as u64)
+    rows: Vec<Mutex<HashMap<u64, u32>>>,
+    // Number of recorded samples, i.e. the number of times every transcript
+    // contributed one transition (possibly src -> src).
+    nsamples: u32,
+    finalized: bool,
 }
 
 /// Pack (gene, dest_cell) into a u64 key for a shared row.
@@ -45,50 +37,134 @@ fn decode_row(key: u64) -> TransitionMatRowKey {
 
 impl TransitionMat {
     pub fn new(nrows: usize) -> Self {
-        let rows = (0..nrows)
-            .map(|_| RwLock::new(HashMap::new()))
-            .collect();
+        let rows = (0..nrows).map(|_| Mutex::new(HashMap::new())).collect();
         Self {
             rows,
-            local_buf: ThreadLocal::new(),
+            nsamples: 0,
+            finalized: false,
         }
     }
 
-    /// Accumulate into the calling thread's local buffer — no shared locking.
-    /// Must be followed by `flush_locals` after the parallel section.
+    pub fn nrows(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Record one transition. Diagonal (src == dest_cell) transitions are
+    /// implicit and ignored here; see `finalize`.
     #[inline]
-    pub fn add_local(&self, src: usize, gene: u32, dest_cell: u32) {
-        let buf = self.local_buf.get_or(|| RefCell::new(HashMap::new()));
-        *buf.borrow_mut()
-            .entry(encode_local(src as u32, gene, dest_cell))
-            .or_insert(0) += 1u32;
+    pub fn add(&self, src: usize, gene: u32, dest_cell: u32) {
+        if src as u32 == dest_cell {
+            return;
+        }
+        *self.rows[src]
+            .lock()
+            .entry(encode_row(gene, dest_cell))
+            .or_insert(0) += 1;
     }
 
-    /// Merge all thread-local buffers into the shared rows, then clear them.
-    /// Call from a single thread after the parallel section completes.
-    pub fn flush_locals(&mut self) {
-        for buf_cell in self.local_buf.iter_mut() {
-            let mut buf = buf_cell.borrow_mut();
-            for (k, count) in buf.drain() {
-                let src = ((k >> (2 * BITS)) & MASK) as usize;
-                let gene = ((k >> BITS) & MASK) as u32;
-                let dest = (k & MASK) as u32;
-                *self.rows[src]
-                    .write()
-                    .entry(encode_row(gene, dest))
-                    .or_insert(0) += count;
-            }
+    /// Mark the end of one recorded sample, during which `add` was called for
+    /// every transcript.
+    pub fn finish_sample(&mut self) {
+        assert!(!self.finalized);
+        self.nsamples += 1;
+    }
+
+    /// Fill in the diagonal. `src_states` yields the (src state, gene) of every
+    /// transcript, which must have been fixed across all recorded samples.
+    /// Each transcript made exactly one transition per sample, so the diagonal
+    /// entry for (s, g) is nsamples * |{transcripts in (s, g)}| minus the
+    /// recorded off-diagonal transitions out of (s, g).
+    pub fn finalize<I>(&mut self, src_states: I)
+    where
+        I: ParallelIterator<Item = (u32, u32)>,
+    {
+        if self.finalized {
+            return;
         }
+        self.finalized = true;
+        if self.nsamples == 0 {
+            return;
+        }
+
+        let mut keys: Vec<u64> = src_states
+            .map(|(src, gene)| (src as u64) << 32 | gene as u64)
+            .collect();
+        keys.par_sort_unstable();
+
+        // Split into runs of equal src state, one per row.
+        let mut row_runs: Vec<(usize, &[u64])> = Vec::new();
+        let mut rest = &keys[..];
+        while let Some(&first) = rest.first() {
+            let src = first >> 32;
+            let len = rest.partition_point(|k| k >> 32 == src);
+            row_runs.push((src as usize, &rest[..len]));
+            rest = &rest[len..];
+        }
+
+        let nsamples = self.nsamples;
+        let rows = &self.rows;
+        row_runs.into_par_iter().for_each(|(src, run)| {
+            let mut row = rows[src].lock();
+
+            let mut offdiag: HashMap<u32, u32> = HashMap::new();
+            for (&key, &count) in row.iter() {
+                *offdiag.entry((key >> 32) as u32).or_insert(0) += count;
+            }
+
+            let mut i = 0;
+            while i < run.len() {
+                let gene = run[i] as u32;
+                let n = run[i..].partition_point(|&k| k as u32 == gene) as u32;
+                let off = offdiag.get(&gene).copied().unwrap_or(0);
+                let diag = nsamples * n - off;
+                if diag > 0 {
+                    row.insert(encode_row(gene, src as u32), diag);
+                }
+                i += n as usize;
+            }
+        });
     }
 
     /// Return all non-zero entries for row `i`, sorted by (gene, dest_cell).
     pub fn iter_row_sorted(&self, i: usize) -> Vec<(TransitionMatRowKey, u32)> {
-        let guard = self.rows[i].read();
+        let guard = self.rows[i].lock();
         let mut entries: Vec<(TransitionMatRowKey, u32)> = guard
             .iter()
             .map(|(&k, &v)| (decode_row(k), v))
             .collect();
         entries.sort_unstable_by_key(|(key, _)| *key);
         entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagonal_is_reconstructed() {
+        // States 0, 1, and 2 (background). Transcripts as (src state, gene).
+        let transcripts = [(0, 0), (0, 0), (0, 1), (1, 0), (2, 1)];
+        // Per sample, the dest state of each transcript.
+        let samples = [[0, 1, 0, 1, 1], [2, 0, 0, 0, 2]];
+
+        let mut direct: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut mat = TransitionMat::new(3);
+        for dests in &samples {
+            for (&(src, gene), &dest) in transcripts.iter().zip(dests) {
+                *direct.entry((src, gene, dest)).or_insert(0) += 1;
+                mat.add(src as usize, gene, dest);
+            }
+            mat.finish_sample();
+        }
+        mat.finalize(transcripts.par_iter().copied());
+
+        let mut reconstructed = HashMap::new();
+        for src in 0..mat.nrows() {
+            for (key, count) in mat.iter_row_sorted(src) {
+                reconstructed.insert((src as u32, key.gene, key.dest_cell), count);
+            }
+        }
+        assert_eq!(direct, reconstructed);
     }
 }

@@ -252,11 +252,9 @@ impl ParamSampler {
 
                             let dest_state = if is_background { ncells } else { cell };
 
-                            params.state_transitions.add_local(
-                                src_state as usize,
-                                gene,
-                                dest_state,
-                            );
+                            params
+                                .state_transitions
+                                .add(src_state as usize, gene, dest_state);
                         }
 
                         if let Some(ref counts) = params.transcript_assignment_counts {
@@ -290,7 +288,7 @@ impl ParamSampler {
         });
 
         if priors.record_state_transitions && record_samples {
-            params.state_transitions.flush_locals();
+            params.state_transitions.finish_sample();
         }
     }
 

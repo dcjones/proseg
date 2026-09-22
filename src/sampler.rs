@@ -468,7 +468,9 @@ pub struct ModelParams {
     // Counts the number of transitions between states for each gene, indexed as
     // (src state, (gene, dest state)). A state is either a cell or the
     // background: cell indexes are used as-is and index `ncells` is the
-    // background state, giving `ncells + 1` states in total.
+    // background state, giving `ncells + 1` states in total. Only off-diagonal
+    // transitions are recorded during sampling; the diagonal is filled in by
+    // `finalize_state_transitions`.
     pub state_transitions: TransitionMat,
 
     // Direction convention for the two flow matrices below: flow is measured
@@ -920,6 +922,23 @@ impl ModelParams {
         {
             reported.store(state.load());
         }
+    }
+
+    /// Fill in the implicit diagonal of `state_transitions`. Call once, after the
+    /// uncertainty phase and before reading `state_transitions`.
+    pub fn finalize_state_transitions(&mut self, voxels: &VoxelCheckerboard) {
+        let ncells = self.ncells() as u32;
+        let reported = &self.reported_transcript_state;
+        self.state_transitions.finalize(
+            reported
+                .par_iter()
+                .zip(voxels.transcript_fixed_state.par_iter())
+                .map(|(state, fixed)| {
+                    let state = state.load();
+                    let src = if state.background { ncells } else { state.cell };
+                    (src, fixed.gene)
+                }),
+        );
     }
 
     /// Per-cell transcript mass exchanged with the background component, measured

@@ -1428,6 +1428,7 @@ fn main() {
     if let Some(ref output_spatialdata) = args.output_spatialdata {
         if args.record_state_transitions {
             let t0 = Instant::now();
+            params.finalize_state_transitions(&voxels);
             write_state_transitions_zarr(
                 &args.output_path,
                 output_spatialdata,
