@@ -24,7 +24,7 @@ use super::voxelcheckerboard::{TranscriptFixedState, Voxel, VoxelCheckerboard};
 use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
-use ndarray::{Array2, Axis, Zip, s};
+use ndarray::{Array2, ArrayViewMut1, Axis, Zip, s};
 use rand::{Rng, rng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -330,9 +330,12 @@ impl ParamOptimizer {
         let nunfactored = params.nunfactored;
         let ngenes = params.θ.shape()[0];
 
-        for tl in params.gene_latent_counts_f_tl.iter_mut() {
-            tl.borrow_mut().fill(0.0);
-        }
+        params
+            .gene_latent_counts_f_tl
+            .iter_mut()
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .for_each(|tl| tl.get_mut().fill(0.0));
 
         let cell_latent_counts_f = &params.cell_latent_counts_f;
         let foreground_counts = &params.foreground_counts;
@@ -371,25 +374,25 @@ impl ParamOptimizer {
                     }
                     let θ_g_factored = θ.slice(s![g as usize, nunfactored..]);
 
-                    let mut sum = 0.0_f32;
-                    for (φ_ck, θ_gk) in φ_c_factored.iter().zip(θ_g_factored.iter()) {
-                        sum += *φ_ck * *θ_gk;
-                    }
-                    if sum <= 0.0 {
+                    // `!(sum > 0.0)` rather than `sum <= 0.0` to also skip NaN.
+                    let sum = φ_c_factored.dot(&θ_g_factored);
+                    if !(sum > 0.0) {
                         continue;
                     }
                     let scale = x_cg as f32 / sum;
 
-                    let mut gene_acc_g = gene_acc.row_mut(g as usize);
-                    for (k, (φ_ck, θ_gk)) in
-                        φ_c_factored.iter().zip(θ_g_factored.iter()).enumerate()
-                    {
-                        let e = *φ_ck * *θ_gk * scale;
-                        if e > 0.0 {
-                            cbuf[k] += e;
-                            gene_acc_g[k] += e;
-                        }
-                    }
+                    // φ, θ ≥ 0, so every term is non-negative and adding them
+                    // unconditionally matches only adding the positive ones, while
+                    // keeping the loop branch-free so it vectorizes.
+                    Zip::from(ArrayViewMut1::from(&mut cbuf[..]))
+                        .and(gene_acc.row_mut(g as usize))
+                        .and(&φ_c_factored)
+                        .and(&θ_g_factored)
+                        .for_each(|cbuf_k, gene_acc_gk, &φ_ck, &θ_gk| {
+                            let e = φ_ck * θ_gk * scale;
+                            *cbuf_k += e;
+                            *gene_acc_gk += e;
+                        });
                 }
 
                 for (k, &v) in cbuf.iter().enumerate() {
@@ -399,10 +402,23 @@ impl ParamOptimizer {
                 }
             });
 
-        params.gene_latent_counts_f.fill(0.0);
-        for tl in params.gene_latent_counts_f_tl.iter_mut() {
-            params.gene_latent_counts_f += &*tl.borrow();
-        }
+        let gene_tls: Vec<&Array2<f32>> = params
+            .gene_latent_counts_f_tl
+            .iter_mut()
+            .map(|tl| &*tl.get_mut())
+            .collect();
+        params
+            .gene_latent_counts_f
+            .outer_iter_mut()
+            .into_par_iter()
+            .enumerate()
+            .with_min_len(64)
+            .for_each(|(g, mut acc_g)| {
+                acc_g.fill(0.0);
+                for tl in &gene_tls {
+                    acc_g += &tl.row(g);
+                }
+            });
     }
 
     // Transpose-partitioned E-step for whole-transcriptome panels. The cell pass
