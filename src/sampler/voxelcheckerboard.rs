@@ -35,8 +35,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::iter::{
-    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
-    ParallelDrainFull, ParallelIterator,
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+    IntoParallelRefMutIterator, ParallelDrainFull, ParallelIterator,
 };
 use rayon::slice::ParallelSliceMut;
 use rstar::primitives::GeomWithData;
@@ -50,7 +50,9 @@ use std::io::{BufReader, Read};
 use std::mem::drop;
 use std::ops::{Add, DerefMut, Neg};
 // use std::sync::Arc;
+use itertools::Either;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use thread_local::ThreadLocal;
@@ -1238,71 +1240,261 @@ impl<'a> QuadStatesView<'a> {
 }
 
 // A derived voxel→transcript index, rebuilt from the flat `transcript_voxel`
-// array by parallel-sorting (voxel, transcript_idx) pairs. Replaces the per-quad
-// BTreeSet's ordered-range role: `voxel_transcripts` locates a voxel's transcripts
-// by binary search over the sorted array (cache-friendly, vs. the tree's pointer
-// chasing). Rebuilt once per sampling step, before morphology reads it.
+// array before each morphology phase. Transcripts are bucketed by voxel with a
+// parallel counting sort over dense voxel "slots": each quad occupied by at least
+// one transcript gets a block of quadsize² × nzlayers slots, one per voxel, and
+// `offsets` gives each slot's range in `transcripts` (CSR). Building is O(n)
+// (count, prefix sum, scatter) rather than a comparison sort, and lookups are a
+// direct index rather than a binary search.
+//
+// Any transcript whose voxel doesn't map to a slot (not expected in practice,
+// e.g. a z layer beyond `nzlayers`) is kept in a small sorted `overflow` list.
 pub struct VoxelIndex {
-    // (packed voxel, transcript_idx), sorted by packed voxel.
-    sorted: Vec<(u64, u32)>,
+    quadsize: u32,
+    nzlayers: u32,
+
+    // Occupied quads, as a dense table over their bounding box: quad (u, v) maps
+    // to quad_ordinal[(u - quad_u0) * quad_nv + (v - quad_v0)], its block of
+    // slots, or NO_QUAD.
+    quad_u0: u32,
+    quad_v0: u32,
+    quad_nu: u32,
+    quad_nv: u32,
+    quad_ordinal: Vec<u32>,
+
+    // [nslots + 1] Start of each slot's transcripts in `transcripts`.
+    offsets: Vec<AtomicU32>,
+
+    // Transcript indexes, grouped by slot.
+    transcripts: Vec<AtomicU32>,
+
+    // (packed voxel, transcript index) for transcripts not in any slot, sorted.
+    overflow: Vec<(u64, u32)>,
 }
+
+const NO_QUAD: u32 = u32::MAX;
 
 impl VoxelIndex {
     pub fn new() -> VoxelIndex {
-        VoxelIndex { sorted: Vec::new() }
-    }
-
-    pub fn build(transcript_voxel: &[std::sync::atomic::AtomicU64]) -> VoxelIndex {
-        use std::sync::atomic::Ordering::Relaxed;
-        let mut sorted: Vec<(u64, u32)> = transcript_voxel
-            .par_iter()
-            .enumerate()
-            .map(|(idx, v)| (v.load(Relaxed), idx as u32))
-            .collect();
-        sorted.par_sort_unstable_by_key(|&(v, _)| v);
-        VoxelIndex { sorted }
-    }
-
-    // Update the index in place, skipping the sort when no transcript has moved
-    // since the last rebuild (e.g. throughout burn-in, when repo is off). When
-    // repo is on it moves most transcripts every iteration, so there's no
-    // cheaper incremental update to be had than sorting again.
-    pub fn rebuild(&mut self, transcript_voxel: &[std::sync::atomic::AtomicU64]) {
-        use std::sync::atomic::Ordering::Relaxed;
-        if self.sorted.len() != transcript_voxel.len() {
-            *self = VoxelIndex::build(transcript_voxel);
-            return;
+        VoxelIndex {
+            quadsize: 1,
+            nzlayers: 1,
+            quad_u0: 0,
+            quad_v0: 0,
+            quad_nu: 0,
+            quad_nv: 0,
+            quad_ordinal: Vec::new(),
+            offsets: Vec::new(),
+            transcripts: Vec::new(),
+            overflow: Vec::new(),
         }
+    }
 
-        let moved = self
-            .sorted
-            .par_iter_mut()
-            .map(|(v, idx)| {
-                let new_v = transcript_voxel[*idx as usize].load(Relaxed);
-                let moved = new_v != *v;
-                *v = new_v;
-                moved
+    fn slots_per_quad(&self) -> usize {
+        (self.quadsize as usize).pow(2) * self.nzlayers as usize
+    }
+
+    #[inline]
+    fn slot(&self, voxel: Voxel) -> Option<usize> {
+        if voxel.raw() == OOB_VOXEL {
+            return None;
+        }
+        let [i, j, k] = voxel.coords();
+        let (i, j, k) = (i as u32, j as u32, k as u32);
+        if k >= self.nzlayers {
+            return None;
+        }
+        let (u, v) = (i / self.quadsize, j / self.quadsize);
+        let (du, dv) = (u.wrapping_sub(self.quad_u0), v.wrapping_sub(self.quad_v0));
+        if du >= self.quad_nu || dv >= self.quad_nv {
+            return None;
+        }
+        let ordinal = self.quad_ordinal[(du * self.quad_nv + dv) as usize];
+        if ordinal == NO_QUAD {
+            return None;
+        }
+        let (li, lj) = (i % self.quadsize, j % self.quadsize);
+        let local = ((li * self.quadsize + lj) * self.nzlayers + k) as usize;
+        Some(ordinal as usize * self.slots_per_quad() + local)
+    }
+
+    // Rebuild from current transcript positions, reusing allocations.
+    pub fn rebuild(
+        &mut self,
+        transcript_voxel: &[std::sync::atomic::AtomicU64],
+        quadsize: usize,
+        nzlayers: usize,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.quadsize = quadsize as u32;
+        self.nzlayers = nzlayers as u32;
+        let voxel = |idx: usize| Voxel::from_raw(transcript_voxel[idx].load(Relaxed));
+        let ntranscripts = transcript_voxel.len();
+
+        // Bounding box of occupied quads.
+        let quadsize = self.quadsize;
+        let (u0, u1, v0, v1) = (0..ntranscripts)
+            .into_par_iter()
+            .map(|idx| voxel(idx))
+            .filter(|voxel| voxel.raw() != OOB_VOXEL)
+            .map(|voxel| {
+                let [i, j, _k] = voxel.coords();
+                let (u, v) = (i as u32 / quadsize, j as u32 / quadsize);
+                (u, u, v, v)
             })
-            .reduce(|| false, |a, b| a || b);
-
-        if moved {
-            self.sorted.par_sort_unstable_by_key(|&(v, _)| v);
+            .reduce(
+                || (u32::MAX, 0, u32::MAX, 0),
+                |a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)),
+            );
+        if u0 > u1 {
+            // no transcripts
+            (self.quad_u0, self.quad_v0, self.quad_nu, self.quad_nv) = (0, 0, 0, 0);
+        } else {
+            (self.quad_u0, self.quad_v0) = (u0, v0);
+            (self.quad_nu, self.quad_nv) = (u1 - u0 + 1, v1 - v0 + 1);
         }
+
+        // Mark occupied quads, then number them.
+        let ntable = self.quad_nu as usize * self.quad_nv as usize;
+        let occupied: Vec<AtomicBool> = (0..ntable).map(|_| AtomicBool::new(false)).collect();
+        (0..ntranscripts).into_par_iter().for_each(|idx| {
+            let voxel = voxel(idx);
+            if voxel.raw() == OOB_VOXEL {
+                return;
+            }
+            let [i, j, _k] = voxel.coords();
+            let du = i as u32 / quadsize - self.quad_u0;
+            let dv = j as u32 / quadsize - self.quad_v0;
+            // Check before storing: nearly every transcript hits an already
+            // marked quad, and unconditional stores to the few shared cache
+            // lines would contend across threads.
+            let occupied = &occupied[(du * self.quad_nv + dv) as usize];
+            if !occupied.load(Relaxed) {
+                occupied.store(true, Relaxed);
+            }
+        });
+        self.quad_ordinal.clear();
+        let mut nquads = 0;
+        for occupied in &occupied {
+            if occupied.load(Relaxed) {
+                self.quad_ordinal.push(nquads);
+                nquads += 1;
+            } else {
+                self.quad_ordinal.push(NO_QUAD);
+            }
+        }
+
+        // Count transcripts per slot, collecting any that don't map to one. The
+        // extra trailing slot is never counted into, so after the prefix sum it
+        // holds the total.
+        let nslots = nquads as usize * self.slots_per_quad();
+        assert!(nslots < u32::MAX as usize);
+        // Resize in place rather than reallocating: the number of occupied quads
+        // can change from one rebuild to the next.
+        self.offsets.resize_with(nslots + 1, || AtomicU32::new(0));
+        self.offsets
+            .par_iter_mut()
+            .for_each(|count| *count.get_mut() = 0);
+        let this = &*self;
+        let mut overflow: Vec<(u64, u32)> = (0..ntranscripts)
+            .into_par_iter()
+            .filter_map(|idx| {
+                let voxel = voxel(idx);
+                match this.slot(voxel) {
+                    Some(slot) => {
+                        this.offsets[slot].fetch_add(1, Relaxed);
+                        None
+                    }
+                    None => Some((voxel.raw(), idx as u32)),
+                }
+            })
+            .collect();
+        overflow.par_sort_unstable();
+
+        // Inclusive prefix sum: offsets[s] becomes the end of slot s.
+        const SCAN_CHUNK: usize = 1 << 16;
+        let chunk_sums: Vec<u32> = self
+            .offsets
+            .par_chunks_mut(SCAN_CHUNK)
+            .map(|chunk| {
+                let mut sum = 0;
+                for count in chunk {
+                    sum += *count.get_mut();
+                    *count.get_mut() = sum;
+                }
+                sum
+            })
+            .collect();
+        let mut chunk_starts = Vec::with_capacity(chunk_sums.len());
+        let mut start = 0;
+        for sum in chunk_sums {
+            chunk_starts.push(start);
+            start += sum;
+        }
+        self.offsets
+            .par_chunks_mut(SCAN_CHUNK)
+            .zip(chunk_starts)
+            .for_each(|(chunk, start)| {
+                for count in chunk {
+                    *count.get_mut() += start;
+                }
+            });
+
+        // Scatter: decrementing each slot's end as its transcripts are placed
+        // leaves offsets[s] at the start of slot s.
+        let nindexed = ntranscripts - overflow.len();
+        self.transcripts.resize_with(nindexed, || AtomicU32::new(0));
+        let this = &*self;
+        (0..ntranscripts).into_par_iter().for_each(|idx| {
+            if let Some(slot) = this.slot(voxel(idx)) {
+                let pos = this.offsets[slot].fetch_sub(1, Relaxed) - 1;
+                this.transcripts[pos as usize].store(idx as u32, Relaxed);
+            }
+        });
+
+        self.overflow = overflow;
+
+        log::debug!(
+            "voxel index: {nquads} quads, {nslots} slots, {} overflow, {:.1} MB",
+            self.overflow.len(),
+            self.heap_bytes() as f64 / 1e6
+        );
     }
 
     // Transcripts currently located in `voxel`.
     pub fn voxel_transcripts(&self, voxel: Voxel) -> impl Iterator<Item = TranscriptIndex> + '_ {
-        let key = voxel.raw();
-        let start = self.sorted.partition_point(|&(v, _)| v < key);
-        self.sorted[start..]
-            .iter()
-            .take_while(move |&&(v, _)| v == key)
-            .map(|&(_, idx)| idx)
+        use std::sync::atomic::Ordering::Relaxed;
+        match self.slot(voxel) {
+            Some(slot) => {
+                let start = self.offsets[slot].load(Relaxed) as usize;
+                let end = self.offsets[slot + 1].load(Relaxed) as usize;
+                Either::Left(self.transcripts[start..end].iter().map(|t| t.load(Relaxed)))
+            }
+            None => {
+                let key = voxel.raw();
+                let start = self.overflow.partition_point(|&(v, _)| v < key);
+                Either::Right(
+                    self.overflow[start..]
+                        .iter()
+                        .take_while(move |&&(v, _)| v == key)
+                        .map(|&(_, idx)| idx),
+                )
+            }
+        }
     }
 
     // Number of transcripts currently located in `voxel`.
     pub fn voxel_population(&self, voxel: Voxel) -> usize {
         self.voxel_transcripts(voxel).count()
+    }
+
+    // Approximate heap memory held by the index, in bytes.
+    pub fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.quad_ordinal.capacity() * size_of::<u32>()
+            + self.offsets.capacity() * size_of::<AtomicU32>()
+            + self.transcripts.capacity() * size_of::<AtomicU32>()
+            + self.overflow.capacity() * size_of::<(u64, u32)>()
     }
 }
 
@@ -2285,7 +2477,8 @@ impl VoxelCheckerboard {
     // Must be called before morphology reads it (positions change during
     // repositioning and initialization, but are static during morphology).
     pub fn rebuild_voxel_index(&mut self) {
-        self.voxel_index.rebuild(&self.transcript_voxel);
+        self.voxel_index
+            .rebuild(&self.transcript_voxel, self.quadsize, self.nzlayers);
     }
 
     pub fn check_mirrored_quad_edges(&self) {
