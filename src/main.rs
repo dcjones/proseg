@@ -400,6 +400,20 @@ struct Args {
     #[arg(long, default_value_t = false)]
     check_consistency: bool,
 
+    /// Compute the model log-likelihood and show it in the progress bar. This is
+    /// purely informational and not free to compute, so it's off by default. An
+    /// optional cadence recomputes it only every N iterations, e.g.
+    /// `--show-log-likelihood=10`; without one it's recomputed every iteration.
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "1",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    show_log_likelihood: Option<u64>,
+
     /// Prepend a path name to every  output file name
     #[arg(long, default_value = None)]
     output_path: Option<String>,
@@ -1144,6 +1158,7 @@ fn main() {
     let total_iterations =
         INIT_ITERATIONS + args.samples + args.burnin_samples + args.uncertainty_samples;
     let prog = ProgressBar::new(total_iterations as u64);
+    let mut ll_display = LogLikelihoodDisplay::new(args.show_log_likelihood);
     prog.set_style(
         ProgressStyle::with_template("{eta_precise} {bar:60} | {msg}")
             .unwrap()
@@ -1196,6 +1211,7 @@ fn main() {
             false,
             args.check_consistency,
             &prog,
+            &mut ll_display,
         );
         optimization_step += 1;
     }
@@ -1239,6 +1255,7 @@ fn main() {
             false,
             args.check_consistency,
             &prog,
+            &mut ll_display,
         );
         optimization_step += 1;
     }
@@ -1421,6 +1438,7 @@ fn main() {
             true,
             args.check_consistency,
             &prog,
+            &mut ll_display,
         );
     }
 
@@ -1517,6 +1535,25 @@ fn anneal_temperature(step: usize, total_steps: usize, min_temperature: f32) -> 
     min_temperature.powf(frac)
 }
 
+// Tracks when to recompute the (informational) log-likelihood shown in the
+// progress bar, and the most recently computed value to show in between.
+struct LogLikelihoodDisplay {
+    // Recompute every this many iterations, or never if None.
+    every: Option<u64>,
+    last: Option<f32>,
+}
+
+impl LogLikelihoodDisplay {
+    fn new(every: Option<u64>) -> Self {
+        LogLikelihoodDisplay { every, last: None }
+    }
+
+    // Whether to recompute at the given (1-based) iteration.
+    fn due(&self, iteration: u64) -> bool {
+        self.every.is_some_and(|every| iteration % every == 0)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sampler(
     param_sampler: &ParamSampler,
@@ -1535,6 +1572,7 @@ fn run_sampler(
     record_samples: bool,
     check_consistency: bool,
     prog: &ProgressBar,
+    ll_display: &mut LogLikelihoodDisplay,
 ) {
     // Rebuild the voxel→transcript index from current positions before morphology
     // reads it. Positions are static across the morphology sub-iterations (only
@@ -1583,18 +1621,33 @@ fn run_sampler(
 
     let nassigned = params.nassigned();
     let nforeground = params.nforeground();
-    let ll = params.log_likelihood(priors);
+
+    // Env-gated per-iteration log-likelihood trace (like PROSEG_VOLTRACE), emitted
+    // to stdout as a parseable TSV row so convergence can be compared between the
+    // optimizer and the sampler without the progress bar overwriting it.
+    let ll_trace = std::env::var_os("PROSEG_LLTRACE").is_some();
+
+    let ll = if ll_trace || ll_display.due(prog.position()) {
+        let ll = params.log_likelihood(priors);
+        ll_display.last = Some(ll);
+        Some(ll)
+    } else {
+        None
+    };
+
+    let ll_message = match (ll_display.every, ll_display.last) {
+        (Some(_), Some(ll)) => format!(" | log-likelihood: {ll}"),
+        _ => String::new(),
+    };
     prog.set_message(format!(
-        "T: {temperature:.3} | log-likelihood: {ll} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
+        "T: {temperature:.3}{ll_message} | assigned: {nassigned} / {ntranscripts} ({perc_assigned:.2}%) | non-background: ({perc_foreground:.2}%)",
         nassigned = nassigned,
         perc_assigned = 100.0 * (nassigned as f32) / (ntranscripts as f32),
         perc_foreground = 100.0 * (nforeground as f32) / (ntranscripts as f32),
     ));
 
-    // Env-gated per-iteration log-likelihood trace (like PROSEG_VOLTRACE), emitted
-    // to stdout as a parseable TSV row so convergence can be compared between the
-    // optimizer and the sampler without the progress bar overwriting it.
-    if std::env::var_os("PROSEG_LLTRACE").is_some() {
+    if ll_trace {
+        let ll = ll.unwrap();
         let (top_metagene, n_active_metagenes) = params.metagene_concentration();
         let (rphi_mean, rphi_median) = params.rφ_summary();
         println!(
