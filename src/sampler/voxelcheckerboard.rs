@@ -1247,7 +1247,6 @@ pub struct VoxelIndex {
     sorted: Vec<(u64, u32)>,
 }
 
-#[allow(dead_code)] // new/rebuild/voxel_transcripts wired to consumers in a following step
 impl VoxelIndex {
     pub fn new() -> VoxelIndex {
         VoxelIndex { sorted: Vec::new() }
@@ -1256,7 +1255,7 @@ impl VoxelIndex {
     pub fn build(transcript_voxel: &[std::sync::atomic::AtomicU64]) -> VoxelIndex {
         use std::sync::atomic::Ordering::Relaxed;
         let mut sorted: Vec<(u64, u32)> = transcript_voxel
-            .iter()
+            .par_iter()
             .enumerate()
             .map(|(idx, v)| (v.load(Relaxed), idx as u32))
             .collect();
@@ -1264,8 +1263,31 @@ impl VoxelIndex {
         VoxelIndex { sorted }
     }
 
+    // Update the index in place, skipping the sort when no transcript has moved
+    // since the last rebuild (e.g. throughout burn-in, when repo is off). When
+    // repo is on it moves most transcripts every iteration, so there's no
+    // cheaper incremental update to be had than sorting again.
     pub fn rebuild(&mut self, transcript_voxel: &[std::sync::atomic::AtomicU64]) {
-        *self = VoxelIndex::build(transcript_voxel);
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.sorted.len() != transcript_voxel.len() {
+            *self = VoxelIndex::build(transcript_voxel);
+            return;
+        }
+
+        let moved = self
+            .sorted
+            .par_iter_mut()
+            .map(|(v, idx)| {
+                let new_v = transcript_voxel[*idx as usize].load(Relaxed);
+                let moved = new_v != *v;
+                *v = new_v;
+                moved
+            })
+            .reduce(|| false, |a, b| a || b);
+
+        if moved {
+            self.sorted.par_sort_unstable_by_key(|&(v, _)| v);
+        }
     }
 
     // Transcripts currently located in `voxel`.
@@ -2263,7 +2285,7 @@ impl VoxelCheckerboard {
     // Must be called before morphology reads it (positions change during
     // repositioning and initialization, but are static during morphology).
     pub fn rebuild_voxel_index(&mut self) {
-        self.voxel_index = VoxelIndex::build(&self.transcript_voxel);
+        self.voxel_index.rebuild(&self.transcript_voxel);
     }
 
     pub fn check_mirrored_quad_edges(&self) {
