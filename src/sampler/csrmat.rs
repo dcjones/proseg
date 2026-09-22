@@ -315,6 +315,7 @@ where
         self.guard.iter_from(from)
     }
 
+    /// Non-zero entries with column index strictly less than `to`.
     pub fn iter_nonzeros_to<'b>(&'b self, to: J) -> impl Iterator<Item = (J, T)> + 'b {
         self.guard.iter_to(to)
     }

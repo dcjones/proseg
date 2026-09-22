@@ -103,6 +103,7 @@ where
         }
     }
 
+    /// Iterate over non-zero entries with keys strictly less than `to`.
     pub fn iter_to(&self, to: K) -> SparseCountVecIter<'_, K, V> {
         if self.leaf_arena.is_empty() {
             return SparseCountVecIter {
@@ -530,6 +531,7 @@ pub struct SparseCountVecIter<'a, K, V> {
     vec: &'a SparseCountVec<K, V>,
     current_leaf: LeafIdx,
     position_in_leaf: usize,
+    // Exclusive upper bound on keys, if any.
     to: Option<K>,
 }
 
@@ -554,9 +556,9 @@ where
                 let (key, val) = leaf.keyvals[self.position_in_leaf];
                 self.position_in_leaf += 1;
 
-                // Check if we've exceeded the to bound
+                // Stop at the (exclusive) to bound
                 if let Some(to) = self.to
-                    && key > to
+                    && key >= to
                 {
                     return None;
                 }
