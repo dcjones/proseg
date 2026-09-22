@@ -544,6 +544,77 @@ mod tests {
         assert_eq!(result.coords(), expected.coords());
         assert_eq!(result.is_oob(), expected.is_oob());
     }
+
+    // Check every voxel's transcripts in the index against a direct grouping.
+    fn check_voxel_index(index: &VoxelIndex, voxels: &[Voxel]) {
+        let mut expected: std::collections::HashMap<u64, Vec<u32>> =
+            std::collections::HashMap::new();
+        for (idx, voxel) in voxels.iter().enumerate() {
+            expected.entry(voxel.raw()).or_default().push(idx as u32);
+        }
+        for (&raw, want) in &expected {
+            let mut got: Vec<u32> = index.voxel_transcripts(Voxel::from_raw(raw)).collect();
+            got.sort_unstable();
+            assert_eq!(&got, want, "voxel {:?}", Voxel::from_raw(raw).coords());
+        }
+        let total: usize = expected
+            .keys()
+            .map(|&raw| index.voxel_population(Voxel::from_raw(raw)))
+            .sum();
+        assert_eq!(total, voxels.len());
+    }
+
+    #[test]
+    fn test_voxel_index() {
+        use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+        let (quadsize, nzlayers) = (4, 2);
+
+        // Several transcripts per voxel, spread over quads, including a z layer
+        // beyond `nzlayers`, which must land in the overflow list.
+        let mut voxels = Vec::new();
+        for i in 0..10 {
+            for j in [0, 3, 9] {
+                for k in 0..3 {
+                    for _ in 0..(i + j + k) % 3 + 1 {
+                        voxels.push(Voxel::new(i, j, k));
+                    }
+                }
+            }
+        }
+        let transcript_voxel: Vec<AtomicU64> =
+            voxels.iter().map(|v| AtomicU64::new(v.raw())).collect();
+
+        let mut index = VoxelIndex::new();
+        index.rebuild(&transcript_voxel, quadsize, nzlayers);
+        check_voxel_index(&index, &voxels);
+        assert!(!index.overflow.is_empty());
+
+        // Empty voxels, both in and out of occupied quads.
+        assert_eq!(index.voxel_population(Voxel::new(1, 1, 0)), 0);
+        assert_eq!(index.voxel_population(Voxel::new(100, 100, 0)), 0);
+
+        // Move transcripts, changing the set of occupied quads, and rebuild.
+        for (voxel, tv) in voxels.iter_mut().zip(&transcript_voxel).step_by(2) {
+            let [i, j, k] = voxel.coords();
+            *voxel = Voxel::new(i + 20, j, k % 2);
+            tv.store(voxel.raw(), Relaxed);
+        }
+        index.rebuild(&transcript_voxel, quadsize, nzlayers);
+        check_voxel_index(&index, &voxels);
+
+        // And back, shrinking the index again.
+        for (voxel, tv) in voxels.iter_mut().zip(&transcript_voxel).step_by(2) {
+            let [i, j, k] = voxel.coords();
+            *voxel = Voxel::new(i - 20, j, k);
+            tv.store(voxel.raw(), Relaxed);
+        }
+        index.rebuild(&transcript_voxel, quadsize, nzlayers);
+        check_voxel_index(&index, &voxels);
+
+        // No transcripts at all.
+        index.rebuild(&[], quadsize, nzlayers);
+        assert_eq!(index.voxel_population(Voxel::new(0, 0, 0)), 0);
+    }
 }
 
 // Index of a single voxel

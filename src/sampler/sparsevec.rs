@@ -768,6 +768,18 @@ mod tests {
         K: Copy + Ord + std::fmt::Debug,
         V: Copy + Zero + std::fmt::Debug,
     {
+        // Look up the stored value for `key`, if any (including explicit zeros).
+        fn get(&self, key: K) -> Option<V> {
+            if self.leaf_arena.is_empty() {
+                return None;
+            }
+            let leaf = self.leaf(self.find_leaf(key));
+            match leaf.binary_search(key) {
+                Ok(pos) => Some(leaf.keyvals[pos].1),
+                Err(_) => None,
+            }
+        }
+
         // Collect all key-value pairs in sorted order by traversing leaf siblings
         fn collect_all(&self) -> Vec<(K, V)> {
             let mut result = Vec::new();
@@ -852,6 +864,25 @@ mod tests {
         assert_eq!(vec.get(10), Some(100));
         assert_eq!(vec.get(11), None); // Odd numbers not inserted
         assert!(vec.verify_sorted());
+    }
+
+    #[test]
+    fn test_iter_to_is_exclusive() {
+        let mut vec: SparseCountVec<u32, i32> = SparseCountVec::new();
+        assert_eq!(vec.iter_to(5).count(), 0);
+
+        // Enough keys to span several leaves.
+        for i in 0..1000 {
+            vec.update_count(i, |v| *v += 1);
+        }
+        assert_eq!(vec.iter_to(0).count(), 0);
+        assert_eq!(
+            vec.iter_to(5).map(|(k, _)| k).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(vec.iter_to(500).count(), 500);
+        assert!(vec.iter_to(500).all(|(k, _)| k < 500));
+        assert_eq!(vec.iter_to(5000).count(), 1000);
     }
 
     #[test]
