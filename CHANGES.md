@@ -1,3 +1,6 @@
+# Unreleased
+  - Report the git commit in `--version` and the output metadata when built from a commit other than a tagged release (e.g. `3.2.0 (v3.2.0-88-g46b4426)`).
+
 
 # 3.2.0
   - Fix a bug when regressing out z-axis tilt.

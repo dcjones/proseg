@@ -46,7 +46,7 @@ const DEFAULT_DIFFUSION_SIGMA_NEAR: f32 = 1.0;
 const DEFAULT_DIFFUSION_SIGMA_FAR: f32 = 4.0;
 
 #[derive(Parser)]
-#[command(version)]
+#[command(version = env!("PROSEG_VERSION"))]
 #[command(name = "proseg")]
 #[command(author = "Daniel C. Jones")]
 #[command(
@@ -1380,7 +1380,7 @@ fn main() {
     let mut run_metadata: HashMap<String, String> = HashMap::new();
     run_metadata.insert(
         String::from("version"),
-        String::from(env!("CARGO_PKG_VERSION")),
+        String::from(env!("PROSEG_VERSION")),
     );
     run_metadata.insert(
         String::from("args"),
