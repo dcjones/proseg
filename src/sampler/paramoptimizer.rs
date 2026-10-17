@@ -132,9 +132,15 @@ impl ParamOptimizer {
             });
     }
 
-    // Hard foreground/background assignment: a transcript is foreground iff its
-    // cell rate exceeds the background rate (the argmax of the two-component
-    // Poisson mixture), replacing the Bernoulli draw. Counts stay integer.
+    // Foreground/background assignment, drawn from the two-component Poisson
+    // mixture posterior P(fg) = λ_cg / (λ_cg + λ_bg) exactly as the sampler does.
+    // This is deliberately NOT a hard argmax (fg iff λ_cg > λ_bg): under the
+    // argmax a gene whose rate falls below background in every cell has all its
+    // transcripts sent to background, so its latent counts vanish, θ_g collapses
+    // to the αθ floor and λ_bg grows — an absorbing state that zeroes the gene in
+    // the output. The draw keeps the expected foreground count equal to the soft
+    // E-step's, while preserving the integer per-transcript state the voxel
+    // sampler and count matrices rely on.
     fn optimize_foreground_background(
         &self,
         priors: &ModelPriors,
@@ -155,7 +161,7 @@ impl ParamOptimizer {
 
         let states = voxels.states_view();
         let ntranscripts = voxels.transcript_voxel.len();
-        (0..ntranscripts).into_par_iter().for_each(|idx| {
+        (0..ntranscripts).into_par_iter().for_each_init(rng, |rng, idx| {
             let voxel = Voxel::from_raw(voxels.transcript_voxel[idx].load(Ordering::Relaxed));
             let cell = states.get_voxel_cell(voxel);
 
@@ -182,12 +188,13 @@ impl ParamOptimizer {
 
                 let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
 
-                if priors.unmodeled_fixed_cells && is_frozen {
-                    false
+                let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
+                    1.0
                 } else {
-                    // hard argmax: background unless the cell rate dominates
-                    λ_cg <= λ_bg
-                }
+                    λ_cg / (λ_cg + λ_bg)
+                };
+
+                rng.random::<f32>() > fg_prob
             };
 
             let new_assignment = TranscriptAssignment {
