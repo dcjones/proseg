@@ -34,8 +34,7 @@ if __name__ == "__main__":
     # Read count matrix
     matrix_root_path = (
         root_path
-        / "intermediate_results"
-        / "02_matrix"
+        / "results"
         / args.sample_name
         / f"{args.sample_name}_raw"
     )
@@ -44,7 +43,7 @@ if __name__ == "__main__":
         print(f"Matrix root path does not exist: {matrix_root_path}")
         exit(1)
 
-    X = mmread(matrix_root_path / "matrix.mtx.gz").transpose().tocsr()
+    X = mmread(matrix_root_path / "matrix.mtx.gz", spmatrix=True).transpose().tocsr()
     genes = pd.read_csv(
         matrix_root_path / "features.tsv.gz",
         header=None,
@@ -121,9 +120,8 @@ if __name__ == "__main__":
     nuclei_poly_path = (
         root_path
         / "intermediate_results"
-        / "07_cell_segmentation"
+        / "06_cell_segmentation"
         / args.sample_name
-        / "cell_segmentation"
         / "nuclei_segmentation"
         / f"{args.sample_name}_nuclei_contour_coords.csv"
     )
@@ -132,9 +130,8 @@ if __name__ == "__main__":
         nuclei_poly_path = (
             root_path
             / "intermediate_results"
-            / "07_cell_segmentation"
+            / "06_cell_segmentation"
             / args.sample_name
-            / "cell_segmentation"
             / "nuclei_segmentation"
             / f"{args.sample_name}_registered_nuclei_contour_coords.csv"
         )
