@@ -330,7 +330,7 @@ fn read_cell_assignments(
         let path = format!("/obs/{cell_id_column}");
 
         let arr = zarrs::array::Array::open(store.clone(), &path)
-            .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", "/obsm/spatial"));
+            .unwrap_or_else(|_err| panic!("Array {} not found in zarr store", path));
 
         match arr.data_type() {
             DataType::String => read_ids_from_str(&arr, cell_id_unassigned),
