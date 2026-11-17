@@ -9,15 +9,15 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression::ZSTD, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
-use serde_json::json;
 use rayon::prelude::*;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{File, create_dir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use wkb::writer::{WriteOptions, write_multi_polygon};
-use zarrs::array::ChunkShape;
-use zarrs::metadata::v2::{DataTypeMetadataV2, FillValueMetadataV2, MetadataV2};
+use zarrs::array::codec::bytes_to_bytes::blosc;
+use zarrs::array::DataType;
 use zarrs::storage::ReadableWritableStorageTraits;
 
 use super::output::write_transcript_metadata;
@@ -30,6 +30,7 @@ use crate::sampler::voxelcheckerboard::VoxelCheckerboard;
 use crate::schemas::*;
 
 pub const SD_TABLE_NAME: &str = "table";
+const DEFAULT_BLOSC_ZSTD_LEVEL: u8 = 3;
 
 #[allow(clippy::too_many_arguments)]
 pub fn write_spatialdata_zarr(
@@ -95,7 +96,23 @@ fn write_spatialdata_parts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
-    new_zarr_group(store.clone(), "/", None)?.store_metadata()?;
+    // SpatialData container format 0.2 is the Zarr v3 format. Without this key
+    // spatialdata assumes the pre-versioned (0.1, Zarr v2) container format.
+    new_zarr_group(
+        store.clone(),
+        "/",
+        Some(
+            json!({
+                "spatialdata_attrs": {
+                    "version": "0.2"
+                }
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
+    )?
+    .store_metadata()?;
     write_anndata_zarr(
         store.clone(),
         counts,
@@ -141,7 +158,7 @@ fn write_shapes_zarr<T: ReadableWritableStorageTraits>(
         Some(
             json!({
                 "spatialdata_attrs": {
-                    "version": "0.2"
+                    "version": "0.3"
                 },
                 "encoding-type": "ngff:shapes",
                 "axes": ["x", "y"],
@@ -269,7 +286,7 @@ fn write_transcripts_zarr<T: ReadableWritableStorageTraits>(
                 "axes": ["x", "y", "z"],
                 "encoding-type": "ngff:points",
                 "spatialdata_attrs": {
-                    "version": "0.1"
+                    "version": "0.2"
                 },
                 "coordinateTransformations": [
                     {
@@ -350,7 +367,7 @@ fn new_zarr_group<T: ReadableWritableStorageTraits>(
     path: &str,
     attributes: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<zarrs::group::Group<T>, zarrs::group::GroupCreateError> {
-    let mut metadata = zarrs::metadata::v2::GroupMetadataV2::default();
+    let mut metadata = zarrs::metadata::v3::GroupMetadataV3::default();
     if let Some(attributes) = attributes {
         metadata.attributes = attributes;
     }
@@ -397,16 +414,34 @@ fn new_zarr_array<T: ReadableWritableStorageTraits>(
     store: Arc<T>,
     path: &str,
     shape: Vec<u64>,
-    chunks: ChunkShape,
-    dtype: DataTypeMetadataV2,
-    fill_value: FillValueMetadataV2,
-    compressor: Option<MetadataV2>,
-    filters: Option<Vec<MetadataV2>>,
+    chunks: &[u64],
+    data_type: zarrs::array::DataType,
+    fill_value: impl Into<zarrs::array::ArrayBuilderFillValue>,
+    use_blosc_compression: bool,
 ) -> Result<zarrs::array::Array<T>, zarrs::array::ArrayCreateError> {
-    let metadata = zarrs::metadata::v2::ArrayMetadataV2::new(
-        shape, chunks, dtype, fill_value, compressor, filters,
-    );
-    zarrs::array::Array::new_with_metadata(store, path, metadata.into())
+    let data_type_fixed_size = data_type.fixed_size();
+    let mut builder = zarrs::array::ArrayBuilder::new(shape, chunks, data_type, fill_value);
+
+    if use_blosc_compression {
+        let (shuffle_mode, type_size) = if let Some(fixed_type_size) = data_type_fixed_size {
+            (blosc::BloscShuffleMode::Shuffle, Some(fixed_type_size))
+        } else {
+            (blosc::BloscShuffleMode::NoShuffle, None)
+        };
+
+        builder.bytes_to_bytes_codecs(vec![Arc::new(
+            blosc::BloscCodec::new(
+                blosc::BloscCompressor::Zstd,
+                blosc::BloscCompressionLevel::try_from(DEFAULT_BLOSC_ZSTD_LEVEL).unwrap(),
+                None,
+                shuffle_mode,
+                type_size,
+            )
+            .unwrap(),
+        )]);
+    }
+
+    builder.build(store.clone(), path)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -432,7 +467,7 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
                 "region": null,
                 "region_key": null,
                 "spatialdata-encoding-type": "ngff:regions_table",
-                "version": "0.1"
+                "version": "0.2"
             })
             .as_object()
             .unwrap()
@@ -547,14 +582,12 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
             store.clone(),
             &format!("/tables/{SD_TABLE_NAME}/uns/proseg_run/{key}"),
             vec![],
-            Vec::<u64>::new().try_into()?,
-            DataTypeMetadataV2::Simple(String::from("|O")),
-            FillValueMetadataV2::Null,
-            None,
-            Some(vec![serde_json::from_value(json!({
-                        "id": "vlen-utf8"
-                    } ))?]),
+            &[],
+            DataType::String,
+            "",
+            false,
         )?;
+
         let attr = arr.attributes_mut();
         attr.insert("encoding-type".to_string(), "string".into());
         attr.insert("encoding-version".to_string(), "0.2.0".into());
@@ -592,13 +625,10 @@ fn write_single_string<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         path,
         vec![],
-        ChunkShape::from(vec![]),
-        DataTypeMetadataV2::Simple("|O".to_string()),
-        FillValueMetadataV2::String("".to_string()),
-        None,
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[],
+        DataType::String,
+        "",
+        false,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "string".into());
@@ -607,16 +637,6 @@ fn write_single_string<T: ReadableWritableStorageTraits + 'static>(
     arr.store_metadata()?;
 
     Ok(())
-}
-
-fn default_blosc_compressor() -> Result<MetadataV2, serde_json::Error> {
-    serde_json::from_value(json!({
-        "id": "blosc",
-        "blocksize": 0,
-        "clevel": 5,
-        "cname": "lz4",
-        "shuffle": 1
-    }))
 }
 
 /// Base column order for the `obs` dataframe, written up front. The heterotypic
@@ -669,13 +689,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/_index"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 16) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|O")),
-        FillValueMetadataV2::Null,
-        Some(default_blosc_compressor()?),
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[guess_chunks_1d(ncells, 16) as u64],
+        DataType::String,
+        "",
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "string-array".into());
@@ -692,11 +709,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/cell"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<u4")),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::UInt32,
+        0,
+        true,
     )?;
 
     arr.store_array_subset_elements(&arr.subset_all(), &(0..ncells as u32).collect::<Vec<u32>>())?;
@@ -707,13 +723,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/original_cell_id"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 16) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|O")),
-        FillValueMetadataV2::Null,
-        Some(default_blosc_compressor()?),
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[guess_chunks_1d(ncells, 16) as u64],
+        DataType::String,
+        "",
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "string-array".into());
@@ -727,11 +740,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/centroid_x"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(0).to_vec())?;
     arr.store_metadata()?;
@@ -741,11 +753,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/centroid_y"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(1).to_vec())?;
     arr.store_metadata()?;
@@ -755,11 +766,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/centroid_z"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &cell_centroids.column(2).to_vec())?;
     arr.store_metadata()?;
@@ -769,11 +779,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/component"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<u4")),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::UInt32,
+        0,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &params.z.to_vec())?;
     arr.store_metadata()?;
@@ -783,11 +792,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/volume"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(
         &arr.subset_all(),
@@ -804,11 +812,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/surface_area"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(
         &arr.subset_all(),
@@ -825,11 +832,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/scale"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), &params.cell_scale.to_vec())?;
     arr.store_metadata()?;
@@ -856,13 +862,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/region/categories"),
         vec![1],
-        vec![1].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|O")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[1],
+        DataType::String,
+        "",
+        true,
     )?;
 
     let attr = arr.attributes_mut();
@@ -878,11 +881,10 @@ fn write_anndata_obs_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/region/codes"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|i1")),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Int8,
+        0,
+        true,
     )?;
 
     let attr = arr.attributes_mut();
@@ -933,13 +935,10 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/var/_index"),
         vec![gene_names.len() as u64],
-        vec![guess_chunks_1d(gene_names.len(), 16) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|O")),
-        FillValueMetadataV2::Null,
-        Some(default_blosc_compressor()?),
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[guess_chunks_1d(gene_names.len(), 16) as u64],
+        DataType::String,
+        "",
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "string-array".into());
@@ -953,13 +952,10 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/var/gene"),
         vec![gene_names.len() as u64],
-        vec![guess_chunks_1d(gene_names.len(), 16) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("|O")),
-        FillValueMetadataV2::Null,
-        Some(default_blosc_compressor()?),
-        Some(vec![serde_json::from_value(json!({
-                    "id": "vlen-utf8"
-                } ))?]),
+        &[guess_chunks_1d(gene_names.len(), 16) as u64],
+        DataType::String,
+        "",
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "string-array".into());
@@ -973,11 +969,10 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/var/total_count"),
         vec![ngenes as u64],
-        vec![guess_chunks_1d(ngenes, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<u4")),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ngenes, 4) as u64],
+        DataType::UInt32,
+        0,
+        true,
     )?;
 
     let mut total_counts = Array1::<u32>::zeros(ngenes);
@@ -994,11 +989,10 @@ fn write_anndata_var_zarr<T: ReadableWritableStorageTraits + 'static>(
             store.clone(),
             &format!("/tables/{SD_TABLE_NAME}/var/lambda_bg_{k}"),
             vec![ngenes as u64],
-            vec![guess_chunks_1d(ngenes, 4) as u64].try_into()?,
-            DataTypeMetadataV2::Simple(String::from("<f4")),
-            FillValueMetadataV2::NaN,
-            Some(default_blosc_compressor()?),
-            None,
+            &[guess_chunks_1d(ngenes, 4) as u64],
+            DataType::Float32,
+            f32::NAN,
+            true,
         )?;
 
         arr.store_array_subset_elements(&arr.subset_all(), &λ_bg_k.to_vec())?;
@@ -1034,11 +1028,10 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obsm/spatial"),
         vec![ncells as u64, 2],
-        vec![guess_chunks_1d(ncells, 4) as u64, 1].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64, 1],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
 
     let attr = arr.attributes_mut();
@@ -1066,11 +1059,10 @@ fn write_anndata_obsm_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obsm/metagene_rates"),
         vec![ncells as u64, nhidden as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64, nhidden as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64, nhidden as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
 
     let attr = arr.attributes_mut();
@@ -1114,11 +1106,10 @@ fn write_anndata_varm_zarr<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/varm/metagene_loadings"),
         vec![ngenes as u64, nhidden as u64],
-        vec![guess_chunks_1d(ngenes, 4) as u64, nhidden as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ngenes, 4) as u64, nhidden as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
 
     let attr = arr.attributes_mut();
@@ -1176,8 +1167,8 @@ fn write_anndata_csr_matrix<T: ReadableWritableStorageTraits + 'static>(
         &data,
         &indices,
         &indptr,
-        "<u4",
-        "<i4",
+        DataType::UInt32,
+        DataType::Int32,
     )
 }
 
@@ -1194,8 +1185,8 @@ fn write_anndata_csr_matrix_raw<
     data: &[V],
     indices: &[Idx],
     indptr: &[Idx],
-    dtype: &str,
-    index_dtype: &str,
+    dtype: DataType,
+    index_dtype: DataType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     new_zarr_group(
         store.clone(),
@@ -1222,11 +1213,10 @@ fn write_anndata_csr_matrix_raw<
         store.clone(),
         &format!("{path}/data"),
         vec![nnz],
-        vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from(dtype)),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(nnz as usize, 4) as u64],
+        dtype,
+        0,
+        true,
     )?;
 
     arr.store_array_subset_elements(&arr.subset_all(), data)
@@ -1237,11 +1227,10 @@ fn write_anndata_csr_matrix_raw<
         store.clone(),
         &format!("{path}/indices"),
         vec![nnz],
-        vec![guess_chunks_1d(nnz as usize, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from(index_dtype)),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(nnz as usize, 4) as u64],
+        index_dtype.clone(),
+        0,
+        true,
     )?;
 
     arr.store_array_subset_elements(&arr.subset_all(), indices)
@@ -1252,11 +1241,10 @@ fn write_anndata_csr_matrix_raw<
         store.clone(),
         &format!("{path}/indptr"),
         vec![indptr.len() as u64],
-        vec![guess_chunks_1d(indptr.len(), 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from(index_dtype)),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(indptr.len(), 4) as u64],
+        index_dtype.clone(),
+        0,
+        true,
     )?;
 
     arr.store_array_subset_elements(&arr.subset_all(), indptr)
@@ -1360,8 +1348,8 @@ fn write_state_transitions_parts(
         &agg_data,
         &agg_indices,
         &agg_indptr,
-        "<u4",
-        "<i4",
+        DataType::UInt32,
+        DataType::Int32,
     )?;
 
     let mut from_bg = vec![0_u32; ncells];
@@ -1443,8 +1431,8 @@ fn write_state_transitions_parts(
                 &data,
                 &indices,
                 &indptr,
-                "<u4",
-                "<i8",
+                DataType::UInt32,
+                DataType::Int64,
             )?;
         }
     }
@@ -1579,8 +1567,8 @@ fn write_flow_covariance_parts(
         &cov_data,
         &indices,
         &indptr,
-        "<f4",
-        "<i4",
+        DataType::Float32,
+        DataType::Int32,
     )?;
 
     Ok(())
@@ -1666,8 +1654,8 @@ fn write_flow_parts(
         &mean_data,
         &indices,
         &indptr,
-        "<f4",
-        "<i4",
+        DataType::Float32,
+        DataType::Int32,
     )?;
 
     // Variance layer (sample variance of per-sample flow count)
@@ -1679,8 +1667,8 @@ fn write_flow_parts(
         &var_data,
         &indices,
         &indptr,
-        "<f4",
-        "<i4",
+        DataType::Float32,
+        DataType::Int32,
     )?;
 
     Ok(())
@@ -1697,11 +1685,10 @@ fn write_obs_f32_column<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/{name}"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), values)?;
     arr.store_metadata()?;
@@ -1718,11 +1705,10 @@ fn write_obs_u32_column<T: ReadableWritableStorageTraits + 'static>(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/obs/{name}"),
         vec![ncells as u64],
-        vec![guess_chunks_1d(ncells, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<u4")),
-        FillValueMetadataV2::Number(serde_json::Number::from(0)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncells, 4) as u64],
+        DataType::UInt32,
+        0,
+        true,
     )?;
     arr.store_array_subset_elements(&arr.subset_all(), values)?;
     arr.store_metadata()?;
@@ -1878,11 +1864,10 @@ fn write_dispersion_params_parts(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/rphi"),
         vec![ncomponents as u64, nhidden as u64],
-        vec![guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "array".into());
@@ -1900,11 +1885,10 @@ fn write_dispersion_params_parts(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/sphi"),
         vec![ncomponents as u64, nhidden as u64],
-        vec![guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncomponents, 4) as u64, nhidden as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "array".into());
@@ -1922,11 +1906,10 @@ fn write_dispersion_params_parts(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/dispersion_params/pi"),
         vec![ncomponents as u64],
-        vec![guess_chunks_1d(ncomponents, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<f4")),
-        FillValueMetadataV2::NaN,
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ncomponents, 4) as u64],
+        DataType::Float32,
+        f32::NAN,
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "array".into());
@@ -2022,8 +2005,8 @@ fn write_transcript_posteriors_parts(
         &data,
         &indices,
         &indptr,
-        "<f4",
-        "<i4",
+        DataType::Float32,
+        DataType::Int32,
     )?;
 
     let mut genes: Vec<i32> = Vec::with_capacity(ntranscripts);
@@ -2035,11 +2018,10 @@ fn write_transcript_posteriors_parts(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns/transcript_posteriors/genes"),
         vec![ntranscripts as u64],
-        vec![guess_chunks_1d(ntranscripts, 4) as u64].try_into()?,
-        DataTypeMetadataV2::Simple(String::from("<i4")),
-        FillValueMetadataV2::Number(serde_json::Number::from(-1)),
-        Some(default_blosc_compressor()?),
-        None,
+        &[guess_chunks_1d(ntranscripts, 4) as u64],
+        DataType::Int32,
+        -1,
+        true,
     )?;
     let attr = arr.attributes_mut();
     attr.insert("encoding-type".to_string(), "array".into());
