@@ -350,86 +350,6 @@ impl TranscriptState {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
-pub struct FlowStats {
-    // re-computed every iteration
-    pub outflow: u32,
-    pub inflow: u32,
-
-    // accumulated over sample
-    pub outflow_sum: u32,
-    pub inflow_sum: u32,
-    pub outflow_sq_sum: u64,
-    pub inflow_sq_sum: u64,
-
-    // for co-variance estimation
-    outflow_mean: f32,
-    inflow_mean: f32,
-    cov: f32,
-}
-
-impl FlowStats {
-    pub fn covariance(&self, nsamples: usize) -> f32 {
-        if nsamples <= 1 {
-            return 0.0;
-        }
-        (self.cov as f64 / (nsamples - 1) as f64) as f32
-    }
-
-    pub fn inflow_variance(&self, nsamples: usize) -> f32 {
-        let n = nsamples as f64;
-        let x = self.inflow_sum as f64;
-        let x_sq = self.inflow_sq_sum as f64;
-        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
-        ((x_sq - x * x / n) / (n - 1.0)) as f32
-    }
-
-    pub fn outflow_variance(&self, nsamples: usize) -> f32 {
-        let n = nsamples as f64;
-        let x = self.outflow_sum as f64;
-        let x_sq = self.outflow_sq_sum as f64;
-        // Welford-equivalent: M2 = count_sq - count^2/n, variance = M2 / (n - 1)
-        ((x_sq - x * x / n) / (n - 1.0)) as f32
-    }
-
-    // Called after outflow and inflow have been computed to update online covariance stats
-    pub fn update_cov_stats(&mut self, sample_num: u32) {
-        let n = (sample_num + 1) as f32;
-        let dx = self.inflow as f32 - self.inflow_mean;
-        self.inflow_mean += dx / n;
-        self.outflow_mean += (self.outflow as f32 - self.outflow_mean) / n;
-        self.cov += dx * (self.outflow as f32 - self.outflow_mean);
-    }
-}
-
-// This is slightly silly, and isn't used, but necessary to define the Zero trait.
-impl std::ops::Add for FlowStats {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            outflow: self.outflow + rhs.outflow,
-            inflow: self.inflow + rhs.inflow,
-            outflow_sum: self.outflow_sum + rhs.outflow_sum,
-            inflow_sum: self.inflow_sum + rhs.inflow_sum,
-            outflow_sq_sum: self.outflow_sq_sum + rhs.outflow_sq_sum,
-            inflow_sq_sum: self.inflow_sq_sum + rhs.inflow_sq_sum,
-            outflow_mean: self.outflow_mean + rhs.outflow_mean,
-            inflow_mean: self.inflow_mean + rhs.inflow_mean,
-            cov: self.cov + rhs.cov,
-        }
-    }
-}
-
-impl num::traits::Zero for FlowStats {
-    fn zero() -> Self {
-        Self::default()
-    }
-
-    fn is_zero(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 // In general, subscripts indicate dimension:
 //   t: component
 //   k: latent dim
@@ -472,27 +392,6 @@ pub struct ModelParams {
     // transitions are recorded during sampling; the diagonal is filled in by
     // `finalize_state_transitions`.
     pub state_transitions: TransitionMat,
-
-    // Direction convention for the two flow matrices below: flow is measured
-    // against the reported segmentation as the *ledger being audited*, not as a
-    // starting position transcripts move away from. So inflow to cell c is
-    // contamination c received (mass in c's reported counts that the posterior
-    // puts elsewhere), and outflow from c is mass c leaked (mass the posterior
-    // puts in c that the reported counts credited elsewhere). A single c→d
-    // disagreement therefore increments inflow for c and outflow for d — the
-    // mirror image of what you get treating the point estimate as the origin, so
-    // check this comment before "fixing" either name.
-
-    // [ncells, ngenes]
-    pub flow_stats: CSRMat<u32, FlowStats>,
-
-    // [ncells, ncells] Off-diagonal, foreground-only cell→cell transition counts
-    // accumulated during the uncertainty phase, keyed (reported/point-estimate
-    // cell, currently-sampled cell). Unlike `state_transitions` this is always
-    // recorded (not gated on the state-transition output flag) and drops both the
-    // gene dimension and the "stayed put" diagonal, keeping it cheap. It is the
-    // basis for the distance-weighted heterotypic uncertainty metric.
-    pub het_transitions: CSRMat<u32, u32>,
 
     // [ntranscripts] Per-transcript assignment counts: for each transcript, a map from
     // cell index to the number of times it was assigned to that cell during uncertainty sampling.
@@ -738,9 +637,6 @@ impl ModelParams {
 
         let state_transitions = TransitionMat::new(ncells + 1);
 
-        let flow_stats = CSRMat::zeros(ncells, ngenes as u32 - 1);
-        let het_transitions = CSRMat::zeros(ncells, ncells as u32 - 1);
-
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
 
         let foreground_counts_mean = CountMeanEstimator::new(ncells, ngenes, CELL_SHARDSIZE);
@@ -864,8 +760,6 @@ impl ModelParams {
             transcript_state,
             reported_transcript_state,
             state_transitions,
-            flow_stats,
-            het_transitions,
             transcript_assignment_counts,
             foreground_counts,
             transition_counts,
@@ -941,208 +835,12 @@ impl ModelParams {
         );
     }
 
-    /// Per-cell transcript mass exchanged with the background component, measured
-    /// from the uncertainty phase. Returns `(lost, retained_noise)` — the mass the
-    /// cell's reported counts are missing, and the noise mass they carry — the pair
-    /// as a posterior Monte Carlo average over the recorded samples, rather than
-    /// a plug-in at the final parameters.
-    ///
-    /// These are just the background-state components of `expected_inflow` and
-    /// `expected_outflow` (see the direction convention documented at their
-    /// declarations — inflow to `c` is contamination `c` received, outflow is mass
-    /// `c` leaked). Each of those lumps the cell↔cell and cell↔background halves
-    /// together:
-    ///
-    /// - `expected_inflow[c,g]` counts events where a transcript reported
-    ///   foreground in `c` is *anywhere else*: foreground in another cell, or
-    ///   background (whether it stayed inside `c` or drifted out).
-    /// - `expected_outflow[c,g]` counts events where a transcript currently
-    ///   foreground in `c` was reported *elsewhere*: another cell, or background.
-    ///
-    /// `het_transitions` is exactly the foreground cell→cell half of both (keyed
-    /// reported cell → current cell, no gene dimension), so differencing leaves the
-    /// background half:
-    ///
-    ///   retained_noise[c] = (Σ_g inflow[c,g]  - Σ_j het[c,j]) / nsamples
-    ///   lost[c]           = (Σ_g outflow[c,g] - Σ_i het[i,c]) / nsamples
-    ///
-    /// Note which side of `het_transitions` pairs with which matrix: the one keyed
-    /// on the reported cell takes row sums, the one keyed on the current cell takes
-    /// column sums.
-    ///
-    /// Keying on the reported cell also means this captures mass that leaves the
-    /// cell's volume entirely: a transcript that drifts out into unassigned space
-    /// and is called noise there still counts against the cell that reported it.
-    ///
-    /// The bias-corrected size factor for downstream normalization is
-    ///
-    ///   size_factor[c] ≈ total_counts[c] + lost[c] - retained_noise[c]
-    ///
-    /// Note that the recorded samples come from the Gibbs sampler, which labels
-    /// foreground/background by Bernoulli draw, while the point estimate these are
-    /// measured against comes from the optimizer's hard argmax. The two sit at
-    /// appreciably different foreground/background balances, so the correction is a
-    /// posterior expectation, not a restatement of the point estimate's own split.
-    ///
-    /// Only meaningful after the uncertainty phase; returns zeros when
-    /// `--uncertainty-samples 0` leaves the flow matrices empty.
-    pub fn background_flow(&self, nsamples: usize) -> (Vec<f32>, Vec<f32>) {
-        let ncells = self.ncells();
-        let mut lost = vec![0.0_f32; ncells];
-        let mut retained_noise = vec![0.0_f32; ncells];
-
-        if nsamples == 0 {
-            return (lost, retained_noise);
-        }
-
-        // Foreground cell→cell events, by reported cell (row sums) and by current
-        // cell (column sums).
-        let mut het_from = vec![0.0_f32; ncells];
-        let mut het_to = vec![0.0_f32; ncells];
-        for (i, het_from_i) in het_from.iter_mut().enumerate() {
-            let row = self.het_transitions.row(i);
-            let row_read = row.read();
-            for (j, count) in row_read.iter_nonzeros() {
-                *het_from_i += count as f32;
-                het_to[j as usize] += count as f32;
-            }
-        }
-
-        let inflow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
-            flow.row(c)
-                .read()
-                .iter_nonzeros()
-                .map(|(_gene, stats)| stats.inflow_sum as f32)
-                .sum()
-        };
-
-        let outflow_row_sum = |flow: &CSRMat<u32, FlowStats>, c: usize| -> f32 {
-            flow.row(c)
-                .read()
-                .iter_nonzeros()
-                .map(|(_gene, stats)| stats.outflow_sum as f32)
-                .sum()
-        };
-
-        let nsamples = nsamples as f32;
-        for c in 0..ncells {
-            // Clamped: the two matrices are accumulated in the same loop over the
-            // same events, so the cell→cell part can only be a subset, but keep the
-            // reported quantity non-negative regardless.
-            retained_noise[c] =
-                ((inflow_row_sum(&self.flow_stats, c) - het_from[c]) / nsamples).max(0.0);
-            lost[c] = ((outflow_row_sum(&self.flow_stats, c) - het_to[c]) / nsamples).max(0.0);
-        }
-
-        (lost, retained_noise)
-    }
-
-    /// Per-cell heterotypic uncertainty: how much a cell's gene composition is at
-    /// risk of being altered by *consequential* (between-type) missegmentation.
-    ///
-    /// Each accumulated cell→cell transition (relative to the point estimate) is
-    /// weighted by the cosine distance between the two cells' metagene-rate (φ)
-    /// profiles, so churn between similar cells contributes ~nothing while churn
-    /// across a type boundary contributes fully. Returns `(het_inflow, het_outflow)`
-    /// per cell; the combined metric is their sum.
-    ///
-    /// - `het_outflow[c]`: c's own transcripts reassigned to a different-type cell,
-    ///   as a fraction of c's point-estimate mass (bleed-out risk).
-    /// - `het_inflow[c]`: transcripts from a different-type cell reassigned into c,
-    ///   relative to c's point-estimate mass (contamination risk).
-    ///
-    /// Normalized by `n_c · nsamples` (the state-transition row sum), i.e. the total
-    /// recorded assignment observations for the cell, so it reads as a per-sample
-    /// fraction rather than a raw count.
-    pub fn heterotypic_uncertainty(&self, nsamples: usize) -> (Vec<f32>, Vec<f32>) {
-        let ncells = self.ncells();
-        let mut het_in = vec![0.0f32; ncells];
-        let mut het_out = vec![0.0f32; ncells];
-
-        if nsamples == 0 {
-            return (het_in, het_out);
-        }
-
-        // L2 norm of each cell's φ profile, for cosine distance.
-        let phi_norm: Vec<f32> = (0..ncells)
-            .map(|i| {
-                self.φ
-                    .row(i)
-                    .iter()
-                    .map(|&v| v * v)
-                    .sum::<f32>()
-                    .sqrt()
-                    .max(1e-12)
-            })
-            .collect();
-
-        // Point-estimate foreground transcript count per cell. This equals the
-        // (background- and diagonal-inclusive) state-transition row sum divided by
-        // nsamples, so `n_reported · nsamples` is the correct normalizer.
-        let mut n_reported = vec![0u64; ncells];
-        for state in &self.reported_transcript_state {
-            let s = state.load();
-            if !s.background {
-                n_reported[s.cell as usize] += 1;
-            }
-        }
-
-        for i in 0..ncells {
-            let phi_i = self.φ.row(i);
-            let norm_i = phi_norm[i];
-            let row = self.het_transitions.row(i);
-            let row_read = row.read();
-            for (j, count) in row_read.iter_nonzeros() {
-                let j = j as usize;
-                let dot: f32 = phi_i
-                    .iter()
-                    .zip(self.φ.row(j).iter())
-                    .map(|(&a, &b)| a * b)
-                    .sum();
-                let d = (1.0 - dot / (norm_i * phi_norm[j])).clamp(0.0, 2.0);
-                let w = count as f32 * d;
-                het_out[i] += w;
-                het_in[j] += w;
-            }
-        }
-
-        for c in 0..ncells {
-            let denom = n_reported[c] as f32 * nsamples as f32;
-            if denom > 0.0 {
-                het_out[c] /= denom;
-                het_in[c] /= denom;
-            } else {
-                het_out[c] = 0.0;
-                het_in[c] = 0.0;
-            }
-        }
-
-        (het_in, het_out)
-    }
-
     pub fn enable_transcript_assignment_tracking(&mut self, ntranscripts: usize) {
         self.transcript_assignment_counts = Some(
             std::iter::repeat_with(|| Mutex::new(HashMap::new()))
                 .take(ntranscripts)
                 .collect(),
         );
-    }
-
-    /// Finalizes per-sample flow statistics for variance tracking.
-    /// Must be called once at the end of each recorded sample: squares the current
-    /// `sample_count` into `count_sq` (Welford-equivalent M2 accumulation), then
-    /// resets `sample_count` to zero for the next sample.
-    pub fn flush_flow_stats(&self) {
-        let flush_row = |row: csrmat::CSRRow<'_, u32, FlowStats>| {
-            let mut guard = row.write();
-            guard.guard.scale_all(|stats| {
-                stats.inflow_sq_sum += stats.inflow as u64 * stats.inflow as u64;
-                stats.outflow_sq_sum += stats.outflow as u64 * stats.outflow as u64;
-                stats.inflow = 0;
-                stats.outflow = 0;
-            });
-        };
-        self.flow_stats.par_rows().for_each(flush_row);
     }
 
     pub fn update_phi_theta_dot(&mut self) {

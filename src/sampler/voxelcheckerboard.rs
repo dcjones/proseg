@@ -2,6 +2,7 @@
 // sparse transcript vector.
 
 use super::super::spatialdata_input::CellPolygons;
+use super::atomiccountvec::AtomicCountVec;
 use super::connectivity::MooreConnectivityChecker;
 use super::csrmat::CSRMat;
 use super::math::logistic;
@@ -9,7 +10,6 @@ use super::onlinestats::ScalarQuantileEstimator;
 use super::polygons::{PolygonBuilder, union_all_into_multipolygon};
 use super::runvec::RunVec;
 use super::sampleset::SampleSet;
-use super::atomiccountvec::AtomicCountVec;
 use super::transcripts::{
     BACKGROUND_CELL, CellIndex, Transcript, TranscriptDataset, TranscriptIndex,
 };
@@ -1058,7 +1058,6 @@ pub struct VoxelState {
     pub log_1m_prior: f16, // log(1-p)
 }
 
-
 // Dense per-quad voxel state in struct-of-arrays layout over a 1-voxel-haloed
 // grid. Local extent is (quadsize+2) in i and j — local index 0 and quadsize+1
 // are the halo ring that mirrors neighbor quads' edge cells so morphology can
@@ -1161,13 +1160,15 @@ impl QuadStates {
     // Set state only if the slot is currently empty: background cell and no prior.
     pub fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
         if let Some(s) = self.slot(voxel)
-            && self.cell[s] == BACKGROUND_CELL && !self.log_prior[s].is_finite() {
-                let state = f();
-                self.cell[s] = state.cell;
-                self.prior_cell[s] = state.prior_cell;
-                self.log_prior[s] = state.log_prior;
-                self.log_1m_prior[s] = state.log_1m_prior;
-            }
+            && self.cell[s] == BACKGROUND_CELL
+            && !self.log_prior[s].is_finite()
+        {
+            let state = f();
+            self.cell[s] = state.cell;
+            self.prior_cell[s] = state.prior_cell;
+            self.log_prior[s] = state.log_prior;
+            self.log_1m_prior[s] = state.log_1m_prior;
+        }
     }
 
     // Iterate interior + halo slots carrying a cell assignment. Matches the old
@@ -1406,7 +1407,7 @@ impl VoxelIndex {
         let quadsize = self.quadsize;
         let (u0, u1, v0, v1) = (0..ntranscripts)
             .into_par_iter()
-            .map(|idx| voxel(idx))
+            .map(voxel)
             .filter(|voxel| voxel.raw() != OOB_VOXEL)
             .map(|voxel| {
                 let [i, j, _k] = voxel.coords();
@@ -1876,14 +1877,15 @@ impl VoxelCheckerboard {
         for ((voxel, cell), count) in cell_votes {
             if voxel != current_voxel {
                 if !current_voxel.is_oob()
-                    && let Some(&vote_winner) = used_cells.get(&vote_winner) {
-                        checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
-                            cell: BACKGROUND_CELL,
-                            prior_cell: vote_winner,
-                            log_prior: log_cellprior,
-                            log_1m_prior: log_1m_cellprior,
-                        });
-                    }
+                    && let Some(&vote_winner) = used_cells.get(&vote_winner)
+                {
+                    checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                        cell: BACKGROUND_CELL,
+                        prior_cell: vote_winner,
+                        log_prior: log_cellprior,
+                        log_1m_prior: log_1m_cellprior,
+                    });
+                }
                 vote_winner = cell;
                 vote_winner_count = count;
                 current_voxel = voxel;
@@ -1893,14 +1895,15 @@ impl VoxelCheckerboard {
             }
         }
         if !current_voxel.is_oob()
-            && let Some(&vote_winner) = used_cells.get(&vote_winner) {
-                checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
-                    cell: BACKGROUND_CELL,
-                    prior_cell: vote_winner,
-                    log_prior: log_cellprior,
-                    log_1m_prior: log_1m_cellprior,
-                });
-            }
+            && let Some(&vote_winner) = used_cells.get(&vote_winner)
+        {
+            checkerboard.insert_state_if_missing(current_voxel, || VoxelState {
+                cell: BACKGROUND_CELL,
+                prior_cell: vote_winner,
+                log_prior: log_cellprior,
+                log_1m_prior: log_1m_cellprior,
+            });
+        }
         trace!("assigned cell priors: {:?}", t0.elapsed());
 
         checkerboard.finish_initialization(dataset, expansion, density_bandwidth, density_nbins);
@@ -2508,7 +2511,8 @@ impl VoxelCheckerboard {
     }
 
     fn insert_state_if_missing(&mut self, voxel: Voxel, f: impl FnOnce() -> VoxelState) {
-        self.write_quad_states(voxel).insert_state_if_missing(voxel, f);
+        self.write_quad_states(voxel)
+            .insert_state_if_missing(voxel, f);
     }
 
     // fn update_state(
@@ -2652,10 +2656,7 @@ impl VoxelCheckerboard {
             let neighbor_v = neighbor_v as u32;
 
             if let Some(neighbor_quad) = self.quads.get(&(neighbor_u, neighbor_v)) {
-                f(
-                    neighbor_quad,
-                    neighbor_quad.states.write().deref_mut(),
-                )
+                f(neighbor_quad, neighbor_quad.states.write().deref_mut())
             }
         }
     }
@@ -2769,7 +2770,9 @@ impl VoxelCheckerboard {
                     grid[(i - min_i) * quadsize + (j - min_j)] = quantile_index as u8;
                 }
             }
-            quad.densities_grid.set(grid).expect("densities_grid set more than once");
+            quad.densities_grid
+                .set(grid)
+                .expect("densities_grid set more than once");
         });
     }
 
@@ -3167,9 +3170,10 @@ impl VoxelCheckerboard {
                         bubbles.insert((edge.a, neighbor_cell));
                     }
                 } else if let Some((cell, neighbor_cell)) = quad_states.is_bubble(quad, edge.b)
-                    && cell == BACKGROUND_CELL {
-                        bubbles.insert((edge.b, neighbor_cell));
-                    }
+                    && cell == BACKGROUND_CELL
+                {
+                    bubbles.insert((edge.b, neighbor_cell));
+                }
             }
 
             for (voxel, neighbor_cell) in bubbles {

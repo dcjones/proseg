@@ -161,58 +161,60 @@ impl ParamOptimizer {
 
         let states = voxels.states_view();
         let ntranscripts = voxels.transcript_voxel.len();
-        (0..ntranscripts).into_par_iter().for_each_init(rng, |rng, idx| {
-            let voxel = Voxel::from_raw(voxels.transcript_voxel[idx].load(Ordering::Relaxed));
-            let cell = states.get_voxel_cell(voxel);
+        (0..ntranscripts)
+            .into_par_iter()
+            .for_each_init(rng, |rng, idx| {
+                let voxel = Voxel::from_raw(voxels.transcript_voxel[idx].load(Ordering::Relaxed));
+                let cell = states.get_voxel_cell(voxel);
 
-            let TranscriptFixedState {
-                original_voxel,
-                gene,
-            } = voxels.transcript_fixed_state[idx];
+                let TranscriptFixedState {
+                    original_voxel,
+                    gene,
+                } = voxels.transcript_fixed_state[idx];
 
-            let density = voxels.get_voxel_density(original_voxel);
-            let k_origin = original_voxel.k() as usize;
+                let density = voxels.get_voxel_density(original_voxel);
+                let k_origin = original_voxel.k() as usize;
 
-            let is_background = if cell == BACKGROUND_CELL {
-                true
-            } else {
-                let is_frozen = params.frozen_cells[cell as usize];
-
-                let λ_cg = if (gene as usize) < params.nunfactored {
-                    params.φ[[cell as usize, gene as usize]]
+                let is_background = if cell == BACKGROUND_CELL {
+                    true
                 } else {
-                    let φ_c_factored = params.φ.slice(s![cell as usize, params.nunfactored..]);
-                    let θ_g_factored = params.θ.slice(s![gene as usize, params.nunfactored..]);
-                    φ_c_factored.dot(&θ_g_factored)
+                    let is_frozen = params.frozen_cells[cell as usize];
+
+                    let λ_cg = if (gene as usize) < params.nunfactored {
+                        params.φ[[cell as usize, gene as usize]]
+                    } else {
+                        let φ_c_factored = params.φ.slice(s![cell as usize, params.nunfactored..]);
+                        let θ_g_factored = params.θ.slice(s![gene as usize, params.nunfactored..]);
+                        φ_c_factored.dot(&θ_g_factored)
+                    };
+
+                    let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
+
+                    let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
+                        1.0
+                    } else {
+                        λ_cg / (λ_cg + λ_bg)
+                    };
+
+                    rng.random::<f32>() > fg_prob
                 };
 
-                let λ_bg = params.λ_bg[[gene as usize, k_origin, density]];
-
-                let fg_prob = if priors.unmodeled_fixed_cells && is_frozen {
-                    1.0
-                } else {
-                    λ_cg / (λ_cg + λ_bg)
+                let new_assignment = TranscriptAssignment {
+                    cell,
+                    background: is_background,
                 };
+                params.transcript_state[idx].store(new_assignment);
 
-                rng.random::<f32>() > fg_prob
-            };
-
-            let new_assignment = TranscriptAssignment {
-                cell,
-                background: is_background,
-            };
-            params.transcript_state[idx].store(new_assignment);
-
-            if is_background {
-                params.background_counts[density][k_origin].add(gene as usize, 1);
-            } else {
-                params
-                    .foreground_counts
-                    .row(cell as usize)
-                    .write()
-                    .add(gene, 1);
-            }
-        });
+                if is_background {
+                    params.background_counts[density][k_origin].add(gene as usize, 1);
+                } else {
+                    params
+                        .foreground_counts
+                        .row(cell as usize)
+                        .write()
+                        .add(gene, 1);
+                }
+            });
     }
 
     fn optimize_factor_model(
@@ -381,9 +383,8 @@ impl ParamOptimizer {
                     }
                     let θ_g_factored = θ.slice(s![g as usize, nunfactored..]);
 
-                    // `!(sum > 0.0)` rather than `sum <= 0.0` to also skip NaN.
                     let sum = φ_c_factored.dot(&θ_g_factored);
-                    if !(sum > 0.0) {
+                    if sum.is_nan() || sum <= 0.0 {
                         continue;
                     }
                     let scale = x_cg as f32 / sum;

@@ -18,6 +18,7 @@ use zarrs::filesystem::FilesystemStore;
 use zarrs::group::Group;
 use zarrs::storage::ReadableStorageTraits;
 
+#[allow(clippy::too_many_arguments)]
 pub fn read_anndata_zarr_transcripts(
     filename: &str,
     excluded_genes: &Option<Regex>,
@@ -50,6 +51,7 @@ pub fn read_anndata_zarr_transcripts(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_anndata_zarr_transcripts_from_store(
     store: Arc<FilesystemStore>,
     excluded_genes: &Option<Regex>,
@@ -146,7 +148,7 @@ fn read_anndata_zarr_transcripts_from_store(
             {
                 if gene_index.contains_key(&(j as usize)) {
                     for _ in 0..count {
-                        transcript_ids.push(transcript_id.clone());
+                        transcript_ids.push(*transcript_id);
                     }
                 }
             }

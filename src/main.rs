@@ -31,8 +31,7 @@ use output::*;
 use schemas::OutputFormat;
 use spatialdata_input::{read_spatialdata_zarr_cell_polygons, read_spatialdata_zarr_transcripts};
 use spatialdata_output::{
-    write_dispersion_params_zarr, write_flow_covariance_zarr, write_heterotypic_uncertainty_zarr,
-    write_inflow_zarr, write_outflow_zarr, write_spatialdata_zarr, write_state_transitions_zarr,
+    write_dispersion_params_zarr, write_spatialdata_zarr, write_state_transitions_zarr,
     write_transcript_posteriors_zarr,
 };
 
@@ -1457,42 +1456,6 @@ fn main() {
             info!("write state transitions: {:?}", t0.elapsed());
         }
 
-        let t0 = Instant::now();
-        write_inflow_zarr(
-            &args.output_path,
-            output_spatialdata,
-            &params,
-            args.uncertainty_samples,
-        );
-        info!("write expected inflow: {:?}", t0.elapsed());
-
-        let t0 = Instant::now();
-        write_outflow_zarr(
-            &args.output_path,
-            output_spatialdata,
-            &params,
-            args.uncertainty_samples,
-        );
-        info!("write expected outflow: {:?}", t0.elapsed());
-
-        let t0 = Instant::now();
-        write_flow_covariance_zarr(
-            &args.output_path,
-            output_spatialdata,
-            &params,
-            args.uncertainty_samples,
-        );
-        info!("write flow covariance: {:?}", t0.elapsed());
-
-        let t0 = Instant::now();
-        write_heterotypic_uncertainty_zarr(
-            &args.output_path,
-            output_spatialdata,
-            &params,
-            args.uncertainty_samples,
-        );
-        info!("write heterotypic uncertainty: {:?}", t0.elapsed());
-
         if args.output_dispersion_params {
             let t0 = Instant::now();
             write_dispersion_params_zarr(&args.output_path, output_spatialdata, &params);
@@ -1550,7 +1513,8 @@ impl LogLikelihoodDisplay {
 
     // Whether to recompute at the given (1-based) iteration.
     fn due(&self, iteration: u64) -> bool {
-        self.every.is_some_and(|every| iteration % every == 0)
+        self.every
+            .is_some_and(|every| iteration.is_multiple_of(every))
     }
 }
 
@@ -1610,10 +1574,6 @@ fn run_sampler(
         );
     }
     let d_param = t_param.elapsed();
-
-    if record_samples {
-        params.flush_flow_stats();
-    }
 
     info!("sampling times: morphology: {d_morph:?}, repo: {d_repo:?}, params: {d_param:?}");
 

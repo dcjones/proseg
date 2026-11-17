@@ -3,7 +3,7 @@ use super::multinomial::Multinomial;
 use super::polyagamma::PolyaGamma;
 use super::transcripts::BACKGROUND_CELL;
 use super::voxelcheckerboard::{TranscriptFixedState, Voxel, VoxelCheckerboard};
-use super::{FlowStats, ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
+use super::{ModelParams, ModelPriors, RAYON_CELL_MIN_LEN, TranscriptAssignment};
 use itertools::izip;
 use libm::lgammaf;
 use log::{info, trace};
@@ -215,34 +215,6 @@ impl ParamSampler {
                         let ncells = voxels.ncells as u32;
                         let src_state = params.reported_transcript_state[idx].load();
 
-                        if !src_state.background && src_state != new_assignment {
-                            let mut row = params.flow_stats.row(src_state.cell as usize).write();
-                            row.update(gene, FlowStats::default, |v| {
-                                v.inflow_sum += 1;
-                                v.inflow += 1;
-                            })
-                        }
-
-                        if !new_assignment.background && src_state != new_assignment {
-                            let mut row =
-                                params.flow_stats.row(new_assignment.cell as usize).write();
-                            row.update(gene, FlowStats::default, |v| {
-                                v.outflow_sum += 1;
-                                v.outflow += 1;
-                            });
-                        }
-
-                        // Heterotypic uncertainty: record off-diagonal, foreground
-                        // cell→cell moves relative to the point estimate (src_state =
-                        // reported cell, `cell` = currently-sampled cell). Always on.
-                        if !src_state.background && !is_background && src_state.cell != cell {
-                            params
-                                .het_transitions
-                                .row(src_state.cell as usize)
-                                .write()
-                                .add(cell, 1);
-                        }
-
                         if priors.record_state_transitions {
                             let src_state = if src_state.background {
                                 ncells
@@ -278,14 +250,6 @@ impl ParamSampler {
                     }
                 }
             });
-
-        // Update covariance stats
-        params.flow_stats.par_rows().for_each(|row| {
-            let mut row = row.write();
-            row.guard.iter_mut().for_each(|(_gene, stats)| {
-                stats.update_cov_stats(params.t);
-            });
-        });
 
         if priors.record_state_transitions && record_samples {
             params.state_transitions.finish_sample();
