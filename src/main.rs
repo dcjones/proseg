@@ -1545,14 +1545,14 @@ fn run_sampler(
 
     let t_morph = Instant::now();
     for _morph_step in 0..(morphology_steps_per_iter / VOXEL_SAMPLING_BATCH_SIZE).max(1) {
-        voxel_sampler.sample(voxels, priors, params, temperature, record_samples);
+        voxel_sampler.sample(voxels, priors, params, temperature);
     }
     let d_morph = t_morph.elapsed();
 
     let mut d_repo = Duration::from_secs(0);
     if !burnin && priors.use_diffusion_model {
         let t_repo = Instant::now();
-        transcript_repo.sample(voxels, priors, params, repo_temperature, record_samples);
+        transcript_repo.sample(voxels, priors, params, repo_temperature);
         d_repo = t_repo.elapsed();
     }
 

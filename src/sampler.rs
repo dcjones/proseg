@@ -406,10 +406,6 @@ pub struct ModelParams {
     // foreground_counts_upper: CountQuantileEstimator,
     pub foreground_counts_mean: CountMeanEstimator,
 
-    // [ncells, ncells] sparse matrix recording the number of times the sampler
-    // moved transcripts between pairs of cells.
-    pub transition_counts: CSRMat<u32, u32>,
-
     // [density_nbins, nlayers, ngenes] background transcripts counts
     unassigned_counts: Vec<Vec<AtomicCountVec>>,
 
@@ -743,8 +739,6 @@ impl ModelParams {
         let mut background_region_volume = Array1::zeros(density_nbins);
         voxels.compute_background_region_volumes(&mut background_region_volume);
 
-        let transition_counts = CSRMat::zeros(ncells, ncells as u32 - 1);
-
         let frozen_cells = voxels.frozen_cells.clone();
 
         let t = 0;
@@ -762,7 +756,6 @@ impl ModelParams {
             state_transitions,
             transcript_assignment_counts,
             foreground_counts,
-            transition_counts,
             foreground_counts_mean,
             unassigned_counts,
             background_counts,

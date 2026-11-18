@@ -91,7 +91,6 @@ impl VoxelSampler {
         priors: &ModelPriors,
         params: &ModelParams,
         temperature: f32,
-        record_samples: bool,
     ) {
         let t0 = Instant::now();
 
@@ -137,7 +136,7 @@ impl VoxelSampler {
                     let s = rng().random::<f32>().ln();
 
                     if s < logu {
-                        self.accept_proposal(voxels, quad, params, proposal, record_samples);
+                        self.accept_proposal(voxels, quad, params, proposal);
                     }
                 }
             });
@@ -503,7 +502,6 @@ impl VoxelSampler {
         quad: &VoxelQuad,
         params: &ModelParams,
         proposal: Proposal,
-        record_samples: bool,
     ) {
         let mut quad_states = quad.states.write();
         let voxel = proposal.voxel;
@@ -566,7 +564,6 @@ impl VoxelSampler {
 
             let counts_row = params.counts.row(current_cell as usize);
             let mut counts_row_write = counts_row.write();
-            let mut total_count = 0;
 
             for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {
                 let TranscriptFixedState {
@@ -579,16 +576,6 @@ impl VoxelSampler {
                     CountMatRowKey::new(gene, original_voxel.k() as u32, density as u8),
                     1,
                 );
-
-                total_count += 1;
-            }
-
-            // TODO: Can remove this when we have the new uncertainty tracking system implemented.
-            // update the count transition matrix
-            if record_samples && proposed_cell != BACKGROUND_CELL {
-                let transitions_row = params.transition_counts.row(current_cell as usize);
-                let mut transitions_row_write = transitions_row.write();
-                transitions_row_write.add(proposed_cell, total_count);
             }
         } else {
             for transcript_id in voxels.voxel_index.voxel_transcripts(voxel) {

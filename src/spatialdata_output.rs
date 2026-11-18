@@ -512,8 +512,6 @@ fn write_anndata_zarr<T: ReadableWritableStorageTraits + 'static>(
     )?
     .store_metadata()?;
 
-    write_anndata_transition_counts_zarr(store.clone(), &params.transition_counts)?;
-
     new_zarr_group(
         store.clone(),
         &format!("/tables/{SD_TABLE_NAME}/uns"),
@@ -1445,17 +1443,6 @@ fn write_anndata_x_zarr<T: ReadableWritableStorageTraits + 'static>(
     counts: &CSRMat<u32, u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     write_anndata_csr_matrix(store, &format!("/tables/{SD_TABLE_NAME}/X"), counts)
-}
-
-fn write_anndata_transition_counts_zarr<T: ReadableWritableStorageTraits + 'static>(
-    store: Arc<T>,
-    transition_counts: &CSRMat<u32, u32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    write_anndata_csr_matrix(
-        store,
-        &format!("/tables/{SD_TABLE_NAME}/obsp/transition_counts"),
-        transition_counts,
-    )
 }
 
 fn write_obs_u32_column<T: ReadableWritableStorageTraits + 'static>(

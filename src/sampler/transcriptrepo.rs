@@ -86,7 +86,6 @@ impl TranscriptRepo {
         priors: &ModelPriors,
         params: &mut ModelParams,
         temperature: f32,
-        record_samples: bool,
     ) {
         let t0 = Instant::now();
         // All updates go through interior mutability: the position array is
@@ -109,7 +108,6 @@ impl TranscriptRepo {
                     params,
                     idx,
                     temperature,
-                    record_samples,
                 );
             });
         trace!("transcript repo: {:?}", t0.elapsed());
@@ -130,7 +128,6 @@ impl TranscriptRepo {
         params: &ModelParams,
         idx: usize,
         temperature: f32,
-        record_samples: bool,
     ) {
         use std::sync::atomic::Ordering::Relaxed;
 
@@ -234,18 +231,6 @@ impl TranscriptRepo {
 
         if rng.random::<f32>() > accept_prob {
             return;
-        }
-
-        // Record the transition only when sampling posteriors. Acquiring the row
-        // lock lazily here (rather than eagerly per transcript) avoids a lock
-        // acquisition for every non-background transcript, which is pure overhead
-        // during the point-estimate phase (record_samples == false).
-        if record_samples && cell != BACKGROUND_CELL && neighbor_cell != BACKGROUND_CELL {
-            params
-                .transition_counts
-                .row(cell as usize)
-                .write()
-                .add(neighbor_cell, 1);
         }
 
         // Move the transcript's count between cells. Same-cell moves (including
