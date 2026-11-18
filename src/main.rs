@@ -507,16 +507,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     monitor_cell_polygons_freq: usize,
 
-    /// Enable output of state transition matrices (obsp/state_transitions and
-    /// varm/state_transitions, plus the obs columns from_bg_trans_count and
-    /// to_bg_trans_count)
+    /// Enable output of the state transition matrix (obsp/state_transitions,
+    /// plus the obs columns from_bg_trans_count and to_bg_trans_count)
     #[arg(long, default_value_t = false)]
     record_state_transitions: bool,
-
-    /// Suppress output of per-gene transcript assignment uncertainty matrices
-    /// (varm/state_transitions)
-    #[arg(long, default_value_t = false)]
-    no_gene_transitions: bool,
 
     /// Output per-transcript assignment posteriors to the spatialdata zarr object
     #[arg(long, default_value_t = false)]
@@ -1445,14 +1439,7 @@ fn main() {
     if let Some(ref output_spatialdata) = args.output_spatialdata {
         if args.record_state_transitions {
             let t0 = Instant::now();
-            params.finalize_state_transitions(&voxels);
-            write_state_transitions_zarr(
-                &args.output_path,
-                output_spatialdata,
-                &params,
-                &dataset.gene_names,
-                !args.no_gene_transitions,
-            );
+            write_state_transitions_zarr(&args.output_path, output_spatialdata, &params);
             info!("write state transitions: {:?}", t0.elapsed());
         }
 

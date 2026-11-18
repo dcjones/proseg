@@ -1252,16 +1252,13 @@ fn write_anndata_csr_matrix_raw<
     Ok(())
 }
 
-/// Write the state transition counts: the gene-agnostic cell→cell matrix to
-/// `obsp/state_transitions` with its background row/column split off into the obs
-/// columns `from_bg_trans_count`/`to_bg_trans_count`, and optionally the per-gene
-/// transition counts to `varm/state_transitions`.
+/// Write the state transition counts: the cell→cell matrix (including the
+/// diagonal) to `obsp/state_transitions`, and transitions to and from the
+/// background to the obs columns `to_bg_trans_count` and `from_bg_trans_count`.
 pub fn write_state_transitions_zarr(
     output_path: &Option<String>,
     filename: &str,
     params: &ModelParams,
-    gene_names: &[String],
-    output_gene_transitions: bool,
 ) {
     let path = if let Some(outputpath) = output_path {
         Path::new(outputpath).join(filename)
@@ -1269,9 +1266,7 @@ pub fn write_state_transitions_zarr(
         Path::new(filename).to_path_buf()
     };
 
-    if let Err(e) =
-        write_state_transitions_parts(&path, params, gene_names, output_gene_transitions)
-    {
+    if let Err(e) = write_state_transitions_parts(&path, params) {
         panic!(
             "Failed to write state transitions to {}: {}",
             path.display(),
@@ -1283,59 +1278,41 @@ pub fn write_state_transitions_zarr(
 fn write_state_transitions_parts(
     path: &Path,
     params: &ModelParams,
-    gene_names: &[String],
-    output_gene_transitions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(zarrs::filesystem::FilesystemStore::new(path)?);
 
     let ncells = params.ncells();
-    // Index `ncells` in `state_transitions` is the background state.
-    debug_assert_eq!(params.state_transitions.nrows(), ncells + 1);
-    let bg = ncells as u32;
+    let diag = params.state_transitions_diagonal();
 
-    // 1. Write the gene-agnostic cell→cell transition matrix. The background
-    // row and column don't fit in an [ncells, ncells] obsp entry, so they are
-    // written as the obs columns `from_bg_trans_count` and `to_bg_trans_count`.
-    // Per row: (dest cell, count) summed over genes, sorted by dest cell, and
-    // the count to background.
-    let agg_rows: Vec<(Vec<(u32, u32)>, u32)> = (0..ncells)
-        .into_par_iter()
-        .map(|i| {
-            let mut to_bg = 0;
-            let mut dests = Vec::new();
-            for (key, count) in params.state_transitions.iter_row_sorted(i) {
-                if key.dest_cell == bg {
-                    to_bg += count;
-                } else {
-                    dests.push((key.dest_cell, count));
-                }
+    // Per row: the recorded off-diagonal entries (already sorted by column) with
+    // the diagonal entry merged in at its place.
+    let rows: Vec<Vec<(u32, u32)>> = params
+        .state_transitions
+        .par_rows()
+        .zip(diag.into_par_iter())
+        .enumerate()
+        .map(|(i, (row, d))| {
+            let row = row.read();
+            let mut entries: Vec<(u32, u32)> = row.iter_nonzeros_to(i as u32).collect();
+            if d > 0 {
+                entries.push((i as u32, d));
             }
-            dests.sort_unstable_by_key(|e| e.0);
-            dests.dedup_by(|next, kept| {
-                if next.0 == kept.0 {
-                    kept.1 += next.1;
-                    true
-                } else {
-                    false
-                }
-            });
-            (dests, to_bg)
+            entries.extend(row.iter_nonzeros_from(i as u32 + 1));
+            entries
         })
         .collect();
 
-    let nnz: usize = agg_rows.iter().map(|(dests, _)| dests.len()).sum();
-    let mut agg_data = Vec::with_capacity(nnz);
-    let mut agg_indices = Vec::with_capacity(nnz);
-    let mut agg_indptr = Vec::with_capacity(ncells + 1);
-    let mut to_bg = Vec::with_capacity(ncells);
-    agg_indptr.push(0);
-    for (dests, to_bg_i) in agg_rows {
-        for (dest_cell, count) in dests {
-            agg_data.push(count);
-            agg_indices.push(dest_cell as i32);
+    let nnz: usize = rows.iter().map(|row| row.len()).sum();
+    let mut data = Vec::with_capacity(nnz);
+    let mut indices = Vec::with_capacity(nnz);
+    let mut indptr = Vec::with_capacity(ncells + 1);
+    indptr.push(0);
+    for row in rows {
+        for (j, count) in row {
+            data.push(count);
+            indices.push(j as i32);
         }
-        agg_indptr.push(agg_data.len() as i32);
-        to_bg.push(to_bg_i);
+        indptr.push(data.len() as i32);
     }
 
     write_anndata_csr_matrix_raw(
@@ -1343,97 +1320,18 @@ fn write_state_transitions_parts(
         &format!("/tables/{SD_TABLE_NAME}/obsp/state_transitions"),
         ncells,
         ncells,
-        &agg_data,
-        &agg_indices,
-        &agg_indptr,
+        &data,
+        &indices,
+        &indptr,
         DataType::UInt32,
         DataType::Int32,
     )?;
 
-    let mut from_bg = vec![0_u32; ncells];
-    for (key, count) in params.state_transitions.iter_row_sorted(ncells) {
-        if key.dest_cell != bg {
-            from_bg[key.dest_cell as usize] += count;
-        }
-    }
-
+    let from_bg: Vec<u32> = params.state_transitions_from_bg.iter().collect();
+    let to_bg: Vec<u32> = params.state_transitions_to_bg.iter().collect();
     write_obs_u32_column(store.clone(), "from_bg_trans_count", &from_bg)?;
     write_obs_u32_column(store.clone(), "to_bg_trans_count", &to_bg)?;
     append_obs_column_order(store.clone(), &["from_bg_trans_count", "to_bg_trans_count"])?;
-
-    // 2. Write gene-wise transition counts, flattened as
-    // [ngenes, nstates * nstates] where nstates = ncells + 1 and the last state
-    // is the background, so transitions to and from background are retained.
-    // Like the matrix above these are raw counts, leaving the consumer to decide
-    // how to normalize them.
-    if output_gene_transitions {
-        let ngenes = gene_names.len();
-        let nstates = ncells + 1;
-
-        let gene_counts = (0..nstates)
-            .into_par_iter()
-            .fold(
-                || vec![0_usize; ngenes],
-                |mut acc, i| {
-                    for (key, _) in params.state_transitions.iter_row_sorted(i) {
-                        acc[key.gene as usize] += 1;
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || vec![0_usize; ngenes],
-                |mut a, b| {
-                    a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
-                    a
-                },
-            );
-
-        let mut indptr: Vec<i64> = Vec::with_capacity(ngenes + 1);
-        indptr.push(0);
-        for count in &gene_counts {
-            indptr.push(indptr.last().unwrap() + *count as i64);
-        }
-        let nnz = *indptr.last().unwrap() as usize;
-
-        // Scatter entries into place. Rows are visited in increasing order and
-        // each row's entries are sorted by (gene, dest_state), so each gene's
-        // entries land in increasing flat-index order, as CSR requires. Rows are
-        // sorted in parallel, a batch at a time to bound memory.
-        let mut data = vec![0_u32; nnz];
-        let mut indices = vec![0_i64; nnz];
-        let mut cursor: Vec<usize> = indptr[..ngenes].iter().map(|&p| p as usize).collect();
-        const BATCH_SIZE: usize = 1024;
-        for batch_start in (0..nstates).step_by(BATCH_SIZE) {
-            let batch_end = (batch_start + BATCH_SIZE).min(nstates);
-            let batch: Vec<_> = (batch_start..batch_end)
-                .into_par_iter()
-                .map(|i| params.state_transitions.iter_row_sorted(i))
-                .collect();
-            for (i, row_entries) in (batch_start..batch_end).zip(batch) {
-                for (key, count) in row_entries {
-                    let pos = &mut cursor[key.gene as usize];
-                    data[*pos] = count;
-                    indices[*pos] = (i * nstates + key.dest_cell as usize) as i64;
-                    *pos += 1;
-                }
-            }
-        }
-
-        if !data.is_empty() {
-            write_anndata_csr_matrix_raw(
-                store.clone(),
-                &format!("/tables/{SD_TABLE_NAME}/varm/state_transitions"),
-                ngenes,
-                nstates * nstates,
-                &data,
-                &indices,
-                &indptr,
-                DataType::UInt32,
-                DataType::Int64,
-            )?;
-        }
-    }
 
     Ok(())
 }

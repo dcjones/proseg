@@ -212,21 +212,29 @@ impl ParamSampler {
 
                     // Update transition counts
                     if record_samples {
-                        let ncells = voxels.ncells as u32;
                         let src_state = params.reported_transcript_state[idx].load();
 
+                        // Only off-diagonal transitions are recorded. See
+                        // `ModelParams::state_transitions_diagonal`.
                         if priors.record_state_transitions {
-                            let src_state = if src_state.background {
-                                ncells
-                            } else {
-                                src_state.cell
-                            };
-
-                            let dest_state = if is_background { ncells } else { cell };
-
-                            params
-                                .state_transitions
-                                .add(src_state as usize, gene, dest_state);
+                            match (src_state.background, is_background) {
+                                (false, false) if src_state.cell != cell => {
+                                    params
+                                        .state_transitions
+                                        .row(src_state.cell as usize)
+                                        .write()
+                                        .add(cell, 1);
+                                }
+                                (false, true) => {
+                                    params
+                                        .state_transitions_to_bg
+                                        .add(src_state.cell as usize, 1);
+                                }
+                                (true, false) => {
+                                    params.state_transitions_from_bg.add(cell as usize, 1);
+                                }
+                                _ => {}
+                            }
                         }
 
                         if let Some(ref counts) = params.transcript_assignment_counts {
@@ -252,7 +260,7 @@ impl ParamSampler {
             });
 
         if priors.record_state_transitions && record_samples {
-            params.state_transitions.finish_sample();
+            params.state_transitions_nsamples += 1;
         }
     }
 

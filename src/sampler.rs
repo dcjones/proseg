@@ -14,7 +14,6 @@ mod sampleset;
 pub mod sparsevec;
 pub mod transcriptrepo;
 pub mod transcripts;
-pub mod transitionmat;
 pub mod voxelcheckerboard;
 pub mod voxelsampler;
 
@@ -22,7 +21,6 @@ use clustering::kmeans;
 use csrmat::CSRMat;
 use csrmat::Increment;
 use transcripts::CellIndex;
-use transitionmat::TransitionMat;
 
 use atomiccountvec::AtomicCountVec;
 use itertools::izip;
@@ -34,7 +32,9 @@ use num::traits::Zero;
 use onlinestats::CountMeanEstimator;
 use parking_lot::Mutex;
 use rand::rng;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Add, AddAssign};
@@ -247,61 +247,6 @@ impl Increment for CountMatRowKey {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct TransitionMatRowKey {
-    pub gene: u32,
-    pub dest_cell: CellIndex,
-}
-
-impl Add for TransitionMatRowKey {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        TransitionMatRowKey {
-            gene: self.gene + other.gene,
-            dest_cell: self.dest_cell + other.dest_cell,
-        }
-    }
-}
-
-impl AddAssign for TransitionMatRowKey {
-    fn add_assign(&mut self, other: Self) {
-        *self = TransitionMatRowKey {
-            gene: self.gene + other.gene,
-            dest_cell: self.dest_cell + other.dest_cell,
-        };
-    }
-}
-
-impl Zero for TransitionMatRowKey {
-    fn zero() -> Self {
-        TransitionMatRowKey {
-            gene: 0,
-            dest_cell: CellIndex::zero(),
-        }
-    }
-
-    fn is_zero(&self) -> bool {
-        self.gene == 0 && self.dest_cell.is_zero()
-    }
-}
-
-impl Increment for TransitionMatRowKey {
-    fn inc(&self, bound: TransitionMatRowKey) -> TransitionMatRowKey {
-        if self.dest_cell + 1 > bound.dest_cell {
-            TransitionMatRowKey {
-                gene: self.gene + 1,
-                dest_cell: 0,
-            }
-        } else {
-            TransitionMatRowKey {
-                gene: self.gene,
-                dest_cell: self.dest_cell + 1,
-            }
-        }
-    }
-}
-
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -385,13 +330,26 @@ pub struct ModelParams {
     // [ntranscripts] State vector used for the reported point estimate.
     reported_transcript_state: Vec<TranscriptState>,
 
-    // Counts the number of transitions between states for each gene, indexed as
-    // (src state, (gene, dest state)). A state is either a cell or the
-    // background: cell indexes are used as-is and index `ncells` is the
-    // background state, giving `ncells + 1` states in total. Only off-diagonal
-    // transitions are recorded during sampling; the diagonal is filled in by
-    // `finalize_state_transitions`.
-    pub state_transitions: TransitionMat,
+    // State transition counts, recorded during uncertainty sampling when
+    // `record_state_transitions` is set. A transition is from a transcript's
+    // reported (point estimate) state to its state in a recorded sample, where
+    // a state is either a cell or the background.
+    //
+    // [ncells, ncells] Cell→cell transitions. Only off-diagonal entries are
+    // recorded; the diagonal is implied by the other counts and computed by
+    // `state_transitions_diagonal`.
+    pub state_transitions: CSRMat<u32, u32>,
+
+    // [ncells] Transitions from each cell to the background.
+    pub state_transitions_to_bg: AtomicCountVec,
+
+    // [ncells] Transitions from the background to each cell.
+    pub state_transitions_from_bg: AtomicCountVec,
+
+    // Number of recorded samples contributing to the state transition counts.
+    // Every transcript makes exactly one transition (possibly to its own state)
+    // per sample.
+    pub state_transitions_nsamples: u32,
 
     // [ntranscripts] Per-transcript assignment counts: for each transcript, a map from
     // cell index to the number of times it was assigned to that cell during uncertainty sampling.
@@ -631,7 +589,9 @@ impl ModelParams {
                 .take(ntranscripts)
                 .collect();
 
-        let state_transitions = TransitionMat::new(ncells + 1);
+        let state_transitions = CSRMat::zeros(ncells, (ncells as u32).saturating_sub(1));
+        let state_transitions_to_bg = AtomicCountVec::zeros(ncells);
+        let state_transitions_from_bg = AtomicCountVec::zeros(ncells);
 
         let transcript_assignment_counts: Option<Vec<Mutex<HashMap<u32, u32>>>> = None;
 
@@ -754,6 +714,9 @@ impl ModelParams {
             transcript_state,
             reported_transcript_state,
             state_transitions,
+            state_transitions_to_bg,
+            state_transitions_from_bg,
+            state_transitions_nsamples: 0,
             transcript_assignment_counts,
             foreground_counts,
             foreground_counts_mean,
@@ -811,21 +774,44 @@ impl ModelParams {
         }
     }
 
-    /// Fill in the implicit diagonal of `state_transitions`. Call once, after the
-    /// uncertainty phase and before reading `state_transitions`.
-    pub fn finalize_state_transitions(&mut self, voxels: &VoxelCheckerboard) {
-        let ncells = self.ncells() as u32;
-        let reported = &self.reported_transcript_state;
-        self.state_transitions.finalize(
-            reported
-                .par_iter()
-                .zip(voxels.transcript_fixed_state.par_iter())
-                .map(|(state, fixed)| {
+    /// The implicit diagonal of `state_transitions`: the number of times each
+    /// cell's transcripts stayed in that cell. Each transcript reported in cell
+    /// `c` makes one transition per recorded sample, so the diagonal entry is
+    /// `nsamples * |{transcripts reported in c}|` minus the recorded transitions
+    /// out of `c` (to other cells and to the background).
+    pub fn state_transitions_diagonal(&self) -> Vec<u32> {
+        let ncells = self.ncells();
+        let nreported = self
+            .reported_transcript_state
+            .par_iter()
+            .fold(
+                || vec![0_u32; ncells],
+                |mut acc, state| {
                     let state = state.load();
-                    let src = if state.background { ncells } else { state.cell };
-                    (src, fixed.gene)
-                }),
-        );
+                    if !state.background {
+                        acc[state.cell as usize] += 1;
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![0_u32; ncells],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
+                    a
+                },
+            );
+
+        let nsamples = self.state_transitions_nsamples;
+        self.state_transitions
+            .par_rows()
+            .zip(nreported.into_par_iter())
+            .enumerate()
+            .map(|(i, (row, n))| {
+                let offdiag: u32 = row.read().iter_nonzeros().map(|(_, count)| count).sum();
+                nsamples * n - offdiag - self.state_transitions_to_bg.get(i)
+            })
+            .collect()
     }
 
     pub fn enable_transcript_assignment_tracking(&mut self, ntranscripts: usize) {

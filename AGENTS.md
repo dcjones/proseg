@@ -42,7 +42,6 @@ cargo build --release --features dhat-heap  # heap profiling build
 | `src/schemas.rs` | Arrow schemas for output tables |
 | `src/sampler/csrmat.rs` | CSR sparse matrix (primary count storage) |
 | `src/sampler/sparsevec.rs` | B+-tree sparse count vector backing each `CSRMat` row |
-| `src/sampler/transitionmat.rs` | State transition counts (`--record-state-transitions`) |
 
 ## Gotchas
 
